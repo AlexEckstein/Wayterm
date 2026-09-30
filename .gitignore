@@ -1,0 +1,27 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock  # bin crate — lockfile stays in the repo once code exists; remove this line at Phase 1
+
+# Runtime / local state
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Agent session state (never commit agent scratch)
+.claude/
+.codex/
+.opencode/
+hermes-session/
+
+# Secrets — never commit credentials, even test ones
+.env
+*.pem
+id_rsa*
