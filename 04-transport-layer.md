@@ -243,7 +243,7 @@ impl Transport for SSHTransport {
 
         // 4. Shell or tmux
         if self.tmux_enabled {
-            // Quoted session name; convention: "<app>-<sessionName>"
+            // Quoted session name; convention: "wayterm-<sessionName>"
             let cmd = format!("tmux new -A -s {}", shell_quote(&self.tmux_session_name));
             channel.exec(false, cmd.as_bytes()).await?;
         } else {
@@ -526,7 +526,7 @@ plain shell. This means:
 - Connection drops: tmux session survives on the remote host
 - Reconnect: re-attaches to same tmux session, full state restored
 
-Session naming convention: `<app>-<sessionName>` to avoid conflicts with
+Session naming convention: `wayterm-<sessionName>` to avoid conflicts with
 the user's own tmux sessions. Quote the name — session names may contain
 shell metacharacters (`;` is legal in tmux session names and would
 otherwise split the command).

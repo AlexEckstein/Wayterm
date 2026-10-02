@@ -1,4 +1,4 @@
-# MobaXterm-Linux (Working Title)
+# Wayterm
 
 An open source, multi-protocol connection manager and terminal for Linux.
 
@@ -11,6 +11,9 @@ in the open source Linux landscape:
 - **Custom hotkeys** — configurable, per-action keybinding system
 - **RDP/VNC** — remote desktop protocols embedded in-window as tabs
 - **SFTP sidebar** — integrated remote file browser alongside the terminal
+
+Project identity: **Wayterm** — app id `com.alex-eckstein.wayterm`, repo
+`github.com/AlexEckstein/Wayterm`.
 
 ## Tech Stack (Chosen)
 

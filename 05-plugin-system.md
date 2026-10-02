@@ -286,7 +286,7 @@ pub struct SessionConfig {
 - Built-in backends (Cargo features): no security concern — compiled in,
   type-safe, no dlopen
 - C ABI plugins: loaded from a fixed system directory
-  (`/usr/lib/yourapp/plugins/` or `~/.local/share/yourapp/plugins/`),
+  (`/usr/lib/wayterm/plugins/` or `~/.local/share/wayterm/plugins/`),
   not arbitrary paths
 - Plugins receive raw terminal data, not connection credentials
 - `libloading::Library` keeps the .so resident — don't drop while
@@ -299,8 +299,8 @@ pub struct SessionConfig {
 
 ### Debian/Ubuntu
 ```
-yourapp                 — main app, VTE backend built-in (default features)
-yourapp-backend-ghostty — libghostty-vt plugin (separate .so + deps)
+wayterm                 — main app, VTE backend built-in (default features)
+wayterm-backend-ghostty — libghostty-vt plugin (separate .so + deps)
 ```
 
 ### Flatpak / AppImage

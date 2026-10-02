@@ -213,7 +213,7 @@ just not in-window) while planning migration to libfreerdp C API.
 **Goal:** Optional session persistence via tmux.
 
 - [ ] SSHTransport tmux integration (04-transport-layer.md)
-  - `tmux new -A -s yourapp-<name>` instead of plain shell
+  - `tmux new -A -s wayterm-<name>` instead of plain shell
   - Per-session toggle in session config
 - [ ] Reconnect logic: detect drop, show "Reconnect?" prompt
 - [ ] Auto-reconnect option (configurable per-session)
@@ -248,7 +248,7 @@ vim is still there.
 import sessions from other tools — most importantly, from their existing
 `~/.ssh/config` on first run.
 
-**Verify:** `dpkg -i yourapp.deb` → app works. Flatpak install → app
+**Verify:** `dpkg -i wayterm.deb` → app works. Flatpak install → app
 works. `~/.ssh/config` import creates the expected sessions. Import from
 MobaXterm creates sessions.
 

@@ -390,7 +390,7 @@ keyring via libsecret, using libsecret's attribute-based lookup (not a
 single concatenated key string — attributes are indexed and matchable):
 
 ```
-schema: <appid>.Session
+schema: com.alex-eckstein.wayterm.Session
 attributes per secret:
     session_id    → sessions.id
     session_name  → sessions.name (human-readable in the keyring UI)
@@ -404,9 +404,11 @@ Full flow (keyring → prompt → store-if-checked, challenge-response
 dialog, zeroization) is specified in
 [11-ssh-auth-security.md](11-ssh-auth-security.md).
 
-> **App id note:** pick the real application id (e.g. `io.github.<org>.<app>`)
-> before Phase 1 — it's baked into keyring schemas, XDG directories, and
-> gsettings schemas, and changing it later orphans stored credentials.
+> **App id note:** the application id is `com.alex-eckstein.wayterm` —
+> decided at design phase, before any code, exactly as required: it's baked
+> into keyring schemas, XDG directories, and gsettings schemas, and
+> changing it later orphans stored credentials. Binaries/packages use the
+> plain name `wayterm`.
 
 ## Default Data
 
