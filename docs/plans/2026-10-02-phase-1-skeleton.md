@@ -162,7 +162,7 @@ in code — do not paraphrase doc 06; copy it.
 **Tests:**
 - `open` on a temp dir creates all 5 tables (query `sqlite_master`)
 - `open` twice on same path is idempotent (`IF NOT EXISTS`)
-- seed check: `SELECT COUNT(*) FROM hotkeys` = 29 rows; `settings`
+- seed check: `SELECT COUNT(*) FROM hotkeys` = 28 rows; `settings`
   contains `host_key_policy=strict`
 - WAL pragma active after open
 
