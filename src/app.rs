@@ -1,6 +1,8 @@
 use gtk4::glib;
 use gtk4::prelude::*;
 
+use crate::ui::MainWindow;
+
 pub const APP_ID: &str = "com.alex-eckstein.wayterm";
 
 pub fn run() -> glib::ExitCode {
@@ -10,11 +12,5 @@ pub fn run() -> glib::ExitCode {
 }
 
 fn build_ui(app: &gtk4::Application) {
-    let win = gtk4::ApplicationWindow::builder()
-        .application(app)
-        .title("Wayterm")
-        .default_width(1200)
-        .default_height(800)
-        .build();
-    win.present();
+    MainWindow::new(app);
 }

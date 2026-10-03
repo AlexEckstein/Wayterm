@@ -1,16 +1,13 @@
 //! Session store layer (doc 06).
 
-// Task 5 consumes SessionConfig and all option structs, but the
-// binary crate still has no non-test callers of the public re-exports
-// below. Keep a narrowly-scoped allow rather than the previous blanket
-// suppression so the lint fires once a future task actually wires the
-// store into the UI (doc 01/07/09).
-#![allow(dead_code, unused_imports)]
-
 pub mod db;
 pub mod model;
 
+// Task 7 will wire the store into the UI (session tree). Until then,
+// the binary crate has no non-test callers of these public re-exports.
+#[allow(dead_code, unused_imports)]
 pub use db::SessionStore;
+#[allow(dead_code, unused_imports)]
 pub use model::{
     AuthMethod, Folder, ForwardKind, ForwardRule, HostKeyPolicy, RdpOptions, SessionConfig,
     SessionType, SshOptions, VncOptions,
