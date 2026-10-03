@@ -1,7 +1,6 @@
 # Rust
 /target/
 **/*.rs.bk
-Cargo.lock  # bin crate — lockfile stays in the repo once code exists; remove this line at Phase 1
 
 # Runtime / local state
 *.sqlite3
