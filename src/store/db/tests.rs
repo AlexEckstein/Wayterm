@@ -346,3 +346,230 @@ fn delete_childless_folder_is_noop() {
         .unwrap();
     assert_eq!(n, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Session CRUD (Task 5)
+// ---------------------------------------------------------------------------
+
+use crate::store::model::{
+    AuthMethod, ForwardKind, ForwardRule, HostKeyPolicy, RdpOptions, SessionConfig, SessionType,
+    SshOptions, VncOptions,
+};
+
+/// Build a fully-populated SSH session config for round-trip tests.
+fn sample_ssh_config(folder_id: Option<i64>) -> SessionConfig {
+    SessionConfig {
+        id: 0,
+        name: "prod-db".to_string(),
+        session_type: SessionType::SSH,
+        folder_id,
+        host: Some("db.prod.lan".to_string()),
+        port: Some(22),
+        username: Some("admin".to_string()),
+        auth_method: Some(AuthMethod::Key),
+        key_path: Some("~/.ssh/id_ed25519".to_string()),
+        host_key_policy: Some(HostKeyPolicy::AcceptNew),
+        jump_session_id: None,
+        forward_rules: Some(vec![
+            ForwardRule {
+                kind: ForwardKind::Local,
+                bind_addr: "127.0.0.1".to_string(),
+                bind_port: 8080,
+                remote_host: "web1.lan".to_string(),
+                remote_port: 80,
+                enabled: true,
+            },
+            ForwardRule {
+                kind: ForwardKind::Local,
+                bind_addr: "127.0.0.1".to_string(),
+                bind_port: 9090,
+                remote_host: "web2.lan".to_string(),
+                remote_port: 9090,
+                enabled: false,
+            },
+        ]),
+        tmux_enabled: true,
+        tmux_session_name: Some("wayterm-main".to_string()),
+        ssh_options: Some(SshOptions {
+            compression: true,
+            keepalive_interval: Some(30),
+            keepalive_count: Some(3),
+        }),
+        rdp_domain: Some("CORP".to_string()),
+        rdp_width: Some(1920),
+        rdp_height: Some(1080),
+        rdp_color_depth: Some(32),
+        rdp_compression: true,
+        rdp_options: Some(RdpOptions {
+            audio: true,
+            clipboard: false,
+            fonts: true,
+            printer: false,
+        }),
+        vnc_color_depth: Some(24),
+        vnc_options: Some(VncOptions {
+            quality: 7,
+            scaling: true,
+            view_only: false,
+        }),
+        serial_device: Some("/dev/ttyUSB0".to_string()),
+        serial_baud_rate: Some(115200),
+        serial_data_bits: Some(8),
+        serial_parity: Some("none".to_string()),
+        serial_stop_bits: Some(1),
+        serial_flow_control: Some("none".to_string()),
+        local_shell: Some("/bin/bash".to_string()),
+        local_working_dir: Some("/srv".to_string()),
+        preferred_backend: Some("vte".to_string()),
+        color_scheme: Some("Dark".to_string()),
+        font_family: Some("Monospace".to_string()),
+        font_size: Some(12.5),
+        opacity: Some(0.9),
+        notes: Some("primary db".to_string()),
+        last_connected: Some("2026-10-02T12:00:00Z".to_string()),
+        connect_count: 17,
+    }
+}
+
+/// Field-by-field equality for `SessionConfig` (no PartialEq because of floats).
+fn assert_session_eq(left: &SessionConfig, right: &SessionConfig) {
+    assert_eq!(left.id, right.id);
+    assert_eq!(left.name, right.name);
+    assert_eq!(left.session_type, right.session_type);
+    assert_eq!(left.folder_id, right.folder_id);
+    assert_eq!(left.host, right.host);
+    assert_eq!(left.port, right.port);
+    assert_eq!(left.username, right.username);
+    assert_eq!(left.auth_method, right.auth_method);
+    assert_eq!(left.key_path, right.key_path);
+    assert_eq!(left.host_key_policy, right.host_key_policy);
+    assert_eq!(left.jump_session_id, right.jump_session_id);
+    assert_eq!(left.forward_rules, right.forward_rules);
+    assert_eq!(left.tmux_enabled, right.tmux_enabled);
+    assert_eq!(left.tmux_session_name, right.tmux_session_name);
+    assert_eq!(left.ssh_options, right.ssh_options);
+    assert_eq!(left.rdp_domain, right.rdp_domain);
+    assert_eq!(left.rdp_width, right.rdp_width);
+    assert_eq!(left.rdp_height, right.rdp_height);
+    assert_eq!(left.rdp_color_depth, right.rdp_color_depth);
+    assert_eq!(left.rdp_compression, right.rdp_compression);
+    assert_eq!(left.rdp_options, right.rdp_options);
+    assert_eq!(left.vnc_color_depth, right.vnc_color_depth);
+    assert_eq!(left.vnc_options, right.vnc_options);
+    assert_eq!(left.serial_device, right.serial_device);
+    assert_eq!(left.serial_baud_rate, right.serial_baud_rate);
+    assert_eq!(left.serial_data_bits, right.serial_data_bits);
+    assert_eq!(left.serial_parity, right.serial_parity);
+    assert_eq!(left.serial_stop_bits, right.serial_stop_bits);
+    assert_eq!(left.serial_flow_control, right.serial_flow_control);
+    assert_eq!(left.local_shell, right.local_shell);
+    assert_eq!(left.local_working_dir, right.local_working_dir);
+    assert_eq!(left.preferred_backend, right.preferred_backend);
+    assert_eq!(left.color_scheme, right.color_scheme);
+    assert_eq!(left.font_family, right.font_family);
+    assert_eq!(left.font_size, right.font_size);
+    assert_eq!(left.opacity, right.opacity);
+    assert_eq!(left.notes, right.notes);
+}
+
+#[test]
+fn session_crud_roundtrip() {
+    let store = SessionStore::in_memory().unwrap();
+
+    let mut config = sample_ssh_config(None);
+    let id = store.insert_session(&config).unwrap();
+
+    let loaded = store.get_session(id).unwrap();
+    config.id = id;
+    assert_session_eq(&loaded, &config);
+}
+
+#[test]
+fn list_sessions_filters_by_folder() {
+    let store = SessionStore::in_memory().unwrap();
+
+    let folder = store.insert_folder("Lab", None).unwrap();
+
+    let mut root_cfg = sample_ssh_config(None);
+    root_cfg.name = "root-session".to_string();
+    let root_id = store.insert_session(&root_cfg).unwrap();
+
+    let mut folder_cfg = sample_ssh_config(Some(folder));
+    folder_cfg.name = "folder-session".to_string();
+    let folder_id = store.insert_session(&folder_cfg).unwrap();
+
+    let root_sessions = store.list_sessions(None).unwrap();
+    assert_eq!(root_sessions.len(), 1);
+    assert_eq!(root_sessions[0].id, root_id);
+
+    let folder_sessions = store.list_sessions(Some(folder)).unwrap();
+    assert_eq!(folder_sessions.len(), 1);
+    assert_eq!(folder_sessions[0].id, folder_id);
+}
+
+#[test]
+fn update_session_persists() {
+    let store = SessionStore::in_memory().unwrap();
+
+    let mut config = sample_ssh_config(None);
+    let id = store.insert_session(&config).unwrap();
+    config.id = id;
+
+    config.name = "prod-db-renamed".to_string();
+    config.host = Some("db2.prod.lan".to_string());
+    config.port = Some(2222);
+    config.auth_method = Some(AuthMethod::KeyboardInteractive);
+    config.tmux_enabled = false;
+    config.forward_rules = Some(vec![ForwardRule {
+        kind: ForwardKind::Local,
+        bind_addr: "127.0.0.1".to_string(),
+        bind_port: 3000,
+        remote_host: "logs.prod.lan".to_string(),
+        remote_port: 80,
+        enabled: true,
+    }]);
+
+    store.update_session(&config).unwrap();
+    let loaded = store.get_session(id).unwrap();
+    assert_session_eq(&loaded, &config);
+}
+
+#[test]
+fn delete_session_removes_row() {
+    let store = SessionStore::in_memory().unwrap();
+
+    let config = sample_ssh_config(None);
+    let id = store.insert_session(&config).unwrap();
+
+    store.delete_session(id).unwrap();
+
+    assert!(store.get_session(id).is_err());
+    assert!(store.list_sessions(None).unwrap().is_empty());
+}
+
+#[test]
+fn touch_connected_increments() {
+    let store = SessionStore::in_memory().unwrap();
+
+    let config = sample_ssh_config(None);
+    let id = store.insert_session(&config).unwrap();
+
+    store.touch_connected(id).unwrap();
+    store.touch_connected(id).unwrap();
+
+    let loaded = store.get_session(id).unwrap();
+    assert_eq!(loaded.connect_count, 2);
+    assert!(loaded.last_connected.is_some());
+}
+
+#[test]
+fn json_columns_survive_roundtrip() {
+    let store = SessionStore::in_memory().unwrap();
+
+    let mut config = sample_ssh_config(None);
+    let id = store.insert_session(&config).unwrap();
+    config.id = id;
+
+    let loaded = store.get_session(id).unwrap();
+    assert_session_eq(&loaded, &config);
+}

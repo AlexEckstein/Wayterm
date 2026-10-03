@@ -13,7 +13,10 @@ use std::path::Path;
 
 use rusqlite::{params, Connection};
 
-use crate::store::model::Folder;
+use crate::store::model::{
+    AuthMethod, Folder, ForwardRule, HostKeyPolicy, RdpOptions, SessionConfig, SessionType,
+    SshOptions, VncOptions,
+};
 
 /// A SQLite-backed store of session folders and saved sessions.
 pub struct SessionStore {
@@ -108,6 +111,237 @@ impl SessionStore {
     pub fn delete_folder(&self, id: i64) -> rusqlite::Result<()> {
         self.conn
             .execute("DELETE FROM folders WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Insert a saved session and return its generated row id.
+    ///
+    /// JSON columns (`ssh_options`, `rdp_options`, `vnc_options`,
+    /// `forward_rules`) are serialized via serde. `session_type` and
+    /// `auth_method` store their serde wire strings (doc 06
+    /// §"Session Config Struct"). No credential material is stored.
+    pub fn insert_session(&self, config: &SessionConfig) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO sessions (
+                name, type, folder_id, sort_order,
+                host, port, username, auth_method, host_key_policy,
+                key_path, tmux_enabled, tmux_session_name, ssh_options,
+                jump_session_id, forward_rules,
+                rdp_domain, rdp_width, rdp_height, rdp_color_depth, rdp_compression, rdp_options,
+                vnc_color_depth, vnc_options,
+                serial_device, serial_baud_rate, serial_data_bits, serial_parity,
+                serial_stop_bits, serial_flow_control,
+                local_shell, local_working_dir,
+                terminal_backend, color_scheme, font_family, font_size, opacity,
+                notes
+            ) VALUES (
+                ?1, ?2, ?3, ?4,
+                ?5, ?6, ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13,
+                ?14, ?15,
+                ?16, ?17, ?18, ?19, ?20, ?21,
+                ?22, ?23,
+                ?24, ?25, ?26, ?27,
+                ?28, ?29,
+                ?30, ?31,
+                ?32, ?33, ?34, ?35, ?36,
+                ?37
+            )",
+            params![
+                config.name,
+                serde_json::to_string(&config.session_type)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                config.folder_id,
+                0,
+                config.host,
+                config.port,
+                config.username,
+                config
+                    .auth_method
+                    .as_ref()
+                    .map(|a| serde_json::to_string(a).unwrap()),
+                config
+                    .host_key_policy
+                    .as_ref()
+                    .map(|p| serde_json::to_string(p).unwrap()),
+                config.key_path,
+                config.tmux_enabled as i32,
+                config.tmux_session_name,
+                config
+                    .ssh_options
+                    .as_ref()
+                    .map(|o| serde_json::to_string(o).unwrap()),
+                config.jump_session_id,
+                config
+                    .forward_rules
+                    .as_ref()
+                    .map(|r| serde_json::to_string(r).unwrap()),
+                config.rdp_domain,
+                config.rdp_width,
+                config.rdp_height,
+                config.rdp_color_depth,
+                config.rdp_compression as i32,
+                config
+                    .rdp_options
+                    .as_ref()
+                    .map(|o| serde_json::to_string(o).unwrap()),
+                config.vnc_color_depth,
+                config
+                    .vnc_options
+                    .as_ref()
+                    .map(|o| serde_json::to_string(o).unwrap()),
+                config.serial_device,
+                config.serial_baud_rate,
+                config.serial_data_bits,
+                config.serial_parity,
+                config.serial_stop_bits,
+                config.serial_flow_control,
+                config.local_shell,
+                config.local_working_dir,
+                config.preferred_backend,
+                config.color_scheme,
+                config.font_family,
+                config.font_size,
+                config.opacity,
+                config.notes,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Read one saved session by id.
+    ///
+    /// Returns `QueryReturnedNoRows` if the id does not exist.
+    pub fn get_session(&self, id: i64) -> rusqlite::Result<SessionConfig> {
+        self.conn.query_row(
+            "SELECT * FROM sessions WHERE id = ?1",
+            params![id],
+            row_to_session,
+        )
+    }
+
+    /// List direct children of a folder, ordered by `sort_order` then `name`.
+    ///
+    /// `folder_id = None` lists root sessions (rows where `folder_id IS NULL`).
+    pub fn list_sessions(&self, folder_id: Option<i64>) -> rusqlite::Result<Vec<SessionConfig>> {
+        let sql = match folder_id {
+            Some(_) => {
+                "SELECT * FROM sessions WHERE folder_id = ?1 ORDER BY sort_order ASC, name ASC"
+            }
+            None => {
+                "SELECT * FROM sessions WHERE folder_id IS NULL ORDER BY sort_order ASC, name ASC"
+            }
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = match folder_id {
+            Some(fid) => stmt.query_map(params![fid], row_to_session)?,
+            None => stmt.query_map([], row_to_session)?,
+        };
+        rows.collect()
+    }
+
+    /// Persist changes to an existing session.
+    ///
+    /// The row is matched by `config.id`. `updated_at` is refreshed to
+    /// `datetime('now')`; `connect_count` and `last_connected` are left
+    /// untouched (use [`touch_connected`] to bump them).
+    pub fn update_session(&self, config: &SessionConfig) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET
+                name = ?1, type = ?2, folder_id = ?3, sort_order = ?4,
+                host = ?5, port = ?6, username = ?7, auth_method = ?8, host_key_policy = ?9,
+                key_path = ?10, tmux_enabled = ?11, tmux_session_name = ?12, ssh_options = ?13,
+                jump_session_id = ?14, forward_rules = ?15,
+                rdp_domain = ?16, rdp_width = ?17, rdp_height = ?18, rdp_color_depth = ?19,
+                rdp_compression = ?20, rdp_options = ?21,
+                vnc_color_depth = ?22, vnc_options = ?23,
+                serial_device = ?24, serial_baud_rate = ?25, serial_data_bits = ?26,
+                serial_parity = ?27, serial_stop_bits = ?28, serial_flow_control = ?29,
+                local_shell = ?30, local_working_dir = ?31,
+                terminal_backend = ?32, color_scheme = ?33, font_family = ?34, font_size = ?35,
+                opacity = ?36,
+                notes = ?37,
+                updated_at = datetime('now')
+             WHERE id = ?38",
+            params![
+                config.name,
+                serde_json::to_string(&config.session_type)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+                config.folder_id,
+                0,
+                config.host,
+                config.port,
+                config.username,
+                config
+                    .auth_method
+                    .as_ref()
+                    .map(|a| serde_json::to_string(a).unwrap()),
+                config
+                    .host_key_policy
+                    .as_ref()
+                    .map(|p| serde_json::to_string(p).unwrap()),
+                config.key_path,
+                config.tmux_enabled as i32,
+                config.tmux_session_name,
+                config
+                    .ssh_options
+                    .as_ref()
+                    .map(|o| serde_json::to_string(o).unwrap()),
+                config.jump_session_id,
+                config
+                    .forward_rules
+                    .as_ref()
+                    .map(|r| serde_json::to_string(r).unwrap()),
+                config.rdp_domain,
+                config.rdp_width,
+                config.rdp_height,
+                config.rdp_color_depth,
+                config.rdp_compression as i32,
+                config
+                    .rdp_options
+                    .as_ref()
+                    .map(|o| serde_json::to_string(o).unwrap()),
+                config.vnc_color_depth,
+                config
+                    .vnc_options
+                    .as_ref()
+                    .map(|o| serde_json::to_string(o).unwrap()),
+                config.serial_device,
+                config.serial_baud_rate,
+                config.serial_data_bits,
+                config.serial_parity,
+                config.serial_stop_bits,
+                config.serial_flow_control,
+                config.local_shell,
+                config.local_working_dir,
+                config.preferred_backend,
+                config.color_scheme,
+                config.font_family,
+                config.font_size,
+                config.opacity,
+                config.notes,
+                config.id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a saved session by id.
+    pub fn delete_session(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Mark a session as just-connected.
+    ///
+    /// Bumps `connect_count` and sets `last_connected = datetime('now')`.
+    pub fn touch_connected(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET last_connected = datetime('now'), \
+             connect_count = connect_count + 1 WHERE id = ?1",
+            params![id],
+        )?;
         Ok(())
     }
 }
@@ -325,6 +559,78 @@ fn row_to_folder(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
         sort_order: row.get("sort_order")?,
         icon: row.get("icon")?,
     })
+}
+
+fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
+    Ok(SessionConfig {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        session_type: serde_json::from_str(row.get::<_, String>("type")?.as_str()).map_err(
+            |e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            },
+        )?,
+        folder_id: row.get("folder_id")?,
+        host: row.get("host")?,
+        port: row.get("port")?,
+        username: row.get("username")?,
+        auth_method: optional_json_column(row, "auth_method")?,
+        key_path: row.get("key_path")?,
+        host_key_policy: optional_json_column(row, "host_key_policy")?,
+        jump_session_id: row.get("jump_session_id")?,
+        forward_rules: optional_json_column(row, "forward_rules")?,
+        tmux_enabled: row.get::<_, i32>("tmux_enabled")? != 0,
+        tmux_session_name: row.get("tmux_session_name")?,
+        ssh_options: optional_json_column(row, "ssh_options")?,
+        rdp_domain: row.get("rdp_domain")?,
+        rdp_width: row.get("rdp_width")?,
+        rdp_height: row.get("rdp_height")?,
+        rdp_color_depth: row.get("rdp_color_depth")?,
+        rdp_compression: row.get::<_, i32>("rdp_compression")? != 0,
+        rdp_options: optional_json_column(row, "rdp_options")?,
+        vnc_color_depth: row.get("vnc_color_depth")?,
+        vnc_options: optional_json_column(row, "vnc_options")?,
+        serial_device: row.get("serial_device")?,
+        serial_baud_rate: row.get("serial_baud_rate")?,
+        serial_data_bits: row.get("serial_data_bits")?,
+        serial_parity: row.get("serial_parity")?,
+        serial_stop_bits: row.get("serial_stop_bits")?,
+        serial_flow_control: row.get("serial_flow_control")?,
+        local_shell: row.get("local_shell")?,
+        local_working_dir: row.get("local_working_dir")?,
+        preferred_backend: row.get("terminal_backend")?,
+        color_scheme: row.get("color_scheme")?,
+        font_family: row.get("font_family")?,
+        font_size: row.get("font_size")?,
+        opacity: row.get("opacity")?,
+        notes: row.get("notes")?,
+        last_connected: row.get("last_connected")?,
+        connect_count: row.get::<_, i32>("connect_count")? as u32,
+    })
+}
+
+fn optional_json_column<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row,
+    name: &str,
+) -> rusqlite::Result<Option<T>> {
+    let text: Option<String> = row.get(name)?;
+    match text {
+        Some(s) => {
+            let value = serde_json::from_str(&s).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
 }
 
 #[cfg(test)]
