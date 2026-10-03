@@ -70,7 +70,8 @@ design decisions removed those advantages:
 
 ## Status
 
-Design phase. No code yet. Docs revised 2026-08 after a design review:
-push-based transport read path, shared SSH connection model,
-host-key/auth spec (doc 11), hotkey table de-confliction, corrected
-Remmina/SIXEL/FreeRDP facts, crate versions refreshed.
+Phase 1 complete — skeleton app with session management. GTK4 shell,
+SQLite session store (29 store-layer tests), session tree with full
+folder/session CRUD, session config dialog, placeholder tabs (Phase 2
+terminal seam). Rust + GTK4 + VTE, per docs 01–11. Build: `cargo build`;
+run: `cargo run`. 39 tests green, clippy `-D warnings` clean.
