@@ -139,27 +139,6 @@ impl SessionTree {
         let selection = tree_view.selection();
         selection.set_mode(gtk4::SelectionMode::Single);
 
-        let gesture = gtk4::GestureClick::new();
-        gesture.set_button(gdk::BUTTON_SECONDARY);
-        gesture.connect_pressed({
-            let tree_view = tree_view.clone();
-            let store = store
-                .duplicate()
-                .expect("failed to duplicate session store for context menu");
-            move |gesture, _n_press, x, y| {
-                let selection = tree_view.selection();
-                if let Some((Some(path), _, _, _)) = tree_view.path_at_pos(x as i32, y as i32) {
-                    selection.select_path(&path);
-                } else {
-                    selection.unselect_all();
-                }
-                if let Some(widget) = gesture.widget() {
-                    show_context_menu(Some(&widget), &tree_view, &store);
-                }
-            }
-        });
-        tree_view.add_controller(gesture);
-
         let this = Self {
             store,
             tree_view: tree_view.clone(),
@@ -168,6 +147,29 @@ impl SessionTree {
         unsafe {
             tree_view.set_data("wayterm-session-tree", this.clone());
         }
+
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(gdk::BUTTON_SECONDARY);
+        if let Ok(store) = this.store.duplicate() {
+            gesture.connect_pressed({
+                let tree_view = tree_view.clone();
+                move |gesture, _n_press, x, y| {
+                    let selection = tree_view.selection();
+                    if let Some((Some(path), _, _, _)) = tree_view.path_at_pos(x as i32, y as i32) {
+                        selection.select_path(&path);
+                    } else {
+                        selection.unselect_all();
+                    }
+                    if let Some(widget) = gesture.widget() {
+                        show_context_menu(Some(&widget), &tree_view, &store);
+                    }
+                }
+            });
+        } else {
+            eprintln!("Wayterm: failed to duplicate session store for context menu");
+        }
+        tree_view.add_controller(gesture);
+
         this
     }
 
@@ -209,11 +211,15 @@ impl SessionTree {
 
 impl Clone for SessionTree {
     fn clone(&self) -> Self {
+        let store = self.store.duplicate().unwrap_or_else(|e| {
+            eprintln!("Wayterm: failed to duplicate session tree store: {e}");
+            // Return an empty in-memory store as a safe fallback.  The tree
+            // will render empty and refresh() will silently fail until the
+            // underlying problem is resolved, rather than crashing the app.
+            SessionStore::in_memory().expect("failed to create fallback store")
+        });
         Self {
-            store: self
-                .store
-                .duplicate()
-                .expect("failed to duplicate store for session tree clone"),
+            store,
             tree_view: self.tree_view.clone(),
             model: self.model.clone(),
         }
@@ -250,9 +256,10 @@ fn show_context_menu(
     let rename_folder = gio::SimpleAction::new("rename-folder", None);
     let delete_folder = gio::SimpleAction::new("delete-folder", None);
 
-    let store_new = store
-        .duplicate()
-        .expect("failed to duplicate store for new-folder handler");
+    let store_new = store.duplicate().unwrap_or_else(|e| {
+        eprintln!("Wayterm: failed to duplicate store for new-folder handler: {e}");
+        SessionStore::in_memory().expect("failed to create fallback store")
+    });
     let tree_view_new = tree_view.clone();
     new_folder.connect_activate(move |_, _| {
         let parent = gtk_window_for(&tree_view_new);
@@ -266,9 +273,10 @@ fn show_context_menu(
         }
     });
 
-    let store_rename = store
-        .duplicate()
-        .expect("failed to duplicate store for rename-folder handler");
+    let store_rename = store.duplicate().unwrap_or_else(|e| {
+        eprintln!("Wayterm: failed to duplicate store for rename-folder handler: {e}");
+        SessionStore::in_memory().expect("failed to create fallback store")
+    });
     let tree_view_rename = tree_view.clone();
     rename_folder.connect_activate(move |_, _| {
         let parent = gtk_window_for(&tree_view_rename);
@@ -283,17 +291,19 @@ fn show_context_menu(
         }
     });
 
-    let store_delete = store
-        .duplicate()
-        .expect("failed to duplicate store for delete-folder handler");
+    let store_delete = store.duplicate().unwrap_or_else(|e| {
+        eprintln!("Wayterm: failed to duplicate store for delete-folder handler: {e}");
+        SessionStore::in_memory().expect("failed to create fallback store")
+    });
     let tree_view_delete = tree_view.clone();
     delete_folder.connect_activate(move |_, _| {
         if let Some((id, name)) = selected_folder_with_name(&tree_view_delete) {
             let parent = gtk_window_for(&tree_view_delete);
             confirm_delete_folder(parent.as_ref(), &name, {
-                let store = store_delete
-                    .duplicate()
-                    .expect("failed to duplicate store for delete");
+                let store = store_delete.duplicate().unwrap_or_else(|e| {
+                    eprintln!("Wayterm: failed to duplicate store for delete: {e}");
+                    SessionStore::in_memory().expect("failed to create fallback store")
+                });
                 let tree_view = tree_view_delete.clone();
                 move || {
                     let _ = store.delete_folder(id);

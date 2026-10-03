@@ -573,3 +573,41 @@ fn json_columns_survive_roundtrip() {
     let loaded = store.get_session(id).unwrap();
     assert_session_eq(&loaded, &config);
 }
+
+/// Regression test for the Task-8 bug: `SessionStore::duplicate()` must
+/// re-open the same file so that mutations made through a duplicate are
+/// visible to the original connection. An in-memory snapshot would hide the
+/// mutation.
+#[test]
+fn duplicate_of_file_store_sees_mutations_on_original_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wayterm.sqlite3");
+
+    let original = SessionStore::open(&path).unwrap();
+    let duplicate = original.duplicate().unwrap();
+
+    // Mutate through the duplicate.
+    duplicate.insert_folder("persisted", None).unwrap();
+
+    // Verify through the original (and its own fresh query).
+    let folders = original.list_folders(None).unwrap();
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0].name, "persisted");
+}
+
+/// `duplicate()` on an in-memory store still produces an isolated snapshot
+/// (the only thing SQLite's backup API allows for `:memory:`).
+#[test]
+fn duplicate_of_in_memory_store_is_isolated_snapshot() {
+    let original = SessionStore::in_memory().unwrap();
+    original.insert_folder("original-only", None).unwrap();
+
+    let duplicate = original.duplicate().unwrap();
+
+    // The duplicate should see what existed at copy time.
+    assert_eq!(duplicate.list_folders(None).unwrap().len(), 1);
+
+    // Mutations on the duplicate must not leak back.
+    duplicate.insert_folder("duplicate-only", None).unwrap();
+    assert_eq!(original.list_folders(None).unwrap().len(), 1);
+}

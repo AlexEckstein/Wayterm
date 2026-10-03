@@ -9,7 +9,7 @@
 //! §"Credential Storage"): the database stores connection parameters
 //! only; secrets live in the OS keyring (libsecret, doc 11).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection};
 
@@ -19,6 +19,10 @@ use crate::store::model::{Folder, SessionConfig};
 #[allow(dead_code)]
 pub struct SessionStore {
     conn: Connection,
+    /// `Some(path)` for a file-backed store, `None` for an in-memory store.
+    /// Duplicating a file-backed store re-opens the same file so that UI
+    /// handlers and the tree refresh see the same persisted data.
+    path: Option<PathBuf>,
 }
 
 #[allow(dead_code)]
@@ -33,7 +37,10 @@ impl SessionStore {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let mut conn = Connection::open(path)?;
         initialize(&mut conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            path: Some(path.to_path_buf()),
+        })
     }
 
     /// Open an in-memory store with the same schema and seed data.
@@ -44,21 +51,35 @@ impl SessionStore {
     pub fn in_memory() -> rusqlite::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         initialize(&mut conn)?;
-        Ok(Self { conn })
+        Ok(Self { conn, path: None })
     }
 
-    /// Create an independent in-memory copy of this store.
+    /// Return another connection to the same store.
     ///
-    /// Used by the UI to give GTK reference-counted closures their own
+    /// For a file-backed store this re-opens the same database file (with
+    /// WAL + foreign keys enabled), so mutations made on one connection are
+    /// visible to the other. For an in-memory store this copies the current
+    /// state into a new `:memory:` database, which is the best isolation the
+    /// SQLite backup API allows for ephemeral stores.
+    ///
+    /// The UI uses this to give GTK reference-counted closures their own
     /// connection while keeping the store single-threaded (the underlying
     /// `rusqlite::Connection` is neither `Send` nor `Sync`).
     pub fn duplicate(&self) -> rusqlite::Result<Self> {
-        let mut new_conn = Connection::open_in_memory()?;
-        {
-            let backup = rusqlite::backup::Backup::new(&self.conn, &mut new_conn)?;
-            backup.run_to_completion(100, std::time::Duration::from_millis(1), None)?;
+        match &self.path {
+            Some(path) => Self::open(path),
+            None => {
+                let mut new_conn = Connection::open_in_memory()?;
+                {
+                    let backup = rusqlite::backup::Backup::new(&self.conn, &mut new_conn)?;
+                    backup.run_to_completion(100, std::time::Duration::from_millis(1), None)?;
+                }
+                Ok(Self {
+                    conn: new_conn,
+                    path: None,
+                })
+            }
         }
-        Ok(Self { conn: new_conn })
     }
 
     /// Insert a folder and return its generated row id.
