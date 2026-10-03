@@ -3,6 +3,7 @@
 pub mod main_window;
 pub mod session_dialog;
 pub mod session_tree;
+pub mod tab;
 
 pub use main_window::MainWindow;
 #[cfg(test)]
@@ -11,3 +12,5 @@ pub use session_dialog::config_from_fields;
 #[allow(unused_imports)]
 pub use session_dialog::SessionDialog;
 pub use session_tree::SessionTree;
+#[allow(unused_imports)]
+pub use tab::SessionTab;

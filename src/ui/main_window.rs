@@ -7,6 +7,7 @@
 use gtk4::prelude::*;
 
 use crate::store::SessionStore;
+use crate::ui::tab::SessionTab;
 use crate::ui::SessionTree;
 
 /// The primary Wayterm application window.
@@ -22,7 +23,31 @@ impl MainWindow {
         let home_label = gtk4::Label::new(Some("Welcome to Wayterm"));
         notebook.append_page(&home_label, Some(&gtk4::Label::new(Some("Home"))));
 
-        let session_tree = SessionTree::new(store);
+        let notebook_for_tree = notebook.clone();
+        let store_for_tree = store.duplicate().unwrap_or_else(|e| {
+            eprintln!("Wayterm: failed to duplicate store for session tree: {e}");
+            // Fall back to an in-memory store so the tree still renders;
+            // opening tabs from it will fail silently when sessions are not
+            // found.
+            SessionStore::in_memory().expect("failed to create fallback store")
+        });
+        let session_tree = SessionTree::new(store, move |session_id| {
+            let store = match store_for_tree.duplicate() {
+                Ok(s) => s,
+                Err(err) => {
+                    eprintln!("Wayterm: failed to duplicate store for open tab: {err}");
+                    return;
+                }
+            };
+            match store.get_session(session_id) {
+                Ok(config) => {
+                    let _ = SessionTab::open(&notebook_for_tree, &config);
+                }
+                Err(err) => {
+                    eprintln!("Wayterm: failed to load session {session_id}: {err}");
+                }
+            }
+        });
         session_tree.refresh();
 
         // The tree needs to scroll when the folder list grows.

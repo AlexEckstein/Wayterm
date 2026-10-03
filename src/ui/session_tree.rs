@@ -109,8 +109,17 @@ pub struct SessionTree {
 
 impl SessionTree {
     /// Build the tree view with an empty model.
+    ///
+    /// `on_open_session` is called when a session row is double-clicked
+    /// (row-activated).  It receives the session id and the row's display
+    /// name.  The caller (MainWindow) provides this callback so the tree
+    /// stays decoupled from the notebook: the tree does not need to own or
+    /// reference the tab container directly.
     #[allow(deprecated)]
-    pub fn new(store: SessionStore) -> Self {
+    pub fn new<F>(store: SessionStore, on_open_session: F) -> Self
+    where
+        F: Fn(i64) + 'static,
+    {
         let model = gtk4::TreeStore::new(&[
             glib::Type::STRING,
             glib::Type::STRING,
@@ -140,11 +149,17 @@ impl SessionTree {
         let selection = tree_view.selection();
         selection.set_mode(gtk4::SelectionMode::Single);
 
-        // Task 11 seam: double-click/row-activated on a session will open a
-        // placeholder terminal tab here.  Intentionally left empty for Task
-        // 10; do not add tab logic in this task.
-        tree_view.connect_row_activated(|_tree_view, _path, _column| {
-            // Placeholder — Phase 2 terminal tab will be wired here.
+        // Task 11: double-click/row-activated on a session opens its tab.
+        tree_view.connect_row_activated({
+            let tree_view = tree_view.clone();
+            move |_tree_view, _path, _column| {
+                let (id, is_folder) = selected_row_info(&tree_view);
+                if let Some(id) = id {
+                    if !is_folder {
+                        on_open_session(id);
+                    }
+                }
+            }
         });
 
         let this = Self {
