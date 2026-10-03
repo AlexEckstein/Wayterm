@@ -11,7 +11,9 @@
 
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
+
+use crate::store::model::Folder;
 
 /// A SQLite-backed store of session folders and saved sessions.
 pub struct SessionStore {
@@ -41,6 +43,72 @@ impl SessionStore {
         let mut conn = Connection::open_in_memory()?;
         initialize(&mut conn)?;
         Ok(Self { conn })
+    }
+
+    /// Insert a folder and return its generated row id.
+    ///
+    /// `parent_id` is `None` for a root folder. The new row starts
+    /// with `sort_order = 0` and `updated_at` from the default
+    /// trigger-equivalent (doc 06 §"Database Schema").
+    pub fn insert_folder(&self, name: &str, parent_id: Option<i64>) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO folders (name, parent_id) VALUES (?1, ?2)",
+            params![name, parent_id],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// List the direct children of a folder.
+    ///
+    /// `parent_id = None` lists root folders. Results are ordered by
+    /// `sort_order` ascending, then `name` ascending — the contract
+    /// the session-tree UI relies on (doc 06 §"Database Operations").
+    pub fn list_folders(&self, parent_id: Option<i64>) -> rusqlite::Result<Vec<Folder>> {
+        let sql = match parent_id {
+            Some(_) => {
+                "SELECT id, name, parent_id, sort_order, icon \
+                 FROM folders WHERE parent_id = ?1 \
+                 ORDER BY sort_order ASC, name ASC"
+            }
+            None => {
+                "SELECT id, name, parent_id, sort_order, icon \
+                 FROM folders WHERE parent_id IS NULL \
+                 ORDER BY sort_order ASC, name ASC"
+            }
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = match parent_id {
+            Some(pid) => stmt.query_map(params![pid], row_to_folder)?,
+            None => stmt.query_map([], row_to_folder)?,
+        };
+        rows.collect()
+    }
+
+    /// Rename an existing folder.
+    ///
+    /// Re-running with the same name is a no-op update; updating a
+    /// non-existent id silently affects zero rows, matching the simple
+    /// contract used in doc 06 §"Database Operations".
+    pub fn rename_folder(&self, id: i64, new_name: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE folders SET name = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![new_name, id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a folder, cascading to sub-folders and orphaning any
+    /// sessions that lived inside it.
+    ///
+    /// The cascade comes from the schema itself:
+    /// `folders.parent_id ON DELETE CASCADE` recursively removes
+    /// descendant folders, while `sessions.folder_id ON DELETE SET
+    /// NULL` preserves the sessions at the root (doc 06 §"Database
+    /// Schema").
+    pub fn delete_folder(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM folders WHERE id = ?1", params![id])?;
+        Ok(())
     }
 }
 
@@ -248,6 +316,16 @@ INSERT INTO settings (key, value) VALUES
 ('tmux_default',        '0'),
 ('host_key_policy',     'strict');   -- global default; per-session override via sessions.host_key_policy
 "#;
+
+fn row_to_folder(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
+    Ok(Folder {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        parent_id: row.get("parent_id")?,
+        sort_order: row.get("sort_order")?,
+        icon: row.get("icon")?,
+    })
+}
 
 #[cfg(test)]
 mod tests;

@@ -1,8 +1,11 @@
-//! Schema, seed, and pragma tests for [`SessionStore`] (doc 06).
+//! Schema, seed, pragma, and CRUD tests for [`SessionStore`] (doc 06).
 //!
 //! Every constant asserted here — table names, index names, seed row
 //! counts, `host_key_policy=strict` — comes from doc 06 §"Database
-//! Schema" and §"Default Data". Treat any change as a schema break.
+//! Schema" and §"Default Data". The CRUD tests lock the foreign-key
+//! behaviors the schema declares (`folders.parent_id ON DELETE
+//! CASCADE`, `sessions.folder_id ON DELETE SET NULL`). Treat any
+//! change as a schema break.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -59,6 +62,33 @@ impl SessionStore {
             .optional()
             .unwrap()
             .flatten()
+    }
+
+    /// Raw session row for CRUD tests: (folder_id,) by id. Session
+    /// CRUD is Task 5; these tests go around the typed API on
+    /// purpose — they exist to pin the schema's ON DELETE behavior.
+    fn session_folder_id(&self, id: i64) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT folder_id FROM sessions WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+            .flatten()
+    }
+
+    /// Direct SQL session insert for FK-behavior tests (Task 5 adds
+    /// the typed API). Columns per doc 06 §"Database Schema".
+    fn insert_session_row(&self, name: &str, folder_id: Option<i64>) -> i64 {
+        self.conn
+            .execute(
+                "INSERT INTO sessions (name, type, folder_id) VALUES (?1, 'ssh', ?2)",
+                params![name, folder_id],
+            )
+            .unwrap();
+        self.conn.last_insert_rowid()
     }
 }
 
@@ -188,4 +218,131 @@ fn in_memory_has_same_schema() {
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .unwrap();
     assert_eq!(fk, 1);
+}
+
+#[test]
+fn insert_and_list_folders() {
+    let store = SessionStore::in_memory().unwrap();
+
+    // Empty store: no roots.
+    assert!(store.list_folders(None).unwrap().is_empty());
+
+    let prod = store.insert_folder("Production", None).unwrap();
+    let staging = store.insert_folder("Staging", None).unwrap();
+    let _db = store.insert_folder("prod-db", Some(prod)).unwrap();
+
+    // list_folders(None) returns ROOTS ONLY: prod-db is invisible at
+    // the top level even though it exists.
+    let roots = store.list_folders(None).unwrap();
+    let root_names: Vec<&str> = roots.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(root_names, ["Production", "Staging"]);
+
+    // All roots carry the right ids (and prove ids are returned, not
+    // just names).
+    assert_eq!(roots[0].id, prod);
+    assert_eq!(roots[1].id, staging);
+
+    // list_folders(Some(prod)) shows the child.
+    let children = store.list_folders(Some(prod)).unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].id, _db);
+    assert_eq!(children[0].name, "prod-db");
+    assert_eq!(children[0].parent_id, Some(prod));
+}
+
+#[test]
+fn list_folders_direct_children_only() {
+    let store = SessionStore::in_memory().unwrap();
+
+    // A -> B -> C: listing A must show B but never C (grandchild) —
+    // one level per call, level by level, the way the UI tree
+    // renders.
+    let a = store.insert_folder("A", None).unwrap();
+    let b = store.insert_folder("B", Some(a)).unwrap();
+    let _c = store.insert_folder("C", Some(b)).unwrap();
+
+    let level1 = store.list_folders(Some(a)).unwrap();
+    assert_eq!(level1.len(), 1);
+    assert_eq!(level1[0].id, b);
+
+    let level2 = store.list_folders(Some(b)).unwrap();
+    assert_eq!(level2.len(), 1);
+    assert_eq!(level2[0].name, "C");
+}
+
+#[test]
+fn rename_folder_is_visible() {
+    let store = SessionStore::in_memory().unwrap();
+
+    let id = store.insert_folder("Old", None).unwrap();
+    store.rename_folder(id, "New").unwrap();
+
+    let roots = store.list_folders(None).unwrap();
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].name, "New");
+
+    // Renaming again to the same name is fine (idempotent update).
+    store.rename_folder(id, "New").unwrap();
+    assert_eq!(store.list_folders(None).unwrap()[0].name, "New");
+}
+
+#[test]
+fn delete_folder_cascades_and_orphans_sessions() {
+    let store = SessionStore::in_memory().unwrap();
+
+    // A -> B -> C, plus a session parked in B and one in C.
+    let a = store.insert_folder("A", None).unwrap();
+    let b = store.insert_folder("B", Some(a)).unwrap();
+    let c = store.insert_folder("C", Some(b)).unwrap();
+
+    let s_in_b = store.insert_session_row("session-in-B", Some(b));
+    let s_in_c = store.insert_session_row("session-in-C", Some(c));
+
+    // Sanity: the rows are where we put them.
+    assert_eq!(store.session_folder_id(s_in_b), Some(b));
+    assert_eq!(store.session_folder_id(s_in_c), Some(c));
+
+    // Delete the top of the subtree.
+    store.delete_folder(a).unwrap();
+
+    // Behavior 1 — folders.parent_id ON DELETE CASCADE: B and C
+    // are gone with A (all levels, not just direct children).
+    assert!(
+        store.list_folders(None).unwrap().is_empty(),
+        "roots must be empty after deleting A"
+    );
+    assert!(store.list_folders(Some(b)).unwrap().is_empty());
+    assert!(store.list_folders(Some(c)).unwrap().is_empty());
+    let n: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM folders", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(n, 0, "folders table must be empty after cascade");
+
+    // Behavior 2 — sessions.folder_id ON DELETE SET NULL: sessions
+    // survive with folder_id = NULL (moved to root).
+    assert_eq!(
+        store.session_folder_id(s_in_b),
+        None,
+        "session in B must survive with folder_id NULL"
+    );
+    assert_eq!(store.session_folder_id(s_in_c), None);
+}
+
+#[test]
+fn delete_childless_folder_is_noop() {
+    let store = SessionStore::in_memory().unwrap();
+
+    let id = store.insert_folder("Solo", None).unwrap();
+    store.delete_folder(id).unwrap();
+
+    assert!(store.list_folders(None).unwrap().is_empty());
+    // The id is really gone, not just filtered out of the list.
+    let n: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM folders WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(n, 0);
 }
