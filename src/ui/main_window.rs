@@ -1,12 +1,13 @@
 //! Main application window — layout only (doc 01 / doc 10 Phase 1).
 //!
 //! The high-level structure is a horizontal [`gtk4::Paned`] with a
-//! session-tree slot on the left and a [`gtk4::Notebook`] on the
-//! right. The left side is intentionally a placeholder: the real
-//! session tree (consuming [`crate::store::SessionStore`]) lands in
-//! Task 7.
+//! session-tree sidebar on the left and a [`gtk4::Notebook`] on the
+//! right.
 
 use gtk4::prelude::*;
+
+use crate::store::SessionStore;
+use crate::ui::SessionTree;
 
 /// The primary Wayterm application window.
 #[allow(dead_code)]
@@ -15,26 +16,25 @@ pub struct MainWindow {
 }
 
 impl MainWindow {
-    /// Build and present the main window.
-    ///
-    /// Creates the paned layout described in the module docs and wires
-    /// the minimum placeholder widgets needed to render the split.
-    pub fn new(app: &gtk4::Application) -> Self {
+    /// Build and present the main window, wiring in the session tree.
+    pub fn new(app: &gtk4::Application, store: SessionStore) -> Self {
         let notebook = gtk4::Notebook::new();
         let home_label = gtk4::Label::new(Some("Welcome to Wayterm"));
         notebook.append_page(&home_label, Some(&gtk4::Label::new(Some("Home"))));
 
-        // Session-tree seam (doc 01): placeholder until Task 7 swaps
-        // this for a real Gtk.TreeView backed by SessionStore.
-        let session_tree_slot = gtk4::Label::new(Some("Sessions"));
-        session_tree_slot.set_margin_top(12);
-        session_tree_slot.set_margin_bottom(12);
-        session_tree_slot.set_margin_start(12);
-        session_tree_slot.set_margin_end(12);
+        let session_tree = SessionTree::new(store);
+        session_tree.refresh();
+
+        // The tree needs to scroll when the folder list grows.
+        let scrolled = gtk4::ScrolledWindow::builder()
+            .child(&session_tree.widget())
+            .vexpand(true)
+            .hexpand(true)
+            .build();
 
         let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
         paned.set_position(280);
-        paned.set_start_child(Some(&session_tree_slot));
+        paned.set_start_child(Some(&scrolled));
         paned.set_end_child(Some(&notebook));
         paned.set_vexpand(true);
         paned.set_hexpand(true);
