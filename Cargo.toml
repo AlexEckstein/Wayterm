@@ -9,9 +9,11 @@ license = "Apache-2.0"
 gtk4 = { version = "0.11", features = ["v4_18"] }
 vte4 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+gdk4 = "0.11.5"
+gio = "0.22.10"
 
 [dev-dependencies]
 tempfile = "3"

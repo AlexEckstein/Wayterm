@@ -83,3 +83,44 @@ fn icon_mapping_for_all_session_types() {
     assert_eq!(icon_for_session_type(&SessionType::Serial), "🔌");
     assert_eq!(icon_for_session_type(&SessionType::LocalShell), "🏠");
 }
+
+#[test]
+fn collect_rows_sorts_folders_then_sessions_at_each_level() {
+    let store = SessionStore::in_memory().unwrap();
+
+    let root_session = store
+        .insert_session(&SessionConfig {
+            name: "root-session".to_string(),
+            session_type: SessionType::SSH,
+            ..Default::default()
+        })
+        .unwrap();
+    let folder_z = store.insert_folder("Z", None).unwrap();
+    let folder_a = store.insert_folder("A", None).unwrap();
+    let child_session = store
+        .insert_session(&SessionConfig {
+            name: "child-session".to_string(),
+            session_type: SessionType::LocalShell,
+            folder_id: Some(folder_a),
+            ..Default::default()
+        })
+        .unwrap();
+    let child_folder = store.insert_folder("Child", Some(folder_a)).unwrap();
+
+    let rows = collect_rows(&store).unwrap();
+    let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+
+    assert_eq!(
+        ids,
+        [
+            folder_a,
+            child_folder,
+            child_session,
+            folder_z,
+            root_session
+        ]
+    );
+
+    let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
+    assert_eq!(names, ["A", "Child", "child-session", "Z", "root-session",]);
+}

@@ -47,6 +47,20 @@ impl SessionStore {
         Ok(Self { conn })
     }
 
+    /// Create an independent in-memory copy of this store.
+    ///
+    /// Used by the UI to give GTK reference-counted closures their own
+    /// connection while keeping the store single-threaded (the underlying
+    /// `rusqlite::Connection` is neither `Send` nor `Sync`).
+    pub fn duplicate(&self) -> rusqlite::Result<Self> {
+        let mut new_conn = Connection::open_in_memory()?;
+        {
+            let backup = rusqlite::backup::Backup::new(&self.conn, &mut new_conn)?;
+            backup.run_to_completion(100, std::time::Duration::from_millis(1), None)?;
+        }
+        Ok(Self { conn: new_conn })
+    }
+
     /// Insert a folder and return its generated row id.
     ///
     /// `parent_id` is `None` for a root folder. The new row starts

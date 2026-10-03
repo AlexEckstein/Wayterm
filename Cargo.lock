@@ -1010,6 +1010,8 @@ dependencies = [
 name = "wayterm"
 version = "0.1.0"
 dependencies = [
+ "gdk4",
+ "gio",
  "gtk4",
  "rusqlite",
  "serde",
