@@ -294,6 +294,13 @@ mod gtk_dialog {
             let type_dropdown = Self::add_dropdown_row(&grid, row, "Type:", TYPE_LABELS);
             row += 1;
 
+            // Task 10 / Phase 1.5 seam: connect type_dropdown to a
+            // `notify::selected` handler here to show/hide per-type field
+            // groups (serial device/baud, rdp domain/resolution, etc.).
+            // Per the Task 10 scope decision, the dialog only exposes the
+            // common dialog-editable fields from doc 06 in Phase 1; adding
+            // per-type UI is a Phase 1.5 polish item.
+
             let folder_names: Vec<String> = std::iter::once("None (root)".to_string())
                 .chain(folders.iter().map(|f| f.name.clone()))
                 .collect();

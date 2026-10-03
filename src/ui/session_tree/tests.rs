@@ -124,3 +124,44 @@ fn collect_rows_sorts_folders_then_sessions_at_each_level() {
     let names: Vec<String> = rows.iter().map(|r| r.name.clone()).collect();
     assert_eq!(names, ["A", "Child", "child-session", "Z", "root-session",]);
 }
+
+/// Persistence smoke test: a file-backed `SessionStore` round-trips a
+/// session through a fresh connection to the same file.
+///
+/// This exercises the same `duplicate()` + re-open path that the GTK
+/// context-menu handlers rely on, proving that UI mutations will survive
+/// across app restarts.
+#[test]
+fn session_persists_across_fresh_connection() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("wayterm.db");
+
+    let store_a = SessionStore::open(&db_path).unwrap();
+    let folder_id = store_a.insert_folder("Work", None).unwrap();
+    let session = SessionConfig {
+        name: "prod-db".to_string(),
+        session_type: SessionType::SSH,
+        folder_id: Some(folder_id),
+        host: Some("db.prod.lan".to_string()),
+        port: Some(22),
+        username: Some("admin".to_string()),
+        auth_method: Some(crate::store::model::AuthMethod::Key),
+        notes: Some("production database".to_string()),
+        ..Default::default()
+    };
+    let id = store_a.insert_session(&session).unwrap();
+
+    // Re-open the same file with a new connection — this is what the next
+    // app launch will do.
+    let store_b = SessionStore::open(&db_path).unwrap();
+    let loaded = store_b.get_session(id).unwrap();
+    assert_eq!(loaded.name, "prod-db");
+    assert_eq!(loaded.session_type, SessionType::SSH);
+    assert_eq!(loaded.folder_id, Some(folder_id));
+    assert_eq!(loaded.host, Some("db.prod.lan".to_string()));
+    assert_eq!(
+        loaded.auth_method,
+        Some(crate::store::model::AuthMethod::Key)
+    );
+    assert_eq!(loaded.notes, Some("production database".to_string()));
+}

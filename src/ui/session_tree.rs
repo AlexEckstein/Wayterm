@@ -1,17 +1,18 @@
 //! Session tree widget — sidebar showing folders and saved sessions
-//! (doc 01 / doc 10 Tasks 7 and 8).
+//! (doc 01 / doc 10 Tasks 7, 8 and 10).
 //!
 //! Split into a display-free data layer ([`SessionRow`], [`collect_rows`],
 //! [`icon_for_session_type`]) and a thin GTK layer ([`SessionTree`]).
-//! The data layer is unit-testable without a display. Folder CRUD is
-//! exposed through a right-click context menu; all mutations go through
-//! [`SessionStore`] and are followed by [`refresh()`](SessionTree::refresh).
+//! The data layer is unit-testable without a display. Folder and session
+//! CRUD are exposed through a right-click context menu; all mutations go
+//! through [`SessionStore`] and are followed by [`refresh()`](SessionTree::refresh).
 
 use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::store::model::SessionType;
 use crate::store::SessionStore;
+use crate::ui::session_dialog::SessionDialog;
 
 // gtk4 re-exports these in its prelude, but the prelude import is not
 // always enough for the compiler to resolve the free-function names in
@@ -139,6 +140,13 @@ impl SessionTree {
         let selection = tree_view.selection();
         selection.set_mode(gtk4::SelectionMode::Single);
 
+        // Task 11 seam: double-click/row-activated on a session will open a
+        // placeholder terminal tab here.  Intentionally left empty for Task
+        // 10; do not add tab logic in this task.
+        tree_view.connect_row_activated(|_tree_view, _path, _column| {
+            // Placeholder — Phase 2 terminal tab will be wired here.
+        });
+
         let this = Self {
             store,
             tree_view: tree_view.clone(),
@@ -236,7 +244,8 @@ fn show_context_menu(
     tree_view: &gtk4::TreeView,
     store: &SessionStore,
 ) {
-    let (_selected_id, selected_is_folder) = selected_row_info(tree_view);
+    let (selected_id, selected_is_folder) = selected_row_info(tree_view);
+    let selected_is_session = selected_id.is_some_and(|_| !selected_is_folder);
 
     let menu = gio::Menu::new();
     menu.append(Some("New Folder"), Some("tree.new-folder"));
@@ -244,6 +253,13 @@ fn show_context_menu(
     if selected_is_folder {
         menu.append(Some("Rename Folder"), Some("tree.rename-folder"));
         menu.append(Some("Delete Folder"), Some("tree.delete-folder"));
+    }
+
+    menu.append(Some("New Session"), Some("tree.new-session"));
+
+    if selected_is_session {
+        menu.append(Some("Edit Session"), Some("tree.edit-session"));
+        menu.append(Some("Delete Session"), Some("tree.delete-session"));
     }
 
     let popover = gtk4::PopoverMenu::from_model(Some(&menu));
@@ -255,6 +271,9 @@ fn show_context_menu(
     let new_folder = gio::SimpleAction::new("new-folder", None);
     let rename_folder = gio::SimpleAction::new("rename-folder", None);
     let delete_folder = gio::SimpleAction::new("delete-folder", None);
+    let new_session = gio::SimpleAction::new("new-session", None);
+    let edit_session = gio::SimpleAction::new("edit-session", None);
+    let delete_session = gio::SimpleAction::new("delete-session", None);
 
     let store_new = store.duplicate().unwrap_or_else(|e| {
         eprintln!("Wayterm: failed to duplicate store for new-folder handler: {e}");
@@ -315,9 +334,93 @@ fn show_context_menu(
         }
     });
 
+    let store_new_session = store.duplicate().unwrap_or_else(|e| {
+        eprintln!("Wayterm: failed to duplicate store for new-session handler: {e}");
+        SessionStore::in_memory().expect("failed to create fallback store")
+    });
+    let tree_view_new_session = tree_view.clone();
+    new_session.connect_activate(move |_, _| {
+        let parent = gtk_window_for(&tree_view_new_session);
+        let folders = match store_new_session.list_folders(None) {
+            Ok(f) => f,
+            Err(err) => {
+                eprintln!("Wayterm: failed to list folders for new session dialog: {err}");
+                return;
+            }
+        };
+        if let Some(parent) = parent {
+            let dialog = SessionDialog::new_session(&parent, &folders);
+            if let Some(config) = dialog.run() {
+                let _ = store_new_session.insert_session(&config);
+                if let Some(tree) = session_tree_from_tree_view(&tree_view_new_session) {
+                    tree.refresh();
+                }
+            }
+        }
+    });
+
+    let store_edit_session = store.duplicate().unwrap_or_else(|e| {
+        eprintln!("Wayterm: failed to duplicate store for edit-session handler: {e}");
+        SessionStore::in_memory().expect("failed to create fallback store")
+    });
+    let tree_view_edit_session = tree_view.clone();
+    edit_session.connect_activate(move |_, _| {
+        let parent = gtk_window_for(&tree_view_edit_session);
+        let Some((id, false)) = selected_folder(&tree_view_edit_session) else {
+            return;
+        };
+        let Ok(config) = store_edit_session.get_session(id) else {
+            eprintln!("Wayterm: failed to load session {id} for edit");
+            return;
+        };
+        let folders = match store_edit_session.list_folders(None) {
+            Ok(f) => f,
+            Err(err) => {
+                eprintln!("Wayterm: failed to list folders for edit session dialog: {err}");
+                return;
+            }
+        };
+        if let Some(parent) = parent {
+            let dialog = SessionDialog::edit(&parent, &config, &folders);
+            if let Some(config) = dialog.run() {
+                let _ = store_edit_session.update_session(&config);
+                if let Some(tree) = session_tree_from_tree_view(&tree_view_edit_session) {
+                    tree.refresh();
+                }
+            }
+        }
+    });
+
+    let store_delete_session = store.duplicate().unwrap_or_else(|e| {
+        eprintln!("Wayterm: failed to duplicate store for delete-session handler: {e}");
+        SessionStore::in_memory().expect("failed to create fallback store")
+    });
+    let tree_view_delete_session = tree_view.clone();
+    delete_session.connect_activate(move |_, _| {
+        if let Some((id, name)) = selected_session_with_name(&tree_view_delete_session) {
+            let parent = gtk_window_for(&tree_view_delete_session);
+            confirm_delete_session(parent.as_ref(), &name, {
+                let store = store_delete_session.duplicate().unwrap_or_else(|e| {
+                    eprintln!("Wayterm: failed to duplicate store for delete session: {e}");
+                    SessionStore::in_memory().expect("failed to create fallback store")
+                });
+                let tree_view = tree_view_delete_session.clone();
+                move || {
+                    let _ = store.delete_session(id);
+                    if let Some(tree) = session_tree_from_tree_view(&tree_view) {
+                        tree.refresh();
+                    }
+                }
+            });
+        }
+    });
+
     action_group.add_action(&new_folder);
     action_group.add_action(&rename_folder);
     action_group.add_action(&delete_folder);
+    action_group.add_action(&new_session);
+    action_group.add_action(&edit_session);
+    action_group.add_action(&delete_session);
 
     popover.insert_action_group("tree", Some(&action_group));
     popover.popup();
@@ -466,6 +569,39 @@ fn selected_folder_with_name(tree_view: &gtk4::TreeView) -> Option<(i64, String)
     }
     let name = selected_row_name(tree_view).unwrap_or_default();
     id.map(|id| (id, name))
+}
+
+/// Return the selected session's id and name.
+#[allow(deprecated)]
+fn selected_session_with_name(tree_view: &gtk4::TreeView) -> Option<(i64, String)> {
+    let (id, is_folder) = selected_row_info(tree_view);
+    if is_folder {
+        return None;
+    }
+    let name = selected_row_name(tree_view).unwrap_or_default();
+    id.map(|id| (id, name))
+}
+
+/// Confirm deletion of a session, then run the provided callback on confirm.
+fn confirm_delete_session(
+    parent: Option<&gtk4::Window>,
+    session_name: &str,
+    on_confirm: impl FnOnce() + 'static,
+) {
+    let dialog = gtk4::AlertDialog::builder()
+        .message(format!("Delete session '{}'?", session_name))
+        .detail("This cannot be undone.")
+        .modal(true)
+        .build();
+    dialog.set_buttons(&["Cancel", "Delete"]);
+    dialog.set_cancel_button(0);
+    dialog.set_default_button(1);
+
+    dialog.choose(parent, gio::Cancellable::NONE, move |res| {
+        if let Ok(1) = res {
+            on_confirm();
+        }
+    });
 }
 
 /// Walk from a tree view up through widget parents to find a [`gtk4::Window`].
