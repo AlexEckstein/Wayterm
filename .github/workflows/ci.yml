@@ -110,7 +110,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Unit tests
-        run: cargo test --lib
+        run: cargo test --bins
 
       # ── Transport integration tests against a real sshd (doc 11 §Testing) ──
       - name: Provision test sshd
