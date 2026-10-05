@@ -8,12 +8,19 @@ license = "Apache-2.0"
 [dependencies]
 gtk4 = { version = "0.11", features = ["v4_14"] }
 vte4 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 gdk4 = "0.11.5"
 gio = "0.22.10"
+pango = "0.22.9"
+
+[features]
+backend-ghostty = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("backend-ghostty"))'] }
 
 [dev-dependencies]
 tempfile = "3"
