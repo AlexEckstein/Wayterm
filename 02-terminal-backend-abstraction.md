@@ -69,7 +69,15 @@ pub enum TerminalEvent {
 /// All methods are &self. The backend owns its widget.
 /// Data flows in via write(). Data flows out via the event channel
 /// created at construction time.
-pub trait TerminalBackend: Send {
+///
+/// **Note (2026-10 revision):** there is deliberately NO `Send` supertrait.
+/// Widget backends hold GTK widgets, which are `!Send` by design — the
+/// backend lives on the GTK main thread for its entire lifetime (doc 04
+/// threading model); the transport side never touches the backend, they
+/// communicate via channels. FakeBackend remains trivially testable. The
+/// original sketch had `TerminalBackend: Send`, which widget backends
+/// cannot satisfy; removed at Phase 2 implementation (commit 97e55ce).
+pub trait TerminalBackend {
     /// The GTK widget to embed in a tab.
     /// Always returns a valid gtk::Widget — the tab embeds this.
     /// Widget backends: their own rendering surface.
