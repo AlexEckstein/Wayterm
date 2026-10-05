@@ -5,16 +5,32 @@ edition = "2021"
 description = "An open source, multi-protocol connection manager and terminal for Linux"
 license = "Apache-2.0"
 
+[lib]
+name = "wayterm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wayterm"
+path = "src/main.rs"
+
 [dependencies]
 gtk4 = { version = "0.11", features = ["v4_14"] }
 vte4 = { version = "0.10", features = ["v0_70"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 gdk4 = "0.11.5"
 gio = "0.22.10"
 pango = "0.22.9"
+russh = "0.64"
+async-trait = "0.1"
+tokio-util = "0.7"
+zeroize = "1"
+base64 = "0.22"
+sha2 = "0.10"
+bytes = "1"
+thiserror = "2"
 
 [features]
 backend-ghostty = []
