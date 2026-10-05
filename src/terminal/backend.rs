@@ -42,8 +42,15 @@ pub enum TerminalEvent {
 /// All methods are &self. The backend owns its widget.
 /// Data flows in via write(). Data flows out via the event channel
 /// created at construction time.
+///
+/// Note: this trait intentionally has no `Send` supertrait. Widget backends
+/// hold GTK widgets (`vte4::Terminal`) which are `!Send` by design — they must
+/// stay on the GTK main thread. The `TerminalHandle` keeps the backend on the
+/// GTK side; the transport pump receives [`TerminalEvent`]s from the channel,
+/// not the backend itself. This is an orchestrator ruling that corrects doc 02's
+/// original `Send` bound, which only fit the fake/test backends.
 #[allow(dead_code)]
-pub trait TerminalBackend: Send {
+pub trait TerminalBackend {
     /// The GTK widget to embed in a tab.
     /// Always returns a valid gtk::Widget — the tab embeds this.
     /// Widget backends: their own rendering surface.
@@ -106,21 +113,23 @@ pub struct TerminalHandle {
 /// * `"ghostty"` is available only with the `backend-ghostty` Cargo feature
 ///   (not created yet; intended for Phase 10).
 /// * Any other `backend_name` falls back to the VteBackend default.
-///
-/// Because VteBackend is not yet implemented, the VteBackend arms currently
-/// panic with a clear stub message. This seam is marked for task P2-2.
 #[allow(dead_code)]
 pub fn create_terminal(
     backend_name: &str,
-    _event_tx: mpsc::Sender<TerminalEvent>,
+    event_tx: mpsc::Sender<TerminalEvent>,
 ) -> TerminalHandle {
     let (_tx, rx) = mpsc::channel(256);
 
+    // Clippy flags `Arc<VteBackend>` because VteBackend is `!Send`/`!Sync`.
+    // The backend is intentionally main-thread only; `Arc` is still the right
+    // owner for the GTK-side tab and channel receiver closures. Suppress the
+    // lint locally rather than change the trait handle type.
+    #[allow(clippy::arc_with_non_send_sync)]
     let backend: Arc<dyn TerminalBackend> = match backend_name {
-        "vte" => Arc::new(crate::terminal::fake::FakeBackend::new()),
+        "vte" => Arc::new(crate::terminal::vte::VteBackend::new(event_tx)),
         #[cfg(feature = "backend-ghostty")]
         "ghostty" => Arc::new(ghostty_backend_stub()),
-        _ => Arc::new(crate::terminal::fake::FakeBackend::new()),
+        _ => Arc::new(crate::terminal::vte::VteBackend::new(event_tx)),
     };
 
     TerminalHandle {
@@ -140,27 +149,10 @@ mod tests {
     use crate::terminal::fake::FakeBackend;
 
     #[tokio::test]
-    async fn create_terminal_vte_construct_without_panic() {
-        let (_tx, _rx) = mpsc::channel::<TerminalEvent>(256);
-        let handle = create_terminal("vte", _tx);
-        assert_eq!(handle.backend.name(), "fake");
-    }
-
-    #[tokio::test]
-    async fn create_terminal_unknown_fallback_without_panic() {
-        let (_tx, _rx) = mpsc::channel::<TerminalEvent>(256);
-        let handle = create_terminal("unknown", _tx);
-        assert_eq!(handle.backend.name(), "fake");
-    }
-
-    #[tokio::test]
     async fn terminal_handle_wires_events_from_backend() {
-        let (outer_tx, _outer_rx) = mpsc::channel::<TerminalEvent>(256);
-        let _handle = create_terminal("vte", outer_tx);
-
-        // Downcast is not possible across Arc<dyn TerminalBackend>, so we
-        // construct a stand-in handle using FakeBackend directly with the
-        // same receiver wiring the factory would produce.
+        // The VteBackend constructor requires GTK init and a display, so this
+        // test uses the FakeBackend stand-in to verify the TerminalHandle
+        // channel wiring without touching the widget.
         let (tx, rx) = mpsc::channel::<TerminalEvent>(256);
         let mut backend = FakeBackend::new();
         backend.event_tx = Some(tx.clone());
