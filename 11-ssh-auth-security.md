@@ -300,6 +300,16 @@ app). Nightly job: `cargo audit` for advisory sweep.
   `client::Handler::check_server_key(&PublicKeyOrCertificate)`,
   `KeyboardInteractiveAuthResponse` (client module), keys re-exported
   from `russh::keys` (was `russh_keys` pre-0.4x).
+  **SUPERSEDED (2026-10, verified against 0.64.1 at Phase 2 implementation,
+  commit ae73f23):** the three-state semantics CHANGED in 0.64 —
+  `check_known_hosts_path` now returns `Ok(false)` for an UNKNOWN host
+  (no entry), and a known-but-mismatched key as
+  `Err(KeysError::KeyChanged { line })`. The 0.63-era mapping in this
+  doc's §Host Key Verification ("Ok(false) = known and MISMATCHED")
+  is WRONG for 0.64+. The implemented mapping: Ok(true)=match→accept;
+  Ok(false)=unknown→apply policy; Err(KeyChanged)=mismatch→hard fail,
+  no prompt. Other read errors (missing file etc.) are treated as
+  unknown → policy applies (prompt under strict; never silent accept).
 - russh-sftp 2.4.0 — `client::SftpSession` (high-level, `std::fs`-like).
 - FreeRDP 3.x — `/from-stdin[:force]` in xfreerdp (verify per distro).
 - VTE ≥ 0.62 — SIXEL support exists but is opt-in
