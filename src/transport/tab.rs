@@ -77,12 +77,25 @@ pub fn create_transport(
     initial_cols: u32,
 ) -> Result<Box<dyn Transport>, TransportError> {
     match &config.session_type {
-        SessionType::SSH => Ok(Box::new(SSHTransport::new(
-            connection.ok_or_else(|| TransportError::ChannelError("no connection".into()))?,
-            event_tx,
-            initial_rows,
-            initial_cols,
-        ))),
+        SessionType::SSH => {
+            let mut transport = SSHTransport::new(
+                connection.ok_or_else(|| TransportError::ChannelError("no connection".into()))?,
+                event_tx,
+                initial_rows,
+                initial_cols,
+            );
+            // Doc 04 §Tmux Session Persistence: the toggle is per-session and
+            // must be set pre-connect, since `connect()` execs
+            // `tmux new -A -s wayterm-<name>` instead of a shell. The stored
+            // name is the bare suffix — the transport prepends `wayterm-`
+            // itself — and `tmux_session_suffix` resolves an absent name from
+            // the session name at this one place, so the remote always sees a
+            // non-empty `wayterm-` session.
+            if let Some(suffix) = config.tmux_session_suffix() {
+                transport.set_tmux_enabled(true, suffix);
+            }
+            Ok(Box::new(transport))
+        }
         SessionType::LocalShell | SessionType::Serial => Err(TransportError::ChannelError(
             "local PTY and serial transports are Phase 5 (doc 04)".into(),
         )),

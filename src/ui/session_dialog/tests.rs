@@ -10,9 +10,9 @@ use crate::store::model::{
 };
 
 use super::{
-    config_from_fields, default_port_for, format_resolution, parse_resolution,
-    session_type_from_index, type_index_for, DialogFields, DEFAULT_SERIAL_BAUD, TYPE_INDEX_LOCAL,
-    TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_SSH, TYPE_INDEX_VNC,
+    config_from_fields, default_port_for, default_tmux_session_name, format_resolution,
+    parse_resolution, session_type_from_index, type_index_for, DialogFields, DEFAULT_SERIAL_BAUD,
+    TYPE_INDEX_LOCAL, TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_SSH, TYPE_INDEX_VNC,
 };
 
 fn sample_folders() -> Vec<Folder> {
@@ -631,4 +631,190 @@ fn ssh_session_with_filled_groups_stores_only_common_fields() {
     assert_eq!(config.session_type, SessionType::SSH);
     assert_eq!(config.port, Some(22));
     assert_no_per_type_payload(&config);
+}
+
+// ---------------------------------------------------------------------------
+// tmux persistence (doc 04 §Tmux Session Persistence)
+//
+// The checkbox and the name Entry live in the SSH group, but doc 04 scopes
+// the feature to SSH rather than making the columns SSH-only, so the flag is
+// stored for every type and only the SSH transport reads it.
+// ---------------------------------------------------------------------------
+
+/// An SSH session with tmux enabled, named `name`.
+fn tmux_fields(name: &str, session_name: &str) -> DialogFields {
+    DialogFields {
+        type_index: TYPE_INDEX_SSH,
+        name: name.to_string(),
+        host: "host.example".to_string(),
+        tmux_enabled: true,
+        tmux_session_name: session_name.to_string(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn tmux_fields_round_trip_through_config_from_fields() {
+    let folders = sample_folders();
+    let config = config_from_fields(&tmux_fields("prod", "wayterm-prod"), &folders);
+
+    assert!(config.tmux_enabled);
+    // The stored column is the bare suffix: `SSHTransport` prepends
+    // `wayterm-` itself, so the remote name is `wayterm-prod`.
+    assert_eq!(config.tmux_session_name.as_deref(), Some("prod"));
+    assert_eq!(config.tmux_session_suffix().as_deref(), Some("prod"));
+    assert_eq!(config.tmux_remote_name().as_deref(), Some("wayterm-prod"));
+}
+
+#[test]
+fn tmux_name_entered_without_the_prefix_is_normalised() {
+    let folders = sample_folders();
+    // A user who ignores the `wayterm-` convention and types the bare name
+    // must not end up with `wayterm-wayterm-prod` on the remote host.
+    let config = config_from_fields(&tmux_fields("prod", " prod "), &folders);
+
+    assert_eq!(config.tmux_session_name.as_deref(), Some("prod"));
+    assert_eq!(config.tmux_remote_name().as_deref(), Some("wayterm-prod"));
+}
+
+#[test]
+fn tmux_names_with_shell_metacharacters_survive_verbatim() {
+    let folders = sample_folders();
+    // Doc 04's quoting caveat: `;` is legal in a tmux session name and
+    // `SSHTransport::shell_quote` handles the command side. The dialog must
+    // not "sanitise" the name away.
+    let config = config_from_fields(&tmux_fields("odd", "wayterm-a;b"), &folders);
+
+    assert_eq!(config.tmux_session_name.as_deref(), Some("a;b"));
+    assert_eq!(config.tmux_remote_name().as_deref(), Some("wayterm-a;b"));
+}
+
+#[test]
+fn empty_tmux_name_is_stored_as_null_and_derived_at_connect() {
+    let folders = sample_folders();
+    // An Entry cleared by hand means "use the session name", not a session
+    // literally called `wayterm-`.
+    let config = config_from_fields(&tmux_fields("prod", ""), &folders);
+
+    assert!(config.tmux_enabled);
+    assert_eq!(config.tmux_session_name, None);
+    assert_eq!(config.tmux_session_suffix().as_deref(), Some("prod"));
+    assert_eq!(config.tmux_remote_name().as_deref(), Some("wayterm-prod"));
+    // …and the dialog shows what the remote will see, even before the box is
+    // ticked.
+    assert_eq!(config.tmux_name_for_dialog(), "wayterm-prod");
+}
+
+#[test]
+fn whitespace_only_tmux_name_counts_as_unset() {
+    let folders = sample_folders();
+    let config = config_from_fields(&tmux_fields("prod", "   "), &folders);
+
+    assert_eq!(config.tmux_session_name, None);
+    assert_eq!(config.tmux_remote_name().as_deref(), Some("wayterm-prod"));
+}
+
+#[test]
+fn derived_tmux_name_follows_name_field_edits() {
+    let folders = sample_folders();
+    // The GTK Entry re-derives on every Name keystroke until the user edits
+    // the Entry; this is the display-free version of that rule.
+    assert_eq!(default_tmux_session_name("prod"), "wayterm-prod");
+    assert_eq!(default_tmux_session_name("  prod  "), "wayterm-prod");
+    assert_eq!(default_tmux_session_name(" staging "), "wayterm-staging");
+    assert_eq!(default_tmux_session_name(""), "wayterm-");
+
+    // Each rename of the session re-derives the remote name, and the stored
+    // row follows only because the Entry text is what gets stored.
+    for name in ["prod", "prod2", "edge-1"] {
+        let entry = default_tmux_session_name(name);
+        let config = config_from_fields(&tmux_fields(name, &entry), &folders);
+        assert_eq!(config.tmux_remote_name().as_deref(), Some(entry.as_str()));
+    }
+}
+
+#[test]
+fn explicit_tmux_name_overrides_the_name_derived_default() {
+    let folders = sample_folders();
+    // Once the user types their own name the Name field stops driving it.
+    let config = config_from_fields(&tmux_fields("prod", "wayterm-shared-1"), &folders);
+
+    assert_eq!(config.tmux_session_name.as_deref(), Some("shared-1"));
+    assert_eq!(
+        config.tmux_remote_name().as_deref(),
+        Some("wayterm-shared-1")
+    );
+    assert_ne!(config.tmux_remote_name().as_deref(), Some("wayterm-prod"));
+}
+
+#[test]
+fn tmux_unticked_stores_no_name_but_keeps_the_flag_off() {
+    let folders = sample_folders();
+    let fields = DialogFields {
+        tmux_enabled: false,
+        tmux_session_name: "wayterm-prod".to_string(),
+        ..tmux_fields("prod", "wayterm-prod")
+    };
+
+    let config = config_from_fields(&fields, &folders);
+
+    assert!(!config.tmux_enabled);
+    // The name the dialog displays is still stored, so re-opening the dialog
+    // shows what the user last saw; `tmux_session_suffix` gates on the flag.
+    assert_eq!(config.tmux_session_name.as_deref(), Some("prod"));
+    assert_eq!(config.tmux_session_suffix(), None);
+    assert_eq!(config.tmux_remote_name(), None);
+}
+
+#[test]
+fn tmux_flag_on_a_serial_session_is_stored_but_ignored() {
+    let folders = sample_folders();
+    // Doc 04 scopes tmux to SSH: a serial row may carry the flag (the
+    // columns are common in doc 06 and the dialog keeps one checkbox), but
+    // `tmux_session_suffix` — the only thing the SSH factory consults — gates
+    // on the type, and no serial transport exists to read it anyway.
+    let fields = DialogFields {
+        type_index: TYPE_INDEX_SERIAL,
+        name: "console".to_string(),
+        serial_device: "/dev/ttyUSB0".to_string(),
+        tmux_enabled: true,
+        tmux_session_name: "wayterm-console".to_string(),
+        ..Default::default()
+    };
+
+    let config = config_from_fields(&fields, &folders);
+
+    assert_eq!(config.session_type, SessionType::Serial);
+    assert!(config.tmux_enabled, "the flag is stored as typed");
+    assert_eq!(config.tmux_session_name.as_deref(), Some("console"));
+    assert_eq!(
+        config.tmux_session_suffix(),
+        Some("console".to_string()),
+        "the suffix resolves, but nothing reads it: create_transport matches \
+         on the type and only SSH exists"
+    );
+    // The type-owned payload is unaffected by the tmux group.
+    assert_eq!(config.serial_device.as_deref(), Some("/dev/ttyUSB0"));
+}
+
+#[test]
+fn tmux_name_for_dialog_prefers_the_stored_name_over_the_session_name() {
+    let config = crate::store::model::SessionConfig {
+        name: "prod".to_string(),
+        tmux_enabled: true,
+        tmux_session_name: Some("shared-1".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(config.tmux_name_for_dialog(), "wayterm-shared-1");
+
+    // A legacy row that stored the full name (before the prefix was split
+    // out) must not render as `wayterm-wayterm-x`.
+    let legacy = crate::store::model::SessionConfig {
+        name: "prod".to_string(),
+        tmux_enabled: true,
+        tmux_session_name: Some("wayterm-legacy".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(legacy.tmux_name_for_dialog(), "wayterm-legacy");
+    assert_eq!(legacy.tmux_remote_name().as_deref(), Some("wayterm-legacy"));
 }

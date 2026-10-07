@@ -223,10 +223,16 @@ just not in-window) while planning migration to libfreerdp C API.
 
 **Goal:** Optional session persistence via tmux.
 
-- [ ] SSHTransport tmux integration (04-transport-layer.md)
+- [x] SSHTransport tmux integration (04-transport-layer.md)
   - `tmux new -A -s wayterm-<name>` instead of plain shell
-  - Per-session toggle in session config
+  - Per-session toggle in session config — dialog checkbox + remote
+    session name in the SSH group; stored in `tmux_enabled` /
+    `tmux_session_name` (doc 06), consumed by `create_transport`
 - [ ] Reconnect logic: detect drop, show "Reconnect?" prompt
+  - the persistence half is done and proven
+    (`tests/tmux_persistence.rs`: drop the transport *and* the
+    connection, reconnect, same tmux session id + session state); the
+    prompt/backoff loop itself is still to do
 - [ ] Auto-reconnect option (configurable per-session)
 - [ ] tmux session cleanup on graceful disconnect (optional)
 
