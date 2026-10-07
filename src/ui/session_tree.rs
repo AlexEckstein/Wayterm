@@ -459,7 +459,15 @@ fn show_context_menu(
 /// Returns `Some(value)` if the user confirmed, `None` if cancelled.
 /// The `parent` window is used only as the transient parent when one is
 /// available; the dialog stays usable even without it.
-fn prompt_text(parent: Option<&gtk4::Window>, title: &str, initial: &str) -> Option<String> {
+///
+/// Shared with the SFTP sidebar (doc 09), which has no entry-capable
+/// `AlertDialog` and needs the same "type one short string" interaction for
+/// Rename and Mkdir.
+pub(crate) fn prompt_text(
+    parent: Option<&gtk4::Window>,
+    title: &str,
+    initial: &str,
+) -> Option<String> {
     let result = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
     let done = std::rc::Rc::new(std::cell::RefCell::new(false));
 

@@ -12,6 +12,7 @@ fn main() -> glib::ExitCode {
     // until the GTK connection dialog wires it in Phase 3.
     transport::touch_public_api();
     ui::touch_dialog_api();
+    ui::touch_sftp_api();
     sftp::touch_public_api();
     app::run()
 }

@@ -12,6 +12,12 @@ use crate::transport::types::TransportState;
 use crate::ui::tab::SessionTab;
 use crate::ui::{SessionTree, StatusBar};
 
+/// gio action id for doc 09's `toggle_sftp`.
+const TOGGLE_SFTP_ACTION: &str = "toggle_sftp";
+
+/// Doc 07's default key for `toggle_sftp` (`<Control><Shift>B`).
+const TOGGLE_SFTP_ACCEL: &str = "<Control><Shift>b";
+
 /// Key under which the status bar is stashed on the window, following the
 /// same pattern as `tab.rs`'s session-id key.
 const STATUS_BAR_KEY: &str = "wayterm-status-bar";
@@ -94,6 +100,8 @@ impl MainWindow {
             window.set_data(STATUS_BAR_KEY, status_bar);
         }
 
+        install_toggle_sftp(app, &window, &notebook);
+
         window.present();
 
         Self { window }
@@ -106,4 +114,37 @@ impl MainWindow {
     pub fn window(&self) -> &gtk4::ApplicationWindow {
         &self.window
     }
+}
+
+/// Register doc 09's `toggle_sftp` action on the window with doc 07's default
+/// key, Ctrl+Shift+B.
+///
+/// The action acts on the **active** tab (doc 09: the sidebar is per tab), and
+/// is disabled whenever the active page has no sidebar — that is how
+/// doc 09 §Availability's "RDP/VNC/serial tabs hide the toggle" is enforced:
+/// page switches (and tab close, which always switches) re-evaluate the
+/// enabled state.
+fn install_toggle_sftp(
+    app: &gtk4::Application,
+    window: &gtk4::ApplicationWindow,
+    notebook: &gtk4::Notebook,
+) {
+    let action = gio::SimpleAction::new(TOGGLE_SFTP_ACTION, None);
+
+    let for_activate = notebook.clone();
+    action.connect_activate(move |_, _| {
+        if let Some(sidebar) = SessionTab::active_sidebar(&for_activate) {
+            sidebar.toggle_visible();
+        }
+    });
+
+    let for_state = action.clone();
+    notebook.connect_switch_page(move |_notebook, page, _page_num| {
+        for_state.set_enabled(SessionTab::sidebar_for_page(page).is_some());
+    });
+
+    // No SSH tab open yet: the Home page has no sidebar.
+    action.set_enabled(false);
+    window.add_action(&action);
+    app.set_accels_for_action(&format!("win.{TOGGLE_SFTP_ACTION}"), &[TOGGLE_SFTP_ACCEL]);
 }

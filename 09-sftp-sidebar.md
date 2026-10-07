@@ -34,6 +34,43 @@ sidebar.
 > - No `ListAll` — `Cd` doubles as the listing command.
 > - `format_perms`/`format_timestamp` render client-side (no new
 >   chrono dependency).
+>
+> **Revision note (2026-10, P3-2):** phase 3 implemented the GTK half
+> (`src/ui/sftp_sidebar.rs`). Adaptations vs. this doc:
+>
+> - **The paned belongs to the tab, not the window.** §Layout's
+>   `GtkPaned` (sidebar left, terminal right) is the *page* of each SSH
+>   tab (`SessionTab::open` in `src/ui/tab.rs`): §Connection Model gives
+>   each sidebar the session's own shared `SshConnection`, so two SSH
+>   tabs browse two servers independently and one window-wide sidebar
+>   could represent neither. Non-SSH session types get the bare page
+>   content (§Availability).
+> - **`toggle_sftp` acts on the active tab** and is a window `gio`
+>   action registered with doc 07's default (Ctrl+Shift+B); its
+>   sensitivity follows the notebook's current page, which is how
+>   §Availability's "RDP/VNC/serial tabs hide the toggle" is enforced.
+> - **Two `GtkDropTarget`s instead of one multi-type target.** §Drag-Drop
+>   asks for `GdkFileList` *and* `text/uri-list` "on the same target";
+>   GTK's API for that is `gtk_drop_target_set_gtypes`, which gtk4-rs
+>   0.11 does not bind. Both formats are still accepted, as two targets
+>   on the tree view feeding one upload queue; the URI-list fallback is
+>   parsed without the `url` crate (§Drag-Drop's aside).
+> - **`Cd` has no resolved path.** The core exposes no `getcwd`, so the
+>   path bar shows the path that was requested; the sidebar starts at
+>   `.` (the home directory an SFTP subsystem channel starts in).
+> - **The client is attached by the caller.** `SftpSidebar::attach`
+>   takes the `Arc<SshConnection>` §Connection Model specifies and spawns
+>   the task; until the connect flow calls it the sidebar renders as an
+>   empty skeleton with the toolbar disabled rather than pretending to be
+>   connected.
+> - **Toolbar buttons are the only operation surface** (doc 10's
+>   "right-click → download" verify line is a later UI phase): Delete
+>   confirms with `AlertDialog`, Rename/Mkdir use the session tree's
+>   small entry dialog, Upload/Download use `FileChooserNative`. Drag
+>   **download** (a `ContentProvider` drag source) is still out of
+>   scope, as §Drag-Drop says.
+> - **Progress display is last-updated-wins** with one rotating bar and
+>   status line, per §Transfers' "a stale-but-moving bar is fine".
 
 ## Layout
 
