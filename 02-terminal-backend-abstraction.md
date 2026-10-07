@@ -264,12 +264,20 @@ GTK requires all widget operations on the main thread. The transport
 runs on a tokio task. Data crosses via channels:
 
 ```rust
-// (Construction, GTK side:) glib channel for terminal output
-let (gtk_tx, gtk_rx) = glib::MainContext::channel::<Vec<u8>>(glib::Priority::DEFAULT);
-gtk_rx.attach(None, glib::clone!(@weak backend => move |chunk: Vec<u8>| {
-    backend.write(&chunk);
-    glib::ControlFlow::Continue
-}));
+// (Construction, GTK side:) bounded tokio channel for terminal output,
+// drained on the main thread (glib 0.22 removed MainContext::channel —
+// see doc 04 for the implemented replacement):
+let (gtk_tx, gtk_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+let backend_clone = backend.clone();
+main_ctx.spawn_local(async move {
+    while let Some(chunk) = gtk_rx.recv().await {
+        backend_clone.write(&chunk);
+    }
+});
+// The drain future is !Send, so spawn_local pins it to the main thread;
+// cross-thread wakes come from glib's task-source waker. (In the actual
+// implementation the bridge is its own task — see doc 04 §Wiring —
+// because folding it into the pump deadlocks under full-duplex load.)
 
 // (In the reader task, tokio side:) bounded send; if the GTK side
 // stalls, SSH flow control (channel window) applies backpressure to
