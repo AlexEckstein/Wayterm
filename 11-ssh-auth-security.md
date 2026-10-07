@@ -260,10 +260,17 @@ pub struct LocalForward { local: SocketAddr, remote_host: String, remote_port: u
 The transport layer is where correctness lives, and it's fully testable
 without a GUI because of the trait split:
 
-1. **Integration (real sshd):** CI container runs `sshd` on localhost:2222
-   with generated host keys and a test user; tests connect, auth
-   (password / key), exec, resize, collect output. This is the russh
-   repo's own approach for its client tests.
+1. **Integration (real sshd):** two provisioning paths, both real sshd
+   instances. **CI** (`.github/workflows/ci.yml`, "Provision test sshd")
+   configures the **runner's system sshd on port 22** — generated host
+   keys, a throwaway `wayterm-test` user, ephemeral `SSH_TEST_*` creds in
+   `GITHUB_ENV`. **Local** (`scripts/run-sshd-tests.sh`) starts a
+   **separate throwaway instance on port 2422** from
+   `scripts/sshd-test-config.inc`, so the system sshd and
+   `/etc/ssh/sshd_config` are never modified or restarted. Either way the
+   tests connect, auth (password / key / keyboard-interactive), exec,
+   resize, collect output. This is the russh repo's own approach for its
+   client tests.
 2. **Host-key tests:** unknown host (TOFU prompt path), matching key,
    mismatched key (must fail), `accept-new` behavior, hashed-entries
    file. Assertions on the verifier's decision table — pure unit tests
@@ -272,6 +279,17 @@ without a GUI because of the trait split:
    instead run against the CI sshd with `AuthenticationMethods` variants
    (password-only, keyboard-interactive-only via PAM, key-only) and
    assert method fallback order and retry counts.
+
+   **Not yet server-gated (verified Phase 2):** neither CI nor
+   `scripts/sshd-test-config.inc` sets `AuthenticationMethods` — both
+   enable *all* methods (`PubkeyAuthentication`,
+   `PasswordAuthentication`, `KbdInteractiveAuthentication yes`), so the
+   per-method matrix above is **not** exercised today. Fallback is
+   covered indirectly: the chain's declared order (agent → key → password
+   → keyboard-interactive) is asserted as a unit test, and the
+   integration suite asserts each method succeeds on its own plus
+   `methods_remaining` on failure. Gating a real per-method matrix is a
+   Phase 12 item (see 10-build-order.md).
 4. **UI-less loop:** TerminalBackend gets a `FakeBackend` (in-memory
    grid, records writes) — already implied by doc 02's trait; make it a
    test fixture from day one.

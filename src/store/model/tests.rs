@@ -216,3 +216,234 @@ fn default_is_sane() {
     assert!(!cfg.tmux_enabled);
     assert_eq!(cfg.folder_id, None);
 }
+
+// ---------------------------------------------------------------------------
+// Per-type value vocabularies (used by the session dialog's DropDowns)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vocab_defaults_are_members_of_their_vocabulary() {
+    // Doc 06 names these defaults in the schema comments; each must be
+    // selectable in the dialog's DropDown for that column.
+    assert!(SERIAL_PARITIES.contains(&SERIAL_PARITY_DEFAULT));
+    assert!(SERIAL_FLOW_CONTROLS.contains(&SERIAL_FLOW_CONTROL_DEFAULT));
+    assert!(SERIAL_DATA_BITS.contains(&SERIAL_DATA_BITS_DEFAULT));
+    assert!(SERIAL_STOP_BITS.contains(&SERIAL_STOP_BITS_DEFAULT));
+    assert!(RDP_COLOR_DEPTHS.contains(&RDP_COLOR_DEPTH_DEFAULT));
+
+    // Doc 06: serial_data_bits DEFAULT 8, serial_stop_bits DEFAULT 1,
+    // serial_parity/serial_flow_control DEFAULT 'none'.
+    assert_eq!(SERIAL_DATA_BITS_DEFAULT, 8);
+    assert_eq!(SERIAL_STOP_BITS_DEFAULT, 1);
+    assert_eq!(SERIAL_PARITY_DEFAULT, "none");
+    assert_eq!(SERIAL_FLOW_CONTROL_DEFAULT, "none");
+
+    // Doc 08 §RDP passes `/bpp:{rdp_color_depth.unwrap_or(32)}` to xfreerdp,
+    // so 32 is the fallback the dialog must default to.
+    assert_eq!(RDP_COLOR_DEPTH_DEFAULT, 32);
+}
+
+#[test]
+fn vocab_value_resolves_every_index() {
+    for (index, expected) in SERIAL_PARITIES.iter().enumerate() {
+        assert_eq!(
+            vocab_value(&SERIAL_PARITIES, index as u32, SERIAL_PARITY_DEFAULT),
+            *expected
+        );
+    }
+    assert_eq!(
+        vocab_value(&SERIAL_FLOW_CONTROLS, 1, SERIAL_FLOW_CONTROL_DEFAULT),
+        "hardware"
+    );
+    assert_eq!(
+        vocab_value(&SERIAL_DATA_BITS, 3, SERIAL_DATA_BITS_DEFAULT),
+        8
+    );
+    assert_eq!(
+        vocab_value(&SERIAL_STOP_BITS, 1, SERIAL_STOP_BITS_DEFAULT),
+        2
+    );
+    assert_eq!(
+        vocab_value(&RDP_COLOR_DEPTHS, 2, RDP_COLOR_DEPTH_DEFAULT),
+        32
+    );
+}
+
+#[test]
+fn vocab_value_out_of_range_falls_back_to_default() {
+    assert_eq!(
+        vocab_value(&SERIAL_PARITIES, 99, SERIAL_PARITY_DEFAULT),
+        "none"
+    );
+    assert_eq!(
+        vocab_value(&SERIAL_DATA_BITS, 99, SERIAL_DATA_BITS_DEFAULT),
+        8
+    );
+    assert_eq!(
+        vocab_value(&RDP_COLOR_DEPTHS, 7, RDP_COLOR_DEPTH_DEFAULT),
+        32
+    );
+}
+
+#[test]
+fn vocab_index_round_trips_every_value() {
+    for (index, expected) in SERIAL_PARITIES.iter().enumerate() {
+        assert_eq!(
+            vocab_index(&SERIAL_PARITIES, Some(*expected), SERIAL_PARITY_DEFAULT),
+            index as u32
+        );
+    }
+    for (index, expected) in SERIAL_FLOW_CONTROLS.iter().enumerate() {
+        assert_eq!(
+            vocab_index(
+                &SERIAL_FLOW_CONTROLS,
+                Some(*expected),
+                SERIAL_FLOW_CONTROL_DEFAULT
+            ),
+            index as u32
+        );
+    }
+    for (index, expected) in RDP_COLOR_DEPTHS.iter().enumerate() {
+        assert_eq!(
+            vocab_index(&RDP_COLOR_DEPTHS, Some(*expected), RDP_COLOR_DEPTH_DEFAULT),
+            index as u32
+        );
+    }
+}
+
+#[test]
+fn vocab_index_falls_back_to_the_default_selection() {
+    // NULL column (doc 06's nullable per-type columns) selects the default.
+    assert_eq!(
+        vocab_index(&SERIAL_PARITIES, None, SERIAL_PARITY_DEFAULT),
+        0
+    );
+    assert_eq!(
+        vocab_index(&RDP_COLOR_DEPTHS, None, RDP_COLOR_DEPTH_DEFAULT),
+        2
+    );
+    // A value written by a newer/foreign writer that this build does not know
+    // normalises to the documented default rather than staying unselectable.
+    assert_eq!(
+        vocab_index(&SERIAL_PARITIES, Some("weird"), SERIAL_PARITY_DEFAULT),
+        0
+    );
+    assert_eq!(
+        vocab_index(&RDP_COLOR_DEPTHS, Some(64), RDP_COLOR_DEPTH_DEFAULT),
+        2
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Wire compatibility: rows written before per-type fields existed
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pre_per_type_field_json_still_deserializes() {
+    // A stored payload with none of the per-type groups present — every
+    // serial/rdp/vnc/local field takes its default rather than failing.
+    let json = r#"{
+        "id": 3,
+        "name": "legacy",
+        "session_type": "ssh",
+        "host": "old.example",
+        "port": 22,
+        "username": "root",
+        "auth_method": "password"
+    }"#;
+
+    let cfg: SessionConfig = serde_json::from_str(json).unwrap();
+
+    assert_eq!(cfg.id, 3);
+    assert_eq!(cfg.name, "legacy");
+    assert_eq!(cfg.session_type, SessionType::SSH);
+    assert_eq!(cfg.host.as_deref(), Some("old.example"));
+    assert_eq!(cfg.port, Some(22));
+    assert_eq!(cfg.auth_method, Some(AuthMethod::Password));
+
+    // Per-type groups default to "unset" so a later save writes NULL and the
+    // doc-06 column defaults (8 / 1 / 'none') keep applying in SQLite.
+    assert_eq!(cfg.serial_device, None);
+    assert_eq!(cfg.serial_baud_rate, None);
+    assert_eq!(cfg.serial_data_bits, None);
+    assert_eq!(cfg.serial_parity, None);
+    assert_eq!(cfg.serial_stop_bits, None);
+    assert_eq!(cfg.serial_flow_control, None);
+    assert_eq!(cfg.rdp_domain, None);
+    assert_eq!(cfg.rdp_width, None);
+    assert_eq!(cfg.rdp_height, None);
+    assert_eq!(cfg.rdp_color_depth, None);
+    assert!(!cfg.rdp_compression);
+    assert_eq!(cfg.rdp_options, None);
+    assert_eq!(cfg.vnc_color_depth, None);
+    assert_eq!(cfg.vnc_options, None);
+    assert_eq!(cfg.local_shell, None);
+    assert_eq!(cfg.local_working_dir, None);
+    assert_eq!(cfg.connect_count, 0);
+}
+
+#[test]
+fn pre_per_type_field_json_round_trips_with_per_type_fields_preserved() {
+    // The full pre-P1.5 wire format, spelled out field-by-field: the dialog
+    // work adds no column, so this payload must keep its exact spelling and
+    // round-trip through the struct unchanged.
+    let json = r#"{
+        "id": 11,
+        "name": "console",
+        "session_type": "serial",
+        "folder_id": null,
+        "host": null,
+        "port": null,
+        "username": null,
+        "auth_method": null,
+        "key_path": null,
+        "host_key_policy": null,
+        "jump_session_id": null,
+        "forward_rules": null,
+        "tmux_enabled": false,
+        "tmux_session_name": null,
+        "ssh_options": null,
+        "rdp_domain": null,
+        "rdp_width": null,
+        "rdp_height": null,
+        "rdp_color_depth": null,
+        "rdp_compression": false,
+        "rdp_options": null,
+        "vnc_color_depth": null,
+        "vnc_options": null,
+        "serial_device": "/dev/ttyUSB0",
+        "serial_baud_rate": 115200,
+        "serial_data_bits": 8,
+        "serial_parity": "none",
+        "serial_stop_bits": 1,
+        "serial_flow_control": "none",
+        "local_shell": null,
+        "local_working_dir": null,
+        "preferred_backend": null,
+        "color_scheme": null,
+        "font_family": null,
+        "font_size": null,
+        "opacity": null,
+        "notes": null,
+        "last_connected": null,
+        "connect_count": 0
+    }"#;
+
+    let cfg: SessionConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.session_type, SessionType::Serial);
+    assert_eq!(cfg.serial_device.as_deref(), Some("/dev/ttyUSB0"));
+    assert_eq!(cfg.serial_baud_rate, Some(115200));
+    assert_eq!(cfg.serial_data_bits, Some(8));
+    assert_eq!(cfg.serial_parity.as_deref(), Some("none"));
+    assert_eq!(cfg.serial_stop_bits, Some(1));
+    assert_eq!(cfg.serial_flow_control.as_deref(), Some("none"));
+
+    // Re-serializing produces exactly the same payload: no field was added,
+    // renamed, or reordered by the per-type dialog work.
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        serde_json::to_value(&cfg).unwrap(),
+        value,
+        "SessionConfig wire format changed — that is a schema break"
+    );
+}
