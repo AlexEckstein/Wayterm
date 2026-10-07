@@ -237,6 +237,10 @@ impl TerminalTab {
             tokio::spawn(async move {
                 let mut events = events;
                 if transport.connect().await.is_err() {
+                    // Doc 04 §Lifecycle: close from any state → disconnect.
+                    // A failed connect still owns a half-open transport; emit
+                    // state and clean up instead of leaking it.
+                    transport.disconnect().await.ok();
                     return;
                 }
                 loop {
