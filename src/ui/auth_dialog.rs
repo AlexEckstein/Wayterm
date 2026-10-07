@@ -374,4 +374,4 @@ pub fn challenge_responder(name: impl Into<String>) -> ChallengeResponder {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

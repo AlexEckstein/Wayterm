@@ -5,6 +5,14 @@
 //! adapter (with an injected fake handler).
 
 use super::*;
+#[cfg(test)]
+pub(crate) use crate::ui::auth_dialog::tests::acquire_default_ctx;
+
+// The two host_key_prompt_* tests below marshal onto the default
+// MainContext through run_on_gtk_main_thread; `acquire_default_ctx()`
+// (from auth_dialog's test module) pins context ownership
+// process-wide so the marshalling path is deterministic under
+// default test parallelism.
 
 fn facts() -> HostKeyFacts {
     HostKeyFacts {
@@ -92,6 +100,7 @@ fn only_strict_policy_prompts() {
 
 #[test]
 fn host_key_prompt_forwards_facts_and_maps_decision() {
+    let _ctx = acquire_default_ctx();
     let closure = host_key_prompt_with(|notice, facts| {
         assert_eq!(notice, HostKeyNotice::Unknown);
         decision_from_response(facts.key_type == "ssh-ed25519")
@@ -104,6 +113,7 @@ fn host_key_prompt_forwards_facts_and_maps_decision() {
 
 #[test]
 fn host_key_prompt_never_returns_bare_accept() {
+    let _ctx = acquire_default_ctx();
     // Bare Accept would skip learn_known_hosts_path and re-prompt on every
     // connect, so the accept path must always be AcceptAndSave.
     let closure = host_key_prompt_with(|_, _| decision_from_response(true));
