@@ -131,6 +131,15 @@ pub struct VncOptions {
     pub view_only: bool,
 }
 
+/// Prefix every Wayterm tmux session name carries on the remote host
+/// (doc 04 §Tmux Session Persistence: "Session naming convention:
+/// `wayterm-<sessionName>` to avoid conflicts with the user's own tmux
+/// sessions").
+///
+/// `SSHTransport` prepends it at connect time, so
+/// [`SessionConfig::tmux_session_name`] stores the bare suffix.
+pub const TMUX_NAME_PREFIX: &str = "wayterm-";
+
 /// A saved session — the Rust mirror of the `sessions` table (doc 06).
 ///
 /// No credential material: secrets live in the OS keyring only
@@ -164,7 +173,27 @@ pub struct SessionConfig {
     pub jump_session_id: Option<i64>,
     /// Local forwards (doc 11).
     pub forward_rules: Option<Vec<ForwardRule>>,
+    /// Run this SSH session inside a tmux session on the remote host, so a
+    /// dropped connection can be re-attached to the same live session
+    /// (doc 04 §Tmux Session Persistence).
+    ///
+    /// Doc 04 scopes the feature to SSH: only the SSH branch of
+    /// [`create_transport`](crate::transport::tab::create_transport) consults
+    /// it, so a serial/local/RDP/VNC row carrying the flag has no effect —
+    /// no other transport exists to read it. Storing it for every type is
+    /// what lets the dialog keep one checkbox and lets a session be switched
+    /// to SSH later without losing the setting.
     pub tmux_enabled: bool,
+    /// The remote tmux session name **without** the [`TMUX_NAME_PREFIX`]
+    /// that `SSHTransport` prepends, or `None` to derive it from the
+    /// session's own name at connect time.
+    ///
+    /// Stored bare so the row and the remote agree on one spelling: the
+    /// dialog shows `wayterm-<suffix>`, the transport runs
+    /// `tmux new -A -s wayterm-<suffix>`. Use
+    /// [`SessionConfig::tmux_session_suffix`] to resolve `None` to a
+    /// concrete name, and [`Self::tmux_remote_name`] to render the full name for
+    /// display.
     pub tmux_session_name: Option<String>,
     pub ssh_options: Option<SshOptions>,
 
@@ -203,6 +232,69 @@ pub struct SessionConfig {
     pub notes: Option<String>,
     pub last_connected: Option<String>,
     pub connect_count: u32,
+}
+
+impl SessionConfig {
+    /// The tmux session name `SSHTransport` should be handed at connect
+    /// time — the **bare** suffix, because the transport prepends
+    /// [`TMUX_NAME_PREFIX`] itself.
+    ///
+    /// `None` unless `tmux_enabled` is set. Doc 04 scopes tmux persistence
+    /// to SSH and that scoping lives in the caller —
+    /// [`create_transport`](crate::transport::tab::create_transport) only
+    /// reaches this for an SSH row, and a serial/local/RDP/VNC row has no
+    /// transport to reach it.
+    ///
+    /// A stored name wins; when it is absent the session's own name is used,
+    /// which is the "auto-derived at connect" behaviour of the dialog (an
+    /// empty name field is stored as NULL precisely so this resolves).
+    pub fn tmux_session_suffix(&self) -> Option<String> {
+        if !self.tmux_enabled {
+            return None;
+        }
+        let stored = self
+            .tmux_session_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        Some(match stored {
+            Some(name) => strip_tmux_prefix(name).to_string(),
+            None => self.name.trim().to_string(),
+        })
+    }
+
+    /// The full remote tmux session name, `wayterm-<suffix>` — what the
+    /// dialog shows and what `tmux list-sessions` reports on the host.
+    ///
+    /// `None` unless [`Self::tmux_enabled`] (doc 04 scopes the feature to
+    /// SSH), so a disabled session has no remote tmux name.
+    pub fn tmux_remote_name(&self) -> Option<String> {
+        self.tmux_session_suffix()
+            .map(|suffix| format!("{}{}", TMUX_NAME_PREFIX, strip_tmux_prefix(&suffix)))
+    }
+
+    /// The name to show in the dialog's tmux Entry for this row, whether or
+    /// not the box is ticked: the stored suffix if there is one, else
+    /// `wayterm-<session name>`.
+    ///
+    /// Pre-filling even when `tmux_enabled` is false keeps the entry and the
+    /// checkbox independent — ticking the box later reuses what the user can
+    /// already see — and means edit mode of an unticked session still
+    /// displays the name that would be used.
+    pub fn tmux_name_for_dialog(&self) -> String {
+        self.tmux_remote_name()
+            .unwrap_or_else(|| format!("{}{}", TMUX_NAME_PREFIX, self.name.trim()))
+    }
+}
+
+/// Drop a leading [`TMUX_NAME_PREFIX`] from a name typed into the dialog.
+///
+/// The dialog pre-fills the Entry with the full remote name (`wayterm-prod`)
+/// so what the user reads matches `tmux list-sessions`, while the stored
+/// column holds the bare suffix the transport prepends. Stripping here is
+/// idempotent, so a hand-typed bare name is stored as-is.
+pub fn strip_tmux_prefix(name: &str) -> &str {
+    name.strip_prefix(TMUX_NAME_PREFIX).unwrap_or(name)
 }
 
 /// A session folder — the Rust mirror of the `folders` table (doc 06).
