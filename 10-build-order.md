@@ -63,9 +63,10 @@ persist across restart.
 - [ ] **CI green** (11-ssh-auth-security.md §Testing): cargo
   fmt/clippy/test against a containerized sshd; FakeBackend transport
   tests for the pump/reader path — fmt/clippy/test are wired and the
-  real-sshd suite exists, but the **auth-method matrix is not
-  server-gated** and the FakeBackend pump/reader tests need the tab
-  wiring above
+  real-sshd suite exists, and the auth-method matrix is now
+  server-gated (`scripts/auth-matrix-sshd.sh` + `tests/auth_matrix.rs`,
+  local/pre-merge — CI still provisions only the all-methods sshd), but
+  the FakeBackend pump/reader tests need the tab wiring above
 - [ ] Spike (half-day, parallel): xfreerdp `/from-stdin` behavior on
   target distros — knowledge for Phase 7, cheap to do now
 
