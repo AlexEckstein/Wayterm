@@ -421,17 +421,33 @@ impl TerminalTab {
         main_ctx: &glib::MainContext,
     ) -> Self {
         let (term_tx, term_rx) = mpsc::channel::<TerminalEvent>(256);
-        let (gtk_tx, gtk_rx) = glib::MainContext::channel::<Vec<u8>>();
-
-        // 1. GTK side: terminal output arrives as Vec<u8> chunks on the
-        //    glib channel; attach() runs on the main thread.
-        let backend_clone = backend.clone();
-        gtk_rx.attach(Some(main_ctx), move |chunk| {
-            backend_clone.write(&chunk);
-            glib::ControlFlow::Continue
+        let (state_tx, state_rx) = mpsc::channel::<Vec<u8>>(256); // bridge → main
+        // 1. Bridge task: TransportEvent::DataReceived → bounded channel
+        //    drained on the main thread. (Revision, 2026-10: glib 0.22
+        //    removed MainContext::channel; this sketch is the replacement —
+        //    a tokio mpsc drained by a spawn_local task, !Send future
+        //    pinned to the main thread. The bridge is its OWN task, not
+        //    part of the pump: folding them deadlocks under full-duplex
+        //    load — a blocked transport.write stops draining the transport
+        //    events, the SSH recv window closes, and the server stops
+        //    reading our writes. Implemented in src/transport/tab.rs,
+        //    commit 30efb90.)
+        let main_ctx2 = main_ctx.clone();
+        tokio::spawn(async move {          // THE BRIDGE TASK
+            while let Some(chunk) = event_rx.recv().await {
+                match chunk {
+                    TransportEvent::DataReceived(data) => {
+                        if state_tx.send(data).await.is_err() { break; }
+                    }
+                    other => { /* StateChanged/Error/ConnectionLost → state path (doc sketch) */ }
+                }
+            }
         });
-        // (TransportEvent variants other than DataReceived are routed
-        //  through a second glib channel — status bar, reconnect prompt.)
+        main_ctx.spawn_local(async move {  // Main-thread-only drain
+            while let Some(chunk) = state_rx.recv().await {
+                backend.write(&chunk);
+            }
+        });
 
         // 2. Backend emits events (keystrokes, resizes) via term_tx —
         //    the backend was constructed with term_tx (see doc 02's
