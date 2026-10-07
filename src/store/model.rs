@@ -136,7 +136,13 @@ pub struct VncOptions {
 /// No credential material: secrets live in the OS keyring only
 /// (docs 06 §Credential Storage / 11). `auth_method` records *which*
 /// method to use, never the secret itself.
+///
+/// `#[serde(default)]` is what keeps stored rows readable as the struct
+/// grows: a row/JSON payload written before a field existed deserializes
+/// with that field's `Default` instead of failing. The serialized form is
+/// unchanged — the attribute only relaxes *deserialization*.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SessionConfig {
     pub id: i64,
     pub name: String,
@@ -207,6 +213,85 @@ pub struct Folder {
     pub parent_id: Option<i64>,
     pub sort_order: i64,
     pub icon: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Per-type value vocabularies
+//
+// Doc 06 stores the enum-like per-type columns as TEXT/INTEGER and names the
+// default in the schema comment, but only the default is enumerated:
+//
+//     serial_data_bits    INTEGER DEFAULT 8
+//     serial_parity       TEXT DEFAULT 'none'
+//     serial_stop_bits    INTEGER DEFAULT 1
+//     serial_flow_control TEXT DEFAULT 'none'
+//     rdp_color_depth     INTEGER            -- no default in the schema
+//
+// The constants below are the single source of truth for the *remaining*
+// values (doc 08 §RDP pins the color-depth fallback to 32 bpp). Each
+// `*_DEFAULT` restates the documented default, so the dialog, the DropDown
+// models, and the config mapper cannot drift apart. Adding a value to a
+// list changes the wire vocabulary for stored rows — treat it like a new
+// enum variant.
+// ---------------------------------------------------------------------------
+
+/// `sessions.serial_parity` vocabulary — POSIX termios parity modes.
+/// Doc 06 default: `none`.
+pub const SERIAL_PARITIES: [&str; 5] = ["none", "odd", "even", "mark", "space"];
+
+/// Doc 06 `serial_parity TEXT DEFAULT 'none'`.
+pub const SERIAL_PARITY_DEFAULT: &str = "none";
+
+/// `sessions.serial_flow_control` vocabulary.
+/// Doc 06 default: `none`.
+pub const SERIAL_FLOW_CONTROLS: [&str; 3] = ["none", "hardware", "software"];
+
+/// Doc 06 `serial_flow_control TEXT DEFAULT 'none'`.
+pub const SERIAL_FLOW_CONTROL_DEFAULT: &str = "none";
+
+/// `sessions.serial_data_bits` vocabulary.
+pub const SERIAL_DATA_BITS: [u8; 4] = [5, 6, 7, 8];
+
+/// Doc 06 `serial_data_bits INTEGER DEFAULT 8`.
+pub const SERIAL_DATA_BITS_DEFAULT: u8 = 8;
+
+/// `sessions.serial_stop_bits` vocabulary.
+pub const SERIAL_STOP_BITS: [u8; 2] = [1, 2];
+
+/// Doc 06 `serial_stop_bits INTEGER DEFAULT 1`.
+pub const SERIAL_STOP_BITS_DEFAULT: u8 = 1;
+
+/// `sessions.rdp_color_depth` vocabulary (bits per pixel).
+pub const RDP_COLOR_DEPTHS: [u32; 3] = [16, 24, 32];
+
+/// Doc 06 stores color depth as a nullable INTEGER with no default; doc 08
+/// §RDP spawns xfreerdp with `/bpp:{rdp_color_depth.unwrap_or(32)}`, so 32 is
+/// the documented fallback.
+pub const RDP_COLOR_DEPTH_DEFAULT: u32 = 32;
+
+/// Resolve a DropDown index to the value stored in the session row.
+///
+/// An out-of-range index cannot come from a GTK DropDown but does occur in
+/// hand-built [`DialogFields`](crate::ui::session_dialog::DialogFields), so it
+/// resolves to `default` rather than panicking.
+pub fn vocab_value<T: Copy + PartialEq>(values: &[T], index: u32, default: T) -> T {
+    match values.get(index as usize) {
+        Some(value) => *value,
+        None => default,
+    }
+}
+
+/// Resolve a stored value to the DropDown index that selects it, for
+/// pre-filling a row (doc-06 column → dialog widget).
+///
+/// A missing or unrecognised value selects `default`'s index, which is what
+/// the mapper will write back — so editing and saving an unrecognised value
+/// normalises it to the documented default instead of silently keeping it.
+pub fn vocab_index<T: Copy + PartialEq>(values: &[T], value: Option<T>, default: T) -> u32 {
+    match value.and_then(|v| values.iter().position(|c| *c == v)) {
+        Some(pos) => pos as u32,
+        None => values.iter().position(|c| *c == default).unwrap_or(0) as u32,
+    }
 }
 
 #[cfg(test)]

@@ -1,25 +1,65 @@
 //! Session config dialog — create/edit a [`SessionConfig`] (doc 06 / doc
-//! 10 Task 9).
+//! 10 Phase 1).
 //!
 //! The GTK side is display-heavy and cannot be unit-tested without a
 //! display.  All mapping logic (DropDown index → enum, port defaulting,
-//! identity-field preservation) is isolated in
-//! [`config_from_fields`](config_from_fields) and exercised by the
-//! tests in [`tests`].
+//! per-type field mapping, identity-field preservation) is isolated in
+//! [`config_from_fields`] and exercised by the tests in [`tests`].
 //!
-//! **Scope note for Task 9:** the plan Task 9 description mentions
-//! type-specific conditional show/hide fields (e.g. serial device/baud).
-//! That complexity is intentionally deferred to Task 10 when this dialog
-//! is wired into the session tree, so Task 9 stays small and the dialog is
-//! fully testable with a pure mapping function.  The dialog only exposes
-//! the common dialog-editable fields from doc 06.
+//! Per-type field groups (doc 06 §"Session Config Struct"): the Type
+//! DropDown drives [`TypeGroups::apply`], which reveals exactly the group
+//! matching the selected type and hides the rest.
+//!
+//! * **serial** — device, baud, data bits, parity, stop bits, flow control
+//!   (`serial_*` columns, doc 06 defaults 8 / `none` / 1 / `none`).
+//! * **rdp** — domain, resolution, color depth (`rdp_domain`,
+//!   `rdp_width`/`rdp_height`, `rdp_color_depth`; doc 08 §RDP falls back to
+//!   1024×768 / 32 bpp).
+//! * **vnc** — no secret field. The VNC password goes to the OS keyring on
+//!   first connect (docs 06 §Credential Storage / 11), so the group only
+//!   says so.
+//! * **local** — shell path and working directory (`local_shell`,
+//!   `local_working_dir`).
+//!
+//! SSH keeps the common fields only; key path, tmux, jump hosts and port
+//! forwards are edited elsewhere (doc 11).
 
-use crate::store::model::{AuthMethod, Folder, SessionConfig, SessionType};
+use crate::store::model::{
+    vocab_index, vocab_value, AuthMethod, Folder, SessionConfig, SessionType, RDP_COLOR_DEPTHS,
+    RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROLS,
+    SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES, SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS,
+    SERIAL_STOP_BITS_DEFAULT,
+};
+
+/// Type DropDown index for SSH (doc-06 order).
+pub const TYPE_INDEX_SSH: u32 = 0;
+/// Type DropDown index for RDP (doc-06 order).
+pub const TYPE_INDEX_RDP: u32 = 1;
+/// Type DropDown index for VNC (doc-06 order).
+pub const TYPE_INDEX_VNC: u32 = 2;
+/// Type DropDown index for serial (doc-06 order).
+pub const TYPE_INDEX_SERIAL: u32 = 3;
+/// Type DropDown index for local shell (doc-06 order).
+pub const TYPE_INDEX_LOCAL: u32 = 4;
+
+/// Baud rate the serial group starts on.
+///
+/// Doc 06 leaves `serial_baud_rate` nullable with no documented default, so
+/// this is the standard USB/serial rate; a stored value overrides it.
+pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
+
+/// Value shown in the Port spin for types that have no network port.
+///
+/// [`gtk4::SpinButton`] starts at 1, so "unset" cannot be displayed; the
+/// widget is unused for serial and local sessions because
+/// [`default_port_for`] stores no port for them.
+const PORT_SPIN_PLACEHOLDER: u16 = 22;
 
 /// Values extracted from the GTK widgets in the dialog.
 ///
 /// Kept deliberately plain so [`config_from_fields`] can be tested without
-/// initializing GTK.
+/// initializing GTK. `*_index` fields are DropDown selections into the
+/// per-type vocabularies in [`crate::store::model`].
 #[derive(Clone, Debug)]
 pub struct DialogFields {
     pub name: String,
@@ -30,6 +70,28 @@ pub struct DialogFields {
     pub username: String,
     pub auth_index: u32,
     pub notes: String,
+
+    // Serial group (doc 06 `serial_*` columns).
+    pub serial_device: String,
+    pub serial_baud: u32,
+    pub serial_data_bits_index: u32,
+    pub serial_parity_index: u32,
+    pub serial_stop_bits_index: u32,
+    pub serial_flow_control_index: u32,
+
+    // RDP group (doc 06 `rdp_domain` / `rdp_width` / `rdp_height` /
+    // `rdp_color_depth`).
+    pub rdp_domain: String,
+    /// `WIDTHxHEIGHT` as typed; empty means "use doc 08's 1024×768".
+    pub rdp_resolution: String,
+    pub rdp_color_depth_index: u32,
+
+    // VNC group: no secret field — the password is keyring-only
+    // (docs 06 §Credential Storage / 11).
+
+    // Local shell group (doc 06 `local_*` columns).
+    pub local_shell: String,
+    pub local_working_dir: String,
 
     // Identity fields from edit mode (not dialog-editable but carried
     // through to the returned config).
@@ -44,18 +106,120 @@ impl Default for DialogFields {
     fn default() -> Self {
         Self {
             name: String::new(),
-            type_index: 0,
+            type_index: TYPE_INDEX_SSH,
             folder_index: 0,
             host: String::new(),
             port: 22,
             username: String::new(),
             auth_index: 0,
             notes: String::new(),
+            serial_device: String::new(),
+            serial_baud: DEFAULT_SERIAL_BAUD,
+            serial_data_bits_index: vocab_index(
+                &SERIAL_DATA_BITS,
+                Some(SERIAL_DATA_BITS_DEFAULT),
+                SERIAL_DATA_BITS_DEFAULT,
+            ),
+            serial_parity_index: vocab_index(
+                &SERIAL_PARITIES,
+                Some(SERIAL_PARITY_DEFAULT),
+                SERIAL_PARITY_DEFAULT,
+            ),
+            serial_stop_bits_index: vocab_index(
+                &SERIAL_STOP_BITS,
+                Some(SERIAL_STOP_BITS_DEFAULT),
+                SERIAL_STOP_BITS_DEFAULT,
+            ),
+            serial_flow_control_index: vocab_index(
+                &SERIAL_FLOW_CONTROLS,
+                Some(SERIAL_FLOW_CONTROL_DEFAULT),
+                SERIAL_FLOW_CONTROL_DEFAULT,
+            ),
+            rdp_domain: String::new(),
+            rdp_resolution: String::new(),
+            rdp_color_depth_index: vocab_index(
+                &RDP_COLOR_DEPTHS,
+                Some(RDP_COLOR_DEPTH_DEFAULT),
+                RDP_COLOR_DEPTH_DEFAULT,
+            ),
+            local_shell: String::new(),
+            local_working_dir: String::new(),
             id: 0,
             folder_id: None,
             last_connected: None,
             connect_count: 0,
         }
+    }
+}
+
+/// DropDown index → [`SessionType`], in the dialog's doc-06 order.
+///
+/// Any index outside the five known entries means SSH.
+pub fn session_type_from_index(index: u32) -> SessionType {
+    match index {
+        TYPE_INDEX_RDP => SessionType::RDP,
+        TYPE_INDEX_VNC => SessionType::VNC,
+        TYPE_INDEX_SERIAL => SessionType::Serial,
+        TYPE_INDEX_LOCAL => SessionType::LocalShell,
+        _ => SessionType::SSH,
+    }
+}
+
+/// [`SessionType`] → DropDown index, for pre-filling the Type widget.
+pub fn type_index_for(session_type: &SessionType) -> u32 {
+    match session_type {
+        SessionType::SSH => TYPE_INDEX_SSH,
+        SessionType::RDP => TYPE_INDEX_RDP,
+        SessionType::VNC => TYPE_INDEX_VNC,
+        SessionType::Serial => TYPE_INDEX_SERIAL,
+        SessionType::LocalShell => TYPE_INDEX_LOCAL,
+    }
+}
+
+/// Default TCP port per session type.
+///
+/// Doc 06 stores `port` as a nullable common column and names no per-type
+/// default, so these are the registered ports for each protocol. Serial and
+/// local sessions have no network port at all — a serial session names a
+/// device and a local session names a shell — so both return `None`.
+pub fn default_port_for(session_type: &SessionType) -> Option<u16> {
+    match session_type {
+        SessionType::SSH => Some(22),
+        SessionType::RDP => Some(3389),
+        SessionType::VNC => Some(5900),
+        SessionType::Serial | SessionType::LocalShell => None,
+    }
+}
+
+/// Parse the RDP "Resolution" field (`WIDTHxHEIGHT`) into doc 06's
+/// `rdp_width` / `rdp_height`.
+///
+/// Empty or malformed input yields `None`, leaving both columns NULL so
+/// doc 08 §RDP applies its 1024×768 fallback at connect time.
+pub fn parse_resolution(text: &str) -> Option<(u32, u32)> {
+    let (width, height) = text.trim().split_once(['x', 'X'])?;
+    let width: u32 = width.trim().parse().ok()?;
+    let height: u32 = height.trim().parse().ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some((width, height))
+}
+
+/// Render doc 06's `rdp_width` / `rdp_height` back into the dialog's
+/// "Resolution" field. `None` on either side renders empty.
+pub fn format_resolution(width: Option<u32>, height: Option<u32>) -> String {
+    match (width, height) {
+        (Some(width), Some(height)) => format!("{width}x{height}"),
+        _ => String::new(),
+    }
+}
+
+fn trimmed_opt(value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value.trim().to_string())
     }
 }
 
@@ -67,16 +231,15 @@ impl Default for DialogFields {
 /// - `folder_index` is resolved against the folder list passed to the
 ///   dialog constructor: `0` means root, otherwise it indexes into
 ///   `folders` and stores that folder's id.
-/// - Invalid `port` values (zero or > 65535) fall back to 22.
+/// - `port` is kept as typed when in range, and otherwise falls back to
+///   [`default_port_for`] the selected type (SSH 22, RDP 3389, VNC 5900).
+///   Serial and local sessions store no port.
+/// - Per-type payloads are written **only** for the selected type, so
+///   values typed into a group that is now hidden never leak into the row.
+///   The VNC group has no payload: its password is keyring-only.
 /// - Edit-mode identity fields are preserved unchanged.
 pub fn config_from_fields(fields: &DialogFields, folders: &[Folder]) -> SessionConfig {
-    let session_type = match fields.type_index {
-        1 => SessionType::RDP,
-        2 => SessionType::VNC,
-        3 => SessionType::Serial,
-        4 => SessionType::LocalShell,
-        _ => SessionType::SSH,
-    };
+    let session_type = session_type_from_index(fields.type_index);
 
     let auth_method = match fields.auth_index {
         1 => Some(AuthMethod::Key),
@@ -94,60 +257,128 @@ pub fn config_from_fields(fields: &DialogFields, folders: &[Folder]) -> SessionC
             .map(|f| f.id)
     };
 
-    let port = if (1..=65535).contains(&fields.port) {
-        Some(fields.port as u16)
-    } else {
-        Some(22)
-    };
+    let port = default_port_for(&session_type).map(|default| {
+        if (1..=65535).contains(&fields.port) {
+            fields.port as u16
+        } else {
+            default
+        }
+    });
 
-    let host = if fields.host.trim().is_empty() {
-        None
-    } else {
-        Some(fields.host.trim().to_string())
-    };
+    let host = trimmed_opt(&fields.host);
+    let username = trimmed_opt(&fields.username);
+    let notes = trimmed_opt(&fields.notes);
 
-    let username = if fields.username.trim().is_empty() {
-        None
-    } else {
-        Some(fields.username.trim().to_string())
-    };
-
-    let notes = if fields.notes.trim().is_empty() {
-        None
-    } else {
-        Some(fields.notes.trim().to_string())
-    };
-
-    SessionConfig {
+    // Doc 06's schema defaults `rdp_compression` to 1 (on) and the dialog
+    // has no compression widget, so RDP sessions are stored with it on;
+    // the other types keep the struct default.
+    let mut config = SessionConfig {
         id: fields.id,
         name: fields.name.trim().to_string(),
-        session_type,
+        session_type: session_type.clone(),
         folder_id,
         host,
         port,
         username,
         auth_method,
+        rdp_compression: session_type == SessionType::RDP,
         notes,
         last_connected: fields.last_connected.clone(),
         connect_count: fields.connect_count,
         ..Default::default()
+    };
+
+    match session_type {
+        SessionType::Serial => {
+            config.serial_device = trimmed_opt(&fields.serial_device);
+            config.serial_baud_rate = Some(if fields.serial_baud > 0 {
+                fields.serial_baud
+            } else {
+                DEFAULT_SERIAL_BAUD
+            });
+            config.serial_data_bits = Some(vocab_value(
+                &SERIAL_DATA_BITS,
+                fields.serial_data_bits_index,
+                SERIAL_DATA_BITS_DEFAULT,
+            ));
+            config.serial_parity = Some(
+                vocab_value(
+                    &SERIAL_PARITIES,
+                    fields.serial_parity_index,
+                    SERIAL_PARITY_DEFAULT,
+                )
+                .to_string(),
+            );
+            config.serial_stop_bits = Some(vocab_value(
+                &SERIAL_STOP_BITS,
+                fields.serial_stop_bits_index,
+                SERIAL_STOP_BITS_DEFAULT,
+            ));
+            config.serial_flow_control = Some(
+                vocab_value(
+                    &SERIAL_FLOW_CONTROLS,
+                    fields.serial_flow_control_index,
+                    SERIAL_FLOW_CONTROL_DEFAULT,
+                )
+                .to_string(),
+            );
+        }
+        SessionType::RDP => {
+            config.rdp_domain = trimmed_opt(&fields.rdp_domain);
+            let (width, height) = parse_resolution(&fields.rdp_resolution)
+                .map_or((None, None), |(w, h)| (Some(w), Some(h)));
+            config.rdp_width = width;
+            config.rdp_height = height;
+            config.rdp_color_depth = Some(vocab_value(
+                &RDP_COLOR_DEPTHS,
+                fields.rdp_color_depth_index,
+                RDP_COLOR_DEPTH_DEFAULT,
+            ));
+        }
+        SessionType::LocalShell => {
+            config.local_shell = trimmed_opt(&fields.local_shell);
+            config.local_working_dir = trimmed_opt(&fields.local_working_dir);
+        }
+        // SSH has no per-type payload in this dialog, and VNC has none at
+        // all: `vnc_password` is a keyring secret (docs 06/11).
+        SessionType::SSH | SessionType::VNC => {}
     }
+
+    config
 }
 
 // The GTK4 constructors and helpers are only used by the UI layer; unit
 // tests target the pure `config_from_fields` function.  Silence dead-code
-// warnings in non-test builds until Task 10 wires the dialog into the tree.
+// warnings in non-test builds until the dialog is exercised end-to-end.
 #[allow(dead_code)]
 mod gtk_dialog {
     use gtk4::prelude::*;
 
-    use super::{config_from_fields, DialogFields, Folder, SessionConfig};
+    use crate::store::model::{
+        vocab_index, AuthMethod, RDP_COLOR_DEPTHS, RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS,
+        SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT,
+        SERIAL_PARITIES, SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT,
+    };
 
-    /// Static labels shown in the Type DropDown.
+    use super::{
+        config_from_fields, default_port_for, format_resolution, session_type_from_index,
+        type_index_for, DialogFields, Folder, SessionConfig, DEFAULT_SERIAL_BAUD,
+        PORT_SPIN_PLACEHOLDER, TYPE_INDEX_LOCAL, TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_VNC,
+    };
+
+    /// Static labels shown in the Type DropDown — index `n` is
+    /// `TYPE_INDEX_*` constant `n`.
     const TYPE_LABELS: &[&str] = &["ssh", "rdp", "vnc", "serial", "local"];
 
     /// Static labels shown in the Auth Method DropDown.
     const AUTH_LABELS: &[&str] = &["password", "key", "agent", "keyboard-interactive", "none"];
+
+    /// Shown in the VNC group instead of a password field: doc 06
+    /// §Credential Storage keeps `vnc_password` in the OS keyring, never in
+    /// the session database, so there is nothing to type here.
+    const VNC_KEYRING_NOTE: &str =
+        "The VNC password is stored in your OS keyring on first connect — never in \
+         Wayterm's database.";
 
     /// Edit-mode metadata carried in a shared cell so the OK handler can read
     /// the current values without capturing `Self`.
@@ -156,6 +387,136 @@ mod gtk_dialog {
         edit_id: i64,
         edit_last_connected: Option<String>,
         edit_connect_count: u32,
+    }
+
+    /// The four per-type field groups, one per non-SSH type.
+    ///
+    /// [`apply`](Self::apply) is the show/hide seam: the Type DropDown's
+    /// `notify::selected` handler calls it, so exactly the group matching
+    /// the selected type is revealed.
+    #[derive(Clone)]
+    struct TypeGroups {
+        serial: gtk4::Revealer,
+        rdp: gtk4::Revealer,
+        vnc: gtk4::Revealer,
+        local: gtk4::Revealer,
+    }
+
+    impl TypeGroups {
+        /// Reveal the group for `type_index`; hide every other group.
+        fn apply(&self, type_index: u32) {
+            self.serial
+                .set_reveal_child(type_index == TYPE_INDEX_SERIAL);
+            self.rdp.set_reveal_child(type_index == TYPE_INDEX_RDP);
+            self.vnc.set_reveal_child(type_index == TYPE_INDEX_VNC);
+            self.local.set_reveal_child(type_index == TYPE_INDEX_LOCAL);
+        }
+    }
+
+    /// Accumulates the labelled rows of one per-type group and wraps them in
+    /// a titled, initially hidden [`gtk4::Revealer`].
+    struct GroupRows {
+        title: String,
+        grid: gtk4::Grid,
+        row: i32,
+    }
+
+    impl GroupRows {
+        fn new(title: &str) -> Self {
+            Self {
+                title: title.to_string(),
+                grid: gtk4::Grid::builder()
+                    .row_spacing(6)
+                    .column_spacing(12)
+                    .margin_start(6)
+                    .margin_end(6)
+                    .margin_top(6)
+                    .margin_bottom(6)
+                    .build(),
+                row: 0,
+            }
+        }
+
+        /// Add a row around an already-built widget.
+        fn add(&mut self, label_text: &str, widget: &gtk4::Widget) {
+            let label = gtk4::Label::builder()
+                .label(label_text)
+                .halign(gtk4::Align::End)
+                .valign(gtk4::Align::Center)
+                .build();
+            self.grid.attach(&label, 0, self.row, 1, 1);
+            self.grid.attach(widget, 1, self.row, 1, 1);
+            self.row += 1;
+        }
+
+        /// Add an [`gtk4::Entry`] row and return it for later pre-fill.
+        fn entry(&mut self, label_text: &str, placeholder: &str) -> gtk4::Entry {
+            let entry = gtk4::Entry::builder()
+                .hexpand(true)
+                .placeholder_text(placeholder)
+                .activates_default(true)
+                .build();
+            self.add(label_text, entry.upcast_ref::<gtk4::Widget>());
+            entry
+        }
+
+        /// Add an integer [`gtk4::SpinButton`] row and return it.
+        fn spin(&mut self, label_text: &str, range: (f64, f64)) -> gtk4::SpinButton {
+            let spin = gtk4::SpinButton::with_range(range.0, range.1, 1.0);
+            spin.set_digits(0);
+            self.add(label_text, spin.upcast_ref::<gtk4::Widget>());
+            spin
+        }
+
+        /// Add a [`gtk4::DropDown`] row and return it.
+        fn dropdown(&mut self, label_text: &str, labels: &[&str]) -> gtk4::DropDown {
+            let model = gtk4::StringList::new(labels);
+            let dropdown = gtk4::DropDown::builder()
+                .model(&model)
+                .hexpand(true)
+                .build();
+            self.add(label_text, dropdown.upcast_ref::<gtk4::Widget>());
+            dropdown
+        }
+
+        /// Add a read-only note row (used by the VNC group).
+        fn note(&mut self, text: &str) {
+            let label = gtk4::Label::builder()
+                .label(text)
+                .wrap(true)
+                .xalign(0.0)
+                .build();
+            let row = self.row;
+            self.grid.attach(&label, 1, row, 1, 1);
+            self.row += 1;
+        }
+
+        /// Wrap the accumulated rows in a titled [`gtk4::Revealer`] that
+        /// starts hidden — `TypeGroups::apply` reveals it when its type is
+        /// selected.
+        fn finish(self) -> gtk4::Revealer {
+            let title = gtk4::Label::builder()
+                .label(self.title)
+                .halign(gtk4::Align::Start)
+                .margin_start(6)
+                .margin_top(8)
+                .build();
+
+            let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+            content.append(&title);
+            content.append(&self.grid);
+
+            gtk4::Revealer::builder()
+                .child(&content)
+                .transition_type(gtk4::RevealerTransitionType::SlideDown)
+                .reveal_child(false)
+                .build()
+        }
+    }
+
+    /// Render a numeric vocabulary as DropDown labels.
+    fn number_labels<T: std::fmt::Display>(values: &[T]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
     }
 
     /// Per-widget handles captured after construction so `edit()` can pre-fill.
@@ -169,14 +530,25 @@ mod gtk_dialog {
         username_entry: gtk4::Entry,
         auth_dropdown: gtk4::DropDown,
         notes_view: gtk4::TextView,
+        serial_device_entry: gtk4::Entry,
+        serial_baud_spin: gtk4::SpinButton,
+        serial_data_bits_dropdown: gtk4::DropDown,
+        serial_parity_dropdown: gtk4::DropDown,
+        serial_stop_bits_dropdown: gtk4::DropDown,
+        serial_flow_control_dropdown: gtk4::DropDown,
+        rdp_domain_entry: gtk4::Entry,
+        rdp_resolution_entry: gtk4::Entry,
+        rdp_color_depth_dropdown: gtk4::DropDown,
+        local_shell_entry: gtk4::Entry,
+        local_working_dir_entry: gtk4::Entry,
     }
 
     /// GTK4 dialog for creating or editing a saved session.
     ///
-    /// Only the common dialog-editable fields from doc 06 are exposed in this
-    /// task (type-specific conditional fields are deferred to Task 10).  The
-    /// dialog returns a fully populated [`SessionConfig`] on OK and `None` on
-    /// cancel.
+    /// Exposes doc 06's common dialog-editable fields plus one per-type
+    /// group per session type; only the group matching the selected type is
+    /// revealed. The dialog returns a fully populated [`SessionConfig`] on OK
+    /// and `None` on cancel.
     pub struct SessionDialog {
         window: gtk4::ApplicationWindow,
         state: std::rc::Rc<std::cell::RefCell<DialogState>>,
@@ -197,13 +569,7 @@ mod gtk_dialog {
             let widgets = this.widgets();
             widgets.name_entry.set_text(&config.name);
 
-            let type_index = match config.session_type {
-                super::SessionType::SSH => 0,
-                super::SessionType::RDP => 1,
-                super::SessionType::VNC => 2,
-                super::SessionType::Serial => 3,
-                super::SessionType::LocalShell => 4,
-            };
+            let type_index = type_index_for(&config.session_type);
             widgets.type_dropdown.set_selected(type_index);
 
             let folder_index = if let Some(id) = config.folder_id {
@@ -220,22 +586,78 @@ mod gtk_dialog {
             widgets
                 .host_entry
                 .set_text(config.host.as_deref().unwrap_or(""));
-            widgets
-                .port_spin
-                .set_value(f64::from(config.port.unwrap_or(22)));
+            // Serial and local sessions have no port; show the placeholder in
+            // the (unused) spin rather than an out-of-range zero.
+            let shown_port = config
+                .port
+                .or_else(|| default_port_for(&config.session_type))
+                .unwrap_or(PORT_SPIN_PLACEHOLDER);
+            widgets.port_spin.set_value(f64::from(shown_port));
             widgets
                 .username_entry
                 .set_text(config.username.as_deref().unwrap_or(""));
 
             let auth_index = match config.auth_method {
                 None => 4,
-                Some(super::AuthMethod::Password) => 0,
-                Some(super::AuthMethod::Key) => 1,
-                Some(super::AuthMethod::Agent) => 2,
-                Some(super::AuthMethod::KeyboardInteractive) => 3,
-                Some(super::AuthMethod::None) => 4,
+                Some(AuthMethod::Password) => 0,
+                Some(AuthMethod::Key) => 1,
+                Some(AuthMethod::Agent) => 2,
+                Some(AuthMethod::KeyboardInteractive) => 3,
+                Some(AuthMethod::None) => 4,
             };
             widgets.auth_dropdown.set_selected(auth_index);
+
+            // Per-type groups (doc 06 columns; doc 08 fallbacks).
+            widgets
+                .serial_device_entry
+                .set_text(config.serial_device.as_deref().unwrap_or(""));
+            widgets.serial_baud_spin.set_value(f64::from(
+                config
+                    .serial_baud_rate
+                    .filter(|baud| *baud > 0)
+                    .unwrap_or(DEFAULT_SERIAL_BAUD),
+            ));
+            widgets.serial_data_bits_dropdown.set_selected(vocab_index(
+                &SERIAL_DATA_BITS,
+                config.serial_data_bits,
+                SERIAL_DATA_BITS_DEFAULT,
+            ));
+            widgets.serial_parity_dropdown.set_selected(vocab_index(
+                &SERIAL_PARITIES,
+                config.serial_parity.as_deref(),
+                SERIAL_PARITY_DEFAULT,
+            ));
+            widgets.serial_stop_bits_dropdown.set_selected(vocab_index(
+                &SERIAL_STOP_BITS,
+                config.serial_stop_bits,
+                SERIAL_STOP_BITS_DEFAULT,
+            ));
+            widgets
+                .serial_flow_control_dropdown
+                .set_selected(vocab_index(
+                    &SERIAL_FLOW_CONTROLS,
+                    config.serial_flow_control.as_deref(),
+                    SERIAL_FLOW_CONTROL_DEFAULT,
+                ));
+
+            widgets
+                .rdp_domain_entry
+                .set_text(config.rdp_domain.as_deref().unwrap_or(""));
+            widgets
+                .rdp_resolution_entry
+                .set_text(&format_resolution(config.rdp_width, config.rdp_height));
+            widgets.rdp_color_depth_dropdown.set_selected(vocab_index(
+                &RDP_COLOR_DEPTHS,
+                config.rdp_color_depth,
+                RDP_COLOR_DEPTH_DEFAULT,
+            ));
+
+            widgets
+                .local_shell_entry
+                .set_text(config.local_shell.as_deref().unwrap_or(""));
+            widgets
+                .local_working_dir_entry
+                .set_text(config.local_working_dir.as_deref().unwrap_or(""));
 
             widgets
                 .notes_view
@@ -247,6 +669,10 @@ mod gtk_dialog {
                 edit_last_connected: config.last_connected.clone(),
                 edit_connect_count: config.connect_count,
             };
+
+            // `set_selected` only emits `notify::selected` on a change, so
+            // apply the group visibility explicitly for an SSH row.
+            this.groups().apply(type_index);
 
             this
         }
@@ -293,13 +719,6 @@ mod gtk_dialog {
 
             let type_dropdown = Self::add_dropdown_row(&grid, row, "Type:", TYPE_LABELS);
             row += 1;
-
-            // Task 10 / Phase 1.5 seam: connect type_dropdown to a
-            // `notify::selected` handler here to show/hide per-type field
-            // groups (serial device/baud, rdp domain/resolution, etc.).
-            // Per the Task 10 scope decision, the dialog only exposes the
-            // common dialog-editable fields from doc 06 in Phase 1; adding
-            // per-type UI is a Phase 1.5 polish item.
 
             let folder_names: Vec<String> = std::iter::once("None (root)".to_string())
                 .chain(folders.iter().map(|f| f.name.clone()))
@@ -350,6 +769,83 @@ mod gtk_dialog {
             // row is intentionally unused after the last row; keep the
             // increment for symmetry and future edits.
 
+            let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+            vbox.append(&grid);
+
+            // --- Per-type groups (doc 06 §"Session Config Struct") ---------
+            let mut serial = GroupRows::new("Serial");
+            let serial_device_entry = serial.entry("Device:", "/dev/ttyUSB0");
+            let serial_baud_spin = serial.spin("Baud:", (50.0, 4_000_000.0));
+            let data_bits_labels = number_labels(&SERIAL_DATA_BITS);
+            let serial_data_bits_dropdown = serial.dropdown(
+                "Data Bits:",
+                &data_bits_labels
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            );
+            let serial_parity_dropdown = serial.dropdown("Parity:", &SERIAL_PARITIES);
+            let stop_bits_labels = number_labels(&SERIAL_STOP_BITS);
+            let serial_stop_bits_dropdown = serial.dropdown(
+                "Stop Bits:",
+                &stop_bits_labels
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            );
+            let serial_flow_control_dropdown =
+                serial.dropdown("Flow Control:", &SERIAL_FLOW_CONTROLS);
+            let serial_group = serial.finish();
+
+            let mut rdp = GroupRows::new("RDP");
+            let rdp_domain_entry = rdp.entry("Domain:", "optional");
+            let rdp_resolution_entry = rdp.entry("Resolution:", "1024x768 (doc 08 default)");
+            let color_depth_labels = number_labels(&RDP_COLOR_DEPTHS);
+            let rdp_color_depth_dropdown = rdp.dropdown(
+                "Color Depth:",
+                &color_depth_labels
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            );
+            let rdp_group = rdp.finish();
+
+            let mut vnc = GroupRows::new("VNC");
+            vnc.note(VNC_KEYRING_NOTE);
+            let vnc_group = vnc.finish();
+
+            let mut local = GroupRows::new("Local Shell");
+            let local_shell_entry = local.entry("Shell:", "$SHELL (default)");
+            let local_working_dir_entry = local.entry("Working Directory:", "~ (default)");
+            let local_group = local.finish();
+
+            let groups = TypeGroups {
+                serial: serial_group,
+                rdp: rdp_group,
+                vnc: vnc_group,
+                local: local_group,
+            };
+            vbox.append(&groups.serial);
+            vbox.append(&groups.rdp);
+            vbox.append(&groups.vnc);
+            vbox.append(&groups.local);
+
+            // Type change → show exactly the matching group, hide the rest.
+            // The Port spin follows too: each protocol has its own default
+            // (SSH 22, RDP 3389, VNC 5900) and the spin cannot show "unset",
+            // so a stale 22 would otherwise be stored for an RDP session.
+            // `edit()` pre-fills the port from the config after this runs.
+            let groups_for_notify = groups.clone();
+            let port_for_notify = port_spin.clone();
+            type_dropdown.connect_notify_local(Some("selected"), move |dropdown, _| {
+                let session_type = session_type_from_index(dropdown.selected());
+                groups_for_notify.apply(dropdown.selected());
+                port_for_notify.set_value(f64::from(
+                    default_port_for(&session_type).unwrap_or(PORT_SPIN_PLACEHOLDER),
+                ));
+            });
+            groups.apply(type_dropdown.selected());
+
             let ok_button = gtk4::Button::with_label("OK");
             let cancel_button = gtk4::Button::with_label("Cancel");
             cancel_button.set_margin_end(12);
@@ -360,8 +856,6 @@ mod gtk_dialog {
             button_box.append(&cancel_button);
             button_box.append(&ok_button);
 
-            let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-            vbox.append(&grid);
             vbox.append(&button_box);
             window.set_child(Some(&vbox));
 
@@ -388,6 +882,17 @@ mod gtk_dialog {
                 let username_entry = username_entry.clone();
                 let auth_dropdown = auth_dropdown.clone();
                 let notes_view = notes_view.clone();
+                let serial_device_entry = serial_device_entry.clone();
+                let serial_baud_spin = serial_baud_spin.clone();
+                let serial_data_bits_dropdown = serial_data_bits_dropdown.clone();
+                let serial_parity_dropdown = serial_parity_dropdown.clone();
+                let serial_stop_bits_dropdown = serial_stop_bits_dropdown.clone();
+                let serial_flow_control_dropdown = serial_flow_control_dropdown.clone();
+                let rdp_domain_entry = rdp_domain_entry.clone();
+                let rdp_resolution_entry = rdp_resolution_entry.clone();
+                let rdp_color_depth_dropdown = rdp_color_depth_dropdown.clone();
+                let local_shell_entry = local_shell_entry.clone();
+                let local_working_dir_entry = local_working_dir_entry.clone();
                 move |_| {
                     let notes = notes_view.buffer().text(
                         &notes_view.buffer().start_iter(),
@@ -404,6 +909,17 @@ mod gtk_dialog {
                         username: username_entry.text().to_string(),
                         auth_index: auth_dropdown.selected(),
                         notes: notes.to_string(),
+                        serial_device: serial_device_entry.text().to_string(),
+                        serial_baud: serial_baud_spin.value() as u32,
+                        serial_data_bits_index: serial_data_bits_dropdown.selected(),
+                        serial_parity_index: serial_parity_dropdown.selected(),
+                        serial_stop_bits_index: serial_stop_bits_dropdown.selected(),
+                        serial_flow_control_index: serial_flow_control_dropdown.selected(),
+                        rdp_domain: rdp_domain_entry.text().to_string(),
+                        rdp_resolution: rdp_resolution_entry.text().to_string(),
+                        rdp_color_depth_index: rdp_color_depth_dropdown.selected(),
+                        local_shell: local_shell_entry.text().to_string(),
+                        local_working_dir: local_working_dir_entry.text().to_string(),
                         id: state.edit_id,
                         folder_id: None,
                         last_connected: state.edit_last_connected.clone(),
@@ -442,12 +958,24 @@ mod gtk_dialog {
                 username_entry,
                 auth_dropdown,
                 notes_view,
+                serial_device_entry,
+                serial_baud_spin,
+                serial_data_bits_dropdown,
+                serial_parity_dropdown,
+                serial_stop_bits_dropdown,
+                serial_flow_control_dropdown,
+                rdp_domain_entry,
+                rdp_resolution_entry,
+                rdp_color_depth_dropdown,
+                local_shell_entry,
+                local_working_dir_entry,
             };
 
             // Keep the widget handles alive on the window so `edit()` can use
             // them after construction.
             unsafe {
                 window.set_data("wayterm-session-dialog-widgets", widgets);
+                window.set_data("wayterm-session-dialog-groups", groups);
             }
 
             Self {
@@ -468,6 +996,16 @@ mod gtk_dialog {
             }
         }
 
+        /// Retrieve the per-type groups stored on the window.
+        fn groups(&self) -> TypeGroups {
+            unsafe {
+                self.window
+                    .data::<TypeGroups>("wayterm-session-dialog-groups")
+                    .map(|d| (*d.as_ptr()).clone())
+                    .expect("dialog groups missing")
+            }
+        }
+
         /// Add a label + [`gtk4::Entry`] row to `grid` and return the entry.
         fn add_labeled_row(grid: &gtk4::Grid, row: i32, label_text: &str) -> gtk4::Entry {
             let entry = gtk4::Entry::builder()
@@ -478,7 +1016,8 @@ mod gtk_dialog {
             entry
         }
 
-        /// Add a label + [`gtk4::DropDown`] row to `grid` and return the dropdown.
+        /// Add a label + [`gtk4::DropDown`] row to `grid` and return the
+        /// dropdown.
         fn add_dropdown_row(
             grid: &gtk4::Grid,
             row: i32,
