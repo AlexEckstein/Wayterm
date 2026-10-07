@@ -310,6 +310,15 @@ app). Nightly job: `cargo audit` for advisory sweep.
   Ok(false)=unknown→apply policy; Err(KeyChanged)=mismatch→hard fail,
   no prompt. Other read errors (missing file etc.) are treated as
   unknown → policy applies (prompt under strict; never silent accept).
+  **ALSO CORRECTED (commit afd122e):** keyboard-interactive in 0.64 is
+  driven from the client side — `Handle::authenticate_keyboard_interactive_start()`
+  + `authenticate_keyboard_interactive_respond()`, with
+  `KeyboardInteractiveAuthResponse::{Success, Failure{remaining_methods,
+  partial_success}, InfoRequest{name, instructions, prompts: Vec<Prompt>}}`
+  and `Prompt{prompt: String, echo: bool}`. It is NOT a client Handler
+  callback (that's the server side). Agent auth:
+  `AgentClient::connect_env()` → `request_identities()` →
+  `authenticate_publickey_with()`.
 - russh-sftp 2.4.0 — `client::SftpSession` (high-level, `std::fs`-like).
 - FreeRDP 3.x — `/from-stdin[:force]` in xfreerdp (verify per distro).
 - VTE ≥ 0.62 — SIXEL support exists but is opt-in
