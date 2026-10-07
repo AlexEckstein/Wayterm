@@ -13,6 +13,7 @@ pub mod connection;
 pub mod credentials;
 pub mod hostkey;
 pub mod ssh;
+pub mod tab;
 pub mod types;
 
 /// No-op that exercises the public transport API so the Phase 2 seam stays
@@ -83,6 +84,13 @@ pub fn touch_public_api() {
     }
     let _ = types::TransportError::from_russh(russh::Error::SendError).to_string();
     let _: Option<Box<dyn types::Transport>> = None;
+
+    // tab wiring (TerminalTab + transport factory)
+    let _ = tab::create_transport;
+    let _ = tab::TerminalTab::new;
+    let _ = tab::TerminalTab::close;
+    let _ = tab::TerminalTab::backend;
+    let _ = tab::TerminalTab::take_state_rx;
 
     // ssh transport constructor + trait methods
     let _ = ssh::SSHTransport::new;
