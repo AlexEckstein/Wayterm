@@ -184,7 +184,7 @@ impl SessionTree {
                         selection.unselect_all();
                     }
                     if let Some(widget) = gesture.widget() {
-                        show_context_menu(Some(&widget), &tree_view, &store);
+                        show_context_menu(Some(&widget), &tree_view, &store, x, y);
                     }
                 }
             });
@@ -249,15 +249,24 @@ impl Clone for SessionTree {
     }
 }
 
-/// Display the folder context menu at the given position.
+/// Display the context menu at the given pointer position.
 ///
-/// `parent_widget` is the widget the popover will be attached to.
-/// `tree_view` and `store` are the ones that receive the menu actions.
+/// `parent_widget` is the widget the popover will be attached to and the
+/// coordinate space for `x`/`y` (the widget-relative click position from
+/// the gesture). `tree_view` and `store` are the ones that receive the
+/// menu actions.
+///
+/// The menu is anchored with `Popover::set_pointing_to()` at a zero-size
+/// rectangle at the click point. Without it, GTK anchors a popover to the
+/// parent widget's edge by default — for a full-height sidebar that puts
+/// the menu above/below the window instead of at the cursor.
 #[allow(deprecated)]
 fn show_context_menu(
     parent_widget: Option<&gtk4::Widget>,
     tree_view: &gtk4::TreeView,
     store: &SessionStore,
+    x: f64,
+    y: f64,
 ) {
     let (selected_id, selected_is_folder) = selected_row_info(tree_view);
     let selected_is_session = selected_id.is_some_and(|_| !selected_is_folder);
@@ -280,6 +289,10 @@ fn show_context_menu(
     let popover = gtk4::PopoverMenu::from_model(Some(&menu));
     if let Some(parent) = parent_widget {
         popover.set_parent(parent);
+        // Anchor the menu to the click position (widget-relative
+        // coordinates, zero-size rectangle). Falls back to GTK's default
+        // widget-edge anchoring when the parent is unknown.
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 0, 0)));
     }
 
     let action_group = gio::SimpleActionGroup::new();
