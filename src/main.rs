@@ -10,5 +10,6 @@ fn main() -> glib::ExitCode {
     // Phase 2 seam: keep the transport public API compiled and lint-clean
     // until the GTK connection dialog wires it in Phase 3.
     transport::touch_public_api();
+    ui::touch_dialog_api();
     app::run()
 }
