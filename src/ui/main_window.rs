@@ -1,14 +1,20 @@
 //! Main application window — layout only (doc 01 / doc 10 Phase 1).
 //!
-//! The high-level structure is a horizontal [`gtk4::Paned`] with a
-//! session-tree sidebar on the left and a [`gtk4::Notebook`] on the
-//! right.
+//! The high-level structure is a vertical [`gtk4::Box`] holding a
+//! horizontal [`gtk4::Paned`] (session-tree sidebar on the left,
+//! [`gtk4::Notebook`] on the right) with a [`StatusBar`] pinned to the
+//! bottom.
 
 use gtk4::prelude::*;
 
 use crate::store::SessionStore;
+use crate::transport::types::TransportState;
 use crate::ui::tab::SessionTab;
-use crate::ui::SessionTree;
+use crate::ui::{SessionTree, StatusBar};
+
+/// Key under which the status bar is stashed on the window, following the
+/// same pattern as `tab.rs`'s session-id key.
+const STATUS_BAR_KEY: &str = "wayterm-status-bar";
 
 /// The primary Wayterm application window.
 #[allow(dead_code)]
@@ -64,13 +70,30 @@ impl MainWindow {
         paned.set_vexpand(true);
         paned.set_hexpand(true);
 
+        // Status bar pinned to the bottom of the window. No tab is active
+        // yet, so it shows the initial Disconnected state with no host;
+        // task P2-7b drives it from the active tab's transport.
+        let status_bar = StatusBar::new();
+        status_bar.set_state(&TransportState::Disconnected, "", 0);
+
+        let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        root.append(&paned);
+        root.append(status_bar.widget());
+
         let window = gtk4::ApplicationWindow::builder()
             .application(app)
             .title("Wayterm")
             .default_width(1200)
             .default_height(800)
-            .child(&paned)
+            .child(&root)
             .build();
+        // Keep the status bar alive for the window's lifetime; task P2-7b
+        // retrieves it with `window.data::<StatusBar>("wayterm-status-bar")`
+        // to drive `set_state` from the active tab.
+        unsafe {
+            window.set_data(STATUS_BAR_KEY, status_bar);
+        }
+
         window.present();
 
         Self { window }
