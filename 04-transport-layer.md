@@ -555,7 +555,7 @@ data-at-rest on the remote side, out of scope client-side (doc 11).
 ```toml
 [dependencies]
 russh = "0.63"           # Pure Rust SSH client (tokio-native)
-russh-sftp = "2.4"       # SFTP subsystem (doc 09)
+russh-sftp = "3.0"       # SFTP subsystem (doc 09)
 russh-config = "0.58"    # ~/.ssh/config parsing (doc 10 phase 9 import)
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }

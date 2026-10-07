@@ -12,8 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use russh::client::{self, Config, Handle};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
+
+use wayterm::sftp::{commands::DirEntry, SftpClient, SftpCommand};
 
 mod app_support {
     pub use wayterm::store::model::HostKeyPolicy;
@@ -380,4 +382,305 @@ async fn auth_failure_returns_failed_with_methods_remaining() {
         }
         other => panic!("expected AuthOutcome::Failed, got {other:?}"),
     }
+}
+
+// ---- SFTP integration (doc 09) -------------------------------------------------
+
+fn unique_tag() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_millis()
+        .to_string()
+}
+
+async fn sftp_cmd<T>(
+    client: &SftpClient,
+    make: impl FnOnce(oneshot::Sender<Result<T, String>>) -> SftpCommand,
+) -> Result<T, String> {
+    let (tx, rx) = oneshot::channel();
+    client
+        .request(make(tx))
+        .await
+        .expect("sftp task queue closed");
+    timeout(Duration::from_secs(30), rx)
+        .await
+        .expect("sftp command timed out")
+        .expect("sftp task ended before replying")
+}
+
+fn transfer_id(client: &SftpClient) -> u64 {
+    client.next_transfer_id()
+}
+
+#[tokio::test]
+async fn sftp_list_dir_returns_seeded_home() {
+    let Some(f) = read_fixture() else {
+        skip();
+        return;
+    };
+
+    let connection = connect_authenticated(
+        AuthMethod::Password(f.password.clone()),
+        password_cred_manager(&f.password),
+        password_responder(&f.password),
+    )
+    .await;
+    let client = SftpClient::new(connection.clone());
+
+    let entries: Vec<DirEntry> = sftp_cmd(&client, |reply| SftpCommand::Cd {
+        path: format!("/home/{}", f.user),
+        reply,
+    })
+    .await
+    .expect("cd into home failed");
+
+    assert!(!entries.is_empty(), "home listing must not be empty");
+    assert!(
+        entries.iter().any(|e| e.name == ".ssh" && e.is_dir),
+        "seeded .ssh directory must be listed"
+    );
+    for pair in entries.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        if a.is_dir != b.is_dir {
+            assert!(a.is_dir, "directories must sort before files");
+        } else {
+            let (la, lb) = (a.name.to_ascii_lowercase(), b.name.to_ascii_lowercase());
+            assert!(
+                la <= lb,
+                "entries of the same kind must sort case-insensitively"
+            );
+        }
+    }
+
+    drop(client);
+    connection.disconnect().await.expect("disconnect failed");
+}
+
+#[tokio::test]
+async fn sftp_upload_download_round_trip_reports_progress() {
+    let Some(f) = read_fixture() else {
+        skip();
+        return;
+    };
+
+    let connection = connect_authenticated(
+        AuthMethod::Password(f.password.clone()),
+        password_cred_manager(&f.password),
+        password_responder(&f.password),
+    )
+    .await;
+    let client = SftpClient::new(connection.clone());
+    let tag = unique_tag();
+
+    let size = 100 * 1024u64;
+    let payload: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+
+    let directory = tempfile::tempdir().expect("create tempdir");
+    let local_upload = directory.path().join("upload.bin");
+    let local_download = directory.path().join("download.bin");
+    std::fs::write(&local_upload, &payload).expect("seed upload file");
+
+    // Upload a 100 KiB payload and watch cumulative progress.
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let (progress_tx, mut progress_rx) = mpsc::channel(32);
+    let up_id = transfer_id(&client);
+    let remote_upload = format!("/home/{}/wayterm-sftp-up-{tag}.bin", f.user);
+    client
+        .request(SftpCommand::Upload {
+            transfer_id: up_id,
+            local_path: local_upload.to_string_lossy().into_owned(),
+            remote_path: remote_upload.clone(),
+            progress: progress_tx,
+            reply: reply_tx,
+        })
+        .await
+        .expect("sftp task queue closed");
+    let up_reply: Result<u64, String> = timeout(Duration::from_secs(60), reply_rx)
+        .await
+        .expect("upload timed out")
+        .expect("upload task ended before replying");
+    let mut up_events = Vec::new();
+    while let Ok(Some(event)) = timeout(Duration::from_secs(5), progress_rx.recv()).await {
+        up_events.push(event);
+    }
+    assert_eq!(up_reply.expect("upload failed"), size);
+    let last = up_events.last().expect("upload must report progress");
+    assert_eq!((last.transferred, last.total), (size, size));
+
+    // Download it back and check byte-for-byte equality.
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let (progress_tx, mut progress_rx) = mpsc::channel(32);
+    let dl_id = transfer_id(&client);
+    client
+        .request(SftpCommand::Download {
+            transfer_id: dl_id,
+            remote_path: remote_upload.clone(),
+            local_path: local_download.to_string_lossy().into_owned(),
+            progress: progress_tx,
+            reply: reply_tx,
+        })
+        .await
+        .expect("sftp task queue closed");
+    let dl_reply: Result<u64, String> = timeout(Duration::from_secs(60), reply_rx)
+        .await
+        .expect("download timed out")
+        .expect("download task ended before replying");
+    let mut dl_events = Vec::new();
+    while let Ok(Some(event)) = timeout(Duration::from_secs(5), progress_rx.recv()).await {
+        dl_events.push(event);
+    }
+    assert_eq!(dl_reply.expect("download failed"), size);
+    let last = dl_events.last().expect("download must report progress");
+    assert_eq!((last.transferred, last.total), (size, size));
+
+    let downloaded = std::fs::read(&local_download).expect("read downloaded file");
+    assert_eq!(
+        downloaded, payload,
+        "downloaded bytes must match uploaded bytes"
+    );
+
+    // Cancelling a finished transfer is a harmless no-op.
+    client
+        .request(SftpCommand::Cancel { transfer_id: dl_id })
+        .await
+        .expect("sftp task queue closed");
+
+    sftp_cmd(&client, |reply| SftpCommand::Delete {
+        path: remote_upload.clone(),
+        reply,
+    })
+    .await
+    .expect("cleanup delete failed");
+    drop(client);
+    connection.disconnect().await.expect("disconnect failed");
+}
+
+#[tokio::test]
+async fn sftp_mkdir_rename_delete_round_trip() {
+    let Some(f) = read_fixture() else {
+        skip();
+        return;
+    };
+
+    let connection = connect_authenticated(
+        AuthMethod::Password(f.password.clone()),
+        password_cred_manager(&f.password),
+        password_responder(&f.password),
+    )
+    .await;
+    let client = SftpClient::new(connection.clone());
+    let tag = unique_tag();
+    let base = format!("/home/{}", f.user);
+    let dir_a = format!("{base}/wayterm-dir-{tag}");
+    let dir_b = format!("{base}/wayterm-dir-renamed-{tag}");
+
+    sftp_cmd(&client, |reply| SftpCommand::Mkdir {
+        path: dir_a.clone(),
+        reply,
+    })
+    .await
+    .expect("mkdir failed");
+
+    sftp_cmd(&client, |reply| SftpCommand::Rename {
+        from: dir_a.clone(),
+        to: dir_b.clone(),
+        reply,
+    })
+    .await
+    .expect("rename failed");
+
+    let entries: Vec<DirEntry> = sftp_cmd(&client, |reply| SftpCommand::Cd {
+        path: base.clone(),
+        reply,
+    })
+    .await
+    .expect("list home failed");
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.name == format!("wayterm-dir-renamed-{tag}")),
+        "renamed directory must be visible"
+    );
+    assert!(
+        !entries
+            .iter()
+            .any(|e| e.name == format!("wayterm-dir-{tag}")),
+        "old name must no longer exist after rename"
+    );
+
+    sftp_cmd(&client, |reply| SftpCommand::Delete {
+        path: dir_b.clone(),
+        reply,
+    })
+    .await
+    .expect("delete directory failed");
+
+    let entries: Vec<DirEntry> = sftp_cmd(&client, |reply| SftpCommand::Cd { path: base, reply })
+        .await
+        .expect("list home failed");
+    assert!(
+        !entries
+            .iter()
+            .any(|e| e.name == format!("wayterm-dir-renamed-{tag}")),
+        "deleted directory must be gone"
+    );
+
+    // Deleting a path that no longer exists must error, not hang.
+    assert!(
+        sftp_cmd(&client, |reply| SftpCommand::Delete { path: dir_b, reply })
+            .await
+            .is_err(),
+        "deleting a missing path should error"
+    );
+
+    drop(client);
+    connection.disconnect().await.expect("disconnect failed");
+}
+
+#[tokio::test]
+async fn sftp_command_errors_after_connection_disconnect() {
+    let Some(f) = read_fixture() else {
+        skip();
+        return;
+    };
+
+    let connection = connect_authenticated(
+        AuthMethod::Password(f.password.clone()),
+        password_cred_manager(&f.password),
+        password_responder(&f.password),
+    )
+    .await;
+    let client = SftpClient::new(connection.clone());
+
+    let _baseline: Vec<DirEntry> = sftp_cmd(&client, |reply| SftpCommand::Cd {
+        path: format!("/home/{}", f.user),
+        reply,
+    })
+    .await
+    .expect("baseline listing should succeed");
+
+    connection.disconnect().await.expect("disconnect failed");
+
+    let after: Result<Vec<DirEntry>, String> = sftp_cmd(&client, |reply| SftpCommand::Cd {
+        path: "/".into(),
+        reply,
+    })
+    .await;
+    assert!(
+        after.is_err(),
+        "a command on the dead session must surface an error"
+    );
+
+    let reopened: Result<Vec<DirEntry>, String> = sftp_cmd(&client, |reply| SftpCommand::Cd {
+        path: "/".into(),
+        reply,
+    })
+    .await;
+    assert!(
+        reopened.is_err(),
+        "a reattempt (fresh session attempt) must also error"
+    );
+
+    drop(client);
 }

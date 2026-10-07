@@ -95,11 +95,20 @@ impl SshConnection {
     }
 
     /// SFTP subsystem channel — used by the sidebar (doc 09).
-    /// Phase 2 stub; SFTP arrives in Phase 3.
+    ///
+    /// Opens a session channel and requests the `sftp` subsystem on it.
+    /// `russh_sftp::client::SftpSession::new` consumes the channel by value
+    /// (`channel.into_stream()`), so the subsystem request lives here while
+    /// session creation stays with doc 09's SFTP task: the task converts the
+    /// returned channel on the first command (lazy open, reopenable after the
+    /// server closes the subsystem).
     pub async fn open_sftp_channel(&self) -> Result<Channel<Msg>, TransportError> {
-        Err(TransportError::ChannelError(
-            "open_sftp_channel not wired in Phase 2".into(),
-        ))
+        let channel = self.open_session_channel().await?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(TransportError::from_russh)?;
+        Ok(channel)
     }
 
     /// Disconnect the underlying SSH session.

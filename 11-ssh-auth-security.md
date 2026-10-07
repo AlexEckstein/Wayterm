@@ -337,7 +337,12 @@ app). Nightly job: `cargo audit` for advisory sweep.
   callback (that's the server side). Agent auth:
   `AgentClient::connect_env()` → `request_identities()` →
   `authenticate_publickey_with()`.
-- russh-sftp 2.4.0 — `client::SftpSession` (high-level, `std::fs`-like).
+- ~~russh-sftp 2.4.0 — `client::SftpSession` (high-level, `std::fs`-like).~~
+  **SUPERSEDED (2026-10, P3-1):** build uses russh-sftp 3.0.1
+  (`SftpSession::new(stream)`, `read_dir` is a sync iterator, no
+  `SftpSession::remove`, `File::close(self)` is async). Update anchors
+  in docs 01/04/09 accordingly; this entry is kept for the historical
+  record.
 - FreeRDP 3.x — `/from-stdin[:force]` in xfreerdp (verify per distro).
 - VTE ≥ 0.62 — SIXEL support exists but is opt-in
   (`vte_terminal_set_enable_sixel`); see docs 02/03.
