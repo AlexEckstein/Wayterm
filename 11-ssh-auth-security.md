@@ -276,20 +276,53 @@ without a GUI because of the trait split:
    file. Assertions on the verifier's decision table — pure unit tests
    given a temp known_hosts file.
 3. **Auth state machine:** mock `Handle` trait? russh is concrete —
-   instead run against the CI sshd with `AuthenticationMethods` variants
+   instead run against a real sshd with `AuthenticationMethods` variants
    (password-only, keyboard-interactive-only via PAM, key-only) and
    assert method fallback order and retry counts.
 
-   **Not yet server-gated (verified Phase 2):** neither CI nor
-   `scripts/sshd-test-config.inc` sets `AuthenticationMethods` — both
-   enable *all* methods (`PubkeyAuthentication`,
-   `PasswordAuthentication`, `KbdInteractiveAuthentication yes`), so the
-   per-method matrix above is **not** exercised today. Fallback is
-   covered indirectly: the chain's declared order (agent → key → password
-   → keyboard-interactive) is asserted as a unit test, and the
-   integration suite asserts each method succeeds on its own plus
-   `methods_remaining` on failure. Gating a real per-method matrix is a
-   Phase 12 item (see 10-build-order.md).
+   **Server-gated locally since 2026-10 (verified against OpenSSH
+   10.0p2).** `tests/auth_matrix.rs` runs the matrix;
+   `scripts/auth-matrix-sshd.sh` provisions one throwaway sshd PER MODE,
+   each on its own port, rendered from a shared base config
+   (`scripts/sshd-auth-matrix-config.inc`) plus one per-mode auth
+   fragment (`scripts/auth-matrix/<mode>.inc`). Exact combos:
+
+   | mode | `AuthenticationMethods` | per-method toggles |
+   |---|---|---|
+   | password-only | `password` | `PasswordAuthentication yes`, `PubkeyAuthentication yes`, `KbdInteractiveAuthentication no` |
+   | kbd-interactive-only | `keyboard-interactive:pam` | `KbdInteractiveAuthentication yes` (needs `UsePAM yes`), `PasswordAuthentication no`, `PubkeyAuthentication no` |
+   | key-only | `publickey` | `PubkeyAuthentication yes`, `PasswordAuthentication no`, `KbdInteractiveAuthentication no` |
+
+   `PubkeyAuthentication yes` in the password-only mode is deliberate: the
+   client has to be able to OFFER its key and have the server refuse it,
+   because that rejection is what forces the fall-through to password. A
+   variant with pubkey switched off would pass for the wrong reason.
+
+   Assertions are on `AuthOutcome` / `methods_remaining`, which is exactly
+   the list of methods the chain never ATTEMPTED — so a method's absence
+   from it proves "attempted and rejected" without adding a hook to the
+   chain. Per mode that means: the rejected methods produce a `Failed`
+   with the expected never-attempted list; the full chain reaches
+   `Success` (key rejected → password succeeds; password rejected →
+   keyboard-interactive/pam succeeds; key succeeds first try); a wrong
+   password triggers EXACTLY ONE re-prompt (doc 11 §Flow retry rule) and
+   then a clean `Failed` with an empty never-attempted list; and a
+   nonexistent key path is likewise a clean `Failed`, with the chain
+   continuing on to the remaining methods rather than aborting.
+
+   **CI still runs only the all-methods sshd.** CI provisions one system
+   sshd on port 22 and sets no `AuthenticationMethods`, so it cannot
+   express this matrix; `tests/auth_matrix.rs` skips itself there
+   (`SSH_MATRIX_*` unset), exactly as it does under a bare `cargo test`.
+   The matrix is a local / pre-merge gate:
+   `scripts/auth-matrix-sshd.sh`.
+
+   **sshd-refusal findings: none on the verified host** (OpenSSH
+   10.0p2) — all three `AuthenticationMethods` combos passed `sshd -t` and
+   each mode's tests went green. The runner still treats an `sshd -t`
+   refusal as a FINDING and moves on to the next mode instead of forcing
+   the combo, because `keyboard-interactive:pam` legitimately cannot be
+   served on a host without `/etc/pam.d/sshd` and `pam_unix.so`.
 4. **UI-less loop:** TerminalBackend gets a `FakeBackend` (in-memory
    grid, records writes) — already implied by doc 02's trait; make it a
    test fixture from day one.
