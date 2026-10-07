@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use std::fmt;
 use std::io;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -20,7 +21,6 @@ pub enum TransportState {
 /// There is deliberately no `read()` method on [`Transport`]; bytes flow
 /// out through `DataReceived`.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub enum TransportEvent {
     /// Pushed by the transport's reader task — the ONLY way bytes arrive
     /// from the remote side. (There is no `read()` method.)
@@ -37,6 +37,16 @@ pub enum TransportType {
     SSH,
     LocalPTY,
     Serial,
+}
+
+impl fmt::Display for TransportType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SSH => write!(f, "SSH"),
+            Self::LocalPTY => write!(f, "LocalPTY"),
+            Self::Serial => write!(f, "Serial"),
+        }
+    }
 }
 
 /// Errors from transport operations.
@@ -100,55 +110,4 @@ impl TransportState {
     pub(crate) fn emit(&self, tx: &mpsc::Sender<TransportEvent>) {
         let _ = tx.try_send(TransportEvent::StateChanged(self.clone()));
     }
-}
-
-#[allow(
-    dead_code,
-    clippy::let_underscore_future,
-    clippy::used_underscore_binding
-)]
-async fn _suppress_dead_code_until_wired(tx: mpsc::Sender<TransportEvent>, mut t: impl Transport) {
-    let _ = (
-        TransportState::Disconnected,
-        TransportState::Connecting,
-        TransportState::Authenticating,
-        TransportState::Connected,
-        TransportState::Reconnecting { attempt: 0 },
-        TransportState::Error(String::new()),
-        TransportEvent::DataReceived(Vec::new()),
-        TransportEvent::StateChanged(TransportState::Disconnected),
-        TransportEvent::Error(String::new()),
-        TransportEvent::ConnectionLost,
-        TransportType::SSH,
-        TransportType::LocalPTY,
-        TransportType::Serial,
-        TransportError::HostKeyRejected(String::new()),
-        TransportError::AuthFailed(String::new()),
-        TransportError::ChannelError(String::new()),
-        TransportError::Disconnected,
-        TransportError::Cancelled,
-    );
-    TransportState::Disconnected.emit(&tx);
-    let _ = t.connect().await;
-    let _ = t.disconnect().await;
-    let _ = t.state();
-    let _ = t.write(&[]).await;
-    let _ = t.resize(0, 0).await;
-    t.set_tmux_enabled(false, String::new());
-    let _ = t.transport_type();
-    let _ = t.description();
-}
-
-#[allow(dead_code)]
-fn _suppress_transport_constructors() {
-    use crate::transport::hostkey::HostKeyVerifier;
-    use crate::transport::SSHTransport;
-    let _ = SSHTransport::new;
-    let _ = HostKeyVerifier::new;
-}
-
-#[allow(dead_code)]
-fn _suppress_connection_methods(_c: &crate::transport::SshConnection) {
-    use crate::transport::connection::authenticate;
-    let _ = authenticate;
 }
