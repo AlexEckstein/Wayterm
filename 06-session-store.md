@@ -460,6 +460,16 @@ INSERT INTO settings (key, value) VALUES
 ('host_key_policy',     'strict');   -- global default; per-session override via sessions.host_key_policy
 ```
 
+> **Known gap (verified Phase 1, Task 3):** `hotkeys` has **no UNIQUE
+> constraint** — not on `action`, not on `(action, context)`. Re-running
+> the seed verbatim would therefore insert duplicate rows. The code
+> compensates rather than changing the schema: the seed runs inside a
+> transaction (so a half-applied seed never commits) guarded by a
+> `SELECT EXISTS(SELECT 1 FROM settings)` probe, so it applies exactly
+> once per database. A `UNIQUE (action, context)` index is the obvious
+> **schema-v2 candidate** — it is what makes the seed idempotent at the
+> database level instead of by convention.
+
 ## Import/Export
 
 Sessions can be exported to JSON for sharing or backup. Credentials are

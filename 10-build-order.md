@@ -31,36 +31,47 @@ persist across restart.
 
 **Goal:** Working SSH terminal tabs. The first real functionality.
 
-- [ ] `TerminalBackend` trait (02-terminal-backend-abstraction.md)
-- [ ] `VteBackend` implementation
+- [x] `TerminalBackend` trait (02-terminal-backend-abstraction.md) — `efd1d5a`
+- [x] `VteBackend` implementation — `97e55ce`
   - Create VTE terminal widget, wire data flow
   - Connect VTE signals to event channel (try_send + idle-flush — the
     blocking_send variant is a UI-freezing bug, see doc 02)
-- [ ] `Transport` trait (04-transport-layer.md)
-- [ ] `SSHTransport` implementation
+- [x] `Transport` trait (04-transport-layer.md) — `ae73f23`
+- [x] `SSHTransport` implementation — `ae73f23`
   - russh: connect, authenticate, channel, PTY, shell
   - **Push-based reader task** — `TransportEvent::DataReceived` to a glib
     channel; no `read()` polling (doc 04)
   - PTY initial size from the actual terminal, not 80×24
-- [ ] **Host-key verification** (11-ssh-auth-security.md) — Phase 2 is
-  not done without this:
+- [x] **Host-key verification** (11-ssh-auth-security.md) — Phase 2 is
+  not done without this: `ae73f23`
   - `check_known_hosts_path` / `learn_known_hosts_path` on
     `~/.ssh/known_hosts`
-  - unknown-host prompt (fingerprint dialog), changed-key hard fail
+  - changed-key hard fail; unknown-host prompt (fingerprint dialog)
+    — **dialog not built**
   - `strict` default policy, per-session + global override
-- [ ] **Keyboard-interactive auth** (11-ssh-auth-security.md) — same
-  milestone. Challenge-response dialog (prompts with echo flags), full
-  method fallback chain: agent → key → password → keyboard-interactive
-- [ ] `CredentialManager` with libsecret (keyring → prompt → store)
+- [x] **Keyboard-interactive auth** (11-ssh-auth-security.md) — same
+  milestone. `afd122e`
+  - Challenge-response dialog (prompts with echo flags) — **not** built;
+    the protocol side (challenge → response, echo flags) is
+  - Full method fallback chain: agent → key → password →
+    keyboard-interactive
+- [x] `CredentialManager` with libsecret (keyring → prompt → store) — `afd122e`
 - [ ] `TerminalTab`: wire transport ↔ backend (pump task, cancellation
   token — doc 04's Lifecycle section)
 - [ ] Tab management: open, close, switch, reorder
 - [ ] Status bar: connection state, host, duration
 - [ ] **CI green** (11-ssh-auth-security.md §Testing): cargo
   fmt/clippy/test against a containerized sshd; FakeBackend transport
-  tests for the pump/reader path
+  tests for the pump/reader path — fmt/clippy/test are wired and the
+  real-sshd suite exists, but the **auth-method matrix is not
+  server-gated** and the FakeBackend pump/reader tests need the tab
+  wiring above
 - [ ] Spike (half-day, parallel): xfreerdp `/from-stdin` behavior on
   target distros — knowledge for Phase 7, cheap to do now
+
+**Known doc corrections during Phase 2:** doc 02 `Send` bound removed
+(`eb7bcad`); doc 11 known_hosts semantics for russh 0.64 (`a869541`,
+`46b18f7`).
 
 **Deliverable:** Click an SSH session → terminal tab opens → working SSH
 terminal with verified host keys and full auth support. Multiple tabs.
