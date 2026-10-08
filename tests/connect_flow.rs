@@ -108,7 +108,7 @@ async fn supervisor_reuses_dial_and_releases_when_idle() {
     assert_released(&fresh_weak).await;
 }
 
-/// The P3-3 end-to-end shape: transport over the supervisor connection, tab
+/// The connect flow end to end: transport over the supervisor connection, tab
 /// close (transport disconnect) does NOT kill the shared session, the SFTP
 /// sidebar keeps working on it, and the supervisor disconnects only after
 /// the sidebar releases it too (doc 04 + doc 09 §Connection Model).
@@ -167,7 +167,7 @@ async fn shared_connection_survives_tab_close_for_sftp() {
 
 /// Host-key rejection under Strict policy surfaces as
 /// [`TransportError::HostKeyRejected`] from the supervisor — the connect
-/// flow maps that onto the error view (P3-3 3), never a panic.
+/// flow maps that onto the error view, never a panic.
 #[tokio::test]
 async fn strict_policy_reject_surfaces_host_key_rejected() {
     let Some(f) = fixture() else { return };

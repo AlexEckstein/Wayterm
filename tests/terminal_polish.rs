@@ -153,7 +153,7 @@ fn payloads_gate_the_route() {
     );
 }
 
-/// Doc 07 / deliverable 5: `search` and `search_scrollback` share the
+/// `search` and `search_scrollback` share the
 /// popover and differ only in the initial search direction.
 #[test]
 fn search_actions_differ_only_in_initial_direction() {

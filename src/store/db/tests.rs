@@ -23,7 +23,7 @@ const TABLES: &[&str] = &[
     "connection_history",
 ];
 
-/// Names of the indexes `open` must create (doc 06 §"Indexes").
+/// Names of the indexes `open` must create (doc 06 §"Database Schema").
 const INDEXES: &[&str] = &[
     "idx_sessions_folder",
     "idx_sessions_type",

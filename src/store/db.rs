@@ -464,7 +464,7 @@ CREATE INDEX IF NOT EXISTS idx_history_session ON connection_history(session_id)
 CREATE INDEX IF NOT EXISTS idx_history_recent ON connection_history(connected_at DESC);
 "#;
 
-/// First-run seed — doc 06 §Default Data verbatim. The hotkey rows are
+/// First-run seed (doc 06 §Default Data). The hotkey rows are
 /// informational (`is_default = 1` rows never load); doc 07's table in
 /// `hotkeys::defaults` is the source of truth.
 const SEED_DEFAULTS: &str = r#"

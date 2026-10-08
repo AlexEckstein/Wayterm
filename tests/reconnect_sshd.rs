@@ -18,7 +18,7 @@
 //! Covered here: the driver's connect closure, its cancellation, and the
 //! `TransportState` transitions on a real [`SshConnection`]. Not covered:
 //! `ConnectionLost` detection itself, which lives in `SSHTransport`'s
-//! reader task (asserted by that lane's `tests/transport_sshd.rs`).
+//! reader task (asserted by `tests/transport_sshd.rs`).
 
 mod common;
 
