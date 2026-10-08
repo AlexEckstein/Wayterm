@@ -1,6 +1,7 @@
 use gtk4::glib;
 
 mod app;
+mod hotkeys;
 mod store;
 mod terminal;
 mod transport;
@@ -11,5 +12,10 @@ fn main() -> glib::ExitCode {
     // until the GTK connection dialog wires it in Phase 3.
     transport::touch_public_api();
     ui::touch_dialog_api();
+    // Phase 4: the hotkey engine's data half (doc 07) is complete and
+    // covered by its inline tests; `HotkeyEngine::install` and the
+    // settings page are the UI task's, and the `#[allow(dead_code)]` on
+    // hotkeys/mod.rs goes away with them. The module stays declared here
+    // so `cargo test --bins` keeps running those tests.
     app::run()
 }
