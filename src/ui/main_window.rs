@@ -5,6 +5,7 @@
 //! [`gtk4::Notebook`] on the right) with a [`StatusBar`] pinned to the
 //! bottom.
 
+use gio;
 use gtk4::prelude::*;
 
 use crate::store::SessionStore;
@@ -105,5 +106,61 @@ impl MainWindow {
     #[allow(dead_code)]
     pub fn window(&self) -> &gtk4::ApplicationWindow {
         &self.window
+    }
+}
+
+// --- Hotkey settings entry (P4-6, additive) -------------------------------
+// P3-3 owns the connect-flow hunks above; this block only appends a
+// header-bar "Settings" button that opens the hotkey settings window
+// (doc 07 §"Settings UI"), so the two lanes never touch the same lines.
+
+impl MainWindow {
+    /// Append a header-bar "Settings" button opening the hotkey settings
+    /// window (doc 07 §"Settings UI").
+    ///
+    /// Additive by design: `new` is untouched, and the button lives in
+    /// the window's titlebar, leaving the paned layout exactly as built.
+    /// Registers the `win.hotkey-settings` open action (close is the
+    /// settings window's own Close button plus the window-manager
+    /// close); the header button simply activates that action.
+    pub fn attach_hotkey_settings(
+        &self,
+        engine: std::rc::Rc<std::cell::RefCell<crate::hotkeys::HotkeyEngine>>,
+        store: std::rc::Rc<crate::store::SessionStore>,
+    ) {
+        let open_settings = gio::SimpleAction::new("hotkey-settings", None);
+        {
+            let engine = std::rc::Rc::clone(&engine);
+            let store = std::rc::Rc::clone(&store);
+            let parent = self.window.clone();
+            open_settings.connect_activate(move |_, _| {
+                crate::ui::settings::show_hotkey_settings(
+                    std::rc::Rc::clone(&engine),
+                    std::rc::Rc::clone(&store),
+                    Some(parent.upcast_ref::<gtk4::Window>()),
+                );
+            });
+        }
+        self.window.add_action(&open_settings);
+
+        // A slim top strip carrying the Settings button. This runs after
+        // `new` already presented the window, and `set_titlebar` on a
+        // realized window only warns without applying — so the button
+        // lives in the layout (prepended above the paned area) instead
+        // of the native header bar.
+        let settings_button = gtk4::Button::with_label("Settings");
+        settings_button.set_action_name(Some("win.hotkey-settings"));
+        settings_button.set_halign(gtk4::Align::End);
+        settings_button.set_margin_top(4);
+        settings_button.set_margin_bottom(4);
+        settings_button.set_margin_start(8);
+        settings_button.set_margin_end(8);
+        if let Some(root) = self
+            .window
+            .child()
+            .and_then(|child| child.downcast::<gtk4::Box>().ok())
+        {
+            root.prepend(&settings_button);
+        }
     }
 }

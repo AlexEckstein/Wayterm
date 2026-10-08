@@ -5,6 +5,7 @@ pub mod hostkey_dialog;
 pub mod main_window;
 pub mod session_dialog;
 pub mod session_tree;
+pub mod settings;
 pub mod status_bar;
 pub mod tab;
 
