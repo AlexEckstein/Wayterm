@@ -221,7 +221,8 @@ pub async fn authenticate_chain(
                 Ok(false) => {
                     last_reason = "keyboard-interactive: server rejected responses".into();
                 }
-                Err(reason) => {
+                Err(KbdAuthError::Cancelled) => return Ok(AuthOutcome::Cancelled),
+                Err(KbdAuthError::Failed(reason)) => {
                     last_reason = format!("keyboard-interactive: {reason}");
                 }
             }
@@ -249,6 +250,17 @@ pub async fn authenticate_chain(
 // ---------------------------------------------------------------------------
 // Individual method implementations
 // ---------------------------------------------------------------------------
+
+/// Failure mode of a single keyboard-interactive attempt.
+///
+/// The distinction matters: `Cancelled` aborts the whole chain with
+/// [`AuthOutcome::Cancelled`] (doc 11 §Flow — a user-initiated cancel is a
+/// clean close, not an error screen), while `Failed` falls through to the
+/// next method like any other rejection.
+enum KbdAuthError {
+    Cancelled,
+    Failed(String),
+}
 
 /// Attempt SSH agent authentication.
 ///
@@ -360,11 +372,11 @@ async fn try_keyboard_interactive_auth(
     handle: &mut Handle<AppClientHandler>,
     username: &str,
     responder: &ChallengeResponder,
-) -> Result<bool, String> {
+) -> Result<bool, KbdAuthError> {
     let mut response = handle
         .authenticate_keyboard_interactive_start(username, None::<String>)
         .await
-        .map_err(|e| format!("kbd-interactive start: {e}"))?;
+        .map_err(|e| KbdAuthError::Failed(format!("kbd-interactive start: {e}")))?;
 
     // Maximum rounds to prevent infinite loops from misbehaving servers.
     const MAX_ROUNDS: usize = 32;
@@ -390,24 +402,24 @@ async fn try_keyboard_interactive_auth(
                 // Ask the user (or test closure)
                 let answers = match responder(&challenge_prompts) {
                     Some(a) => a,
-                    None => {
-                        // User cancelled — we can't cleanly abort
-                        // keyboard-interactive mid-flow in russh 0.64, so
-                        // send empty responses which will cause the server
-                        // to reject.
-                        return Err("user cancelled keyboard-interactive prompt".into());
-                    }
+                    // User cancelled — russh 0.64 cannot abort a
+                    // keyboard-interactive round mid-flow, so stop responding
+                    // and surface the cancellation up the chain instead of
+                    // letting it surface as a failure screen.
+                    None => return Err(KbdAuthError::Cancelled),
                 };
 
                 response = handle
                     .authenticate_keyboard_interactive_respond(answers)
                     .await
-                    .map_err(|e| format!("kbd-interactive respond: {e}"))?;
+                    .map_err(|e| KbdAuthError::Failed(format!("kbd-interactive respond: {e}")))?;
             }
         }
     }
 
-    Err("keyboard-interactive: too many challenge rounds".into())
+    Err(KbdAuthError::Failed(
+        "keyboard-interactive: too many challenge rounds".into(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
