@@ -64,9 +64,8 @@ impl SessionStore {
             .flatten()
     }
 
-    /// Raw session row for CRUD tests: (folder_id,) by id. Session
-    /// CRUD is Task 5; these tests go around the typed API on
-    /// purpose — they exist to pin the schema's ON DELETE behavior.
+    /// Raw `folder_id` of a session, bypassing the typed API to pin the
+    /// schema's ON DELETE behavior.
     fn session_folder_id(&self, id: i64) -> Option<i64> {
         self.conn
             .query_row(
@@ -79,8 +78,7 @@ impl SessionStore {
             .flatten()
     }
 
-    /// Direct SQL session insert for FK-behavior tests (Task 5 adds
-    /// the typed API). Columns per doc 06 §"Database Schema".
+    /// Raw session insert for the FK-behavior tests.
     fn insert_session_row(&self, name: &str, folder_id: Option<i64>) -> i64 {
         self.conn
             .execute(
@@ -348,7 +346,7 @@ fn delete_childless_folder_is_noop() {
 }
 
 // ---------------------------------------------------------------------------
-// Session CRUD (Task 5)
+// Session CRUD
 // ---------------------------------------------------------------------------
 
 use crate::store::model::{
