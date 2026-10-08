@@ -12,6 +12,7 @@ pub mod auth;
 pub mod connection;
 pub mod credentials;
 pub mod hostkey;
+pub mod reconnect;
 pub mod ssh;
 pub mod tab;
 pub mod types;
@@ -84,6 +85,54 @@ pub fn touch_public_api() {
     }
     let _ = types::TransportError::from_russh(russh::Error::SendError).to_string();
     let _: Option<Box<dyn types::Transport>> = None;
+
+    // reconnect core (doc 04 §Lifecycle & Cancellation)
+    let _ = reconnect::next_delay(1);
+    for mode in [
+        reconnect::ReconnectMode::Prompt,
+        reconnect::ReconnectMode::Auto,
+    ] {
+        let policy = reconnect::ReconnectPolicy::new(mode);
+        let driver = reconnect::ReconnectDriver::new(policy);
+        let _ = driver.cancel_token();
+        let _ = driver.is_cancelled();
+    }
+    let _ = reconnect::should_confirm_close(&types::TransportState::Connected, true);
+    let _ = reconnect::policy_from_settings(Some("1"));
+    let _ = reconnect::ReconnectPolicy::auto().with_max_attempts(3);
+    let _ = reconnect::ReconnectOutcome::Connected { attempts: 1 }.is_connected();
+    let _ = reconnect::ReconnectEvent::Cancelled;
+    let _ = reconnect::ReconnectEvent::Declined { attempt: 1 };
+    let _ = reconnect::ReconnectOutcome::Exhausted {
+        attempts: 1,
+        error: String::new(),
+    };
+    let _ = reconnect::ReconnectEvent::BackingOff {
+        attempt: 1,
+        delay: std::time::Duration::from_secs(1),
+    };
+    let _ = reconnect::ReconnectEvent::Prompting { attempt: 1 };
+    let _ = reconnect::ReconnectEvent::Attempting { attempt: 1 };
+    let _ = reconnect::ReconnectEvent::AttemptFailed {
+        attempt: 1,
+        error: String::new(),
+    };
+    let _ = reconnect::ReconnectEvent::Exhausted {
+        attempts: 1,
+        error: String::new(),
+    };
+    let _ = reconnect::ReconnectEvent::Connected { attempts: 1 };
+    let _ = reconnect::ReconnectOutcome::Cancelled;
+    let _ = reconnect::ReconnectOutcome::Declined { attempt: 1 };
+    let _ = reconnect::is_live(&types::TransportState::Connected);
+    let _ = reconnect::confirm_close_enabled(Some("1"));
+    let _ = reconnect::reconnect_on_drop_enabled(Some("1"));
+    reconnect::ReconnectDriver::new(reconnect::ReconnectPolicy::prompt()).cancel();
+    let _ = reconnect::ReconnectDriver::new(reconnect::ReconnectPolicy::prompt()).policy();
+    let _ = reconnect::ReconnectDriver::spawn;
+    let _ = reconnect::ReconnectDriver::run;
+    let _ = reconnect::BACKOFF_SCHEDULE;
+    let _ = reconnect::MAX_BACKOFF;
 
     // tab wiring (TerminalTab + transport factory)
     let _ = tab::create_transport;

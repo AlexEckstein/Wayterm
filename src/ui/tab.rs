@@ -72,13 +72,50 @@ fn build_tab_label(notebook: &gtk4::Notebook, session: &SessionConfig) -> gtk4::
     let notebook_for_close = notebook.clone();
     let session_id = session.id;
     close_button.connect_clicked(move |_| {
-        if let Some((page_num, _)) = find_tab_by_session_id(&notebook_for_close, session_id) {
-            notebook_for_close.remove_page(Some(page_num));
-        }
+        // Doc 04 §Lifecycle: "Confirm-before-close if processes running
+        // (setting `confirm_close`)". The decision and the dialog live in
+        // `tab_resilience` (this file is owned by the connect-flow lane);
+        // the only hook here is routing the click through it.
+        let parent = gtk_window_for(&notebook_for_close.clone().upcast());
+        let notebook_for_close_button = notebook_for_close.clone();
+        crate::ui::tab_resilience::request_close(session_id, parent.as_ref(), move || {
+            if let Some((page_num, _)) =
+                find_tab_by_session_id(&notebook_for_close_button, session_id)
+            {
+                notebook_for_close_button.remove_page(Some(page_num));
+            }
+        });
     });
 
     box_.append(&close_button);
     box_.upcast()
+}
+
+/// The session id of the notebook's current page, if it is a session tab.
+///
+/// The reconnect / disconnect actions (doc 07) resolve their target tab
+/// through this; a non-session page (the Home tab) yields `None` and the
+/// actions no-op.
+pub(crate) fn current_session_id(notebook: &gtk4::Notebook) -> Option<i64> {
+    let page_num = notebook.current_page()?;
+    let child = notebook.nth_page(Some(page_num))?;
+    #[allow(deprecated)]
+    let id: Option<i64> = unsafe { child.data::<i64>(SESSION_ID_KEY).map(|d| *d.as_ptr()) };
+    id
+}
+
+/// Walk up from a widget to the [`gtk4::Window`] that owns it, so a
+/// dialog opened from a tab's close button gets the right transient
+/// parent.
+#[allow(deprecated)]
+fn gtk_window_for(widget: &gtk4::Widget) -> Option<gtk4::Window> {
+    let mut current = widget.clone();
+    loop {
+        if let Ok(window) = current.clone().downcast::<gtk4::Window>() {
+            return Some(window);
+        }
+        current = current.parent()?;
+    }
 }
 
 /// Find the notebook page whose content widget carries `session_id`.

@@ -7,6 +7,7 @@ pub mod session_dialog;
 pub mod session_tree;
 pub mod status_bar;
 pub mod tab;
+pub mod tab_resilience;
 
 pub use main_window::MainWindow;
 #[cfg(test)]
@@ -18,6 +19,8 @@ pub use session_tree::SessionTree;
 pub use status_bar::StatusBar;
 #[allow(unused_imports)]
 pub use tab::SessionTab;
+#[allow(unused_imports)]
+pub use tab_resilience::LiveTab;
 
 /// No-op that exercises the auth/host-key dialog API so the P2-6 seam stays
 /// compiled and lint-clean until P2-7 wires the dialogs into a real session
@@ -29,6 +32,10 @@ pub use tab::SessionTab;
 /// referenced, and the display-free helpers are called with inert inputs.
 /// Removed once the connect flow calls the dialogs directly.
 pub fn touch_dialog_api() {
+    use tokio_util::sync::CancellationToken;
+
+    use crate::transport::types::TransportState;
+
     // Display-free challenge logic.
     let prompts = [auth_dialog::ChallengePrompt {
         prompt: String::from("Password: "),
@@ -82,4 +89,34 @@ pub fn touch_dialog_api() {
         crate::transport::hostkey::HostKeyDecision::Reject
     });
     let _ = hostkey_dialog::host_key_prompt();
+
+    // Tab resilience (doc 04 §Lifecycle): constants + display-free helpers.
+    let _ = tab_resilience::RECONNECT_ACTION;
+    let _ = tab_resilience::DISCONNECT_ACTION;
+    let _ = tab_resilience::CONFIRM_CLOSE_MESSAGE;
+    let _ = tab_resilience::RECONNECT_PROMPT_DETAIL;
+    let _ = tab_resilience::DIALOG_BUTTONS;
+    tab_resilience::install_settings(Some("1"), Some("0"));
+    let _ = tab_resilience::confirm_close_setting();
+    let _ = tab_resilience::reconnect_on_drop_setting();
+    let _ = tab_resilience::policy();
+    let _ = tab_resilience::should_confirm_close_for_tab(-1);
+    let _ = tab_resilience::activate_reconnect(None, None, None);
+    let _ = tab_resilience::activate_disconnect(None);
+    let _ = tab_resilience::ReconnectAction::NoLiveTab { session_id: None }.started();
+    let _ = tab_resilience::DisconnectAction::NoLiveTab { session_id: None }.cancelled();
+    let _ = tab_resilience::live_tab(-1);
+    let _ = tab_resilience::tab_state(-1);
+    tab_resilience::set_tab_state(-1, TransportState::Disconnected);
+    tab_resilience::register_live_tab(
+        -1,
+        LiveTab::new(
+            tab_resilience::never_connect(),
+            CancellationToken::new(),
+            TransportState::Disconnected,
+        ),
+    );
+    tab_resilience::unregister_live_tab(-1);
+    tab_resilience::reset_registry();
+    let _ = tab_resilience::reconnect_prompt(String::new());
 }
