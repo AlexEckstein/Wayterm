@@ -451,8 +451,8 @@ impl MainWindow {
         // only place the window holds it. A missing or unreadable row keeps
         // the documented default (ON).
         crate::ui::tab_resilience::install_settings(
-            read_setting(&store, crate::ui::tab_resilience::CONFIRM_CLOSE_SETTING).as_deref(),
-            read_setting(&store, crate::ui::tab_resilience::RECONNECT_ON_DROP_SETTING).as_deref(),
+            store.flag(crate::ui::tab_resilience::CONFIRM_CLOSE_SETTING),
+            store.flag(crate::ui::tab_resilience::RECONNECT_ON_DROP_SETTING),
         );
 
         let notebook_for_tree = notebook.clone();
@@ -684,18 +684,6 @@ impl MainWindow {
             .and_then(|child| child.downcast::<gtk4::Box>().ok())
         {
             root.prepend(&settings_button);
-        }
-    }
-}
-
-/// Read one settings row, returning `None` for a missing row or a read
-/// error (the caller keeps its default either way).
-fn read_setting(store: &SessionStore, key: &str) -> Option<String> {
-    match store.get_setting(key) {
-        Ok(value) => value,
-        Err(err) => {
-            eprintln!("Wayterm: failed to read setting '{key}': {err}");
-            None
         }
     }
 }

@@ -120,21 +120,10 @@ pub fn never_connect() -> ConnectFn {
     Arc::new(|| Box::pin(async { Err(TransportError::Disconnected) }) as reconnect::ConnectFuture)
 }
 
-/// Install the two settings the resilience policy reads, resolved once at
-/// startup by the window (the only holder of the store there).
-///
-/// Values are the raw settings rows; missing/unparseable values keep the
-/// documented default (ON) rather than silently disabling a safety
-/// prompt.
-pub fn install_settings(confirm_close: Option<&str>, reconnect_on_drop: Option<&str>) {
-    CONFIRM_CLOSE.store(
-        reconnect::confirm_close_enabled(confirm_close),
-        Ordering::SeqCst,
-    );
-    RECONNECT_ON_DROP.store(
-        reconnect::reconnect_on_drop_enabled(reconnect_on_drop),
-        Ordering::SeqCst,
-    );
+/// Install the two settings rows the policy reads (resolved once at startup).
+pub fn install_settings(confirm_close: bool, reconnect_on_drop: bool) {
+    CONFIRM_CLOSE.store(confirm_close, Ordering::SeqCst);
+    RECONNECT_ON_DROP.store(reconnect_on_drop, Ordering::SeqCst);
 }
 
 /// The active `confirm_close` setting.
@@ -147,14 +136,9 @@ pub fn reconnect_on_drop_setting() -> bool {
     RECONNECT_ON_DROP.load(Ordering::SeqCst)
 }
 
-/// The policy doc 04 describes for a new drop: auto when the setting is
-/// on, prompt when it is off.
+/// Auto-reconnect when `reconnect_on_drop` is on, prompt otherwise.
 pub fn policy() -> ReconnectPolicy {
-    reconnect::policy_from_settings(Some(if reconnect_on_drop_setting() {
-        "1"
-    } else {
-        "0"
-    }))
+    ReconnectPolicy::for_setting(reconnect_on_drop_setting())
 }
 
 /// Register (or update) a tab's live transport. Idempotent per session.
@@ -333,7 +317,7 @@ pub fn activate_disconnect(session_id: Option<i64>) -> DisconnectAction {
 pub fn reset_registry() {
     live_tabs_lock().take();
     RUNNING.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    install_settings(None, None);
+    install_settings(true, true);
 }
 
 // ---------------------------------------------------------------------------

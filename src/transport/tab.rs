@@ -60,8 +60,9 @@ pub fn create_transport(
     }
 }
 
-/// A transport wired to a terminal backend. Dropping it leaves the tasks
-/// running; call [`close`](Self::close) for an orderly teardown.
+/// A transport wired to a terminal backend. Dropping it cancels the tasks
+/// (the pump still disconnects on its way out); [`close`](Self::close) also
+/// waits for them.
 pub struct TerminalTab {
     pump_task: Option<JoinHandle<()>>,
     bridge_task: Option<JoinHandle<()>>,
@@ -192,6 +193,16 @@ impl TerminalTab {
         if let Some(bridge) = self.bridge_task.take() {
             let _ = bridge.await;
         }
+    }
+}
+
+/// The tasks keep each other alive (drain → backend → widget signals →
+/// pump → transport → bridge → drain), so a tab dropped without `close`
+/// — a page removed from the notebook — must still cancel them, or the SSH
+/// channel and its connection are never released.
+impl Drop for TerminalTab {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
 
@@ -376,6 +387,16 @@ mod tests {
         h.tab.close().await;
         h.tab.close().await;
         assert_eq!(h.calls.disconnects(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_the_tab_still_disconnects() {
+        let h = harness(false);
+        drive(&h.ctx, "transport.connect", || h.calls.connects() == 1);
+        drop(h.tab);
+        drive(&h.ctx, "transport.disconnect", || {
+            h.calls.disconnects() == 1
+        });
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -23,7 +23,7 @@ use gtk4::glib::Propagation;
 use gtk4::prelude::*;
 
 use crate::store::model::HostKeyPolicy;
-use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts};
+use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyPrompt};
 
 use crate::ui::auth_dialog::run_on_gtk_main_thread;
 
@@ -258,9 +258,7 @@ fn show(facts: &HostKeyFacts, notice: HostKeyNotice) -> Option<bool> {
 ///
 /// `handler` receives the notice and returns the decision. Extracting it makes
 /// the marshalling testable without a display.
-pub fn host_key_prompt_with<H>(
-    handler: H,
-) -> Arc<dyn Fn(&HostKeyFacts) -> HostKeyDecision + Send + Sync>
+pub fn host_key_prompt_with<H>(handler: H) -> HostKeyPrompt
 where
     H: Fn(HostKeyNotice, &HostKeyFacts) -> HostKeyDecision + Send + Sync + 'static,
 {
@@ -285,7 +283,7 @@ where
 /// `TransportError::HostKeyRejected` presentation) rather than by this closure.
 /// The closure cannot capture a [`gtk4::Window`] (not `Send`), so the dialog
 /// resolves its transient parent itself.
-pub fn host_key_prompt() -> Arc<dyn Fn(&HostKeyFacts) -> HostKeyDecision + Send + Sync> {
+pub fn host_key_prompt() -> HostKeyPrompt {
     host_key_prompt_with(|_, facts| prompt_unknown(facts))
 }
 

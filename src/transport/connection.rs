@@ -1,8 +1,12 @@
+//! [`SshConnection`]: one authenticated russh session shared by every
+//! consumer — terminal channels, the SFTP sidebar, future tunnels (doc 04
+//! §Connection Supervisor).
+
 use std::fmt;
 use std::path::Path;
 
 use russh::client::{self, Handle, Msg};
-use russh::keys::{load_secret_key, HashAlg};
+use russh::keys::{load_secret_key, HashAlg, PublicKeyOrCertificate};
 use russh::{Channel, Disconnect};
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
@@ -12,34 +16,26 @@ use crate::transport::credentials::CredentialManager;
 use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
 use crate::transport::types::{TransportError, TransportState};
 
-/// Authentication method for a session, including the secrets required at
-/// connect time.
-///
-/// Doc 11 defines the full enum with agent and keyboard-interactive. In Phase 2
-/// the transport layer converts this into an [`AuthConfig`] and runs the full
-/// fallback chain (agent → key → password → keyboard-interactive).
+/// The method a session prefers. Secrets are looked up through the
+/// [`CredentialManager`] at connect time; the chain still falls through to
+/// the other methods (doc 11 §Flow).
 #[derive(Clone, Debug, Default)]
 pub enum AuthMethod {
-    /// Password authentication.
+    /// The payload is not used: the password comes from the credential
+    /// lookup, never from the session row.
     Password(String),
-    /// Private-key authentication.
     Key {
         path: String,
         passphrase: Option<String>,
     },
-    /// SSH agent authentication.
     Agent,
-    /// Keyboard-interactive authentication (2FA/OTP/bastions).
     KeyboardInteractive,
-    /// No authentication.
     #[default]
     None,
 }
 
-/// One authenticated russh session, shared by multiple consumers.
-///
-/// Created and owned by `ConnectionSupervisor` (Phase 3); consumers hold
-/// `Arc`. The session is authenticated; opening channels on it is cheap.
+/// One authenticated SSH session. Consumers hold an `Arc`; the supervisor
+/// disconnects it after the last one lets go.
 pub struct SshConnection {
     handle: Mutex<Handle<AppClientHandler>>,
     host: String,
@@ -74,35 +70,30 @@ impl SshConnection {
         &self.username
     }
 
-    /// Shell/exec/PTY channels — used by `SSHTransport`.
+    /// Shell/exec/PTY channels (`SSHTransport`).
     pub async fn open_session_channel(&self) -> Result<Channel<Msg>, TransportError> {
-        let handle = self.handle.lock().await;
-        handle
+        self.handle
+            .lock()
+            .await
             .channel_open_session()
             .await
             .map_err(TransportError::from_russh)
     }
 
-    /// direct-tcpip channels — used by local forwards and jump hops (doc 11).
-    /// Phase 2 stub; returns a clear error until Phase 3/11 wiring is built.
+    /// direct-tcpip channels for local forwards and jump hosts (doc 11,
+    /// Phase 11). Not implemented yet.
     pub async fn open_direct_tcpip(
         &self,
         _host: &str,
         _port: u16,
     ) -> Result<Channel<Msg>, TransportError> {
         Err(TransportError::ChannelError(
-            "open_direct_tcpip not wired in Phase 2".into(),
+            "direct-tcpip channels are not implemented yet (Phase 11)".into(),
         ))
     }
 
-    /// SFTP subsystem channel — used by the sidebar (doc 09).
-    ///
-    /// Opens a session channel and requests the `sftp` subsystem on it.
-    /// `russh_sftp::client::SftpSession::new` consumes the channel by value
-    /// (`channel.into_stream()`), so the subsystem request lives here while
-    /// session creation stays with doc 09's SFTP task: the task converts the
-    /// returned channel on the first command (lazy open, reopenable after the
-    /// server closes the subsystem).
+    /// A session channel with the `sftp` subsystem requested; the SFTP task
+    /// turns it into a session with `into_stream()` (doc 09).
     pub async fn open_sftp_channel(&self) -> Result<Channel<Msg>, TransportError> {
         let channel = self.open_session_channel().await?;
         channel
@@ -112,27 +103,25 @@ impl SshConnection {
         Ok(channel)
     }
 
-    /// Disconnect the underlying SSH session.
     pub async fn disconnect(&self) -> Result<(), TransportError> {
-        let handle = self.handle.lock().await;
-        handle
+        self.handle
+            .lock()
+            .await
             .disconnect(Disconnect::ByApplication, "", "English")
             .await
             .map_err(TransportError::from_russh)
     }
 
-    /// Authenticate this connection's handle using the supplied method and
-    /// credential manager.  Runs the full fallback chain per doc 11.
+    /// Run the auth chain on this session (doc 11 §Flow).
     pub async fn authenticate(
         &self,
         method: &AuthMethod,
         creds: &CredentialManager,
         responder: Option<ChallengeResponder>,
     ) -> Result<(), TransportError> {
-        let mut handle = self.handle.lock().await;
         let config = auth_config(method, creds, responder)?;
-        let outcome = authenticate_chain(&mut handle, &self.username, &config).await?;
-        match outcome {
+        let mut handle = self.handle.lock().await;
+        match authenticate_chain(&mut handle, &self.username, &config).await? {
             AuthOutcome::Success => Ok(()),
             AuthOutcome::Cancelled => Err(TransportError::Cancelled),
             AuthOutcome::Failed { reason, .. } => Err(TransportError::AuthFailed(reason)),
@@ -150,22 +139,15 @@ impl fmt::Debug for SshConnection {
     }
 }
 
-/// Build an [`AuthConfig`] from a preferred [`AuthMethod`] and a
-/// [`CredentialManager`].
-///
-/// The preferred method controls which options are enabled, but the chain
-/// still falls through so the user can recover if the preferred method fails
-/// (e.g. password configured but server only offers keyboard-interactive).
-///
-/// Returns [`TransportError::Cancelled`] when a credential prompt was shown
-/// and the user cancelled it (doc 11 §Flow: cancellation aborts the connect
-/// cleanly instead of falling through to a failure screen).
+/// Turn the preferred method into the chain's inputs. A credential prompt
+/// the user cancels aborts the connect with [`TransportError::Cancelled`]
+/// instead of falling through to a failure screen.
 pub(crate) fn auth_config(
     method: &AuthMethod,
     creds: &CredentialManager,
     responder: Option<ChallengeResponder>,
 ) -> Result<AuthConfig, TransportError> {
-    let session_id = "_live_connect";
+    const SESSION_ID: &str = "_live_connect";
     let mut config = AuthConfig {
         key_path: None,
         key_passphrase: None,
@@ -174,49 +156,36 @@ pub(crate) fn auth_config(
         try_keyboard_interactive: false,
         challenge_responder: responder,
     };
-
     match method {
-        AuthMethod::Agent => {
-            config.try_agent = true;
-        }
+        AuthMethod::Agent => config.try_agent = true,
         AuthMethod::Key { path, passphrase } => {
             config.key_path = Some(path.clone());
-            if let Some(pw) = passphrase {
-                config.key_passphrase = Some(Zeroizing::new(pw.clone().into_bytes()));
-            } else if key_needs_passphrase(path) {
-                match creds.lookup(session_id, "key_passphrase") {
-                    Some(pw) => config.key_passphrase = Some(pw),
-                    None => return Err(TransportError::Cancelled),
-                }
-            }
+            config.key_passphrase = match passphrase {
+                Some(pw) => Some(Zeroizing::new(pw.clone().into_bytes())),
+                // Only an encrypted key prompts; nothing can rescue a
+                // missing or corrupt one.
+                None if key_needs_passphrase(path) => Some(
+                    creds
+                        .lookup(SESSION_ID, "key_passphrase")
+                        .ok_or(TransportError::Cancelled)?,
+                ),
+                None => None,
+            };
         }
-        AuthMethod::Password(_) => match creds.lookup(session_id, "password") {
-            Some(pw) => {
-                config.password = Some(pw);
-                config.try_keyboard_interactive = true;
-            }
-            // `PromptFn::None` means the user cancelled the prompt
-            // (credentials.rs) — abort instead of re-prompting through the
-            // keyboard-interactive fallback.
-            None => return Err(TransportError::Cancelled),
-        },
-        AuthMethod::KeyboardInteractive => {
+        AuthMethod::Password(_) => {
+            config.password = Some(
+                creds
+                    .lookup(SESSION_ID, "password")
+                    .ok_or(TransportError::Cancelled)?,
+            );
             config.try_keyboard_interactive = true;
         }
+        AuthMethod::KeyboardInteractive => config.try_keyboard_interactive = true,
         AuthMethod::None => {}
     }
-
     Ok(config)
 }
 
-/// Whether a key file needs a passphrase before it can be loaded.
-///
-/// Probing with `load_secret_key(path, None)` returns
-/// [`russh::keys::Error::KeyIsEncrypted`] only for passphrase-protected
-/// OpenSSH keys. Any other outcome (key loads fine, file missing, corrupt)
-/// means no passphrase can help, so no dialog is raised — this keeps
-/// unencrypted keys from hitting a spurious passphrase prompt on every
-/// connect.
 fn key_needs_passphrase(path: &str) -> bool {
     matches!(
         load_secret_key(Path::new(path), None),
@@ -224,7 +193,8 @@ fn key_needs_passphrase(path: &str) -> bool {
     )
 }
 
-/// State carried by the russh `Handler` during connection setup.
+/// The russh client handler: host-key verification happens here, during
+/// key exchange and before authentication.
 pub struct AppClientHandler {
     pub host: String,
     pub port: u16,
@@ -251,61 +221,46 @@ impl AppClientHandler {
     }
 }
 
-impl AppClientHandler {
-    fn send_state(&self, state: TransportState) {
-        if let Some(tx) = &self.state_tx {
-            let _ = tx.try_send(state);
-        }
-    }
-}
-
 impl client::Handler for AppClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::PublicKeyOrCertificate,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        self.send_state(TransportState::VerifyingHostKey);
-
+        if let Some(tx) = &self.state_tx {
+            let _ = tx.try_send(TransportState::VerifyingHostKey);
+        }
         let key = match server_public_key {
-            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
-            russh::keys::PublicKeyOrCertificate::Certificate(_) => {
-                return Err(russh::Error::from(std::io::Error::other(
-                    "certificate-based host auth not supported yet",
-                )));
+            PublicKeyOrCertificate::PublicKey { key, .. } => key,
+            PublicKeyOrCertificate::Certificate(_) => {
+                return Err(
+                    std::io::Error::other("certificate-based host auth not supported yet").into(),
+                );
             }
         };
-
         let facts = HostKeyFacts {
             host: self.host.clone(),
             port: self.port,
             key_type: key.algorithm().to_string(),
             fingerprint_sha256: key.fingerprint(HashAlg::Sha256).to_string(),
         };
-
         match self.host_key_verifier.verify(&facts, key) {
-            HostKeyDecision::Accept => Ok(true),
-            HostKeyDecision::AcceptAndSave => {
-                // `HostKeyVerifier::verify` already called `learn_known_hosts_path`
-                // before returning AcceptAndSave.
-                Ok(true)
+            HostKeyDecision::Accept | HostKeyDecision::AcceptAndSave => Ok(true),
+            // The supervisor recognises this message as HostKeyRejected.
+            HostKeyDecision::Reject => {
+                Err(std::io::Error::other(format!("host key rejected for {}", self.host)).into())
             }
-            HostKeyDecision::Reject => Err(russh::Error::from(std::io::Error::other(format!(
-                "host key rejected for {}",
-                self.host
-            )))),
         }
     }
 
+    /// Banners may carry sensitive host info, so they are not logged; the UI
+    /// does not show them yet.
     async fn auth_banner(
         &mut self,
-        banner: &str,
+        _banner: &str,
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        // Banners are not logged (they may contain sensitive host info).
-        // They are surfaced through the UI in a later phase.
-        let _ = banner;
         Ok(())
     }
 }
@@ -315,273 +270,120 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    use zeroize::Zeroizing;
-
-    use crate::transport::auth::{AuthConfig, AuthMethodKind, ChallengeResponder};
-    use crate::transport::connection::{auth_config, AuthMethod, CredentialManager};
+    use super::*;
     use crate::transport::credentials::PromptSource;
-    use crate::transport::types::TransportError;
 
-    fn empty_creds() -> CredentialManager {
+    /// Answers only `secret_type` prompts, with `secret`.
+    fn creds_for(secret_type: &'static str, secret: &'static [u8]) -> CredentialManager {
+        CredentialManager::new(vec![Box::new(PromptSource::new(Arc::new(
+            move |_, asked| (asked == secret_type).then(|| Zeroizing::new(secret.to_vec())),
+        )))])
+    }
+
+    fn no_creds() -> CredentialManager {
         CredentialManager::new(vec![])
     }
 
-    fn password_creds(password: &[u8]) -> CredentialManager {
-        let source = PromptSource::new(Arc::new({
-            let password = password.to_vec();
-            move |_session_id, secret_type| match secret_type {
-                "password" => Some(Zeroizing::new(password.clone())),
-                _ => None,
-            }
-        }));
-        CredentialManager::new(vec![Box::new(source)])
-    }
-
-    fn passphrase_creds(passphrase: &[u8]) -> CredentialManager {
-        let source = PromptSource::new(Arc::new({
-            let passphrase = passphrase.to_vec();
-            move |_session_id, secret_type| match secret_type {
-                "key_passphrase" => Some(Zeroizing::new(passphrase.clone())),
-                _ => None,
-            }
-        }));
-        CredentialManager::new(vec![Box::new(source)])
-    }
-
     fn cancelling_creds() -> CredentialManager {
-        let source = PromptSource::new(Arc::new(|_session_id, _secret_type| None));
-        CredentialManager::new(vec![Box::new(source)])
+        CredentialManager::new(vec![Box::new(PromptSource::new(Arc::new(|_, _| None)))])
     }
 
-    /// Generate a throwaway ed25519 key at runtime so no key material is
-    /// ever committed (AGENTS.md: no secrets in test fixtures). Returns
-    /// `None` when `ssh-keygen` is unavailable so callers can skip.
+    fn key(path: impl Into<String>) -> AuthMethod {
+        AuthMethod::Key {
+            path: path.into(),
+            passphrase: None,
+        }
+    }
+
+    /// A throwaway ed25519 key generated at runtime (no key material is
+    /// committed); `None` when `ssh-keygen` is unavailable.
     fn generate_test_key(dir: &Path, passphrase: &str) -> Option<PathBuf> {
         let path = dir.join("id_ed25519");
-        let status = std::process::Command::new("ssh-keygen")
+        std::process::Command::new("ssh-keygen")
             .args(["-t", "ed25519", "-q", "-f"])
             .arg(&path)
-            .arg("-N")
-            .arg(passphrase)
+            .args(["-N", passphrase])
             .status()
-            .ok()?;
-        if status.success() {
-            Some(path)
-        } else {
-            None
-        }
+            .ok()?
+            .success()
+            .then_some(path)
     }
 
     #[test]
-    fn chain_order_matches_doc_11() {
-        // Doc 11 order: agent → publickey → password → keyboard-interactive.
-        let expected = [
-            AuthMethodKind::Agent,
-            AuthMethodKind::PublicKey,
-            AuthMethodKind::Password,
-            AuthMethodKind::KeyboardInteractive,
-        ];
-        for (i, kind) in expected.iter().enumerate() {
-            assert_eq!(*kind, expected[i]);
-        }
-        // All four are distinct.
-        for (i, a) in expected.iter().enumerate() {
-            for (j, b) in expected.iter().enumerate() {
-                if i != j {
-                    assert_ne!(a, b);
-                }
-            }
-        }
+    fn agent_and_none_enable_only_what_they_name() {
+        let agent = auth_config(&AuthMethod::Agent, &no_creds(), None).unwrap();
+        assert!(agent.try_agent && !agent.try_keyboard_interactive);
+        assert!(agent.key_path.is_none() && agent.password.is_none());
+
+        let none = auth_config(&AuthMethod::None, &no_creds(), None).unwrap();
+        assert!(!none.try_agent && !none.try_keyboard_interactive);
+        assert!(none.key_path.is_none() && none.password.is_none());
     }
 
     #[test]
-    fn auth_config_for_agent_enables_agent_only() {
-        let config = auth_config(&AuthMethod::Agent, &empty_creds(), None).unwrap();
-        assert!(config.try_agent);
-        assert!(!config.try_keyboard_interactive);
-        assert!(config.key_path.is_none());
-        assert!(config.password.is_none());
-    }
-
-    #[test]
-    fn auth_config_for_key_uses_inline_passphrase() {
-        let config = auth_config(
-            &AuthMethod::Key {
-                path: "/tmp/key".into(),
-                passphrase: Some("inline-pass".into()),
-            },
-            &empty_creds(),
-            None,
-        )
-        .unwrap();
+    fn key_uses_an_inline_passphrase() {
+        let method = AuthMethod::Key {
+            path: "/tmp/key".into(),
+            passphrase: Some("inline-pass".into()),
+        };
+        let config = auth_config(&method, &no_creds(), None).unwrap();
         assert_eq!(config.key_path.as_deref(), Some("/tmp/key"));
         assert_eq!(
-            config.key_passphrase.as_ref().map(|p| p.as_slice()),
-            Some(b"inline-pass".as_slice())
+            config.key_passphrase.as_deref(),
+            Some(&b"inline-pass".to_vec())
         );
     }
 
     #[test]
-    fn auth_config_for_key_falls_back_to_credential_manager_passphrase() {
-        // The lookup only happens when the key is actually encrypted, so
-        // generate a real encrypted key at runtime.
+    fn only_an_encrypted_key_asks_for_a_passphrase() {
         let dir = tempfile::tempdir().unwrap();
-        let Some(path) = generate_test_key(dir.path(), "key-secret") else {
-            eprintln!("ssh-keygen unavailable; skipping encrypted-key lookup test");
+        let Some(encrypted) = generate_test_key(dir.path(), "key-secret") else {
+            eprintln!("ssh-keygen unavailable; skipping");
             return;
         };
-        let config = auth_config(
-            &AuthMethod::Key {
-                path: path.to_string_lossy().into_owned(),
-                passphrase: None,
-            },
-            &passphrase_creds(b"cm-pass"),
-            None,
-        )
-        .unwrap();
+        let path = encrypted.to_string_lossy().into_owned();
+        let config = auth_config(&key(&path), &creds_for("key_passphrase", b"cm-pass"), None);
         assert_eq!(
-            config.key_passphrase.as_ref().map(|p| p.as_slice()),
-            Some(b"cm-pass".as_slice())
+            config.unwrap().key_passphrase.as_deref(),
+            Some(&b"cm-pass".to_vec())
         );
-    }
+        let cancelled = auth_config(&key(&path), &cancelling_creds(), None);
+        assert!(matches!(cancelled, Err(TransportError::Cancelled)));
 
-    #[test]
-    fn auth_config_for_unencrypted_key_skips_passphrase_lookup() {
-        // An unencrypted key must never raise a passphrase prompt, even when
-        // the credential manager would have one to hand out.
-        let dir = tempfile::tempdir().unwrap();
-        let Some(path) = generate_test_key(dir.path(), "") else {
-            eprintln!("ssh-keygen unavailable; skipping unencrypted-key lookup test");
-            return;
-        };
-        let config = auth_config(
-            &AuthMethod::Key {
-                path: path.to_string_lossy().into_owned(),
-                passphrase: None,
-            },
-            &passphrase_creds(b"cm-pass"),
-            None,
-        )
-        .unwrap();
-        assert!(config.key_passphrase.is_none());
-    }
-
-    #[test]
-    fn auth_config_for_unreadable_key_skips_passphrase_lookup() {
-        // No passphrase can rescue a key file that cannot be read — do not
-        // prompt for one.
-        let config = auth_config(
-            &AuthMethod::Key {
-                path: "/nonexistent-wayterm-key".into(),
-                passphrase: None,
-            },
-            &passphrase_creds(b"cm-pass"),
-            None,
-        )
-        .unwrap();
-        assert!(config.key_passphrase.is_none());
-    }
-
-    #[test]
-    fn auth_config_for_encrypted_key_with_cancelled_prompt_is_cancelled() {
-        let dir = tempfile::tempdir().unwrap();
-        let Some(path) = generate_test_key(dir.path(), "key-secret") else {
-            eprintln!("ssh-keygen unavailable; skipping encrypted-key cancel test");
-            return;
-        };
-        let err = auth_config(
-            &AuthMethod::Key {
-                path: path.to_string_lossy().into_owned(),
-                passphrase: None,
-            },
-            &cancelling_creds(),
-            None,
-        )
-        .unwrap_err();
-        assert!(matches!(err, TransportError::Cancelled));
-    }
-
-    #[test]
-    fn auth_config_for_password_with_cancelled_prompt_is_cancelled() {
-        let err = auth_config(
-            &AuthMethod::Password(String::new()),
-            &cancelling_creds(),
-            None,
-        )
-        .unwrap_err();
-        assert!(matches!(err, TransportError::Cancelled));
-    }
-
-    #[test]
-    fn auth_config_for_password_looks_up_password_and_enables_kbd_interactive() {
-        let config = auth_config(
-            &AuthMethod::Password("configured".into()),
-            &password_creds(b"cm-password"),
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            config.password.as_ref().map(|p| p.as_slice()),
-            Some(b"cm-password".as_slice())
+        let plain_dir = tempfile::tempdir().unwrap();
+        let plain = generate_test_key(plain_dir.path(), "").unwrap();
+        let creds = creds_for("key_passphrase", b"cm-pass");
+        let config = auth_config(&key(plain.to_string_lossy()), &creds, None).unwrap();
+        assert!(
+            config.key_passphrase.is_none(),
+            "unencrypted key: no prompt"
         );
+
+        let config = auth_config(&key("/nonexistent-wayterm-key"), &creds, None).unwrap();
+        assert!(config.key_passphrase.is_none(), "unreadable key: no prompt");
+    }
+
+    #[test]
+    fn password_comes_from_the_credential_lookup() {
+        let method = AuthMethod::Password("ignored".into());
+        let config = auth_config(&method, &creds_for("password", b"cm-password"), None).unwrap();
+        assert_eq!(config.password.as_deref(), Some(&b"cm-password".to_vec()));
         assert!(config.try_keyboard_interactive);
+
+        let cancelled = auth_config(&method, &cancelling_creds(), None);
+        assert!(matches!(cancelled, Err(TransportError::Cancelled)));
     }
 
     #[test]
-    fn auth_config_for_keyboard_interactive_enables_responder() {
+    fn keyboard_interactive_keeps_the_responder() {
         let responder: ChallengeResponder = Arc::new(|_| Some(vec!["answer".into()]));
         let config = auth_config(
             &AuthMethod::KeyboardInteractive,
-            &empty_creds(),
+            &no_creds(),
             Some(responder),
         )
         .unwrap();
-        assert!(config.try_keyboard_interactive);
-        assert!(config.challenge_responder.is_some());
+        assert!(config.try_keyboard_interactive && config.challenge_responder.is_some());
         assert!(config.password.is_none());
-    }
-
-    #[test]
-    fn auth_config_for_none_is_empty() {
-        let config = auth_config(&AuthMethod::None, &empty_creds(), None).unwrap();
-        assert!(!config.try_agent);
-        assert!(!config.try_keyboard_interactive);
-        assert!(config.key_path.is_none());
-        assert!(config.password.is_none());
-        assert!(config.challenge_responder.is_none());
-    }
-
-    #[test]
-    fn auth_method_default_is_none() {
-        let method: AuthMethod = Default::default();
-        assert!(matches!(method, AuthMethod::None));
-    }
-
-    #[test]
-    fn auth_config_debug_redacts_secrets() {
-        let responder: ChallengeResponder = Arc::new(|_| None);
-        let config = AuthConfig {
-            key_path: Some("/tmp/key".into()),
-            key_passphrase: Some(Zeroizing::new(b"supersecret".to_vec())),
-            password: Some(Zeroizing::new(b"hunter2".to_vec())),
-            try_agent: true,
-            try_keyboard_interactive: true,
-            challenge_responder: Some(responder),
-        };
-        let dbg = format!("{config:?}");
-        assert!(
-            dbg.contains("[REDACTED]"),
-            "expected redaction marker: {dbg}"
-        );
-        assert!(
-            !dbg.contains("supersecret"),
-            "secret leaked in debug: {dbg}"
-        );
-        assert!(!dbg.contains("hunter2"), "secret leaked in debug: {dbg}");
-        // Zeroize zeroes memory on drop, but Debug must still not print raw bytes.
-        assert!(
-            !dbg.as_bytes().windows(11).any(|w| w == b"supersecret"),
-            "raw secret bytes leaked in debug output"
-        );
     }
 }

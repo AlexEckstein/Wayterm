@@ -74,28 +74,20 @@ fn settings_default_to_confirm_close_and_reconnect_on() {
 #[test]
 fn install_settings_honours_both_rows() {
     let _guard = fresh();
-    install_settings(Some("0"), Some("0"));
+    install_settings(false, false);
     assert!(!confirm_close_setting());
     assert!(!reconnect_on_drop_setting());
 }
 
 #[test]
-fn install_settings_keeps_defaults_for_missing_rows() {
-    let _guard = fresh();
-    install_settings(None, None);
-    assert!(confirm_close_setting());
-    assert!(reconnect_on_drop_setting());
-}
-
-#[test]
 fn policy_follows_the_reconnect_on_drop_setting() {
     let _guard = fresh();
-    install_settings(Some("1"), Some("0"));
+    install_settings(true, false);
     assert_eq!(
         policy().mode,
         crate::transport::reconnect::ReconnectMode::Prompt
     );
-    install_settings(Some("1"), Some("1"));
+    install_settings(true, true);
     assert_eq!(
         policy().mode,
         crate::transport::reconnect::ReconnectMode::Auto
@@ -183,7 +175,7 @@ fn tabs_are_tracked_per_session() {
 #[test]
 fn a_connected_tab_asks_before_close_when_the_setting_is_on() {
     let _guard = fresh();
-    install_settings(Some("1"), None);
+    install_settings(true, true);
     register_live_tab(SESSION, tab_in(TransportState::Connected));
     assert!(should_confirm_close_for_tab(SESSION));
 }
@@ -218,7 +210,7 @@ fn an_errored_tab_closes_without_asking() {
 #[test]
 fn the_setting_turns_the_prompt_off() {
     let _guard = fresh();
-    install_settings(Some("0"), None);
+    install_settings(false, true);
     register_live_tab(SESSION, tab_in(TransportState::Connected));
     assert!(!should_confirm_close_for_tab(SESSION));
 }
@@ -274,7 +266,7 @@ fn reconnect_on_a_tab_with_no_transport_reports_the_seam() {
 #[tokio::test]
 async fn reconnect_starts_a_driver_for_a_registered_tab() {
     let _guard = fresh_async().await;
-    install_settings(None, None); // auto mode
+    install_settings(true, true); // auto mode
     register_live_tab(SESSION, tab_in(TransportState::Disconnected));
     assert!(activate_reconnect(Some(SESSION), None, None).started());
 }
@@ -371,7 +363,7 @@ async fn disconnect_cancels_a_running_reconnect_loop() {
 #[tokio::test(start_paused = true)]
 async fn prompt_mode_reconnect_defers_to_the_confirm_responder() {
     let _guard = fresh_async().await;
-    install_settings(None, Some("0")); // prompt mode
+    install_settings(true, false); // prompt mode
     assert_eq!(
         policy().mode,
         crate::transport::reconnect::ReconnectMode::Prompt
@@ -485,7 +477,7 @@ fn live_tab_carries_the_three_things_the_actions_need() {
 #[test]
 fn the_registry_resets_cleanly_between_windows() {
     let _guard = fresh();
-    install_settings(Some("0"), Some("0"));
+    install_settings(false, false);
     register_live_tab(SESSION, tab_in(TransportState::Connected));
     reset_registry();
     assert!(live_tab(SESSION).is_none());

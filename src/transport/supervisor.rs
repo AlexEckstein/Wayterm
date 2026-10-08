@@ -1,9 +1,6 @@
-//! Connection supervisor — one authenticated SSH session per identity,
-//! shared by consumers and disconnected when the last consumer releases it
-//! (doc 04 §Connection Supervisor).
-//!
-//! Design contracts:
-//!   - docs/04-transport-layer.md §Connection Supervisor
+//! [`ConnectionSupervisor`]: one authenticated SSH session per
+//! (host, port, username), shared by every consumer and disconnected after
+//! the last one releases it (doc 04 §Connection Supervisor).
 
 use std::collections::hash_map::Entry as MapEntry;
 use std::collections::HashMap;
@@ -19,36 +16,24 @@ use crate::transport::credentials::CredentialManager;
 use crate::transport::hostkey::HostKeyVerifier;
 use crate::transport::types::TransportError;
 
-/// How often each release monitor checks whether its connection has been
-/// fully released by every consumer. Short in unit tests so release-counting
-/// assertions do not take seconds.
+/// How often a release monitor checks for the last consumer (short in unit
+/// tests so release assertions stay fast).
 #[cfg(not(test))]
 const MONITOR_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 #[cfg(test)]
 const MONITOR_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// Pool identity: a connection is shared exactly per (host, port, username)
-/// (doc 04).
+/// Where to dial, and the pool key: one connection per identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ConnectionKey {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-}
-
-/// Everything needed to dial a new SSH connection.
-#[derive(Clone, Debug)]
 pub struct ConnectParams {
     pub host: String,
     pub port: u16,
     pub username: String,
 }
 
-/// A connection type the supervisor can tear down once every consumer has
-/// released it.
+/// What the pool holds: anything it can disconnect once released.
 #[async_trait]
 pub trait PooledConnection: Send + Sync + 'static {
-    /// Close this connection (graceful disconnect for SSH).
     async fn disconnect_now(&self);
 }
 
@@ -59,24 +44,16 @@ impl PooledConnection for SshConnection {
     }
 }
 
-/// Pool map, reference-counted so release monitors keep it alive after the
-/// supervisor handle itself is dropped.
-type Pool<T> = Arc<Mutex<HashMap<ConnectionKey, Arc<T>>>>;
+/// Shared with the release monitors, which outlive the supervisor handle.
+type Pool<T> = Arc<Mutex<HashMap<ConnectParams, Arc<T>>>>;
 
-fn lock_pool<T>(pool: &Pool<T>) -> MutexGuard<'_, HashMap<ConnectionKey, Arc<T>>> {
-    // Poisoning only means some earlier task panicked while touching the
-    // map; the map invariants still hold, so recover instead of cascading.
-    match pool.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+fn lock_pool<T>(pool: &Pool<T>) -> MutexGuard<'_, HashMap<ConnectParams, Arc<T>>> {
+    // A poisoned lock still guards a consistent map.
+    pool.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Shares one authenticated connection per [`ConnectionKey`].
-///
-/// Consumers receive `Arc`s; when the last consumer drops its handle and the
-/// supervisor no longer holds one either, a monitor task disconnects the
-/// session and evicts the pool entry (release counting, doc 04).
+/// Hands out shared `Arc`s; a monitor task per connection disconnects and
+/// evicts it once only the pool's own reference is left.
 pub struct ConnectionSupervisor<T: PooledConnection = SshConnection> {
     pool: Pool<T>,
 }
@@ -94,21 +71,16 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
         }
     }
 
-    /// Pool lookup: the live connection for `key`, if one exists.
-    fn lookup(&self, key: &ConnectionKey) -> Option<Arc<T>> {
+    fn lookup(&self, key: &ConnectParams) -> Option<Arc<T>> {
         lock_pool(&self.pool).get(key).map(Arc::clone)
     }
 
-    /// Core of [`Self::get_or_connect`]: reuse a pooled connection, else
-    /// await `dial`, then insert the winner and arm its release monitor.
-    ///
-    /// Two concurrent dials for the same key are both allowed to race (no
-    /// lock is held across the await); the loser disconnects its own fresh
-    /// connection and adopts the winner's, so consumers never observe two
-    /// live connections for one key.
+    /// Reuse the pooled connection for `key`, else `dial` one. No lock is
+    /// held across the dial, so two dials for one key may race; the loser
+    /// disconnects its own connection and adopts the winner's.
     async fn get_or_connect_with<F, Fut>(
         &self,
-        key: ConnectionKey,
+        key: ConnectParams,
         dial: F,
     ) -> Result<Arc<T>, TransportError>
     where
@@ -119,8 +91,6 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
             return Ok(conn);
         }
         let conn = dial().await?;
-        // The pool lock is scoped to the map mutation only — never held
-        // across an await (the loser's `disconnect_now` runs lock-free).
         let winner = {
             let mut pool = lock_pool(&self.pool);
             match pool.entry(key.clone()) {
@@ -133,8 +103,6 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
         };
         match winner {
             Some(theirs) => {
-                // A concurrent dial beat us: drop ours, adopt theirs, so
-                // consumers never observe two live connections for `key`.
                 conn.disconnect_now().await;
                 Ok(theirs)
             }
@@ -149,8 +117,8 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
 }
 
 impl ConnectionSupervisor<SshConnection> {
-    /// Return the pooled SSH connection for `params`, dialing and
-    /// authenticating only when no live connection exists (doc 04).
+    /// The pooled connection for `params`, dialing and authenticating only
+    /// when none is live.
     pub async fn get_or_connect(
         &self,
         params: &ConnectParams,
@@ -159,12 +127,7 @@ impl ConnectionSupervisor<SshConnection> {
         verifier: HostKeyVerifier,
         responder: Option<ChallengeResponder>,
     ) -> Result<Arc<SshConnection>, TransportError> {
-        let key = ConnectionKey {
-            host: params.host.clone(),
-            port: params.port,
-            username: params.username.clone(),
-        };
-        self.get_or_connect_with(key, || async {
+        self.get_or_connect_with(params.clone(), || async {
             let conn = dial_ssh(params, method, creds, verifier, responder).await?;
             Ok(Arc::new(conn))
         })
@@ -172,7 +135,6 @@ impl ConnectionSupervisor<SshConnection> {
     }
 }
 
-/// Dial + authenticate one SSH session (doc 04 §Connect).
 async fn dial_ssh(
     params: &ConnectParams,
     method: &AuthMethod,
@@ -188,7 +150,6 @@ async fn dial_ssh(
         verifier,
         None,
     );
-    // `ToSocketAddrs` lets tokio resolve hostnames for us.
     let handle = client::connect(config, (params.host.as_str(), params.port), handler)
         .await
         .map_err(|err| connect_error(&params.host, err))?;
@@ -205,9 +166,7 @@ async fn dial_ssh(
     Ok(conn)
 }
 
-/// Map a russh connect error onto the transport taxonomy: a rejected host
-/// key is its own outcome (doc 04 §Host keys), everything else is a
-/// connection failure.
+/// A rejected host key is its own outcome (doc 11), not a connect failure.
 fn connect_error(host: &str, err: russh::Error) -> TransportError {
     if matches!(err, russh::Error::UnknownKey) || err.to_string().contains("host key rejected for")
     {
@@ -217,29 +176,22 @@ fn connect_error(host: &str, err: russh::Error) -> TransportError {
     }
 }
 
-/// Disconnect a connection once every external consumer has released it,
-/// then evict it from the pool so the next `get_or_connect` dials fresh.
-///
-/// The strong count is only ever inspected while holding the pool lock, and
-/// consumers clone their handle under the same lock, so "count == 1" means
-/// exactly "only the map's own `Arc` remains" — no TOCTOU window.
-async fn monitored_release<T: PooledConnection>(key: ConnectionKey, weak: Weak<T>, pool: Pool<T>) {
+/// Disconnect and evict once every consumer has released the connection.
+/// Consumers clone under the pool lock and the count is read under it too,
+/// so a strong count of 1 means exactly "only the pool's `Arc` is left".
+async fn monitored_release<T: PooledConnection>(key: ConnectParams, weak: Weak<T>, pool: Pool<T>) {
     loop {
         tokio::time::sleep(MONITOR_POLL).await;
         let released = {
             let mut guard = lock_pool(&pool);
             match guard.get(&key) {
-                // Entry evicted elsewhere, or replaced by a later dial:
-                // nothing left for this monitor to do.
+                // Evicted, or replaced by a later dial.
                 None => return,
                 Some(conn) if Arc::as_ptr(conn) != weak.as_ptr() => return,
-                // Still held by at least one consumer — keep monitoring.
                 Some(conn) if Arc::strong_count(conn) > 1 => {
                     drop(guard);
                     continue;
                 }
-                // Last reference is the map's own — take it out of the pool
-                // under the lock, disconnect outside it.
                 Some(_) => guard.remove(&key),
             }
         };
@@ -250,18 +202,13 @@ async fn monitored_release<T: PooledConnection>(key: ConnectionKey, weak: Weak<T
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
 
-    /// Observation handle that outlives the connection it belongs to, so
-    /// tests can assert "was disconnected" after the object is dropped.
+    /// Outlives its connection, so tests can assert "was disconnected".
     type Flag = Arc<AtomicBool>;
 
     struct FakeConn {
@@ -275,8 +222,8 @@ mod tests {
         }
     }
 
-    fn key(host: &str) -> ConnectionKey {
-        ConnectionKey {
+    fn key(host: &str) -> ConnectParams {
+        ConnectParams {
             host: host.to_string(),
             port: 22,
             username: "u".to_string(),

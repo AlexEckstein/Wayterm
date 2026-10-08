@@ -10,8 +10,8 @@
 //! * **Display-free core** (pure functions + an async forwarder, all unit
 //!   tested in `tests/tray.rs`): [`TrayAction`] mapping, [`DisconnectAlert`]
 //!   formatting, [`triage_transport_event`], [`forward_disconnect_alerts`],
-//!   and the `minimize_to_tray` setting logic ([`parse_setting_enabled`],
-//!   [`minimize_to_tray_enabled`], [`should_minimize_to_tray`]).
+//!   and the `minimize_to_tray` setting logic ([`minimize_to_tray_enabled`],
+//!   [`should_minimize_to_tray`]).
 //! * **Display-bound shell** (manual verification only — see the
 //!   doc-comment on [`init_tray`]): [`WaytermTray`] (the ksni item),
 //!   [`init_tray`], [`register_actions`], [`handle_app_action`],
@@ -95,28 +95,9 @@ pub enum MenuEntry {
     Separator,
 }
 
-/// Parse a `settings` value for `minimize_to_tray`.
-///
-/// Fail-open: anything but an explicit opt-out (`0`/`false`/`no`/`off`,
-/// case-insensitive, trimmed) enables minimize-to-tray. `None` (row
-/// absent) is the default-ON case.
-pub fn parse_setting_enabled(value: Option<&str>) -> bool {
-    match value {
-        None => true,
-        Some(raw) => !matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        ),
-    }
-}
-
-/// Read the `minimize_to_tray` setting; DB errors fail open (ON), same as
-/// a missing row — a tray preference must never break startup.
+/// The `minimize_to_tray` setting; on unless explicitly off.
 pub fn minimize_to_tray_enabled(store: &SessionStore) -> bool {
-    match store.get_setting(MINIMIZE_TO_TRAY_KEY) {
-        Ok(value) => parse_setting_enabled(value.as_deref()),
-        Err(_) => true,
-    }
+    store.flag(MINIMIZE_TO_TRAY_KEY)
 }
 
 /// Close-request decision: minimize (hide) only when the tray actually

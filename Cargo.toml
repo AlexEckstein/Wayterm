@@ -37,10 +37,6 @@ thiserror = "2"
 russh-sftp = "3.0"
 ksni = "0.3"
 
-[features]
-default = ["keyring"]
-keyring = []
-
 [dev-dependencies]
 tempfile = "3"
 # test-util enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,

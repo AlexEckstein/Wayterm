@@ -6,38 +6,23 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::store::model::TMUX_NAME_PREFIX;
 use crate::transport::connection::SshConnection;
 use crate::transport::types::{
     Transport, TransportError, TransportEvent, TransportState, TransportType,
 };
 
-/// SSH byte-stream transport: one channel on a shared, supervisor-owned
-/// [`SshConnection`].
-///
-/// The session is NOT owned here; `disconnect()` closes only this channel and
-/// cancels the reader task. The supervisor drops the session when the last `Arc`
-/// is released.
+/// SSH byte-stream transport: one PTY channel on a shared, supervisor-owned
+/// [`SshConnection`] (doc 04). Disconnecting closes only this channel.
 pub struct SSHTransport {
-    // Shared, supervisor-owned — NOT owned here (see doc 04).
     connection: Arc<SshConnection>,
-
-    // Write half of our channel on that connection.
     channel_write: Option<ChannelWriteHalf<Msg>>,
-
-    // Reader task JoinHandle — spawned in connect(), aborted in disconnect().
     reader_task: Option<JoinHandle<()>>,
-
-    // Where reader task pushes DataReceived chunks (bound to the GTK side).
     event_tx: mpsc::Sender<TransportEvent>,
-
-    // Cancellation token shared with the reader task.
     cancel_token: CancellationToken,
-
-    // Initial PTY size, taken from the terminal backend at connect time —
-    // NOT a hardcoded 80x24.
+    /// The terminal's measured grid at connect time.
     initial_rows: u32,
     initial_cols: u32,
-
     state: TransportState,
     tmux_enabled: bool,
     tmux_session_name: String,
@@ -64,28 +49,22 @@ impl SSHTransport {
         }
     }
 
-    fn emit_state(&self) {
+    fn set_state(&mut self, state: TransportState) {
+        self.state = state;
         self.state.emit(&self.event_tx);
     }
+}
 
-    /// Shell-quote a single argument for `/bin/sh -c` execution on the remote.
-    ///
-    /// This is a minimal implementation: if the string contains shell
-    /// metacharacters we wrap it in single quotes and escape embedded single
-    /// quotes. Good enough for tmux session names; full shell quoting is a
-    /// Phase-3 utility candidate.
-    fn shell_quote(s: &str) -> String {
-        if s.is_empty() {
-            return "''".into();
-        }
-        if s.chars()
+/// Quote one argument for the remote `/bin/sh -c` (tmux session names may
+/// contain `;` and other metacharacters).
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
             .all(|c| c.is_alphanumeric() || "_-./@+".contains(c))
-        {
-            return s.into();
-        }
-        let escaped = s.replace('\'', "'\\''");
-        format!("'{}'", escaped)
+    {
+        return s.into();
     }
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[async_trait]
@@ -94,14 +73,9 @@ impl Transport for SSHTransport {
         if self.state == TransportState::Connected {
             return Err(TransportError::ChannelError("already connected".into()));
         }
+        self.set_state(TransportState::Connecting);
 
-        self.state = TransportState::Connecting;
-        self.emit_state();
-
-        // 2. Open our channel.
         let channel = self.connection.open_session_channel().await?;
-
-        // 3. Request PTY with the ACTUAL current terminal size.
         channel
             .request_pty(
                 false,
@@ -114,91 +88,58 @@ impl Transport for SSHTransport {
             )
             .await
             .map_err(TransportError::from_russh)?;
-
-        // 4. Shell or tmux.
-        if self.tmux_enabled {
-            let session_name = format!("wayterm-{}", self.tmux_session_name);
-            let cmd = format!("tmux new -A -s {}", Self::shell_quote(&session_name));
-            channel
-                .exec(false, cmd.as_bytes())
-                .await
-                .map_err(TransportError::from_russh)?;
+        let started = if self.tmux_enabled {
+            // `-A` attaches to the session if it already exists.
+            let name = format!("{TMUX_NAME_PREFIX}{}", self.tmux_session_name);
+            let command = format!("tmux new -A -s {}", shell_quote(&name));
+            channel.exec(false, command.as_bytes()).await
         } else {
-            channel
-                .request_shell(false)
-                .await
-                .map_err(TransportError::from_russh)?;
-        }
+            channel.request_shell(false).await
+        };
+        started.map_err(TransportError::from_russh)?;
 
-        // 5. Split the channel so the reader task owns the read half and we keep
-        //    the write half for write()/resize().
+        // The reader task owns the read half: the only path bytes take in.
         let (mut read_half, write_half) = channel.split();
-
-        // 6. Spawn the reader task — THE read path. Pushes chunks until EOF.
         let event_tx = self.event_tx.clone();
         let cancel = self.cancel_token.clone();
         self.reader_task = Some(tokio::spawn(async move {
             loop {
-                tokio::select! {
+                let msg = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => break,
-                    msg = read_half.wait() => match msg {
-                        Some(ChannelMsg::Data { data }) => {
-                            if event_tx
-                                .send(TransportEvent::DataReceived(data.to_vec()))
-                                .await
-                                .is_err()
-                            {
-                                break; // UI side gone (tab closed)
-                            }
+                    msg = read_half.wait() => msg,
+                };
+                match msg {
+                    // v1 shows stderr inline with stdout.
+                    Some(ChannelMsg::Data { data })
+                    | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        let event = TransportEvent::DataReceived(data.to_vec());
+                        if event_tx.send(event).await.is_err() {
+                            break; // tab closed
                         }
-                        // ExtendedData is treated the same as Data for now — v1
-                        // does not separate stderr into a distinct UI stream.
-                        Some(ChannelMsg::ExtendedData { data, .. }) => {
-                            if event_tx
-                                .send(TransportEvent::DataReceived(data.to_vec()))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => {
-                            let _ = event_tx.send(TransportEvent::ConnectionLost).await;
-                            break;
-                        }
-                        None => {
-                            let _ = event_tx.send(TransportEvent::ConnectionLost).await;
-                            break;
-                        }
-                        _ => {}
                     }
+                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                        let _ = event_tx.send(TransportEvent::ConnectionLost).await;
+                        break;
+                    }
+                    Some(_) => {}
                 }
             }
         }));
-
         self.channel_write = Some(write_half);
-
-        self.state = TransportState::Connected;
-        self.emit_state();
-
+        self.set_state(TransportState::Connected);
         Ok(())
     }
 
     async fn disconnect(&mut self) -> Result<(), TransportError> {
-        // Idempotent: safe to call twice, safe if never connected.
         self.cancel_token.cancel();
         if let Some(task) = self.reader_task.take() {
             task.abort();
         }
-        // ChannelWriteHalf has no close() in russh 0.64; dropping it is sufficient
-        // because the reader task already owns the read half and will exit on cancel.
-        let _ = self.channel_write.take();
-        // NOTE: the SshConnection itself is NOT disconnected here — other
-        // tabs/the SFTP sidebar may share it. The supervisor disconnects
-        // it when the last Arc drops.
-        self.state = TransportState::Disconnected;
-        self.emit_state();
+        // Dropping the write half closes our side; the shared connection
+        // stays up for other consumers.
+        self.channel_write = None;
+        self.set_state(TransportState::Disconnected);
         Ok(())
     }
 
@@ -207,23 +148,25 @@ impl Transport for SSHTransport {
     }
 
     async fn write(&mut self, data: &[u8]) -> Result<(), TransportError> {
-        if let Some(ch) = &mut self.channel_write {
-            ch.data_bytes(bytes::Bytes::copy_from_slice(data))
-                .await
-                .map_err(TransportError::from_russh)
-        } else {
-            Err(TransportError::Disconnected)
-        }
+        let channel = self
+            .channel_write
+            .as_mut()
+            .ok_or(TransportError::Disconnected)?;
+        channel
+            .data_bytes(bytes::Bytes::copy_from_slice(data))
+            .await
+            .map_err(TransportError::from_russh)
     }
 
     async fn resize(&mut self, rows: u32, cols: u32) -> Result<(), TransportError> {
-        if let Some(ch) = &mut self.channel_write {
-            ch.window_change(cols, rows, 0, 0)
-                .await
-                .map_err(TransportError::from_russh)
-        } else {
-            Err(TransportError::Disconnected)
-        }
+        let channel = self
+            .channel_write
+            .as_mut()
+            .ok_or(TransportError::Disconnected)?;
+        channel
+            .window_change(cols, rows, 0, 0)
+            .await
+            .map_err(TransportError::from_russh)
     }
 
     fn set_tmux_enabled(&mut self, enabled: bool, session_name: String) {
@@ -236,14 +179,20 @@ impl Transport for SSHTransport {
     }
 
     fn description(&self) -> String {
-        format!(
-            "{}@{}:{}",
-            self.connection.username(),
-            self.connection.host(),
-            self.connection.port()
-        )
+        let c = &self.connection;
+        format!("{}@{}:{}", c.username(), c.host(), c.port())
     }
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::shell_quote;
+
+    #[test]
+    fn shell_quote_escapes_metacharacters() {
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("wayterm-prod_1"), "wayterm-prod_1");
+        assert_eq!(shell_quote("a;b"), "'a;b'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+}

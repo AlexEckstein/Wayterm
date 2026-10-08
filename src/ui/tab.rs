@@ -57,9 +57,7 @@ use crate::store::model::{
 };
 use crate::terminal::{create_terminal, TerminalBackend};
 use crate::transport::connection::{AuthMethod as TransportAuthMethod, SshConnection};
-#[cfg(feature = "keyring")]
-use crate::transport::credentials::KeyringSource;
-use crate::transport::credentials::{CredentialManager, CredentialSource, PromptSource};
+use crate::transport::credentials::{CredentialManager, KeyringSource, PromptSource};
 use crate::transport::hostkey::HostKeyVerifier;
 use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor};
 use crate::transport::tab::TerminalTab;
@@ -537,13 +535,10 @@ fn transport_auth_method(session: &SessionConfig) -> TransportAuthMethod {
 /// interactive prompt that opens the GTK challenge dialog (doc 11
 /// §CredentialManager lookup order).
 fn credential_manager(session_name: &str) -> CredentialManager {
-    let prompt = prompt_source(session_name.to_string());
-    #[cfg(feature = "keyring")]
-    let sources: Vec<Box<dyn CredentialSource>> =
-        vec![Box::new(KeyringSource::new()), Box::new(prompt)];
-    #[cfg(not(feature = "keyring"))]
-    let sources: Vec<Box<dyn CredentialSource>> = vec![Box::new(prompt)];
-    CredentialManager::new(sources)
+    CredentialManager::new(vec![
+        Box::new(KeyringSource),
+        Box::new(prompt_source(session_name.to_string())),
+    ])
 }
 
 /// Interactive credential source: one non-echo entry, shown on the GTK main

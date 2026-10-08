@@ -1,29 +1,24 @@
+//! Host-key verification against `~/.ssh/known_hosts` (doc 11 §Host Key
+//! Verification).
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
-use russh::keys::Error as KeysError;
-use russh::keys::PublicKey;
+use russh::keys::{Error as KeysError, PublicKey};
 
 use crate::store::model::HostKeyPolicy;
 
-fn known_hosts_default_path() -> PathBuf {
-    std::env::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".ssh")
-        .join("known_hosts")
-}
-
-/// Outcome of a host-key prompt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostKeyDecision {
     Accept,
+    /// Accept and record the key in known_hosts.
     AcceptAndSave,
     Reject,
 }
 
-/// OpenSSH-style facts shown to the user when prompting about an unknown host.
+/// What the unknown-host prompt shows (OpenSSH style).
 #[derive(Clone, Debug)]
 pub struct HostKeyFacts {
     pub host: String,
@@ -42,27 +37,22 @@ impl fmt::Display for HostKeyFacts {
     }
 }
 
-/// Host-key verification logic per doc 11.
-///
-/// `check_known_hosts_path` does the actual file check. This type maps the
-/// result to a decision, applying the configured policy for unknown hosts.
+/// Asks the user about an unknown host; must answer `AcceptAndSave` to
+/// accept, so the key gets recorded.
+pub type HostKeyPrompt = Arc<dyn Fn(&HostKeyFacts) -> HostKeyDecision + Send + Sync>;
+
+/// Maps a known_hosts check to a decision under a [`HostKeyPolicy`].
 pub struct HostKeyVerifier {
     policy: HostKeyPolicy,
-    prompt: Arc<dyn Fn(&HostKeyFacts) -> HostKeyDecision + Send + Sync>,
+    prompt: HostKeyPrompt,
+    /// `None` = `~/.ssh/known_hosts`; tests pass a temp file.
     known_hosts_path: Option<Arc<Path>>,
 }
 
 impl HostKeyVerifier {
-    /// Build a verifier.
-    ///
-    /// * `policy` — global or per-session policy.
-    /// * `prompt` — closure bridging to the GTK dialog. Must return
-    ///   `AcceptAndSave` when the user confirms, so the key is recorded.
-    /// * `known_hosts_path` — `None` means the default `~/.ssh/known_hosts`
-    ///   is used by `russh::keys`. Tests always provide an explicit path.
     pub fn new(
         policy: HostKeyPolicy,
-        prompt: Arc<dyn Fn(&HostKeyFacts) -> HostKeyDecision + Send + Sync>,
+        prompt: HostKeyPrompt,
         known_hosts_path: Option<Arc<Path>>,
     ) -> Self {
         Self {
@@ -72,83 +62,41 @@ impl HostKeyVerifier {
         }
     }
 
-    /// Decide whether to trust a server key.
+    /// Decide whether to trust `key` (russh 0.64 semantics):
     ///
-    /// Mapping per russh 0.64.1 known_hosts semantics:
-    /// * `Ok(true)`    → known + matching  → `Accept`.
-    /// * `Ok(false)`   → unknown host       → apply `policy`.
-    /// * `Err(KeyChanged { line })` → known + mismatched → hard `Reject`,
-    ///   no prompt.
+    /// * `Ok(true)` — known and matching → accept;
+    /// * `Err(KeyChanged)` — known and **mismatched** → reject, no prompt
+    ///   (the MITM signal);
+    /// * `Ok(false)` or any other error — unknown → the policy decides
+    ///   (`strict` prompts, `accept-new` records, `off` accepts).
+    ///
+    /// A key that should be recorded but cannot be is rejected rather than
+    /// accepted unrecorded.
     pub fn verify(&self, facts: &HostKeyFacts, key: &PublicKey) -> HostKeyDecision {
-        let path = self.known_hosts_path.as_deref();
-        let check_result = if let Some(p) = path {
-            check_known_hosts_path(&facts.host, facts.port, key, p)
-        } else {
-            check_known_hosts_path(&facts.host, facts.port, key, known_hosts_default_path())
-        };
-
-        match check_result {
-            Ok(true) => HostKeyDecision::Accept,
-            Ok(false) => match self.policy {
-                HostKeyPolicy::Strict => {
-                    let decision = (self.prompt)(facts);
-                    if decision == HostKeyDecision::AcceptAndSave {
-                        let learn_path =
-                            path.map_or_else(known_hosts_default_path, |p| p.to_path_buf());
-                        if learn_known_hosts_path(&facts.host, facts.port, key, learn_path).is_err()
-                        {
-                            // If we cannot persist the key, reject rather than silently
-                            // accepting an unrecorded host under a strict policy.
-                            return HostKeyDecision::Reject;
-                        }
-                    }
-                    decision
-                }
-                HostKeyPolicy::AcceptNew => {
-                    let learn_path =
-                        path.map_or_else(known_hosts_default_path, |p| p.to_path_buf());
-                    if learn_known_hosts_path(&facts.host, facts.port, key, learn_path).is_err() {
-                        return HostKeyDecision::Reject;
-                    }
-                    HostKeyDecision::AcceptAndSave
-                }
-                HostKeyPolicy::Off => HostKeyDecision::Accept,
+        let path = self.known_hosts();
+        let decision = match check_known_hosts_path(&facts.host, facts.port, key, &path) {
+            Ok(true) => return HostKeyDecision::Accept,
+            Err(KeysError::KeyChanged { .. }) => return HostKeyDecision::Reject,
+            Ok(false) | Err(_) => match self.policy {
+                HostKeyPolicy::Off => return HostKeyDecision::Accept,
+                HostKeyPolicy::AcceptNew => HostKeyDecision::AcceptAndSave,
+                HostKeyPolicy::Strict => (self.prompt)(facts),
             },
-            Err(KeysError::KeyChanged { line }) => {
-                let _ = line;
-                HostKeyDecision::Reject
-            }
-            Err(_) => {
-                // File/read errors other than KeyChanged are treated as an
-                // unknown host so the policy can still decide. Under strict
-                // this will prompt; under accept-new this will auto-save.
-                self.verify_for_unknown(facts, key)
-            }
+        };
+        if decision == HostKeyDecision::AcceptAndSave
+            && learn_known_hosts_path(&facts.host, facts.port, key, &path).is_err()
+        {
+            return HostKeyDecision::Reject;
         }
+        decision
     }
 
-    fn verify_for_unknown(&self, facts: &HostKeyFacts, key: &PublicKey) -> HostKeyDecision {
-        let path = self.known_hosts_path.as_deref();
-        match self.policy {
-            HostKeyPolicy::Strict => {
-                let decision = (self.prompt)(facts);
-                if decision == HostKeyDecision::AcceptAndSave {
-                    let learn_path =
-                        path.map_or_else(known_hosts_default_path, |p| p.to_path_buf());
-                    if learn_known_hosts_path(&facts.host, facts.port, key, learn_path).is_err() {
-                        return HostKeyDecision::Reject;
-                    }
-                }
-                decision
-            }
-            HostKeyPolicy::AcceptNew => {
-                let learn_path = path.map_or_else(known_hosts_default_path, |p| p.to_path_buf());
-                if learn_known_hosts_path(&facts.host, facts.port, key, learn_path).is_err() {
-                    return HostKeyDecision::Reject;
-                }
-                HostKeyDecision::AcceptAndSave
-            }
-            HostKeyPolicy::Off => HostKeyDecision::Accept,
+    fn known_hosts(&self) -> PathBuf {
+        match &self.known_hosts_path {
+            Some(path) => path.to_path_buf(),
+            None => std::env::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".ssh/known_hosts"),
         }
     }
 }

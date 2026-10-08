@@ -471,6 +471,16 @@ impl SessionStore {
             .optional()
     }
 
+    /// A boolean settings row (see [`flag_enabled`]). A row that cannot be
+    /// read counts as missing, i.e. on.
+    pub fn flag(&self, key: &str) -> bool {
+        let value = self.get_setting(key).unwrap_or_else(|err| {
+            eprintln!("Wayterm: failed to read setting '{key}': {err}");
+            None
+        });
+        flag_enabled(value.as_deref())
+    }
+
     /// Upsert a global setting into the `settings` key-value table.
     pub fn set_setting(&self, key: &str, value: &str) -> rusqlite::Result<()> {
         self.conn.execute(
@@ -538,6 +548,19 @@ impl SessionStore {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })
     }
+}
+
+/// Parse a boolean settings value. Every flag Wayterm stores defaults to on,
+/// so a missing row is on, and only an explicit `0`/`false`/`no`/`off` (any
+/// case, surrounding blanks ignored) turns one off — a typo never silently
+/// disables a safety prompt.
+pub fn flag_enabled(raw: Option<&str>) -> bool {
+    !raw.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
 }
 
 /// One `hotkeys` row with `is_default = 0`, as

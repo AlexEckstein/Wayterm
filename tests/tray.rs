@@ -140,7 +140,7 @@ fn setting_defaults_on_when_row_absent() {
 
 #[test]
 fn setting_parse_matrix() {
-    use tray::parse_setting_enabled as parse;
+    use wayterm::store::db::flag_enabled as parse;
     assert!(parse(None));
     for on in [
         "1",
