@@ -26,6 +26,7 @@ use crate::terminal::TerminalBackend;
 use crate::transport::supervisor::ConnectionSupervisor;
 use crate::transport::types::TransportState;
 use crate::ui::tab::SessionTab;
+use crate::ui::tab_restore::TabPersistence;
 use crate::ui::{SessionTree, StatusBar};
 
 /// gio action id for doc 09's `toggle_sftp`.
@@ -430,6 +431,19 @@ impl MainWindow {
         let notebook = gtk4::Notebook::new();
         let home_label = gtk4::Label::new(Some("Welcome to Wayterm"));
         notebook.append_page(&home_label, Some(&gtk4::Label::new(Some("Home"))));
+        // Keep the welcome page's widget: tab persistence identifies
+        // the home tab by identity, so a reordered notebook still never
+        // saves it (doc 10 Phase 4 — it is rebuilt on every launch).
+        let home_widget: gtk4::Widget = home_label.upcast();
+
+        // Tab persistence needs its own connection: `store` moves into
+        // the session tree below.
+        let store_for_tabs = store.duplicate().unwrap_or_else(|e| {
+            eprintln!("Wayterm: failed to duplicate store for tab persistence: {e}");
+            // Tabs then simply do not survive the run; the app is still
+            // usable, which beats refusing to start.
+            SessionStore::in_memory().expect("failed to create fallback store")
+        });
 
         // Doc 04 §Lifecycle reads `confirm_close` / `reconnect_on_drop`
         // from the settings table (doc 06 §Default Data). Resolve them once
@@ -554,6 +568,22 @@ impl MainWindow {
         let notebook_for_actions = notebook.clone();
         crate::ui::tab_resilience::install_connection_actions(&window, move || {
             crate::ui::tab::current_session_id(&notebook_for_actions)
+        });
+
+        // Tab session persistence (doc 10 Phase 4: "Remember open tabs
+        // on exit, restore on launch"). Restore first, then start
+        // watching: the restored tabs are the starting state, not a
+        // burst of user actions to be re-saved.
+        let tabs = TabPersistence::new(notebook.clone(), home_widget, store_for_tabs);
+        tabs.restore();
+        tabs.install();
+
+        // Exit save. The close-request handler is also what keeps the
+        // watcher alive for the window's lifetime — the notebook's own
+        // handlers only hold a weak reference back.
+        window.connect_close_request(move |_| {
+            tabs.flush();
+            gtk4::glib::Propagation::Proceed
         });
 
         window.present();

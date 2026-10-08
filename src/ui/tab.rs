@@ -73,7 +73,11 @@ use vte4::prelude::*;
 use zeroize::Zeroizing;
 
 /// Key used to stash the session id on the tab content widget for dedup.
-const SESSION_ID_KEY: &str = "wayterm-session-tab-id";
+///
+/// Public because the tab-persistence layer reads the same value back
+/// off a page to learn which session a tab belongs to (doc 10 Phase 4,
+/// "Remember open tabs on exit, restore on launch").
+pub const SESSION_ID_KEY: &str = "wayterm-session-tab-id";
 
 /// Key used to stash the sidebar on an SSH tab's page widget so the
 /// `toggle_sftp` action can find it — the same widget-data pattern

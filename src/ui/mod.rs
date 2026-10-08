@@ -13,6 +13,8 @@ pub mod tab_label;
 
 use sftp_sidebar::SftpSidebar;
 pub mod tab_resilience;
+pub mod tab_restore;
+pub mod tab_state;
 pub mod tray;
 
 pub use main_window::MainWindow;
@@ -27,6 +29,8 @@ pub use status_bar::StatusBar;
 pub use tab::SessionTab;
 #[allow(unused_imports)]
 pub use tab_resilience::LiveTab;
+#[allow(unused_imports)]
+pub use tab_state::{DebouncedSave, PageInfo, TabState};
 
 /// No-op that exercises the auth/host-key dialog API so the P2-6 seam stays
 /// compiled and lint-clean until P2-7 wires the dialogs into a real session
