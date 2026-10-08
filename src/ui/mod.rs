@@ -7,6 +7,8 @@ pub mod session_dialog;
 pub mod session_tree;
 pub mod status_bar;
 pub mod tab;
+pub mod tab_restore;
+pub mod tab_state;
 
 pub use main_window::MainWindow;
 #[cfg(test)]
@@ -18,6 +20,10 @@ pub use session_tree::SessionTree;
 pub use status_bar::StatusBar;
 #[allow(unused_imports)]
 pub use tab::SessionTab;
+#[allow(unused_imports)]
+pub use tab_restore::TabPersistence;
+#[allow(unused_imports)]
+pub use tab_state::{DebouncedSave, PageInfo, TabState};
 
 /// No-op that exercises the auth/host-key dialog API so the P2-6 seam stays
 /// compiled and lint-clean until P2-7 wires the dialogs into a real session

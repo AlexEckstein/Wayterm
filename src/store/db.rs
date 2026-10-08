@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::store::model::{Folder, SessionConfig};
 
@@ -377,6 +377,65 @@ impl SessionStore {
             params![id],
         )?;
         Ok(())
+    }
+
+    /// Persist the list of open tabs so the next launch can restore it
+    /// (doc 10 Phase 4: "Remember open tabs on exit, restore on
+    /// launch").
+    ///
+    /// # Why a `settings` row and not a table
+    ///
+    /// The open-tab list is one value that is always read whole and
+    /// written whole, and doc 06 already ships `settings(key TEXT
+    /// PRIMARY KEY, value TEXT)` for exactly that shape. A dedicated
+    /// `open_tabs` table would need its own CREATE in
+    /// [`MIGRATION_001`], its own idempotency story for databases that
+    /// are already on disk, and indexes — all to hold what a single
+    /// key-value row holds natively. The row is therefore written with
+    /// an upsert so repeated saves replace it instead of colliding on
+    /// the primary key.
+    ///
+    /// An empty list is stored as `[]`, not deleted: "no tabs open" is
+    /// a state worth remembering, and keeping the row means a fresh
+    /// store and a deliberately-emptied one are distinguishable.
+    ///
+    /// Only tab identity is stored — no credentials (doc 06
+    /// §"Credential Storage").
+    pub fn save_open_tabs(&self, tabs: &[crate::ui::tab_state::TabState]) -> rusqlite::Result<()> {
+        let json = crate::ui::tab_state::tabs_to_json(tabs)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![crate::ui::tab_state::OPEN_TABS_SETTING_KEY, json],
+        )?;
+        Ok(())
+    }
+
+    /// Read the persisted open-tab list.
+    ///
+    /// Returns an empty list when nothing was ever saved — a fresh
+    /// database has no `open_tabs` row, which is the same thing as "no
+    /// tabs to restore". Malformed JSON surfaces as a
+    /// [`rusqlite::Error::FromSqlConversionFailure`] rather than an
+    /// empty list: silently restoring nothing would look identical to a
+    /// successful launch with no saved tabs, and the caller can log it
+    /// and carry on.
+    pub fn load_open_tabs(&self) -> rusqlite::Result<Vec<crate::ui::tab_state::TabState>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![crate::ui::tab_state::OPEN_TABS_SETTING_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(json) = json else {
+            return Ok(Vec::new());
+        };
+        crate::ui::tab_state::tabs_from_json(&json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
     }
 }
 

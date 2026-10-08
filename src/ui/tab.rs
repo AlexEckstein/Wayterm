@@ -11,7 +11,11 @@ use gtk4::prelude::*;
 use crate::store::model::SessionConfig;
 
 /// Key used to stash the session id on the tab content widget for dedup.
-const SESSION_ID_KEY: &str = "wayterm-session-tab-id";
+///
+/// Public because the tab-persistence layer reads the same value back
+/// off a page to learn which session a tab belongs to (doc 10 Phase 4,
+/// "Remember open tabs on exit, restore on launch").
+pub const SESSION_ID_KEY: &str = "wayterm-session-tab-id";
 
 /// A placeholder terminal tab for a saved session.
 #[allow(dead_code)]
