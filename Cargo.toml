@@ -40,10 +40,6 @@ ksni = "0.3"
 [features]
 default = ["keyring"]
 keyring = []
-backend-ghostty = []
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("backend-ghostty", "keyring"))'] }
 
 [dev-dependencies]
 tempfile = "3"

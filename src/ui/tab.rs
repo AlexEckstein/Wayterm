@@ -368,10 +368,7 @@ async fn finish_connect(
     conn: Arc<SshConnection>,
 ) {
     // Swap the real terminal into the paned first, so it can be allocated.
-    // `create_terminal` hands the backend our `term_tx`; the paired
-    // `term_rx` is the pump's input (TerminalTab's documented contract).
-    let (term_tx, term_rx) = tokio::sync::mpsc::channel(256);
-    let handle = create_terminal("vte", term_tx);
+    let handle = create_terminal();
     let widget = handle.backend.widget();
     set_terminal_area(page, &widget);
 
@@ -386,29 +383,22 @@ async fn finish_connect(
     let (rows, cols) = measure_grid(&widget);
 
     let main_ctx = glib::MainContext::default();
-    let mut terminal_tab = match TerminalTab::new(
+    let (terminal_tab, state_rx) = match TerminalTab::new(
         session.as_ref(),
         Some(conn.clone()),
-        handle.backend.clone(),
-        term_rx,
+        handle,
         &main_ctx,
         rows,
         cols,
     ) {
-        Ok(tab) => tab,
+        Ok(wired) => wired,
         Err(err) => {
             show_error_view(notebook, page, session, &err.to_string());
             return;
         }
     };
-
-    let state_rx = terminal_tab.take_state_rx();
-    let slot = ensure_term_tab_slot(page);
-    *slot.borrow_mut() = Some(terminal_tab);
-
-    if let Some(rx) = state_rx {
-        spawn_state_drain(notebook.clone(), page.clone(), session.clone(), rx);
-    }
+    *ensure_term_tab_slot(page).borrow_mut() = Some(terminal_tab);
+    spawn_state_drain(notebook.clone(), page.clone(), session.clone(), state_rx);
 
     // SFTP sidebar over the same shared connection (doc 09 §Connection
     // Model; P3-2's `NOT_CONNECTED` gate is replaced by this attach).

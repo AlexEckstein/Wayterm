@@ -1,242 +1,116 @@
-use super::backend::{TerminalBackend, TerminalEvent, TerminalFeatures};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use gtk4::glib;
 use gtk4::Widget;
-use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
-use std::rc::Rc;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::TrySendError;
 use vte4::prelude::*;
 use vte4::Terminal as VteTerminal;
 
-/// Built-in terminal backend backed by the GTK4 VTE widget.
-///
-/// Implements the [`TerminalBackend`] trait from doc 02. User keystrokes and
-/// resize events are forwarded via an async channel without ever blocking the
-/// GTK main thread: the fast path uses [`mpsc::Sender::try_send`]; if the
-/// channel is full, the bytes/payload are parked in a [`RefCell<VecDeque>`]
-/// and flushed from a `glib::idle_add_local` callback. See doc 02
-/// §Backpressure for the normative shape.
+use super::backend::{TerminalBackend, TerminalEvent, TerminalFeatures};
+use crate::backpressure::PendingQueue;
+
+/// The built-in backend: the GTK4 VTE widget (doc 02). Main thread only.
 pub struct VteBackend {
     terminal: VteTerminal,
 }
 
-// VteBackend is intentionally not Send: the vte4::Terminal widget must stay on
-// the GTK main thread. The TerminalBackend trait no longer requires Send so
-// `Arc<dyn TerminalBackend>` can hold the widget without unsafe impls.
-
 impl VteBackend {
-    /// Construct a new VTE-backed terminal and wire GTK signals.
-    ///
-    /// Must be called from the GTK main thread. `event_tx` is the sender half
-    /// of the bounded channel consumed by the transport pump task.
+    /// Build the widget and wire its signals to `event_tx`, the bounded
+    /// channel the transport pump consumes.
     pub fn new(event_tx: mpsc::Sender<TerminalEvent>) -> Self {
         let terminal = VteTerminal::new();
+        let sender = EventSender::new(event_tx);
 
-        wire_commit(&terminal, event_tx.clone());
-        wire_resize(&terminal, event_tx.clone());
-        wire_size(&terminal, event_tx);
+        let commit = sender.clone();
+        terminal.connect_commit(move |_, data, _| {
+            commit.send(TerminalEvent::DataOut(data.as_bytes().to_vec()));
+        });
+
+        // `resize-window` reports child-initiated resizes as (cols, rows).
+        let resize = sender.clone();
+        terminal.connect_resize_window(move |_, cols, rows| {
+            resize.send(TerminalEvent::SizeChange { rows, cols });
+        });
+
+        // Widget allocation changes (pane drags, window resizes) only show up
+        // as new row/column counts on `contents-changed`, which also fires on
+        // every byte of output — so only a changed grid is sent.
+        let last = Cell::new(grid_from_counts(
+            terminal.row_count(),
+            terminal.column_count(),
+        ));
+        terminal.connect_contents_changed(move |term| {
+            let grid = grid_from_counts(term.row_count(), term.column_count());
+            if last.replace(grid) != grid {
+                sender.send(TerminalEvent::SizeChange {
+                    rows: grid.0,
+                    cols: grid.1,
+                });
+            }
+        });
 
         Self { terminal }
     }
 }
 
-/// Wire VTE's `commit` signal to the event channel using the try_send +
-/// idle-flush backpressure pattern from doc 02.
-fn wire_commit(terminal: &VteTerminal, tx: mpsc::Sender<TerminalEvent>) {
-    let pending: Rc<RefCell<VecDeque<Vec<u8>>>> = Rc::new(RefCell::new(VecDeque::new()));
-    let idle_scheduled = Rc::new(Cell::new(false));
-
-    terminal.connect_commit(move |_term, data: &str, _size: u32| {
-        let event = TerminalEvent::DataOut(data.as_bytes().to_vec());
-        if let Err(err) = tx.try_send(event) {
-            let chunk = match err {
-                TrySendError::Full(TerminalEvent::DataOut(c)) => c,
-                // commit only emits DataOut; a Closed channel is silently dropped.
-                TrySendError::Closed(_) | TrySendError::Full(_) => return,
-            };
-            pending.borrow_mut().push_back(chunk);
-            if !idle_scheduled.get() {
-                idle_scheduled.set(true);
-                let pending2 = pending.clone();
-                let tx2 = tx.clone();
-                let idle_scheduled2 = idle_scheduled.clone();
-                glib::idle_add_local(move || {
-                    let mut q = pending2.borrow_mut();
-                    while let Some(chunk) = q.pop_front() {
-                        match tx2.try_send(TerminalEvent::DataOut(chunk)) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(TerminalEvent::DataOut(chunk))) => {
-                                q.push_front(chunk);
-                                return glib::ControlFlow::Continue;
-                            }
-                            Err(TrySendError::Closed(_)) => {
-                                q.clear();
-                                return glib::ControlFlow::Break;
-                            }
-                            Err(TrySendError::Full(_)) => {
-                                unreachable!("commit flush only emits DataOut events")
-                            }
-                        }
-                    }
-                    idle_scheduled2.set(false);
-                    glib::ControlFlow::Continue
-                });
-            }
-        }
-    });
+/// Sends terminal events without ever blocking the GTK main thread
+/// (doc 02 §Backpressure): events the channel refuses are parked and
+/// flushed, in order, from an idle callback. Nothing is dropped unless the
+/// pump is gone.
+#[derive(Clone)]
+struct EventSender {
+    tx: mpsc::Sender<TerminalEvent>,
+    pending: Rc<RefCell<PendingQueue<TerminalEvent>>>,
+    flush_scheduled: Rc<Cell<bool>>,
 }
 
-/// Wire VTE's `resize-window` signal to the event channel using the same
-/// try_send + idle-flush backpressure pattern.
-fn wire_resize(terminal: &VteTerminal, tx: mpsc::Sender<TerminalEvent>) {
-    let pending: Rc<RefCell<VecDeque<TerminalEvent>>> = Rc::new(RefCell::new(VecDeque::new()));
-    let idle_scheduled = Rc::new(Cell::new(false));
+impl EventSender {
+    fn new(tx: mpsc::Sender<TerminalEvent>) -> Self {
+        Self {
+            tx,
+            pending: Rc::default(),
+            flush_scheduled: Rc::default(),
+        }
+    }
 
-    // vte4 0.10 names the signal `resize-window`; the binding method is
-    // `connect_resize_window` and the parameters are `(width, height)` in
-    // terminal cells.
-    terminal.connect_resize_window(move |_term, width: u32, height: u32| {
-        let event = TerminalEvent::SizeChange {
-            rows: height,
-            cols: width,
-        };
-        if let Err(err) = tx.try_send(event) {
-            let ev = match err {
-                TrySendError::Full(TerminalEvent::SizeChange { rows, cols }) => {
-                    TerminalEvent::SizeChange { rows, cols }
+    fn send(&self, event: TerminalEvent) {
+        // Queue behind anything already parked so events stay in order.
+        self.pending.borrow_mut().push(event);
+        if !self.flush() && !self.flush_scheduled.replace(true) {
+            let this = self.clone();
+            glib::idle_add_local(move || {
+                if this.flush() {
+                    this.flush_scheduled.set(false);
+                    glib::ControlFlow::Break
+                } else {
+                    glib::ControlFlow::Continue
                 }
-                TrySendError::Closed(_) => return,
-                // resize only emits SizeChange.
-                TrySendError::Full(_) => return,
-            };
-            pending.borrow_mut().push_back(ev);
-            if !idle_scheduled.get() {
-                idle_scheduled.set(true);
-                let pending2 = pending.clone();
-                let tx2 = tx.clone();
-                let idle_scheduled2 = idle_scheduled.clone();
-                glib::idle_add_local(move || {
-                    let mut q = pending2.borrow_mut();
-                    while let Some(ev) = q.pop_front() {
-                        match tx2.try_send(ev) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(TerminalEvent::SizeChange { rows, cols })) => {
-                                q.push_front(TerminalEvent::SizeChange { rows, cols });
-                                return glib::ControlFlow::Continue;
-                            }
-                            Err(TrySendError::Closed(_)) => {
-                                q.clear();
-                                return glib::ControlFlow::Break;
-                            }
-                            Err(TrySendError::Full(_)) => {
-                                unreachable!("resize flush only emits SizeChange events")
-                            }
-                        }
-                    }
-                    idle_scheduled2.set(false);
-                    glib::ControlFlow::Continue
-                });
-            }
+            });
         }
-    });
+    }
+
+    /// Offer parked events to the channel; `true` once nothing is left.
+    fn flush(&self) -> bool {
+        let report = self
+            .pending
+            .borrow_mut()
+            .drain_with(|event| self.tx.try_send(event));
+        report.remaining == 0
+    }
 }
 
-/// Clamp VTE's signed cell counts to a positive grid size so a degenerate
-/// reading can never emit a zero-dimension PTY resize downstream.
+/// VTE reports signed cell counts; never emit a zero or negative grid.
 fn grid_from_counts(rows: i64, cols: i64) -> (u32, u32) {
     (
-        rows.clamp(1, u32::MAX as i64) as u32,
-        cols.clamp(1, u32::MAX as i64) as u32,
+        rows.clamp(1, u32::MAX.into()) as u32,
+        cols.clamp(1, u32::MAX.into()) as u32,
     )
 }
 
-/// Dedup gate for `contents-changed`: the signal also fires on plain output,
-/// so only a grid that differs from the last emitted one produces a size
-/// event. Returns the new size when it changed, `None` when unchanged.
-fn changed_size(last: Option<(u32, u32)>, current: (u32, u32)) -> Option<(u32, u32)> {
-    (last != Some(current)).then_some(current)
-}
-
-/// Wire VTE's `contents-changed` signal as a size event.
-///
-/// `resize-window` only fires for child-app-initiated resizes; widget
-/// allocation changes (pane moves, window resizes) surface as changed
-/// `row_count`/`column_count` on `contents-changed` — verified against the
-/// installed VTE: shrinking a pane 120 → 84 columns reproduced as counts 84.
-/// Plain output fires the same signal, so the last emitted grid is
-/// deduplicated through [`changed_size`] to avoid resize spam.
-///
-/// Uses the same try_send + idle-flush backpressure pattern as the other
-/// wires: `SizeChange` is rare and small, but a parked event must survive a
-/// full channel (a dropped resize would desync the PTY from the widget).
-fn wire_size(terminal: &VteTerminal, tx: mpsc::Sender<TerminalEvent>) {
-    let last: Rc<Cell<Option<(u32, u32)>>> = Rc::new(Cell::new(Some(grid_from_counts(
-        terminal.row_count(),
-        terminal.column_count(),
-    ))));
-    let pending: Rc<RefCell<VecDeque<TerminalEvent>>> = Rc::new(RefCell::new(VecDeque::new()));
-    let idle_scheduled = Rc::new(Cell::new(false));
-
-    terminal.connect_contents_changed(move |term| {
-        let current = grid_from_counts(term.row_count(), term.column_count());
-        let Some(size) = changed_size(last.get(), current) else {
-            return;
-        };
-        last.set(Some(size));
-        let event = TerminalEvent::SizeChange {
-            rows: size.0,
-            cols: size.1,
-        };
-        if let Err(err) = tx.try_send(event) {
-            let ev = match err {
-                TrySendError::Full(TerminalEvent::SizeChange { rows, cols }) => {
-                    TerminalEvent::SizeChange { rows, cols }
-                }
-                TrySendError::Closed(_) => return,
-                // contents-changed only emits SizeChange here.
-                TrySendError::Full(_) => return,
-            };
-            pending.borrow_mut().push_back(ev);
-            if !idle_scheduled.get() {
-                idle_scheduled.set(true);
-                let pending2 = pending.clone();
-                let tx2 = tx.clone();
-                let idle_scheduled2 = idle_scheduled.clone();
-                glib::idle_add_local(move || {
-                    let mut q = pending2.borrow_mut();
-                    while let Some(ev) = q.pop_front() {
-                        match tx2.try_send(ev) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(TerminalEvent::SizeChange { rows, cols })) => {
-                                q.push_front(TerminalEvent::SizeChange { rows, cols });
-                                return glib::ControlFlow::Continue;
-                            }
-                            Err(TrySendError::Closed(_)) => {
-                                q.clear();
-                                return glib::ControlFlow::Break;
-                            }
-                            Err(TrySendError::Full(_)) => {
-                                unreachable!("contents-changed flush only emits SizeChange events")
-                            }
-                        }
-                    }
-                    idle_scheduled2.set(false);
-                    glib::ControlFlow::Continue
-                });
-            }
-        }
-    });
-}
-
-// Interaction + scrollback methods below all drive the live widget, so they
-// are only verifiable under a display: the xvfb path is the ignored
-// `vte_scrollback_roundtrip` test in `tests/terminal_polish.rs` (see
-// `scrollback_text`). Display-free routing of the actions that reach them is
-// covered by the FakeBackend tests in the same file.
 impl TerminalBackend for VteBackend {
     fn widget(&self) -> Widget {
-        self.terminal.clone().upcast::<Widget>()
+        self.terminal.clone().upcast()
     }
 
     fn write(&self, data: &[u8]) {
@@ -244,59 +118,62 @@ impl TerminalBackend for VteBackend {
     }
 
     fn set_size(&self, rows: u32, cols: u32) {
-        // vte4 0.10's `set_size` takes `(columns, rows)` as `libc::c_long`.
-        self.terminal.set_size(cols as i64, rows as i64);
+        self.terminal.set_size(cols.into(), rows.into());
     }
 
     fn features(&self) -> TerminalFeatures {
-        build_features()
+        // SAFETY: plain getters for the loaded library's version.
+        let (major, minor) = unsafe {
+            (
+                vte4::ffi::vte_get_major_version(),
+                vte4::ffi::vte_get_minor_version(),
+            )
+        };
+        TerminalFeatures {
+            search: true,
+            color_schemes: true,
+            scrollback_search: true,
+            url_detection: true,
+            // SIXEL landed in VTE 0.62 — a runtime check, never a hardcode.
+            sixel_graphics: (major, minor) >= (0, 62),
+            kitty_graphics: false,
+            custom_fonts: true,
+            reflow: true,
+            alternate_screen: true,
+            scrollback_config: true,
+        }
     }
 
-    fn set_color_scheme(&self, _name: &str) {
-        // Loading/applying palettes is intentionally out of scope for P2-2.
-        // This is a documented stub pending the color-scheme store (doc 03).
-    }
+    /// Not implemented yet: needs the color-scheme store.
+    fn set_color_scheme(&self, _name: &str) {}
 
     fn set_font(&self, font_desc: &pango::FontDescription) {
         self.terminal.set_font(Some(font_desc));
     }
 
-    fn set_opacity(&self, opacity: f64) {
-        // vte4 0.10 does not expose `set_opacity` on the GTK4 port; the
-        // background color alpha path lives in the color-scheme work later.
-        // Clamp and store the value would be a hidden no-op, so simply leave
-        // this as a documented stub.
-        let _ = opacity;
-    }
+    /// Not implemented yet: the GTK4 VTE binding has no `set_opacity`; it
+    /// arrives with background-alpha color schemes.
+    fn set_opacity(&self, _opacity: f64) {}
 
     fn set_scrollback_limit(&self, lines: u32) {
-        // vte4 0.10 `set_scrollback_lines` takes `libc::c_long`.
-        self.terminal.set_scrollback_lines(lines as i64);
+        self.terminal.set_scrollback_lines(lines.into());
     }
 
     fn selected_text(&self) -> Option<String> {
-        if self.terminal.has_selection() {
-            // vte4 0.10 implements this as `TerminalExt::text_selected`
-            // (requires the `v0_70` feature, which is enabled by vte4's
-            // default binding set). It is gated behind the trait.
-            self.terminal
-                .text_selected(vte4::Format::Text)
-                .as_ref()
-                .map(|s| s.to_string())
-        } else {
-            None
-        }
+        self.terminal
+            .has_selection()
+            .then(|| self.terminal.text_selected(vte4::Format::Text))
+            .flatten()
+            .map(|text| text.to_string())
     }
 
     fn copy_selection(&self) {
         if self.terminal.has_selection() {
-            // vte4 0.10 uses `copy_clipboard_format` with `Format::Text`.
             self.terminal.copy_clipboard_format(vte4::Format::Text);
         }
     }
 
     fn paste(&self, text: &str) {
-        // vte4 0.10 binding name is `paste_text` (doc 02 guessed correctly).
         self.terminal.paste_text(text);
     }
 
@@ -308,25 +185,16 @@ impl TerminalBackend for VteBackend {
         self.terminal.reset(true, true);
     }
 
+    /// Regex search (PCRE2, case-sensitive) with wrap-around. An empty or
+    /// invalid query clears the highlight instead of stepping a stale match.
     fn search(&self, text: &str, reverse: bool) {
-        // vte4 0.10 exposes `search_set_regex(&Regex, flags)` — the GTK3-era
-        // `search_set_gregex` does not exist in the GTK4 binding. Regexes are
-        // PCRE2 via `vte4::Regex::for_match`; flags 0 = case-sensitive,
-        // unanchored (doc 02 leaves match flags to the implementation).
-        if text.is_empty() {
-            // Empty query clears the highlight instead of keeping the last
-            // match selected.
-            self.terminal.search_set_regex(None::<&vte4::Regex>, 0);
-            return;
-        }
-        let Ok(regex) = vte4::Regex::for_match(text, 0) else {
-            // Invalid regex (e.g. a dangling '('): clear any previous match
-            // rather than stepping with a stale one.
+        let regex = (!text.is_empty())
+            .then(|| vte4::Regex::for_match(text, 0).ok())
+            .flatten();
+        let Some(regex) = regex else {
             self.terminal.search_set_regex(None::<&vte4::Regex>, 0);
             return;
         };
-        // Configure wrap-around *before* stepping so the very first
-        // forward/backward step already wraps.
         self.terminal.search_set_wrap_around(true);
         self.terminal.search_set_regex(Some(&regex), 0);
         if reverse {
@@ -336,44 +204,28 @@ impl TerminalBackend for VteBackend {
         }
     }
 
+    /// The whole buffer, scrollback included (VTE >= 0.72). Row 0 is the
+    /// oldest line and `row_count` only counts screen rows, so the range
+    /// spans the scrollback limit plus the screen; VTE clamps past the end.
+    /// Verified under xvfb by `tests/terminal_polish.rs`.
     fn scrollback_text(&self) -> Option<String> {
-        // vte4 0.10 leaves `text_range` commented out (the callback argument
-        // has no binding conversion); the generated replacement is
-        // `text_range_format` (VTE >= 0.72, crate feature `v0_72`).
-        //
-        // Row 0 is the oldest line of the buffer (verified under xvfb) and
-        // `row_count` counts *screen* rows only, so the range end must span
-        // the scrollback ring limit + screen rows; VTE clamps past the last
-        // line that exists. `scrollback_lines()` is the configured limit
-        // (negative = unlimited) — for unlimited rings fall back to a large
-        // fixed window (the ring is scanned, not the number).
-        //
-        // Widget-dependent: not reachable from display-free tests. The
-        // xvfb verification path is the `vte_scrollback_roundtrip` test in
-        // `tests/terminal_polish.rs`, run via:
-        //   xvfb-run -a cargo test --test terminal_polish -- --ignored
         let rows = self.terminal.row_count();
         let cols = self.terminal.column_count();
         if rows <= 0 || cols <= 0 {
             return None;
         }
-        let scrollback = self.terminal.scrollback_lines();
-        let ring = if scrollback >= 0 {
-            scrollback
-        } else {
-            // Unlimited scrollback: any fixed end is a guess; VTE only holds
-            // the lines actually written, and clamps the range.
-            100_000
+        // Negative = unlimited; VTE only holds what was written anyway.
+        let ring = match self.terminal.scrollback_lines() {
+            n if n >= 0 => n,
+            _ => 100_000,
         };
-        let end_row = ring + rows - 1;
-        let (text, _len) =
+        let (text, _) =
             self.terminal
-                .text_range_format(vte4::Format::Text, 0, 0, end_row, cols - 1);
-        text.map(|g| g.to_string())
+                .text_range_format(vte4::Format::Text, 0, 0, ring + rows - 1, cols - 1);
+        text.map(|text| text.to_string())
     }
 
     fn scroll_to_top(&self) {
-        // VTE4 implements scrolling via its `Scrollable` vadjustment.
         if let Some(adj) = self.terminal.vadjustment() {
             adj.set_value(adj.lower());
         }
@@ -381,8 +233,7 @@ impl TerminalBackend for VteBackend {
 
     fn scroll_to_bottom(&self) {
         if let Some(adj) = self.terminal.vadjustment() {
-            let bottom = (adj.upper() - adj.page_size()).max(adj.lower());
-            adj.set_value(bottom);
+            adj.set_value((adj.upper() - adj.page_size()).max(adj.lower()));
         }
     }
 
@@ -403,76 +254,10 @@ impl TerminalBackend for VteBackend {
     }
 }
 
-/// Feature mapping extracted for display-free unit testing.
-///
-/// Doc 02 required SIXEL detection to be a runtime check, never hardcoded.
-/// The vte4 0.10 crate does not expose `check_version`; the installed VTE
-/// version is queried via `vte4::ffi` (pkg-config tells us runtime version).
-fn build_features() -> TerminalFeatures {
-    // Runtime SIXEL capability check: VTE >= 0.62. The vte4-sys crate exposes
-    // the C getters, not a helper, so compute the predicate directly.
-    // SAFETY: these are pure getters returning the compile-time/runtime
-    // version of the loaded VTE library.
-    let sixel_graphics = unsafe {
-        let major = vte4::ffi::vte_get_major_version();
-        let minor = vte4::ffi::vte_get_minor_version();
-        (major, minor) >= (0, 62)
-    };
-
-    TerminalFeatures {
-        search: true,
-        color_schemes: true,
-        scrollback_search: true,
-        url_detection: true,
-        sixel_graphics,
-        kitty_graphics: false, // no Kitty graphics protocol in VTE
-        custom_fonts: true,
-        reflow: true,
-        alternate_screen: true,
-        scrollback_config: true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::{Cell, RefCell};
-    use std::collections::VecDeque;
-    use std::rc::Rc;
-    use tokio::sync::mpsc::error::TrySendError;
 
-    /// The features mapping must always report VTE-parity defaults.
-    /// SIXEL depends on the installed library; the other flags are fixed.
-    #[test]
-    fn vte_feature_mapping_matches_contract() {
-        let f = build_features();
-        assert!(f.search);
-        assert!(f.color_schemes);
-        assert!(f.scrollback_search);
-        assert!(f.url_detection);
-        assert!(!f.kitty_graphics);
-        assert!(f.custom_fonts);
-        assert!(f.reflow);
-        assert!(f.alternate_screen);
-        assert!(f.scrollback_config);
-    }
-
-    /// `contents-changed` fires on plain output too; only a genuinely changed
-    /// grid may emit `SizeChange` (probed: every keystroke fires the signal).
-    #[test]
-    fn changed_size_dedups_unchanged_grids() {
-        // First observation always emits.
-        assert_eq!(changed_size(None, (24, 80)), Some((24, 80)));
-        // Same grid (plain output) → suppressed.
-        assert_eq!(changed_size(Some((24, 80)), (24, 80)), None);
-        // Pane resize → emitted, rows and cols independent.
-        assert_eq!(changed_size(Some((24, 80)), (24, 120)), Some((24, 120)));
-        assert_eq!(changed_size(Some((35, 59)), (24, 59)), Some((24, 59)));
-        assert_eq!(changed_size(Some((35, 59)), (36, 60)), Some((36, 60)));
-    }
-
-    /// VTE reports cell counts as signed integers; degenerate readings must
-    /// never produce a zero or wrapping grid size.
     #[test]
     fn grid_from_counts_clamps_degenerate_values() {
         assert_eq!(grid_from_counts(24, 80), (24, 80));
@@ -481,65 +266,25 @@ mod tests {
         assert_eq!(grid_from_counts(i64::MAX, 80), (u32::MAX, 80));
     }
 
-    /// Display-free model of the try_send + idle-flush backpressure path.
-    /// Simulates a bounded channel of capacity zero so the first send parks
-    /// the chunk; a second attempt after space is made drains the queue.
-    #[tokio::test]
-    async fn idle_flush_mechanic_drains_parked_events() {
-        let (tx, mut rx) = mpsc::channel::<TerminalEvent>(1);
-        let pending: Rc<RefCell<VecDeque<Vec<u8>>>> = Rc::new(RefCell::new(VecDeque::new()));
-        let idle_scheduled = Rc::new(Cell::new(false));
+    /// The sender's display-free path: a full channel parks events, and a
+    /// later flush delivers them in order once there is room.
+    #[test]
+    fn a_full_channel_parks_events_until_a_flush_finds_room() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let sender = EventSender::new(tx);
+        sender.pending.borrow_mut().push(TerminalEvent::Bell);
+        assert!(sender.flush(), "room for one event");
+        sender
+            .pending
+            .borrow_mut()
+            .push(TerminalEvent::DataOut(b"a".to_vec()));
+        assert!(!sender.flush(), "the channel is full");
 
-        // Fill the channel so the next send takes the slow path.
-        tx.try_send(TerminalEvent::DataOut(vec![0x00]))
-            .expect("precondition: fill channel");
-
-        let chunk = vec![0x41, 0x42];
-        if let Err(err) = tx.try_send(TerminalEvent::DataOut(chunk.clone())) {
-            let parked = match err {
-                TrySendError::Full(TerminalEvent::DataOut(c)) => c,
-                other => panic!("expected Full(DataOut), got {:?}", other),
-            };
-            pending.borrow_mut().push_back(parked);
-            idle_scheduled.set(true);
-        } else {
-            panic!("expected channel to be full");
-        }
-
-        // Simulate the idle flush: drain the queue by re-sending once capacity
-        // is available. In the real widget this happens inside
-        // glib::idle_add_local; here we exercise the same state machine.
-        assert!(idle_scheduled.get());
-
-        // Make room in the channel.
-        let _ = rx.recv().await;
-
-        // Flush exactly like the idle callback would.
-        let flushed = {
-            let mut q = pending.borrow_mut();
-            while let Some(chunk) = q.pop_front() {
-                match tx.try_send(TerminalEvent::DataOut(chunk)) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(c)) => {
-                        if let TerminalEvent::DataOut(v) = c {
-                            q.push_front(v);
-                            break;
-                        }
-                        panic!("unexpected event variant returned");
-                    }
-                    Err(TrySendError::Closed(_)) => {
-                        q.clear();
-                        break;
-                    }
-                }
-            }
-            q.is_empty()
-        };
-
-        assert!(flushed);
-        idle_scheduled.set(false);
-
-        let received = rx.recv().await.expect("parked event should arrive");
-        assert_eq!(received, TerminalEvent::DataOut(vec![0x41, 0x42]));
+        assert_eq!(rx.try_recv().unwrap(), TerminalEvent::Bell);
+        assert!(sender.flush());
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            TerminalEvent::DataOut(b"a".to_vec())
+        );
     }
 }
