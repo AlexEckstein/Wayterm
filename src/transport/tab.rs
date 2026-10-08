@@ -77,12 +77,25 @@ pub fn create_transport(
     initial_cols: u32,
 ) -> Result<Box<dyn Transport>, TransportError> {
     match &config.session_type {
-        SessionType::SSH => Ok(Box::new(SSHTransport::new(
-            connection.ok_or_else(|| TransportError::ChannelError("no connection".into()))?,
-            event_tx,
-            initial_rows,
-            initial_cols,
-        ))),
+        SessionType::SSH => {
+            let mut transport = SSHTransport::new(
+                connection.ok_or_else(|| TransportError::ChannelError("no connection".into()))?,
+                event_tx,
+                initial_rows,
+                initial_cols,
+            );
+            // Doc 04 §Tmux Session Persistence: the toggle is per-session and
+            // must be set pre-connect, since `connect()` execs
+            // `tmux new -A -s wayterm-<name>` instead of a shell. The stored
+            // name is the bare suffix — the transport prepends `wayterm-`
+            // itself — and `tmux_session_suffix` resolves an absent name from
+            // the session name at this one place, so the remote always sees a
+            // non-empty `wayterm-` session.
+            if let Some(suffix) = config.tmux_session_suffix() {
+                transport.set_tmux_enabled(true, suffix);
+            }
+            Ok(Box::new(transport))
+        }
         SessionType::LocalShell | SessionType::Serial => Err(TransportError::ChannelError(
             "local PTY and serial transports are Phase 5 (doc 04)".into(),
         )),
@@ -190,6 +203,9 @@ impl TerminalTab {
         //    status bar, reconnect prompt (doc 04 §Wiring). Unbounded:
         //    these are rare and must never block the bridge.
         let (state_tx, state_rx) = mpsc::unbounded_channel::<TransportEvent>();
+        // The pump reports its own connect failures on this channel too,
+        // so the UI never sees a tab that silently died at startup.
+        let pump_state_tx = state_tx.clone();
 
         let cancel = CancellationToken::new();
 
@@ -236,10 +252,12 @@ impl TerminalTab {
             let cancel = cancel.clone();
             tokio::spawn(async move {
                 let mut events = events;
-                if transport.connect().await.is_err() {
-                    // Doc 04 §Lifecycle: close from any state → disconnect.
-                    // A failed connect still owns a half-open transport; emit
-                    // state and clean up instead of leaking it.
+                if let Err(err) = transport.connect().await {
+                    // Surface the failure before tearing the half-open
+                    // transport down (doc 04 §Lifecycle: close from any
+                    // state → disconnect), so the UI can show an error
+                    // view instead of a permanently blank tab.
+                    let _ = pump_state_tx.send(TransportEvent::Error(err.to_string()));
                     transport.disconnect().await.ok();
                     return;
                 }
@@ -362,6 +380,7 @@ mod tests {
         resizes: Arc<Mutex<Vec<(u32, u32)>>>,
         connects: Arc<AtomicUsize>,
         disconnects: Arc<AtomicUsize>,
+        fail_connect: bool,
     }
 
     impl MockTransport {
@@ -379,7 +398,16 @@ mod tests {
                 resizes: handle.resizes.clone(),
                 connects: handle.connects.clone(),
                 disconnects: handle.disconnects.clone(),
+                fail_connect: false,
             };
+            (transport, handle)
+        }
+
+        /// A transport whose `connect` always fails — the display-free way
+        /// to exercise the pump's failure path.
+        fn failing(event_tx: mpsc::Sender<TransportEvent>) -> (Self, MockHandle) {
+            let (mut transport, handle) = Self::new(event_tx);
+            transport.fail_connect = true;
             (transport, handle)
         }
     }
@@ -388,6 +416,9 @@ mod tests {
     impl Transport for MockTransport {
         async fn connect(&mut self) -> Result<(), TransportError> {
             self.connects.fetch_add(1, Ordering::SeqCst);
+            if self.fail_connect {
+                return Err(TransportError::ConnectionFailed("connect refused".into()));
+            }
             self.state = TransportState::Connected;
             Ok(())
         }
@@ -546,6 +577,36 @@ mod tests {
         assert!(matches!(received[2], TransportEvent::ConnectionLost));
         assert!(h.tab.take_state_rx().is_none());
         h.tab.close().await;
+    }
+
+    /// A failed `transport.connect()` reports `TransportEvent::Error` on the
+    /// state channel (so the UI can show an error view) and still tears the
+    /// half-open transport down exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_failure_emits_error_to_state_channel() {
+        let ctx = glib::MainContext::new();
+        let (event_tx, event_rx) = mpsc::channel(256);
+        let (transport, handle) = MockTransport::failing(event_tx);
+        let (term_tx, term_rx) = mpsc::channel(256);
+        let fake = FakeBackend::new();
+        let mut emitter = fake.clone();
+        emitter.event_tx = Some(term_tx);
+        let mut tab =
+            TerminalTab::for_test(Box::new(transport), event_rx, Arc::new(fake), term_rx, &ctx);
+
+        let mut rx = tab.take_state_rx().expect("state receiver taken once");
+        let ev = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("state event before timeout")
+            .expect("state channel open");
+        assert!(
+            matches!(ev, TransportEvent::Error(ref m) if m.contains("connect refused")),
+            "expected connect error, got {ev:?}"
+        );
+
+        drive(&ctx, "transport.disconnect", || handle.disconnects() == 1);
+        tab.close().await;
+        assert_eq!(handle.disconnects(), 1);
     }
 
     /// Doc 04 §Transport Factory mapping — every non-SSH type is an error,

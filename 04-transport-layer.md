@@ -533,6 +533,9 @@ that bind this doc:
 ## Tmux Session Persistence
 
 Per-session toggle in session config: "Persist via tmux: ☑"
+(`sessions.tmux_enabled` + `sessions.tmux_session_name`, doc 06). The
+checkbox and the session-name field live in the dialog's SSH group; the
+transport is SSH-only, so no other type shows them.
 
 When enabled, SSHTransport runs `tmux new -A -s <name>` instead of a
 plain shell. This means:
@@ -550,12 +553,33 @@ otherwise split the command).
 Caveat: tmux scrollback persists on the remote host after disconnect —
 data-at-rest on the remote side, out of scope client-side (doc 11).
 
+### Where the name lives (implemented)
+
+`sessions.tmux_session_name` stores the **bare suffix**, not the full
+remote name: `SSHTransport` prepends `wayterm-` itself, so
+`create_transport` hands it `SessionConfig::tmux_session_suffix()`. A
+`NULL` name resolves to the session's own name at that one point, which
+is what an empty field in the dialog means.
+
+The dialog shows the *full* remote name (`wayterm-<suffix>`) so what the
+user reads matches `tmux list-sessions`; the mapper strips one leading
+`wayterm-` on the way in, so a bare name typed by hand cannot produce
+`wayterm-wayterm-x`. The Entry follows the Name field until the user
+edits it, after which their name wins.
+
+Verified against a real sshd in `tests/tmux_persistence.rs`: connect with
+the toggle on → `TMUX` is set and `#S` is the `wayterm-` session →
+transport disconnected and the `SshConnection` dropped → session still on
+the host → reconnect over a brand-new connection → the **same tmux
+session id** and session-scoped environment written before the drop. With
+the toggle off, the shell is a plain shell and no session is created.
+
 ## Crate Dependencies
 
 ```toml
 [dependencies]
 russh = "0.63"           # Pure Rust SSH client (tokio-native)
-russh-sftp = "2.4"       # SFTP subsystem (doc 09)
+russh-sftp = "3.0"       # SFTP subsystem (doc 09)
 russh-config = "0.58"    # ~/.ssh/config parsing (doc 10 phase 9 import)
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }

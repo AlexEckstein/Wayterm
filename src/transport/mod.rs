@@ -13,6 +13,7 @@ pub mod connection;
 pub mod credentials;
 pub mod hostkey;
 pub mod ssh;
+pub mod supervisor;
 pub mod tab;
 pub mod types;
 
@@ -139,6 +140,27 @@ pub fn touch_public_api() {
             | connection::AuthMethod::None => {}
         }
     }
+
+    // connection supervisor (doc 04 §Connection Supervisor)
+    let _ = supervisor::ConnectionSupervisor::<connection::SshConnection>::new;
+    let _ = supervisor::ConnectionSupervisor::<connection::SshConnection>::get_or_connect;
+    let pool_key = supervisor::ConnectionKey {
+        host: String::from("h"),
+        port: 22,
+        username: String::from("u"),
+    };
+    let _ = pool_key.host.len();
+    let _ = pool_key.port;
+    let _ = pool_key.username.len();
+    let params = supervisor::ConnectParams {
+        host: String::from("h"),
+        port: 22,
+        username: String::from("u"),
+    };
+    let _ = params.host.len();
+    let _ = params.port;
+    let _ = params.username.len();
+    let _ = <connection::SshConnection as supervisor::PooledConnection>::disconnect_now;
 
     // auth chain
     let _ = auth::authenticate_chain;

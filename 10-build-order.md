@@ -63,9 +63,10 @@ persist across restart.
 - [ ] **CI green** (11-ssh-auth-security.md §Testing): cargo
   fmt/clippy/test against a containerized sshd; FakeBackend transport
   tests for the pump/reader path — fmt/clippy/test are wired and the
-  real-sshd suite exists, but the **auth-method matrix is not
-  server-gated** and the FakeBackend pump/reader tests need the tab
-  wiring above
+  real-sshd suite exists, and the auth-method matrix is now
+  server-gated (`scripts/auth-matrix-sshd.sh` + `tests/auth_matrix.rs`,
+  local/pre-merge — CI still provisions only the all-methods sshd), but
+  the FakeBackend pump/reader tests need the tab wiring above
 - [ ] Spike (half-day, parallel): xfreerdp `/from-stdin` behavior on
   target distros — knowledge for Phase 7, cheap to do now
 
@@ -223,10 +224,16 @@ just not in-window) while planning migration to libfreerdp C API.
 
 **Goal:** Optional session persistence via tmux.
 
-- [ ] SSHTransport tmux integration (04-transport-layer.md)
+- [x] SSHTransport tmux integration (04-transport-layer.md)
   - `tmux new -A -s wayterm-<name>` instead of plain shell
-  - Per-session toggle in session config
+  - Per-session toggle in session config — dialog checkbox + remote
+    session name in the SSH group; stored in `tmux_enabled` /
+    `tmux_session_name` (doc 06), consumed by `create_transport`
 - [ ] Reconnect logic: detect drop, show "Reconnect?" prompt
+  - the persistence half is done and proven
+    (`tests/tmux_persistence.rs`: drop the transport *and* the
+    connection, reconnect, same tmux session id + session state); the
+    prompt/backoff loop itself is still to do
 - [ ] Auto-reconnect option (configurable per-session)
 - [ ] tmux session cleanup on graceful disconnect (optional)
 

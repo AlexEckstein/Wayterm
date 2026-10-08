@@ -5,8 +5,11 @@ pub mod hostkey_dialog;
 pub mod main_window;
 pub mod session_dialog;
 pub mod session_tree;
+pub mod sftp_sidebar;
 pub mod status_bar;
 pub mod tab;
+
+use sftp_sidebar::SftpSidebar;
 
 pub use main_window::MainWindow;
 #[cfg(test)]
@@ -82,4 +85,19 @@ pub fn touch_dialog_api() {
         crate::transport::hostkey::HostKeyDecision::Reject
     });
     let _ = hostkey_dialog::host_key_prompt();
+}
+
+/// No-op that exercises the SFTP sidebar API (doc 09) so the P3-2 seam stays
+/// compiled and lint-clean until the connect flow owns an `SshConnection` to
+/// hand [`SftpSidebar::attach`]. Same pattern as
+/// [`crate::transport::touch_public_api`]: the bin target compiles this module
+/// tree privately, so an unwired `pub fn` would otherwise read as dead code.
+///
+/// Function items only — constructing the widget needs a display, and this
+/// runs before GTK is initialized.
+pub fn touch_sftp_api() {
+    let _ = SftpSidebar::new;
+    let _ = SftpSidebar::attach;
+    let _ = SftpSidebar::toggle_visible;
+    let _ = SftpSidebar::widget;
 }

@@ -37,5 +37,9 @@ MaxAuthTries 12
 MaxSessions 20
 LoginGraceTime 30
 
+# The dedicated config does not inherit the distro's default sshd_config, so
+# the sftp subsystem must be declared explicitly (doc 09 SFTP integration).
+Subsystem sftp internal-sftp
+
 # Test-host chatter lands in the throwaway log file, not the system journal.
 LogLevel VERBOSE

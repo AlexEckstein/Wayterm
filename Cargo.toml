@@ -31,6 +31,7 @@ base64 = "0.22"
 sha2 = "0.10"
 bytes = "1"
 thiserror = "2"
+russh-sftp = "3.0"
 
 [features]
 default = ["keyring"]

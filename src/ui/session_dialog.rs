@@ -15,20 +15,39 @@
 //! * **rdp** — domain, resolution, color depth (`rdp_domain`,
 //!   `rdp_width`/`rdp_height`, `rdp_color_depth`; doc 08 §RDP falls back to
 //!   1024×768 / 32 bpp).
+//! * **ssh** — the tmux persistence toggle (doc 04 §Tmux Session
+//!   Persistence), revealed only for SSH: the checkbox plus the remote
+//!   session name. Key path, jump hosts and port forwards are edited
+//!   elsewhere (doc 11).
 //! * **vnc** — no secret field. The VNC password goes to the OS keyring on
 //!   first connect (docs 06 §Credential Storage / 11), so the group only
 //!   says so.
 //! * **local** — shell path and working directory (`local_shell`,
 //!   `local_working_dir`).
 //!
-//! SSH keeps the common fields only; key path, tmux, jump hosts and port
-//! forwards are edited elsewhere (doc 11).
+//! ## tmux persistence (doc 04 §Tmux Session Persistence)
+//!
+//! The SSH group holds the "Persist via tmux" checkbox and the remote
+//! session-name Entry. The Entry shows the **full** remote name
+//! (`wayterm-<suffix>`) so what the user reads matches
+//! `tmux list-sessions`; the stored `tmux_session_name` is the bare
+//! suffix, because `SSHTransport` prepends `wayterm-` itself.
+//! [`config_from_fields`] strips one leading
+//! [`TMUX_NAME_PREFIX`](crate::store::model::TMUX_NAME_PREFIX) on the way
+//! in, so a bare name typed by hand cannot become `wayterm-wayterm-x`.
+//! An Entry left empty is stored as NULL and resolved from the session
+//! name at connect ([`SessionConfig::tmux_session_suffix`]).
+//!
+//! The Entry follows the Name field until the user types in it, after
+//! which their name wins — see `TmuxNameFollow` in `gtk_dialog`. Doc 04
+//! scopes the feature to SSH, so the flag is stored for every type (the
+//! columns are common in doc 06) and only the SSH transport reads it.
 
 use crate::store::model::{
-    vocab_index, vocab_value, AuthMethod, Folder, SessionConfig, SessionType, RDP_COLOR_DEPTHS,
-    RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROLS,
-    SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES, SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS,
-    SERIAL_STOP_BITS_DEFAULT,
+    strip_tmux_prefix, vocab_index, vocab_value, AuthMethod, Folder, SessionConfig, SessionType,
+    RDP_COLOR_DEPTHS, RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT,
+    SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES, SERIAL_PARITY_DEFAULT,
+    SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT, TMUX_NAME_PREFIX,
 };
 
 /// Type DropDown index for SSH (doc-06 order).
@@ -70,6 +89,16 @@ pub struct DialogFields {
     pub username: String,
     pub auth_index: u32,
     pub notes: String,
+
+    // tmux group (doc 04 §Tmux Session Persistence; stored in doc 06's
+    // `tmux_enabled` / `tmux_session_name` columns).
+    pub tmux_enabled: bool,
+    /// The remote tmux session name as typed in the dialog, i.e. the full
+    /// `wayterm-<suffix>` spelling the box documents (doc 04's naming
+    /// convention). `config_from_fields` strips one leading
+    /// [`TMUX_NAME_PREFIX`](crate::store::model::TMUX_NAME_PREFIX) before
+    /// storing, because `SSHTransport` prepends it.
+    pub tmux_session_name: String,
 
     // Serial group (doc 06 `serial_*` columns).
     pub serial_device: String,
@@ -113,6 +142,8 @@ impl Default for DialogFields {
             username: String::new(),
             auth_index: 0,
             notes: String::new(),
+            tmux_enabled: false,
+            tmux_session_name: String::new(),
             serial_device: String::new(),
             serial_baud: DEFAULT_SERIAL_BAUD,
             serial_data_bits_index: vocab_index(
@@ -206,6 +237,16 @@ pub fn parse_resolution(text: &str) -> Option<(u32, u32)> {
     Some((width, height))
 }
 
+/// The remote tmux session name the dialog offers for a session called
+/// `session_name`: doc 04's `wayterm-<sessionName>` convention.
+///
+/// Display-free on purpose — the GTK Entry and the tests both derive the
+/// name through this function, so the auto-update behaviour cannot drift
+/// between them.
+pub fn default_tmux_session_name(session_name: &str) -> String {
+    format!("{}{}", TMUX_NAME_PREFIX, session_name.trim())
+}
+
 /// Render doc 06's `rdp_width` / `rdp_height` back into the dialog's
 /// "Resolution" field. `None` on either side renders empty.
 pub fn format_resolution(width: Option<u32>, height: Option<u32>) -> String {
@@ -237,6 +278,11 @@ fn trimmed_opt(value: &str) -> Option<String> {
 /// - Per-type payloads are written **only** for the selected type, so
 ///   values typed into a group that is now hidden never leak into the row.
 ///   The VNC group has no payload: its password is keyring-only.
+/// - The tmux flag is the exception: doc 04 scopes tmux persistence to
+///   SSH, but `tmux_enabled` / `tmux_session_name` are common columns
+///   (doc 06), so they are stored as typed for every type and only the SSH
+///   transport reads them. The stored name is the bare suffix —
+///   `SSHTransport` prepends `wayterm-`.
 /// - Edit-mode identity fields are preserved unchanged.
 pub fn config_from_fields(fields: &DialogFields, folders: &[Folder]) -> SessionConfig {
     let session_type = session_type_from_index(fields.type_index);
@@ -269,6 +315,14 @@ pub fn config_from_fields(fields: &DialogFields, folders: &[Folder]) -> SessionC
     let username = trimmed_opt(&fields.username);
     let notes = trimmed_opt(&fields.notes);
 
+    // Strip one leading `wayterm-` so the remote never ends up with
+    // `wayterm-wayterm-…`, and store an empty box as NULL: that means
+    // "derive the name from the session name at connect", not a session
+    // literally called `wayterm-`.
+    let tmux_session_name = trimmed_opt(&fields.tmux_session_name)
+        .map(|name| strip_tmux_prefix(&name).to_string())
+        .filter(|name| !name.is_empty());
+
     // Doc 06's schema defaults `rdp_compression` to 1 (on) and the dialog
     // has no compression widget, so RDP sessions are stored with it on;
     // the other types keep the struct default.
@@ -282,6 +336,8 @@ pub fn config_from_fields(fields: &DialogFields, folders: &[Folder]) -> SessionC
         username,
         auth_method,
         rdp_compression: session_type == SessionType::RDP,
+        tmux_enabled: fields.tmux_enabled,
+        tmux_session_name,
         notes,
         last_connected: fields.last_connected.clone(),
         connect_count: fields.connect_count,
@@ -361,9 +417,10 @@ mod gtk_dialog {
     };
 
     use super::{
-        config_from_fields, default_port_for, format_resolution, session_type_from_index,
-        type_index_for, DialogFields, Folder, SessionConfig, DEFAULT_SERIAL_BAUD,
-        PORT_SPIN_PLACEHOLDER, TYPE_INDEX_LOCAL, TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_VNC,
+        config_from_fields, default_port_for, default_tmux_session_name, format_resolution,
+        session_type_from_index, type_index_for, DialogFields, Folder, SessionConfig,
+        DEFAULT_SERIAL_BAUD, PORT_SPIN_PLACEHOLDER, TYPE_INDEX_LOCAL, TYPE_INDEX_RDP,
+        TYPE_INDEX_SERIAL, TYPE_INDEX_SSH, TYPE_INDEX_VNC,
     };
 
     /// Static labels shown in the Type DropDown — index `n` is
@@ -379,6 +436,71 @@ mod gtk_dialog {
     const VNC_KEYRING_NOTE: &str =
         "The VNC password is stored in your OS keyring on first connect — never in \
          Wayterm's database.";
+
+    /// Checkbox label for tmux persistence, revealed in the SSH group only
+    /// (doc 04 §Tmux Session Persistence).
+    const TMUX_LABEL: &str = "Persist via tmux — survive reconnects; sessions on the remote \
+                              host are named wayterm-<session name>";
+
+    /// Placeholder for the tmux session-name Entry. The field is pre-filled
+    /// with the derived name, so the placeholder only shows when the user
+    /// clears it — which means "derive at connect".
+    const TMUX_NAME_PLACEHOLDER: &str = "wayterm-<session name>";
+
+    /// The dialog's tmux Entry auto-update rule (doc 04 §Tmux Session
+    /// Persistence), as state both signal handlers can see.
+    ///
+    /// The Entry is pre-filled with `wayterm-<session name>` and keeps
+    /// following the Name field until the user types in it themselves; after
+    /// that their name wins and the Name field stops touching it. An Entry
+    /// cleared by hand stays empty, which `config_from_fields` stores as NULL
+    /// and [`SessionConfig::tmux_session_suffix`] resolves from the session
+    /// name at connect time.
+    #[derive(Clone, Default)]
+    struct TmuxNameFollow {
+        /// Set once the user edits the Entry. Never cleared: the only way
+        /// back to "follows the name" is a fresh dialog.
+        overridden: std::rc::Rc<std::cell::Cell<bool>>,
+        /// `gtk4::Entry::set_text` emits `changed` synchronously, so the
+        /// Entry's own handler must be muted while we write it or our own
+        /// fill would count as a user edit.
+        programmatic: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    impl TmuxNameFollow {
+        /// Write `text` into `entry` verbatim, without recording an edit.
+        ///
+        /// Takes the finished name rather than a session name: the
+        /// edit-mode pre-fill already carries the `wayterm-` prefix
+        /// ([`SessionConfig::tmux_name_for_dialog`]) and must not gain a
+        /// second one.
+        fn fill(&self, entry: &gtk4::Entry, text: &str) {
+            self.programmatic.set(true);
+            entry.set_text(text);
+            self.programmatic.set(false);
+        }
+
+        /// Name field changed: re-derive unless the user took the Entry over.
+        fn sync_to(&self, entry: &gtk4::Entry, name_entry: &gtk4::Entry) {
+            if !self.overridden.get() {
+                self.fill(entry, &default_tmux_session_name(&name_entry.text()));
+            }
+        }
+
+        /// Entry changed: a user edit, unless we caused it.
+        fn note_edit(&self) {
+            if !self.programmatic.get() {
+                self.overridden.set(true);
+            }
+        }
+
+        /// Stop following the Name field for good — used by edit mode when
+        /// the row carries an explicit session name, so renaming the
+        /// session cannot silently discard a name the user chose earlier.
+        fn take_over(&self) {
+            self.overridden.set(true);
+        }
+    }
 
     /// Edit-mode metadata carried in a shared cell so the OK handler can read
     /// the current values without capturing `Self`.
@@ -396,6 +518,7 @@ mod gtk_dialog {
     /// the selected type is revealed.
     #[derive(Clone)]
     struct TypeGroups {
+        ssh: gtk4::Revealer,
         serial: gtk4::Revealer,
         rdp: gtk4::Revealer,
         vnc: gtk4::Revealer,
@@ -405,6 +528,7 @@ mod gtk_dialog {
     impl TypeGroups {
         /// Reveal the group for `type_index`; hide every other group.
         fn apply(&self, type_index: u32) {
+            self.ssh.set_reveal_child(type_index == TYPE_INDEX_SSH);
             self.serial
                 .set_reveal_child(type_index == TYPE_INDEX_SERIAL);
             self.rdp.set_reveal_child(type_index == TYPE_INDEX_RDP);
@@ -479,6 +603,16 @@ mod gtk_dialog {
             dropdown
         }
 
+        /// Add a [`gtk4::CheckButton`] row spanning both columns, and
+        /// return it.
+        fn check(&mut self, label_text: &str) -> gtk4::CheckButton {
+            let check = gtk4::CheckButton::with_label(label_text);
+            check.set_halign(gtk4::Align::Start);
+            self.grid.attach(&check, 0, self.row, 2, 1);
+            self.row += 1;
+            check
+        }
+
         /// Add a read-only note row (used by the VNC group).
         fn note(&mut self, text: &str) {
             let label = gtk4::Label::builder()
@@ -529,6 +663,8 @@ mod gtk_dialog {
         port_spin: gtk4::SpinButton,
         username_entry: gtk4::Entry,
         auth_dropdown: gtk4::DropDown,
+        tmux_check: gtk4::CheckButton,
+        tmux_session_name_entry: gtk4::Entry,
         notes_view: gtk4::TextView,
         serial_device_entry: gtk4::Entry,
         serial_baud_spin: gtk4::SpinButton,
@@ -606,6 +742,21 @@ mod gtk_dialog {
                 Some(AuthMethod::None) => 4,
             };
             widgets.auth_dropdown.set_selected(auth_index);
+
+            // tmux (doc 04 §Tmux Session Persistence). The stored column is
+            // the bare suffix and the Entry shows the full remote name. Fill
+            // programmatically: an edit-mode pre-fill is not a user edit, so
+            // the Entry keeps following the Name field until they type in it.
+            widgets.tmux_check.set_active(config.tmux_enabled);
+            this.tmux_follow().fill(
+                &widgets.tmux_session_name_entry,
+                &config.tmux_name_for_dialog(),
+            );
+            // An explicit stored name is the user's own choice, so it keeps
+            // winning over the Name field — exactly as if they had typed it.
+            if config.tmux_session_name.is_some() {
+                this.tmux_follow().take_over();
+            }
 
             // Per-type groups (doc 06 columns; doc 08 fallbacks).
             widgets
@@ -773,6 +924,11 @@ mod gtk_dialog {
             vbox.append(&grid);
 
             // --- Per-type groups (doc 06 §"Session Config Struct") ---------
+            let mut ssh = GroupRows::new("SSH");
+            let tmux_check = ssh.check(TMUX_LABEL);
+            let tmux_session_name_entry = ssh.entry("tmux session:", TMUX_NAME_PLACEHOLDER);
+            let ssh_group = ssh.finish();
+
             let mut serial = GroupRows::new("Serial");
             let serial_device_entry = serial.entry("Device:", "/dev/ttyUSB0");
             let serial_baud_spin = serial.spin("Baud:", (50.0, 4_000_000.0));
@@ -820,11 +976,13 @@ mod gtk_dialog {
             let local_group = local.finish();
 
             let groups = TypeGroups {
+                ssh: ssh_group,
                 serial: serial_group,
                 rdp: rdp_group,
                 vnc: vnc_group,
                 local: local_group,
             };
+            vbox.append(&groups.ssh);
             vbox.append(&groups.serial);
             vbox.append(&groups.rdp);
             vbox.append(&groups.vnc);
@@ -845,6 +1003,26 @@ mod gtk_dialog {
                 ));
             });
             groups.apply(type_dropdown.selected());
+
+            // tmux micro-UX (doc 04 §Tmux Session Persistence): see
+            // `TmuxNameFollow` for the whole rule.
+            let tmux_follow = TmuxNameFollow::default();
+            {
+                let tmux_entry = tmux_session_name_entry.clone();
+                let name_entry_for_sync = name_entry.clone();
+                let follow = tmux_follow.clone();
+                name_entry.connect_changed(move |_| {
+                    follow.sync_to(&tmux_entry, &name_entry_for_sync);
+                });
+            }
+            {
+                let follow = tmux_follow.clone();
+                tmux_session_name_entry.connect_changed(move |_| follow.note_edit());
+            }
+            tmux_follow.fill(
+                &tmux_session_name_entry,
+                &default_tmux_session_name(&name_entry.text()),
+            );
 
             let ok_button = gtk4::Button::with_label("OK");
             let cancel_button = gtk4::Button::with_label("Cancel");
@@ -881,6 +1059,8 @@ mod gtk_dialog {
                 let port_spin = port_spin.clone();
                 let username_entry = username_entry.clone();
                 let auth_dropdown = auth_dropdown.clone();
+                let tmux_check = tmux_check.clone();
+                let tmux_session_name_entry = tmux_session_name_entry.clone();
                 let notes_view = notes_view.clone();
                 let serial_device_entry = serial_device_entry.clone();
                 let serial_baud_spin = serial_baud_spin.clone();
@@ -908,6 +1088,8 @@ mod gtk_dialog {
                         port: port_spin.value() as u32,
                         username: username_entry.text().to_string(),
                         auth_index: auth_dropdown.selected(),
+                        tmux_enabled: tmux_check.is_active(),
+                        tmux_session_name: tmux_session_name_entry.text().to_string(),
                         notes: notes.to_string(),
                         serial_device: serial_device_entry.text().to_string(),
                         serial_baud: serial_baud_spin.value() as u32,
@@ -957,6 +1139,8 @@ mod gtk_dialog {
                 port_spin,
                 username_entry,
                 auth_dropdown,
+                tmux_check,
+                tmux_session_name_entry,
                 notes_view,
                 serial_device_entry,
                 serial_baud_spin,
@@ -976,6 +1160,7 @@ mod gtk_dialog {
             unsafe {
                 window.set_data("wayterm-session-dialog-widgets", widgets);
                 window.set_data("wayterm-session-dialog-groups", groups);
+                window.set_data("wayterm-session-dialog-tmux-follow", tmux_follow);
             }
 
             Self {
@@ -993,6 +1178,16 @@ mod gtk_dialog {
                     .data::<Widgets>("wayterm-session-dialog-widgets")
                     .map(|d| (*d.as_ptr()).clone())
                     .expect("dialog widgets missing")
+            }
+        }
+
+        /// Retrieve the tmux Entry auto-update state stored on the window.
+        fn tmux_follow(&self) -> TmuxNameFollow {
+            unsafe {
+                self.window
+                    .data::<TmuxNameFollow>("wayterm-session-dialog-tmux-follow")
+                    .map(|d| (*d.as_ptr()).clone())
+                    .expect("dialog tmux follow state missing")
             }
         }
 
@@ -1042,6 +1237,95 @@ mod gtk_dialog {
                 .build();
             grid.attach(&label, 0, row, 1, 1);
             grid.attach(widget, 1, row, 1, 1);
+        }
+    }
+    /// Widget-level tests for the tmux group.
+    ///
+    /// These need a display, so they are `#[ignore]`d by default and run
+    /// under a virtual one:
+    ///
+    /// ```text
+    /// xvfb-run -a cargo test -- --ignored gtk_dialog
+    /// ```
+    ///
+    /// The pure mapping logic (what gets *stored*) is covered without a
+    /// display in the sibling [`tests`](super::tests) module; what is only
+    /// observable here is the Entry's auto-update behaviour and the SSH
+    /// group's visibility, both of which the GTK API can express but plain
+    /// data cannot.
+    #[cfg(test)]
+    mod gtk_tests {
+        use crate::store::model::{SessionConfig, SessionType};
+
+        use super::*;
+
+        // One test, not several: gtk4::init() can only win the default main
+        // context once per process, and cargo runs tests in parallel
+        // threads, so a second GTK test would race this one for it.
+        #[test]
+        #[ignore = "needs a display; run under xvfb-run"]
+        fn tmux_group_entry_follows_name_until_user_edits() {
+            gtk4::init().expect("gtk init");
+
+            // New session: Entry pre-filled from the (empty) name, box off.
+            let parent = gtk4::Window::new();
+            let dialog = SessionDialog::new_session(&parent, &[]);
+            let widgets = dialog.widgets();
+            assert_eq!(widgets.tmux_session_name_entry.text(), "wayterm-");
+            assert!(!widgets.tmux_check.is_active());
+
+            // Name edits drive the Entry.
+            widgets.name_entry.set_text("prod");
+            assert_eq!(widgets.tmux_session_name_entry.text(), "wayterm-prod");
+            widgets.name_entry.set_text("prod2");
+            assert_eq!(widgets.tmux_session_name_entry.text(), "wayterm-prod2");
+
+            // Once the user edits the Entry, the Name field stops touching it.
+            widgets.tmux_session_name_entry.set_text("wayterm-custom");
+            widgets.name_entry.set_text("other");
+            assert_eq!(widgets.tmux_session_name_entry.text(), "wayterm-custom");
+
+            // SSH reveals the tmux group; other types hide it.
+            let groups = dialog.groups();
+            let revealed = |g: &gtk4::Revealer| g.property::<bool>("reveal-child");
+            groups.apply(TYPE_INDEX_SSH);
+            assert!(revealed(&groups.ssh), "SSH reveals its tmux group");
+            groups.apply(TYPE_INDEX_SERIAL);
+            assert!(!revealed(&groups.ssh), "serial hides the tmux group");
+            drop(dialog);
+
+            // Edit mode pre-fills box + full remote name, and the stored
+            // name is not clobbered by later name edits.
+            let config = SessionConfig {
+                id: 7,
+                name: "prod".to_string(),
+                session_type: SessionType::SSH,
+                tmux_enabled: true,
+                tmux_session_name: Some("shared".to_string()),
+                ..Default::default()
+            };
+            let dialog = SessionDialog::edit(&parent, &config, &[]);
+            let widgets = dialog.widgets();
+            assert!(widgets.tmux_check.is_active());
+            assert_eq!(widgets.tmux_session_name_entry.text(), "wayterm-shared");
+            widgets.name_entry.set_text("renamed");
+            assert_eq!(widgets.tmux_session_name_entry.text(), "wayterm-shared");
+            drop(dialog);
+
+            // Edit mode on a row with no stored name shows the derived one,
+            // and it still follows the Name field (pre-fill is not a user
+            // edit).
+            let config = SessionConfig {
+                id: 8,
+                name: "prod".to_string(),
+                tmux_enabled: true,
+                ..Default::default()
+            };
+            let dialog = SessionDialog::edit(&parent, &config, &[]);
+            let widgets = dialog.widgets();
+            assert_eq!(widgets.tmux_session_name_entry.text(), "wayterm-prod");
+            widgets.name_entry.set_text("renamed");
+            assert_eq!(widgets.tmux_session_name_entry.text(), "wayterm-renamed");
         }
     }
 }

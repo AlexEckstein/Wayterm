@@ -115,7 +115,7 @@ vte4 = "0.10"              # VTE terminal widget (GTK4)
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"         # CancellationToken (transport lifecycle)
 russh = "0.63"             # Pure Rust SSH client
-russh-sftp = "2.4"         # SFTP subsystem for russh
+russh-sftp = "3.0"         # SFTP subsystem for russh
 russh-config = "0.58"      # ~/.ssh/config parsing (Phase 9 import)
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

@@ -39,6 +39,7 @@ impl VteBackend {
 
         wire_commit(&terminal, event_tx.clone());
         wire_resize(&terminal, event_tx.clone());
+        wire_size(&terminal, event_tx.clone());
 
         Self { terminal, event_tx }
     }
@@ -134,6 +135,93 @@ fn wire_resize(terminal: &VteTerminal, tx: mpsc::Sender<TerminalEvent>) {
                             }
                             Err(TrySendError::Full(_)) => {
                                 unreachable!("resize flush only emits SizeChange events")
+                            }
+                        }
+                    }
+                    idle_scheduled2.set(false);
+                    glib::ControlFlow::Continue
+                });
+            }
+        }
+    });
+}
+
+/// Clamp VTE's signed cell counts to a positive grid size so a degenerate
+/// reading can never emit a zero-dimension PTY resize downstream.
+fn grid_from_counts(rows: i64, cols: i64) -> (u32, u32) {
+    (
+        rows.clamp(1, u32::MAX as i64) as u32,
+        cols.clamp(1, u32::MAX as i64) as u32,
+    )
+}
+
+/// Dedup gate for `contents-changed`: the signal also fires on plain output,
+/// so only a grid that differs from the last emitted one produces a size
+/// event. Returns the new size when it changed, `None` when unchanged.
+fn changed_size(last: Option<(u32, u32)>, current: (u32, u32)) -> Option<(u32, u32)> {
+    (last != Some(current)).then_some(current)
+}
+
+/// Wire VTE's `contents-changed` signal as a size event.
+///
+/// `resize-window` only fires for child-app-initiated resizes; widget
+/// allocation changes (pane moves, window resizes) surface as changed
+/// `row_count`/`column_count` on `contents-changed` — verified against the
+/// installed VTE: shrinking a pane 120 → 84 columns reproduced as counts 84.
+/// Plain output fires the same signal, so the last emitted grid is
+/// deduplicated through [`changed_size`] to avoid resize spam.
+///
+/// Uses the same try_send + idle-flush backpressure pattern as the other
+/// wires: `SizeChange` is rare and small, but a parked event must survive a
+/// full channel (a dropped resize would desync the PTY from the widget).
+fn wire_size(terminal: &VteTerminal, tx: mpsc::Sender<TerminalEvent>) {
+    let last: Rc<Cell<Option<(u32, u32)>>> = Rc::new(Cell::new(Some(grid_from_counts(
+        terminal.row_count(),
+        terminal.column_count(),
+    ))));
+    let pending: Rc<RefCell<VecDeque<TerminalEvent>>> = Rc::new(RefCell::new(VecDeque::new()));
+    let idle_scheduled = Rc::new(Cell::new(false));
+
+    terminal.connect_contents_changed(move |term| {
+        let current = grid_from_counts(term.row_count(), term.column_count());
+        let Some(size) = changed_size(last.get(), current) else {
+            return;
+        };
+        last.set(Some(size));
+        let event = TerminalEvent::SizeChange {
+            rows: size.0,
+            cols: size.1,
+        };
+        if let Err(err) = tx.try_send(event) {
+            let ev = match err {
+                TrySendError::Full(TerminalEvent::SizeChange { rows, cols }) => {
+                    TerminalEvent::SizeChange { rows, cols }
+                }
+                TrySendError::Closed(_) => return,
+                // contents-changed only emits SizeChange here.
+                TrySendError::Full(_) => return,
+            };
+            pending.borrow_mut().push_back(ev);
+            if !idle_scheduled.get() {
+                idle_scheduled.set(true);
+                let pending2 = pending.clone();
+                let tx2 = tx.clone();
+                let idle_scheduled2 = idle_scheduled.clone();
+                glib::idle_add_local(move || {
+                    let mut q = pending2.borrow_mut();
+                    while let Some(ev) = q.pop_front() {
+                        match tx2.try_send(ev) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(TerminalEvent::SizeChange { rows, cols })) => {
+                                q.push_front(TerminalEvent::SizeChange { rows, cols });
+                                return glib::ControlFlow::Continue;
+                            }
+                            Err(TrySendError::Closed(_)) => {
+                                q.clear();
+                                return glib::ControlFlow::Break;
+                            }
+                            Err(TrySendError::Full(_)) => {
+                                unreachable!("contents-changed flush only emits SizeChange events")
                             }
                         }
                     }
@@ -324,6 +412,30 @@ mod tests {
         assert!(f.reflow);
         assert!(f.alternate_screen);
         assert!(f.scrollback_config);
+    }
+
+    /// `contents-changed` fires on plain output too; only a genuinely changed
+    /// grid may emit `SizeChange` (probed: every keystroke fires the signal).
+    #[test]
+    fn changed_size_dedups_unchanged_grids() {
+        // First observation always emits.
+        assert_eq!(changed_size(None, (24, 80)), Some((24, 80)));
+        // Same grid (plain output) → suppressed.
+        assert_eq!(changed_size(Some((24, 80)), (24, 80)), None);
+        // Pane resize → emitted, rows and cols independent.
+        assert_eq!(changed_size(Some((24, 80)), (24, 120)), Some((24, 120)));
+        assert_eq!(changed_size(Some((35, 59)), (24, 59)), Some((24, 59)));
+        assert_eq!(changed_size(Some((35, 59)), (36, 60)), Some((36, 60)));
+    }
+
+    /// VTE reports cell counts as signed integers; degenerate readings must
+    /// never produce a zero or wrapping grid size.
+    #[test]
+    fn grid_from_counts_clamps_degenerate_values() {
+        assert_eq!(grid_from_counts(24, 80), (24, 80));
+        assert_eq!(grid_from_counts(0, 0), (1, 1));
+        assert_eq!(grid_from_counts(-5, -5), (1, 1));
+        assert_eq!(grid_from_counts(i64::MAX, 80), (u32::MAX, 80));
     }
 
     /// Display-free model of the try_send + idle-flush backpressure path.

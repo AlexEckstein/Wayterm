@@ -38,7 +38,7 @@ CREATE TABLE sessions (
     -- SSH-specific
     key_path        TEXT,
     tmux_enabled    INTEGER DEFAULT 0,
-    tmux_session_name TEXT,
+    tmux_session_name TEXT,                   -- bare suffix; SSHTransport prepends 'wayterm-' (doc 04)
     ssh_options     TEXT,                     -- JSON: compression, keepalive, etc.
     jump_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
                                               -- ProxyJump-style hop: this session connects
