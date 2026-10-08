@@ -240,6 +240,18 @@ impl SessionStore {
     }
 }
 
+#[cfg(test)]
+impl SessionStore {
+    /// The seeded `is_default = 1` hotkey rows as `(action, key, context)`.
+    pub(crate) fn seeded_hotkeys(&self) -> rusqlite::Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT action, key_sequence, context FROM hotkeys WHERE is_default = 1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect()
+    }
+}
+
 /// Parse a boolean settings value. Every flag Wayterm stores defaults to on,
 /// so a missing row is on, and only an explicit `0`/`false`/`no`/`off` (any
 /// case, surrounding blanks ignored) turns one off — a typo never silently

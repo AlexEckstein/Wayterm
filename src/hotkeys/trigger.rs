@@ -1,49 +1,15 @@
-//! Trigger parsing and the key-capture side of the hotkey engine
-//! (doc 07 §"Trigger Parsing").
+//! Trigger parsing and key capture (doc 07 §Trigger Parsing).
 //!
-//! Wayterm's persisted key format is the doc's *UI format* —
-//! `"Ctrl+Shift+T"` — which [`ui_key_to_accel`] converts to GTK
-//! accelerator syntax (`"<Control><Shift>t"`) for
-//! [`parse_trigger`]. The reverse, [`accel_to_ui_key`], exists so the
-//! settings UI can render a binding that came back from GTK (an
-//! accelerator name or a captured chord) in the same format the
-//! database stores.
-//!
-//! Two doc rules are load-bearing and are preserved verbatim here:
-//!
-//! * the parse lowercases **single characters only** — key names keep
-//!   their case, because `"Tab"`, `"F11"` and `"Delete"` are
-//!   case-sensitive tokens in accelerator strings (the doc's original
-//!   lowercased the whole string and corrupted them);
-//! * an unknown modifier, or a trailing `'+'`, yields `None`.
-//!
-//! Nothing in this module needs a display except the functions that
-//! hand an accelerator string to GTK ([`parse_trigger`],
-//! [`KeyChord::to_trigger`]): they call `gtk4::ShortcutTrigger`, which
-//! asserts GTK is initialized. Every string-level function — including
-//! the capture side, which is built from `gdk::Key` values a caller
-//! already has — is display-free and covered by the tests here.
-//!
-//! ## Key names
-//!
-//! `gdk::Key::from_name` is the same lookup GTK's accelerator parser
-//! uses and needs no display, so it is what validates a key token
-//! ([`key_token_is_bindable`]). It is also why the default table spells
-//! the Enter key `Return`, not `Enter`: `gdk_keyval_from_name` has no
-//! `Enter` entry, so GTK rejects `"<Control>Enter"` outright and such a
-//! binding would silently never fire (see [`crate::hotkeys::defaults`]).
+//! Bindings are stored in UI format (`"Ctrl+Shift+T"`), converted to GTK
+//! accelerator syntax (`"<Control><Shift>t"`) for binding, and rendered
+//! back for display. Only single characters are lowercased — `Tab`, `F11`
+//! and `Delete` are case-sensitive key names. Everything here is
+//! display-free except [`parse_trigger`] and [`KeyChord::to_trigger`].
 
 use gdk4::{Key, ModifierType};
 
-/// UI modifier name → GTK accelerator token → GDK modifier mask.
-///
-/// The doc's `ui_key_to_accel` sketch declares a two-column `MODS`
-/// table inside the function; it lives at module scope here as three
-/// columns (UI name, accelerator token, mask) so the reverse mapping
-/// ([`accel_to_ui_key`]) and the capture side ([`KeyChord`]) read the
-/// same rows and the three directions cannot drift apart. The row order
-/// is the doc's, and is the order both directions emit modifiers in, so
-/// a round-trip through either one is stable.
+/// UI name, accelerator token, and GDK mask of each modifier, in the
+/// order every direction emits them (so round trips are stable).
 const MODS: &[(&str, &str, ModifierType)] = &[
     ("Ctrl", "<Control>", ModifierType::CONTROL_MASK),
     ("Shift", "<Shift>", ModifierType::SHIFT_MASK),
@@ -52,18 +18,9 @@ const MODS: &[(&str, &str, ModifierType)] = &[
     ("Meta", "<Meta>", ModifierType::META_MASK),
 ];
 
-/// `"Ctrl+Shift+T"` → `"<Control><Shift>t"`.
-///
-/// Doc 07 §"Trigger Parsing", transcribed line for line — the only
-/// edit is the modifier table, hoisted to [`MODS`] above so the reverse
-/// mapping and the capture side share it. `None` when the last `'+'`-
-/// separated token is empty (a trailing `'+'`, or an empty string) or
-/// when any preceding token is not a known modifier.
-///
-/// Note the doc's format cannot express a literal `'+'` key: `'+'` is
-/// the separator, so `"Ctrl++"` parses as a trailing `'+'`. Bind the
-/// plus key through the capture side instead, which never parses a
-/// string.
+/// `"Ctrl+Shift+T"` → `"<Control><Shift>t"`; `None` for an unknown
+/// modifier or an empty key (a trailing `'+'`). A literal `+` key cannot be
+/// written in this format — bind it through capture.
 pub fn ui_key_to_accel(key: &str) -> Option<String> {
     let tokens: Vec<&str> = key.split('+').collect();
     let key_name = tokens.last()?;
@@ -85,21 +42,10 @@ pub fn ui_key_to_accel(key: &str) -> Option<String> {
     Some(out)
 }
 
-/// `"<Control><Shift>t"` → `"Ctrl+Shift+t"` — the reverse of
-/// [`ui_key_to_accel`].
-///
-/// Renders a binding that came from GTK (an accelerator name, or a
-/// captured chord) in the UI format the database stores, so the
-/// settings UI and the persistence path never disagree about a chord.
-///
-/// `None` when the accelerator is malformed (unterminated `<`), carries
-/// a modifier outside Wayterm's vocabulary (`<Hyper>`), names no key,
-/// or names a key `gdk` does not know — the same inputs
-/// [`parse_trigger`] rejects. The round-trip is
-/// *chord*-preserving, not string-identical: `"Ctrl+Shift+T"` comes
-/// back as `"Ctrl+Shift+t"`, which parses to the same accelerator, and
-/// `"<Shift><Control>t"` renders as `"Ctrl+Shift+t"` whatever order
-/// GTK emitted the modifiers in.
+/// `"<Control><Shift>t"` → `"Ctrl+Shift+t"`, the reverse of
+/// [`ui_key_to_accel`]. Chord-preserving rather than string-identical
+/// (modifiers come back in [`MODS`] order). `None` for anything
+/// [`parse_trigger`] would reject.
 pub fn accel_to_ui_key(accel: &str) -> Option<String> {
     let mut rest = accel;
     let mut mods: Vec<ModifierType> = Vec::new();
@@ -122,41 +68,25 @@ pub fn accel_to_ui_key(accel: &str) -> Option<String> {
     ))
 }
 
-/// The key token of a UI-format binding: everything after the last
-/// `'+'`.
+/// The key part of a UI-format binding (after the last `'+'`).
 pub fn key_token(key: &str) -> &str {
     key.rsplit('+').next().unwrap_or(key)
 }
 
-/// Whether GTK could resolve `token` as a key.
-///
-/// Checks the same `gdk_keyval_from_name` table GTK's accelerator
-/// parser uses, which needs no display. `"Tab"`, `"F11"`, `"Delete"`
-/// and `"Return"` resolve; `"Enter"`, `"bogus"` and `""` do not.
+/// Whether GDK knows `token` as a key name (no display needed): `Return`
+/// resolves, `Enter` does not.
 pub fn key_token_is_bindable(token: &str) -> bool {
     !token.is_empty() && Key::from_name(token).is_some()
 }
 
-/// Whether `key` is a UI-format binding the engine will accept.
-///
-/// The gate [`ActionRegistry::rebind_checked`](crate::hotkeys::ActionRegistry::rebind_checked)
-/// applies before storing a binding: the doc's parse must succeed (no
-/// unknown modifier, no trailing `'+'`) *and* the key token must be a
-/// name GTK knows — so a binding can never be accepted and then fail
-/// silently at install time. Case is irrelevant to the key check: GDK
-/// knows both `"T"` and `"t"`, and [`ui_key_to_accel`] normalizes a
-/// single character to lowercase either way.
+/// Whether `key` parses and names a key GTK knows — the gate every stored
+/// binding passes, so none can be accepted and then never fire.
 pub fn ui_key_is_bindable(key: &str) -> bool {
     ui_key_to_accel(key).is_some() && key_token_is_bindable(key_token(key))
 }
 
-/// A captured key chord: the display-free equivalent of the two
-/// `gdk::EventKey` accessors doc 07 §"Trigger Parsing" names
-/// (`event.key()` + `event.modifier_state()`).
-///
-/// The settings UI's capture button builds one of these from the key
-/// press it receives, so the capture path is exercised by the tests
-/// here without a display or a real event.
+/// A captured key press (`key()` + `modifier_state()`), as the settings
+/// UI's capture button records it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyChord {
     pub key: Key,
@@ -164,17 +94,11 @@ pub struct KeyChord {
 }
 
 impl KeyChord {
-    /// Build a chord from a `gdk::EventKey`'s `key()` and
-    /// `modifier_state()`.
     pub fn new(key: Key, modifiers: ModifierType) -> Self {
         Self { key, modifiers }
     }
 
-    /// Build a chord from a UI-format binding (`"Ctrl+Shift+T"`).
-    ///
-    /// The persistence-side inverse of [`KeyChord::to_ui_key`], used to
-    /// re-derive a GTK trigger for a stored binding without relying on
-    /// GTK's own name normalization.
+    /// The inverse of [`KeyChord::to_ui_key`].
     pub fn from_ui_key(key: &str) -> Option<Self> {
         let tokens: Vec<&str> = key.split('+').collect();
         let key_token = *tokens.last()?;
@@ -189,14 +113,8 @@ impl KeyChord {
         })
     }
 
-    /// The chord as a UI-format string (`"Ctrl+Shift+t"`).
-    ///
-    /// A single-character key name is lowercased, exactly as
-    /// [`ui_key_to_accel`] lowercases it — and as GTK itself does for a
-    /// Shift+letter chord — so a captured binding is always a string the
-    /// persistence path parses back to the same accelerator.
-    ///
-    /// `None` when GDK has no canonical name for the key.
+    /// The chord in UI format (`"Ctrl+Shift+t"`); `None` when GDK has no
+    /// name for the key.
     pub fn to_ui_key(self) -> Option<String> {
         let name = self.key.name()?;
         let mods = self.active_modifiers();
@@ -218,11 +136,8 @@ impl KeyChord {
         ))
     }
 
-    /// The modifier masks Wayterm renders, in [`MODS`] order.
-    ///
-    /// Button and lock masks are not modifiers in this sense and are
-    /// dropped: a chord captured while a mouse button was held is still
-    /// the same chord.
+    /// The modifiers Wayterm renders, in [`MODS`] order; button and lock
+    /// masks are ignored.
     fn active_modifiers(self) -> Vec<ModifierType> {
         MODS.iter()
             .filter(|(_, _, mask)| self.modifiers.contains(*mask))
@@ -230,29 +145,15 @@ impl KeyChord {
             .collect()
     }
 
-    /// The GTK trigger for this chord.
-    ///
-    /// Doc 07 §"Trigger Parsing" says the capture path should build the
-    /// trigger straight from key + modifiers and never round-trip a
-    /// string. gtk4-rs 0.11 exposes no such constructor below GTK 4.24
-    /// — `ShortcutTrigger::create_with_aliases` is
-    /// `#[cfg(feature = "v4_24")]` and this crate builds against
-    /// `v4_14` — so the capture path renders the accelerator from the
-    /// same [`KeyChord`] values and hands it to `parse_string`. The
-    /// trigger is identical, and capture cannot disagree with the
-    /// persistence path because both derive from one chord.
-    ///
-    /// Requires GTK to be initialized (the UI task's call site runs
-    /// inside a `gtk4::Application`); `None` when the key has no
-    /// accelerator name.
+    /// The GTK trigger for this chord. gtk4-rs exposes no key+modifiers
+    /// constructor below GTK 4.24, so this goes through the accelerator
+    /// string. Requires GTK to be initialized.
     pub fn to_trigger(self) -> Option<gtk4::ShortcutTrigger> {
         parse_trigger(&self.to_ui_key()?)
     }
 }
 
-/// Single characters lowercase, multi-character names untouched — the
-/// doc 07 §"Trigger Parsing" rule, applied to a key name from either
-/// side of the conversion.
+/// Single characters lowercase; key names keep their case.
 fn normalize_key_name(name: &str) -> String {
     if name.chars().count() == 1 {
         name.to_lowercase()
@@ -261,12 +162,8 @@ fn normalize_key_name(name: &str) -> String {
     }
 }
 
-/// `"Ctrl+"` / `"<Control>"` prefix for the masks that are present.
-///
-/// `pick` chooses which column of [`MODS`] to emit and `sep` how to
-/// join, because the two formats differ in both ways — the UI names are
-/// joined with `'+'`, while the accelerator tokens already carry their
-/// own `<>`. One loop and one order for both directions.
+/// The modifier prefix in either format: `pick` selects the [`MODS`]
+/// column, `sep` the joiner.
 fn modifier_prefix(
     mods: &[ModifierType],
     pick: impl Fn(&'static str, &'static str) -> &'static str,
@@ -282,17 +179,8 @@ fn modifier_prefix(
     out
 }
 
-/// `"Ctrl+Shift+T"` → a `gtk4::ShortcutTrigger`.
-///
-/// Doc 07 §"Trigger Parsing": parse the UI format into accelerator
-/// syntax, then hand it to GTK. `None` when the UI format is malformed
-/// (unknown modifier, trailing `'+'`) or when GTK itself rejects the
-/// accelerator — which is what a key name GDK does not know looks like
-/// from the outside (`"Enter"` is rejected, `"Return"` is accepted).
-///
-/// Requires GTK to be initialized: `gtk_shortcut_trigger_parse_string`
-/// asserts the main thread is initialized, so this function is *not*
-/// display-free and the tests here exercise [`ui_key_to_accel`] instead.
+/// `"Ctrl+Shift+T"` → a `gtk4::ShortcutTrigger`; `None` when the format
+/// or the key name is invalid. Requires GTK to be initialized.
 pub fn parse_trigger(key: &str) -> Option<gtk4::ShortcutTrigger> {
     let accel = ui_key_to_accel(key)?;
     gtk4::ShortcutTrigger::parse_string(&accel)
