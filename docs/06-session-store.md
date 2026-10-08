@@ -1,12 +1,15 @@
-# Session Store Schema
+# Session Store
 
-## Overview
-
-Sessions are persisted in a SQLite database via `rusqlite`. Credentials
-are stored separately in the OS keyring (libsecret), never in the
-database.
+Sessions, folders, hotkey overrides, and settings live in one SQLite
+database (`$XDG_DATA_HOME/wayterm/wayterm.sqlite3`) through `rusqlite`
+(`src/store/`). Credentials never do: they live in the OS keyring
+(§Credential Storage).
 
 ## Database Schema
+
+`SessionStore::open` turns on `journal_mode=WAL` and `foreign_keys`, then
+applies this schema (with `IF NOT EXISTS`) and, on a fresh database, the
+seed below. There is no migration framework yet; the schema is v1.
 
 ```sql
 -- Session folders for tree organization
@@ -123,409 +126,74 @@ CREATE INDEX idx_history_session ON connection_history(session_id);
 CREATE INDEX idx_history_recent ON connection_history(connected_at DESC);
 ```
 
-## Rust Schema Definition
 
-Using `rusqlite` with prepared statements. The schema is created on
-first run via migrations:
+Deleting a folder deletes its sub-folders (`ON DELETE CASCADE`) and moves
+its sessions to the root (`ON DELETE SET NULL`).
 
-```rust
-use rusqlite::{Connection, params};
-use std::path::Path;
+### Wire formats
 
-pub struct SessionStore {
-    conn: Connection,
-}
+Enum columns hold serde spellings, locked by `src/store/model.rs` tests:
 
-impl SessionStore {
-    pub fn open(db_path: &Path) -> Result<Self, rusqlite::Error> {
-        let conn = Connection::open(db_path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        conn.execute_batch(MIGRATION_001)?;
-        Ok(SessionStore { conn })
-    }
-}
+| Column | Values |
+|---|---|
+| `type` | `ssh`, `rdp`, `vnc`, `serial`, `local` (stored as a JSON string, quotes included) |
+| `auth_method` | `password`, `key`, `agent`, `keyboard-interactive`, `none` |
+| `host_key_policy` | `strict`, `accept-new`, `off`; NULL = the global setting |
+| `serial_parity` | `none`, `odd`, `even`, `mark`, `space` |
+| `serial_flow_control` | `none`, `hardware`, `software` |
+| `serial_data_bits` / `serial_stop_bits` | 5–8 / 1–2 |
+| `rdp_color_depth` | 16, 24, 32 (NULL → 32) |
 
-const MIGRATION_001: &str = r#"
-CREATE TABLE IF NOT EXISTS folders (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT NOT NULL,
-    parent_id   INTEGER REFERENCES folders(id) ON DELETE CASCADE,
-    sort_order  INTEGER DEFAULT 0,
-    icon        TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
--- ... (full schema from above)
-"#;
-```
-
-## Session Config Struct
-
-The database maps to a Rust struct via serde for JSON fields:
-
-```rust
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum SessionType {
-    SSH,
-    RDP,
-    VNC,
-    Serial,
-    LocalShell,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum AuthMethod {
-    Password,
-    Key,
-    Agent,
-    KeyboardInteractive,   // see doc 11 — not optional, 2FA/OTP needs it
-    None,
-}
-
-/// Host-key verification policy (doc 11). None = use global setting.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum HostKeyPolicy {
-    Strict,      // unknown → prompt; changed → hard fail (default)
-    AcceptNew,   // unknown → auto-accept + record; changed → hard fail
-    Off,         // no verification — lab/testing only, warning badge
-}
-
-/// One port-forward rule (doc 11 §Port forwarding).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ForwardRule {
-    pub kind: ForwardKind,     // Local (v1); Remote/Dynamic in v2
-    pub bind_addr: String,    // "127.0.0.1"
-    pub bind_port: u16,
-    pub remote_host: String,
-    pub remote_port: u16,
-    pub enabled: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SessionConfig {
-    pub id: i64,
-    pub name: String,
-    pub session_type: SessionType,
-    pub folder_id: Option<i64>,
-
-    // Common
-    pub host: Option<String>,
-    pub port: Option<u16>,
-    pub username: Option<String>,
-    pub auth_method: Option<AuthMethod>,
-
-    // SSH
-    pub key_path: Option<String>,
-    pub host_key_policy: Option<HostKeyPolicy>,   // None = global default
-    pub jump_session_id: Option<i64>,            // ProxyJump hop (doc 11), depth ≤ 1 in v1
-    pub forward_rules: Option<Vec<ForwardRule>>, // local forwards (doc 11)
-    pub tmux_enabled: bool,
-    pub tmux_session_name: Option<String>,
-    pub ssh_options: Option<SshOptions>,
-
-    // RDP
-    pub rdp_domain: Option<String>,
-    pub rdp_width: Option<u32>,
-    pub rdp_height: Option<u32>,
-    pub rdp_color_depth: Option<u32>,
-    pub rdp_compression: bool,
-    pub rdp_options: Option<RdpOptions>,
-
-    // VNC
-    pub vnc_color_depth: Option<u32>,
-    pub vnc_options: Option<VncOptions>,
-
-    // Serial
-    pub serial_device: Option<String>,
-    pub serial_baud_rate: Option<u32>,
-    pub serial_data_bits: Option<u8>,
-    pub serial_parity: Option<String>,
-    pub serial_stop_bits: Option<u8>,
-    pub serial_flow_control: Option<String>,
-
-    // Local
-    pub local_shell: Option<String>,
-    pub local_working_dir: Option<String>,
-
-    // Terminal
-    pub preferred_backend: Option<String>,
-    pub color_scheme: Option<String>,
-    pub font_family: Option<String>,
-    pub font_size: Option<f64>,
-    pub opacity: Option<f64>,
-
-    // Metadata
-    pub notes: Option<String>,
-    pub last_connected: Option<String>,
-    pub connect_count: u32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SshOptions {
-    pub compression: bool,
-    pub keepalive_interval: Option<u32>,
-    pub keepalive_count: Option<u32>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RdpOptions {
-    pub audio: bool,
-    pub clipboard: bool,
-    pub fonts: bool,
-    pub printer: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct VncOptions {
-    pub quality: u8,       // 0-9
-    pub scaling: bool,
-    pub view_only: bool,
-}
-```
-
-## Database Operations
-
-```rust
-impl SessionStore {
-    pub fn insert_session(&self, config: &SessionConfig) -> Result<i64, rusqlite::Error> {
-        self.conn.execute(
-            "INSERT INTO sessions (name, type, folder_id, host, port, username, auth_method,
-                key_path, tmux_enabled, tmux_session_name, ssh_options,
-                rdp_domain, rdp_width, rdp_height, rdp_color_depth, rdp_compression, rdp_options,
-                vnc_color_depth, vnc_options,
-                serial_device, serial_baud_rate, serial_data_bits, serial_parity,
-                serial_stop_bits, serial_flow_control,
-                local_shell, local_working_dir,
-                terminal_backend, color_scheme, font_family, font_size, opacity, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27,
-                ?28, ?29, ?30, ?31, ?32, ?33)",
-            params![
-                config.name,
-                serde_json::to_string(&config.session_type)?,
-                config.folder_id,
-                config.host,
-                config.port,
-                config.username,
-                config.auth_method.as_ref().map(|a| serde_json::to_string(a).unwrap()),
-                config.key_path,
-                config.tmux_enabled as i32,
-                config.tmux_session_name,
-                config.ssh_options.as_ref().map(|o| serde_json::to_string(o).unwrap()),
-                config.rdp_domain,
-                config.rdp_width,
-                config.rdp_height,
-                config.rdp_color_depth,
-                config.rdp_compression as i32,
-                config.rdp_options.as_ref().map(|o| serde_json::to_string(o).unwrap()),
-                config.vnc_color_depth,
-                config.vnc_options.as_ref().map(|o| serde_json::to_string(o).unwrap()),
-                config.serial_device,
-                config.serial_baud_rate,
-                config.serial_data_bits,
-                config.serial_parity,
-                config.serial_stop_bits,
-                config.serial_flow_control,
-                config.local_shell,
-                config.local_working_dir,
-                config.preferred_backend,
-                config.color_scheme,
-                config.font_family,
-                config.font_size,
-                config.opacity,
-                config.notes,
-            ],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    pub fn get_session(&self, id: i64) -> Result<SessionConfig, rusqlite::Error> {
-        // SELECT * FROM sessions WHERE id = ?1
-        // Map row to SessionConfig
-        todo!()
-    }
-
-    pub fn list_sessions(&self, folder_id: Option<i64>) -> Result<Vec<SessionConfig>, rusqlite::Error> {
-        // SELECT * FROM sessions WHERE folder_id = ?1 ORDER BY sort_order
-        todo!()
-    }
-
-    pub fn update_session(&self, config: &SessionConfig) -> Result<(), rusqlite::Error> {
-        // UPDATE sessions SET ... WHERE id = ?1
-        todo!()
-    }
-
-    pub fn delete_session(&self, id: i64) -> Result<(), rusqlite::Error> {
-        self.conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-
-    // Folders
-    pub fn insert_folder(&self, name: &str, parent_id: Option<i64>) -> Result<i64, rusqlite::Error> {
-        self.conn.execute(
-            "INSERT INTO folders (name, parent_id) VALUES (?1, ?2)",
-            params![name, parent_id],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    pub fn list_folders(&self, parent_id: Option<i64>) -> Result<Vec<Folder>, rusqlite::Error> {
-        // ...
-        todo!()
-    }
-
-    pub fn delete_folder(&self, id: i64) -> Result<(), rusqlite::Error> {
-        self.conn.execute("DELETE FROM folders WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-}
-```
-
-## Credential Storage
-
-Credentials are NEVER stored in the SQLite database. They go in the OS
-keyring via libsecret, using libsecret's attribute-based lookup (not a
-single concatenated key string — attributes are indexed and matchable):
-
-```
-schema: com.alex-eckstein.wayterm.Session
-attributes per secret:
-    session_id    → sessions.id
-    session_name  → sessions.name (human-readable in the keyring UI)
-    secret_type   → 'password' | 'key_passphrase' | 'vnc_password' | 'rdp_password'
-```
-
-The `sessions.auth_method` field records *which* method to use, but the
-secret material is in the keyring. If a user exports/imports sessions,
-credentials are not included — they must re-authenticate on first connect.
-Full flow (keyring → prompt → store-if-checked, challenge-response
-dialog, zeroization) is specified in
-[11-ssh-auth-security.md](11-ssh-auth-security.md).
-
-> **App id note:** the application id is `com.alex-eckstein.wayterm` —
-> decided at design phase, before any code, exactly as required: it's baked
-> into keyring schemas, XDG directories, and gsettings schemas, and
-> changing it later orphans stored credentials. Binaries/packages use the
-> plain name `wayterm`.
+`ssh_options`, `rdp_options`, `vnc_options`, and `forward_rules` are JSON
+objects (`SshOptions`, `RdpOptions`, `VncOptions`, `[ForwardRule]`).
+`SessionConfig` mirrors one row and never holds a secret; it deserializes
+with defaults, so JSON written before a field existed still loads.
 
 ## Default Data
 
-```sql
--- Default hotkeys — MUST stay in sync with doc 07's default-actions table.
--- (These rows are the seed data for is_default=1; user rebinding writes
--- is_default=0 rows which override at load time.)
-INSERT INTO hotkeys (action, key_sequence, context, is_default) VALUES
-('new_tab',           'Ctrl+Shift+T',    'global',       1),
-('close_tab',         'Ctrl+Shift+W',    'global',       1),
-('next_tab',          'Ctrl+Tab',        'global',       1),
-('prev_tab',          'Ctrl+Shift+Tab',  'global',       1),
-('toggle_sftp',       'Ctrl+Shift+B',    'global',       1),
-('toggle_session_tree','Ctrl+Shift+S',   'global',       1),
-('toggle_fullscreen', 'F11',             'global',       1),
-('reconnect',         'Ctrl+Shift+R',    'global',       1),
-('disconnect',        'Ctrl+Shift+X',    'global',       1),
-('new_session',       'Ctrl+N',          'global',       1),
-('rename_tab',        'Ctrl+Shift+Enter','global',       1),
-('split_horizontal',  'Ctrl+Shift+D',    'terminal',     1),
-('split_vertical',    'Ctrl+Shift+E',    'terminal',     1),
-('close_split',       'Ctrl+Shift+Q',    'terminal',     1),
-('search',            'Ctrl+Shift+F',    'terminal',     1),
-('search_scrollback', 'Ctrl+Shift+K',    'terminal',     1),
-('copy',              'Ctrl+Shift+C',    'terminal',     1),
-('paste',             'Ctrl+Shift+V',    'terminal',     1),
-('select_all',        'Ctrl+Shift+A',    'terminal',     1),
-('clear',             'Ctrl+Shift+L',    'terminal',     1),
-('edit_session',      'Ctrl+E',          'session_tree', 1),
-('duplicate_session', 'Ctrl+D',         'session_tree', 1),
-('delete_session',    'Delete',          'session_tree', 1),
-('connect_session',   'Enter',          'session_tree', 1),
-('sftp_upload',       'Ctrl+U',          'sftp',         1),
-('sftp_download',     'Ctrl+D',         'sftp',         1),
-('sftp_rename',       'F2',              'sftp',         1),
-('sftp_delete',       'Delete',          'sftp',         1);
+Seeded once, inside a transaction, when the `settings` table is empty
+(`hotkeys` has no `UNIQUE (action, context)`, so re-running the seed would
+duplicate rows; that constraint is the first schema-v2 candidate).
 
--- Default settings
-INSERT INTO settings (key, value) VALUES
-('default_backend',     'vte'),
-('default_color_scheme', 'Dark'),
-('default_font_family',  'Monospace'),
-('default_font_size',    '12.0'),
-('default_opacity',      '1.0'),
-('scrollback_limit',     '10000'),
-('confirm_close',       '1'),
-('reconnect_on_drop',    '1'),
-('tmux_default',        '0'),
-('host_key_policy',     'strict');   -- global default; per-session override via sessions.host_key_policy
-```
+| Setting | Default | Notes |
+|---|---|---|
+| `default_backend` | `vte` | |
+| `default_color_scheme` | `Dark` | |
+| `default_font_family` / `default_font_size` | `Monospace` / `12.0` | |
+| `default_opacity` | `1.0` | |
+| `scrollback_limit` | `10000` | |
+| `confirm_close` | `1` | doc 04 §Lifecycle & Cancellation |
+| `reconnect_on_drop` | `1` | auto-reconnect vs prompt |
+| `tmux_default` | `0` | |
+| `host_key_policy` | `strict` | doc 11 |
+| `minimize_to_tray` | (not seeded) | missing = on |
+| `open_tabs` | (written at runtime) | JSON tab list (doc 10 Phase 4) |
 
-> **Known gap (verified Phase 1, Task 3):** `hotkeys` has **no UNIQUE
-> constraint** — not on `action`, not on `(action, context)`. Re-running
-> the seed verbatim would therefore insert duplicate rows. The code
-> compensates rather than changing the schema: the seed runs inside a
-> transaction (so a half-applied seed never commits) guarded by a
-> `SELECT EXISTS(SELECT 1 FROM settings)` probe, so it applies exactly
-> once per database. A `UNIQUE (action, context)` index is the obvious
-> **schema-v2 candidate** — it is what makes the seed idempotent at the
-> database level instead of by convention.
+Boolean settings are on unless explicitly `0`/`false`/`no`/`off`; a
+missing or unreadable row is on, so a typo never disables a safety prompt.
 
-## Import/Export
+The seed also inserts 28 `hotkeys` rows with `is_default = 1`. They are
+informational: only `is_default = 0` rows (user overrides) are ever loaded,
+and doc 07's table is the source of truth. The seed predates two fixes
+there, so it spells the Enter key `Enter` (GDK's name is `Return`) and
+lacks `goto_tab_1` … `goto_tab_9`; a test pins exactly those differences.
 
-Sessions can be exported to JSON for sharing or backup. Credentials are
-not included — only connection parameters.
+## Credential Storage
 
-```json
-{
-  "version": 1,
-  "exported_at": "2026-08-27T12:00:00Z",
-  "folders": [
-    { "name": "Production", "sessions": [
-      {
-        "name": "prod-db",
-        "type": "ssh",
-        "host": "db.prod.lan",
-        "port": 22,
-        "username": "admin",
-        "auth_method": "key",
-        "key_path": "~/.ssh/id_ed25519"
-      }
-    ]}
-  ]
-}
-```
+Secrets go in the OS keyring under libsecret schema
+`com.alex-eckstein.wayterm.Session`, with attributes `session_id`,
+`session_name`, and `secret_type` (`password`, `key_passphrase`,
+`vnc_password`, `rdp_password`). `auth_method` only records which method to
+use. Export/import never includes secrets. The application id
+`com.alex-eckstein.wayterm` is baked into keyring schemas and XDG paths —
+changing it orphans stored credentials. (The keyring source is not wired
+yet; lookups fall through to the prompt — doc 11 §CredentialManager.)
 
-Rust implementation via serde:
+## Import and export (Phase 9)
 
-```rust
-pub fn export_sessions(store: &SessionStore, path: &Path) -> Result<(), Box<dyn Error>> {
-    let folders = store.list_folders(None)?;
-    let export = ExportFile {
-        version: 1,
-        exported_at: chrono::Utc::now().to_rfc3339(),
-        folders: folders,
-    };
-    let json = serde_json::to_string_pretty(&export)?;
-    fs::write(path, json)?;
-    Ok(())
-}
-```
-
-## Migration from Other Tools
-
-Priority order — `~/.ssh/config` first, because it's the format every
-Linux user already has (see doc 10 Phase 9):
-
-1. **`~/.ssh/config`** — `russh-config` crate parses it (Host blocks,
-   HostName, User, Port, IdentityFile, ProxyJump, dynamic entries).
-   Import creates one saved session per Host block (skipping wildcard
-   `Host *` blocks, or offering them as templates). This is the single
-   cheapest adoption driver — a user's first run should offer it.
-2. Remmina (`.remmina` files, GKeyFile format — one file per session)
-3. MobaXterm (`.mxtpro`/registry export — format is XML/INI-ish, undocumented; reverse-engineer)
-4. Asbru (PAC YAML)
-5. Termius (if export available)
-
-Each importer reads the foreign format, maps to `SessionConfig`, and
-inserts into the DB. All importers are read-only against their source —
-importing never writes back to `~/.ssh/config`.
+- **Export** sessions as JSON (`{"version": 1, "folders": [...]}`) without
+  credentials.
+- **Import**, in priority order: `~/.ssh/config` (via `russh-config`; one
+  session per `Host`, wildcard blocks as templates, offered on first run),
+  then Remmina `.remmina` files, MobaXterm exports, Asbru YAML. Importers
+  only read their sources.
