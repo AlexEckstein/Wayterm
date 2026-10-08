@@ -153,7 +153,7 @@ export SSH_TEST_KEY_PATH="$KEY_PATH"
 # on the untouched-methods list, and a stray agent would change that.
 unset SSH_AUTH_SOCK
 
-TEST_CMD=(cargo test --test transport_sshd --test tmux_persistence --test connect_flow -- --test-threads=1 --nocapture)
+TEST_CMD=(cargo test --test transport_sshd --test tmux_persistence --test connect_flow --test reconnect_sshd -- --test-threads=1 --nocapture)
 if [ -n "$TEST_FILTER" ]; then
     TEST_CMD+=("$TEST_FILTER")
 fi
@@ -161,8 +161,10 @@ fi
 log "running: ${TEST_CMD[*]}"
 CARGO_LOG="$RUN_DIR/cargo-test.log"
 set +e
-(cd "$REPO_ROOT" && "${TEST_CMD[@]}" 2>&1 | tee "$CARGO_LOG")
+cd "$REPO_ROOT"
+"${TEST_CMD[@]}" 2>&1 | tee "$CARGO_LOG"
 CARGO_STATUS="${PIPESTATUS[0]}"
+cd - >/dev/null
 set -e
 
 unset SSH_TEST_PASSWORD TEST_PASSWORD

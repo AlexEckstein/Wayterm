@@ -36,6 +36,12 @@
 //! Every attempt bumps a per-page generation counter; a cancelled or
 //! superseded attempt discards its result (the late connection is simply
 //! dropped, which the supervisor's release monitor notices).
+//!
+//! P4-PAR-2 additions (additive only, P3-3 owns the connect flow):
+//! [`SessionTab::attach_terminal`] / [`SessionTab::active_terminal`] are the
+//! seam the connect flow uses to publish a tab's terminal backend and the
+//! window-level terminal actions use to find it;
+//! [`SessionTab::apply_terminal_title`] is the doc-02 `TitleChanged` seam.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -49,7 +55,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::store::model::{
     AuthMethod as ModelAuthMethod, HostKeyPolicy, SessionConfig, SessionType,
 };
-use crate::terminal::create_terminal;
+use crate::terminal::{create_terminal, TerminalBackend};
 use crate::transport::connection::{AuthMethod as TransportAuthMethod, SshConnection};
 #[cfg(feature = "keyring")]
 use crate::transport::credentials::KeyringSource;
@@ -62,11 +68,16 @@ use crate::ui::auth_dialog::{self, ChallengePrompt};
 use crate::ui::hostkey_dialog;
 use crate::ui::main_window::{route_status, SUPERVISOR_KEY};
 use crate::ui::sftp_sidebar::{supports_sftp, SftpSidebar};
+use crate::ui::tab_label;
 use vte4::prelude::*;
 use zeroize::Zeroizing;
 
 /// Key used to stash the session id on the tab content widget for dedup.
-const SESSION_ID_KEY: &str = "wayterm-session-tab-id";
+///
+/// Public because the tab-persistence layer reads the same value back
+/// off a page to learn which session a tab belongs to (doc 10 Phase 4,
+/// "Remember open tabs on exit, restore on launch").
+pub const SESSION_ID_KEY: &str = "wayterm-session-tab-id";
 
 /// Key used to stash the sidebar on an SSH tab's page widget so the
 /// `toggle_sftp` action can find it — the same widget-data pattern
@@ -88,6 +99,10 @@ const TERM_TAB_KEY: &str = "wayterm-terminal-tab";
 /// Key for the page's connect-generation [`Cell<u64>`]; bumped to invalidate
 /// an in-flight attempt.
 const CONNECT_GEN_KEY: &str = "wayterm-connect-gen";
+
+/// Key used to stash the tab's wired terminal backend (an
+/// `Arc<dyn TerminalBackend>`) on the tab content widget.
+const TERMINAL_BACKEND_KEY: &str = "wayterm-terminal-backend";
 
 /// Width of the sidebar when the tab is created, in pixels.
 const SIDEBAR_WIDTH: i32 = 320;
@@ -175,6 +190,53 @@ impl SessionTab {
     /// Used by the window's `switch_page` handler to repaint the status bar.
     pub(crate) fn page_status(page: &gtk4::Widget) -> Option<PageStatusCell> {
         page_status_cell(page)
+    }
+
+    /// Publish `backend` as the terminal of the tab whose content widget is
+    /// `content` (the connect flow's side of the seam; P3 calls this once a
+    /// session is wired). The window-level terminal actions read it back
+    /// through [`SessionTab::active_terminal`].
+    // The connect flow (P3) is the caller; it lands in that lane.
+    #[allow(dead_code)]
+    pub fn attach_terminal(content: &gtk4::Widget, backend: Arc<dyn TerminalBackend>) {
+        // SAFETY: the key and value type have a 1:1 relationship; the qdata
+        // (and its Arc) is dropped with the widget.
+        unsafe {
+            content.set_data(TERMINAL_BACKEND_KEY, backend);
+        }
+    }
+
+    /// The terminal backend wired to the notebook's current tab, if the
+    /// connect flow has attached one yet. `None` for the Home page and for
+    /// placeholder tabs — window-level terminal actions must treat that as
+    /// "nothing to act on" (doc 07 context=terminal).
+    pub fn active_terminal(notebook: &gtk4::Notebook) -> Option<Arc<dyn TerminalBackend>> {
+        let page = notebook.current_page()?;
+        let content = notebook.nth_page(Some(page))?;
+        // SAFETY: only `attach_terminal` writes this key, with this type.
+        unsafe { content.data::<Arc<dyn TerminalBackend>>(TERMINAL_BACKEND_KEY) }
+            .map(|ptr| unsafe { (*ptr.as_ptr()).clone() })
+    }
+
+    /// Doc 02 `TitleChanged` seam: feed a terminal-provided window title
+    /// into the active tab's title state machine. Ignored when the user has
+    /// already renamed the tab (see [`tab_label::TabTitle`]). Returns
+    /// whether the title took effect.
+    ///
+    /// Not called yet — the pump drops `TerminalEvent::TitleChanged` today;
+    /// the consumer wiring lands with the connect flow.
+    #[allow(dead_code)]
+    pub fn apply_terminal_title(notebook: &gtk4::Notebook, title: &str) -> bool {
+        let Some(page) = notebook.current_page() else {
+            return false;
+        };
+        let Some(content) = notebook.nth_page(Some(page)) else {
+            return false;
+        };
+        let Some(label) = notebook.tab_label(&content) else {
+            return false;
+        };
+        tab_label::apply_terminal_title(&label, title)
     }
 }
 
@@ -827,31 +889,56 @@ fn page_content(session: &SessionConfig) -> gtk4::Widget {
 }
 
 /// Build the tab label widget: session name + close button.
-///
-/// Returns the label widget plus the name [`gtk4::Label`], which the
-/// terminal-title wiring updates.
 fn build_tab_label(
     notebook: &gtk4::Notebook,
     session: &SessionConfig,
 ) -> (gtk4::Widget, gtk4::Label) {
-    let box_ = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-
-    let name_label = gtk4::Label::new(Some(&session.name));
-    box_.append(&name_label);
-
-    let close_button = gtk4::Button::from_icon_name("window-close-symbolic");
-    close_button.set_has_frame(false);
-    close_button.set_tooltip_text(Some("Close tab"));
-    close_button.set_focus_on_click(false);
-
     let notebook_for_close = notebook.clone();
     let session_id = session.id;
-    close_button.connect_clicked(move |_| {
-        request_close_tab(&notebook_for_close, session_id);
-    });
+    // P4-2's tab_label module owns construction + the rename gesture +
+    // the TabTitle state machine; P3-3's caller keeps its (Widget, Label)
+    // contract for the terminal-title wiring.
+    // Doc 04 §Lifecycle: "Confirm-before-close if processes running
+    // (setting `confirm_close`)". The decision and the dialog live in
+    // `tab_resilience`; the close button (built by tab_label) routes
+    // through it — the close bookkeeping moves into tab_resilience and
+    // the confirm dialog fires before the page is removed.
+    tab_label::build_tab_label(&session.name, move || {
+        let parent = gtk_window_for(&notebook_for_close.clone().upcast());
+        let notebook_for_close2 = notebook_for_close.clone();
+        crate::ui::tab_resilience::request_close(session_id, parent.as_ref(), move || {
+            if let Some((page_num, _)) = find_tab_by_session_id(&notebook_for_close2, session_id) {
+                notebook_for_close2.remove_page(Some(page_num));
+            }
+        });
+    })
+}
 
-    box_.append(&close_button);
-    (box_.upcast(), name_label)
+/// The session id of the notebook's current page, if it is a session tab.
+///
+/// The reconnect / disconnect actions (doc 07) resolve their target tab
+/// through this; a non-session page (the Home tab) yields `None` and the
+/// actions no-op.
+pub(crate) fn current_session_id(notebook: &gtk4::Notebook) -> Option<i64> {
+    let page_num = notebook.current_page()?;
+    let child = notebook.nth_page(Some(page_num))?;
+    #[allow(deprecated)]
+    let id: Option<i64> = unsafe { child.data::<i64>(SESSION_ID_KEY).map(|d| *d.as_ptr()) };
+    id
+}
+
+/// Walk up from a widget to the [`gtk4::Window`] that owns it, so a
+/// dialog opened from a tab's close button gets the right transient
+/// parent.
+#[allow(deprecated)]
+fn gtk_window_for(widget: &gtk4::Widget) -> Option<gtk4::Window> {
+    let mut current = widget.clone();
+    loop {
+        if let Ok(window) = current.clone().downcast::<gtk4::Window>() {
+            return Some(window);
+        }
+        current = current.parent()?;
+    }
 }
 
 /// Find the notebook page whose content widget carries `session_id`.

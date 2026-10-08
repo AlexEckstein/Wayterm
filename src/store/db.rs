@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::store::model::{Folder, SessionConfig};
 
@@ -378,7 +378,177 @@ impl SessionStore {
         )?;
         Ok(())
     }
+
+    /// Read the user-customized hotkey rows: `WHERE is_default = 0`,
+    /// oldest first (doc 07 §"Persistence", step 2).
+    ///
+    /// Rows seeded with `is_default = 1` are first-run data and are
+    /// never returned — doc 07 is explicit that they "are never loaded
+    /// back over the registry's compiled-in defaults", and filtering
+    /// here is what guarantees that even if a seed row is edited by
+    /// hand. `context` is not returned: doc 07 applies a row by action
+    /// id, and the context is a property of the registered action.
+    pub fn load_custom_hotkeys(&self) -> rusqlite::Result<Vec<CustomHotkeyRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT action, key_sequence, enabled FROM hotkeys \
+             WHERE is_default = 0 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get::<_, i32>(2)? != 0))
+        })?;
+        rows.collect()
+    }
+
+    /// Write one user-customized hotkey row (`is_default = 0`).
+    ///
+    /// Doc 06 §"Default Data": "user rebinding writes is_default = 0
+    /// rows which override at load time". Rebinding the same action
+    /// twice replaces the row rather than appending a second one, which
+    /// is what the missing `UNIQUE (action, context)` constraint cannot
+    /// enforce on its own: the delete and the insert share one
+    /// `BEGIN IMMEDIATE` transaction, so the write lock is taken before
+    /// the read of the row set and two writers cannot interleave into
+    /// duplicates. `UNIQUE (action, context)` remains doc 06's
+    /// schema-v2 candidate; `db.rs` still has a single
+    /// `CREATE TABLE IF NOT EXISTS` migration and no version table, so
+    /// adding a second one is a migration-system decision, not a hotkey
+    /// one.
+    pub fn save_custom_hotkey(
+        &self,
+        action: &str,
+        key_sequence: &str,
+        context: &str,
+        enabled: bool,
+    ) -> rusqlite::Result<()> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM hotkeys WHERE action = ?1 AND is_default = 0",
+            params![action],
+        )?;
+        tx.execute(
+            "INSERT INTO hotkeys (action, key_sequence, context, enabled, is_default) \
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            params![action, key_sequence, context, enabled as i32],
+        )?;
+        tx.commit()
+    }
+
+    /// Drop a user-customized hotkey row, returning the number of rows
+    /// removed.
+    ///
+    /// Called when an action is back at its compiled-in binding: with no
+    /// `is_default = 0` row, [`Self::load_custom_hotkeys`] has nothing to
+    /// say about it and the compiled-in default applies again. Seeded
+    /// `is_default = 1` rows are never in scope for this statement.
+    pub fn delete_custom_hotkey(&self, action: &str) -> rusqlite::Result<usize> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let removed = tx.execute(
+            "DELETE FROM hotkeys WHERE action = ?1 AND is_default = 0",
+            params![action],
+        )?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// Read one row from the key-value `settings` table (doc 06).
+    ///
+    /// `Ok(None)` means the key is absent, which is distinct from an
+    /// `Err` (the database is unreadable) — callers that need a default
+    /// supply it themselves, so a missing row never silently becomes an
+    /// empty string.
+    /// Read a global setting from the `settings` key-value table.
+    ///
+    /// Returns `Ok(None)` when the row is absent — callers apply the
+    /// documented default (e.g. `tray::minimize_to_tray_enabled` treats a
+    /// missing `minimize_to_tray` row as ON). Added for P4-5; previously
+    /// only the db tests had a private equivalent.
+    pub fn get_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        use rusqlite::OptionalExtension as _;
+        self.conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// Upsert a global setting into the `settings` key-value table.
+    pub fn set_setting(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+    /// Persist the list of open tabs so the next launch can restore it
+    /// (doc 10 Phase 4: "Remember open tabs on exit, restore on
+    /// launch").
+    ///
+    /// # Why a `settings` row and not a table
+    ///
+    /// The open-tab list is one value that is always read whole and
+    /// written whole, and doc 06 already ships `settings(key TEXT
+    /// PRIMARY KEY, value TEXT)` for exactly that shape. A dedicated
+    /// `open_tabs` table would need its own CREATE in
+    /// [`MIGRATION_001`], its own idempotency story for databases that
+    /// are already on disk, and indexes — all to hold what a single
+    /// key-value row holds natively. The row is therefore written with
+    /// an upsert so repeated saves replace it instead of colliding on
+    /// the primary key.
+    ///
+    /// An empty list is stored as `[]`, not deleted: "no tabs open" is
+    /// a state worth remembering, and keeping the row means a fresh
+    /// store and a deliberately-emptied one are distinguishable.
+    ///
+    /// Only tab identity is stored — no credentials (doc 06
+    /// §"Credential Storage").
+    pub fn save_open_tabs(&self, tabs: &[crate::ui::tab_state::TabState]) -> rusqlite::Result<()> {
+        let json = crate::ui::tab_state::tabs_to_json(tabs)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![crate::ui::tab_state::OPEN_TABS_SETTING_KEY, json],
+        )?;
+        Ok(())
+    }
+
+    /// Read the persisted open-tab list.
+    ///
+    /// Returns an empty list when nothing was ever saved — a fresh
+    /// database has no `open_tabs` row, which is the same thing as "no
+    /// tabs to restore". Malformed JSON surfaces as a
+    /// [`rusqlite::Error::FromSqlConversionFailure`] rather than an
+    /// empty list: silently restoring nothing would look identical to a
+    /// successful launch with no saved tabs, and the caller can log it
+    /// and carry on.
+    pub fn load_open_tabs(&self) -> rusqlite::Result<Vec<crate::ui::tab_state::TabState>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![crate::ui::tab_state::OPEN_TABS_SETTING_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(json) = json else {
+            return Ok(Vec::new());
+        };
+        crate::ui::tab_state::tabs_from_json(&json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
+    }
 }
+
+/// One `hotkeys` row with `is_default = 0`, as
+/// `(action, key_sequence, enabled)`.
+///
+/// A plain tuple in the table's column order: the hotkey row carries no
+/// JSON and no typed model (doc 06 §"Database Schema"), and
+/// [`SessionStore::load_custom_hotkeys`] is its only reader.
+pub type CustomHotkeyRow = (String, String, bool);
 
 /// Shared setup for both constructors: pragmas, schema, seed.
 #[allow(dead_code)]

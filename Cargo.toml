@@ -15,7 +15,10 @@ path = "src/main.rs"
 
 [dependencies]
 gtk4 = { version = "0.11", features = ["v4_14"] }
-vte4 = { version = "0.10", features = ["v0_70"] }
+# v0_72 unlocks `text_range_format` (full-buffer scrollback extraction,
+# doc 02 §Scrollback). Requires VTE >= 0.72 at runtime — the GTK4 VTE
+# package only exists from Debian bookworm / Ubuntu 23.04 on, both ≥ 0.72.
+vte4 = { version = "0.10", features = ["v0_70", "v0_72"] }
 tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 serde = { version = "1", features = ["derive"] }
@@ -32,6 +35,7 @@ sha2 = "0.10"
 bytes = "1"
 thiserror = "2"
 russh-sftp = "3.0"
+ksni = "0.3"
 
 [features]
 default = ["keyring"]
@@ -43,3 +47,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("backend-g
 
 [dev-dependencies]
 tempfile = "3"
+# test-util enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,
+# which the reconnect driver's backoff tests use to assert the doc 04 curve
+# against virtual time (doc 04 §Lifecycle & Cancellation).
+tokio = { version = "1", features = ["test-util"] }
