@@ -23,7 +23,6 @@ pub enum Interaction {
 /// Records every [`write`](TerminalBackend::write) call so tests can assert
 /// what the remote actually received, plus every interaction call (see
 /// [`Interaction`]) so the terminal-action routing can be tested display-free.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct FakeBackend {
     written: Arc<Mutex<Vec<u8>>>,
@@ -37,7 +36,6 @@ pub struct FakeBackend {
 }
 
 impl FakeBackend {
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             written: Arc::new(Mutex::new(Vec::new())),
@@ -48,7 +46,6 @@ impl FakeBackend {
     }
 
     /// Build a fake backend with a fixed [`TerminalFeatures`] value.
-    #[allow(dead_code)]
     pub fn with_features(features: TerminalFeatures) -> Self {
         Self {
             written: Arc::new(Mutex::new(Vec::new())),
@@ -59,7 +56,6 @@ impl FakeBackend {
     }
 
     /// All bytes written to this backend, in order.
-    #[allow(dead_code)]
     pub fn written(&self) -> Vec<u8> {
         self.written
             .lock()
@@ -68,7 +64,6 @@ impl FakeBackend {
     }
 
     /// All interaction calls routed to this backend, in order.
-    #[allow(dead_code)]
     pub fn interactions(&self) -> Vec<Interaction> {
         self.interactions
             .lock()
@@ -86,7 +81,6 @@ impl FakeBackend {
     /// Test helper: emit a synthetic event into the channel held by the
     /// corresponding [`TerminalHandle`](super::TerminalHandle).
     #[doc(hidden)]
-    #[allow(dead_code)]
     pub fn emit(&self, ev: TerminalEvent) {
         if let Some(ref tx) = self.event_tx {
             // Tests run inside the tokio runtime, so try_send is synchronous.

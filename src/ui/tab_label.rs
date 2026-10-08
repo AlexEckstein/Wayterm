@@ -79,7 +79,6 @@ impl TabTitle {
     /// Current lifecycle state.
     // Read by the state-machine tests; consumers of a live tab go through
     // `value()` (the rendered label).
-    #[allow(dead_code)]
     pub fn state(&self) -> &TabTitleState {
         &self.state
     }

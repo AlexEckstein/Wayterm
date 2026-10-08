@@ -6,7 +6,6 @@ use tokio::sync::mpsc;
 // Public API surface for the terminal abstraction. Dead-code lints are
 // expected while the trait is defined in P2-1 and first consumed by
 // VteBackend in P2-2.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TerminalFeatures {
     pub search: bool,
@@ -24,7 +23,6 @@ pub struct TerminalFeatures {
 /// Data flowing out of the terminal (user keystrokes → transport).
 /// Sent via channel, not return value, to keep the backend decoupled
 /// from the transport.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum TerminalEvent {
     DataOut(Vec<u8>),
@@ -49,7 +47,6 @@ pub enum TerminalEvent {
 /// GTK side; the transport pump receives [`TerminalEvent`]s from the channel,
 /// not the backend itself. This is an orchestrator ruling that corrects doc 02's
 /// original `Send` bound, which only fit the fake/test backends.
-#[allow(dead_code)]
 pub trait TerminalBackend {
     /// The GTK widget to embed in a tab.
     /// Always returns a valid gtk::Widget — the tab embeds this.
@@ -101,7 +98,6 @@ pub trait TerminalBackend {
 /// Owner handle returned by [`create_terminal`]. The receiver half is held by
 /// the transport pump task; the backend keeps the sender half and emits
 /// [`TerminalEvent`]s as the user interacts with the terminal.
-#[allow(dead_code)]
 pub struct TerminalHandle {
     pub backend: Arc<dyn TerminalBackend>,
     pub events: mpsc::Receiver<TerminalEvent>,
@@ -113,7 +109,6 @@ pub struct TerminalHandle {
 /// * `"ghostty"` is available only with the `backend-ghostty` Cargo feature
 ///   (not created yet; intended for Phase 10).
 /// * Any other `backend_name` falls back to the VteBackend default.
-#[allow(dead_code)]
 pub fn create_terminal(
     backend_name: &str,
     event_tx: mpsc::Sender<TerminalEvent>,

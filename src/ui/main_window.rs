@@ -25,9 +25,10 @@ use crate::store::SessionStore;
 use crate::terminal::TerminalBackend;
 use crate::transport::supervisor::ConnectionSupervisor;
 use crate::transport::types::TransportState;
+use crate::ui::session_tree::SessionTree;
+use crate::ui::status_bar::StatusBar;
 use crate::ui::tab::SessionTab;
 use crate::ui::tab_restore::TabPersistence;
-use crate::ui::{SessionTree, StatusBar};
 
 /// gio action id for doc 09's `toggle_sftp`.
 const TOGGLE_SFTP_ACTION: &str = "toggle_sftp";
@@ -420,7 +421,6 @@ fn build_search_popover(
 }
 
 /// The primary Wayterm application window.
-#[allow(dead_code)]
 pub struct MainWindow {
     window: gtk4::ApplicationWindow,
 }
@@ -594,7 +594,6 @@ impl MainWindow {
     /// Return the underlying GTK window.
     ///
     /// Useful for tests that need to inspect or close the window.
-    #[allow(dead_code)]
     pub fn window(&self) -> &gtk4::ApplicationWindow {
         &self.window
     }

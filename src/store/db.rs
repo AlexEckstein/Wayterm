@@ -16,7 +16,6 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use crate::store::model::{Folder, SessionConfig};
 
 /// A SQLite-backed store of session folders and saved sessions.
-#[allow(dead_code)]
 pub struct SessionStore {
     conn: Connection,
     /// `Some(path)` for a file-backed store, `None` for an in-memory store.
@@ -25,7 +24,6 @@ pub struct SessionStore {
     path: Option<PathBuf>,
 }
 
-#[allow(dead_code)]
 impl SessionStore {
     /// Open the store at `path`, creating the file (parent directory
     /// must exist), the schema, and the default seed data on first
@@ -551,7 +549,6 @@ impl SessionStore {
 pub type CustomHotkeyRow = (String, String, bool);
 
 /// Shared setup for both constructors: pragmas, schema, seed.
-#[allow(dead_code)]
 fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     // Doc 06 §"Rust Schema Definition": pragmas first, then the
     // migration. `foreign_keys` is per-connection and re-armed on
@@ -570,7 +567,6 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
 /// is what keeps `open` idempotent for the seed: `hotkeys` has no
 /// UNIQUE constraint on `action`, so re-running the seed verbatim
 /// would insert duplicate rows.
-#[allow(dead_code)]
 fn seed_defaults(conn: &mut Connection) -> rusqlite::Result<()> {
     let seeded: i64 = conn.query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |row| {
         row.get(0)
@@ -589,7 +585,6 @@ fn seed_defaults(conn: &mut Connection) -> rusqlite::Result<()> {
 /// Rust sketch shows) so re-opening an existing database succeeds.
 /// Includes the 2026-08 revision columns `host_key_policy`,
 /// `jump_session_id`, and `forward_rules`.
-#[allow(dead_code)]
 const MIGRATION_001: &str = r#"
 -- Session folders for tree organization
 CREATE TABLE IF NOT EXISTS folders (
@@ -710,7 +705,6 @@ CREATE INDEX IF NOT EXISTS idx_history_recent ON connection_history(connected_at
 /// 28 hotkeys and 10 settings, inserted only into a fresh database by
 /// [`seed_defaults`]. The hotkeys MUST stay in sync with doc 07's
 /// default-actions table.
-#[allow(dead_code)]
 const SEED_DEFAULTS: &str = r#"
 -- Default hotkeys — MUST stay in sync with doc 07's default-actions table.
 -- (These rows are the seed data for is_default=1; user rebinding writes

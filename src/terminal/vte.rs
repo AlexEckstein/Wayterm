@@ -19,10 +19,6 @@ use vte4::Terminal as VteTerminal;
 /// §Backpressure for the normative shape.
 pub struct VteBackend {
     terminal: VteTerminal,
-    // The sender is retained only to satisfy the "owned by the backend"
-    // contract; the wired signal closures each keep their own clone.
-    #[allow(dead_code)]
-    event_tx: mpsc::Sender<TerminalEvent>,
 }
 
 // VteBackend is intentionally not Send: the vte4::Terminal widget must stay on
@@ -39,9 +35,9 @@ impl VteBackend {
 
         wire_commit(&terminal, event_tx.clone());
         wire_resize(&terminal, event_tx.clone());
-        wire_size(&terminal, event_tx.clone());
+        wire_size(&terminal, event_tx);
 
-        Self { terminal, event_tx }
+        Self { terminal }
     }
 }
 

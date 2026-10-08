@@ -24,13 +24,6 @@
 //! ([`should_minimize_to_tray`] is false whenever `tray_available` is
 //! false, regardless of the setting).
 
-// Seam allowances: the bin target compiles this module tree privately,
-// so the display-free core (exercised by `tests/tray.rs` through the lib
-// target) and the not-yet-live-wired notifier read as dead code there.
-// Same convention as `store`'s and `transport`'s `#[allow(dead_code)]`
-// seams. Remove once live tabs call the forwarder + notifier directly.
-#![allow(dead_code)]
-
 use std::cell::RefCell;
 
 use gtk4::glib;

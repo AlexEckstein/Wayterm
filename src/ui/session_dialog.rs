@@ -125,7 +125,6 @@ pub struct DialogFields {
     // Identity fields from edit mode (not dialog-editable but carried
     // through to the returned config).
     pub id: i64,
-    #[allow(dead_code)]
     pub folder_id: Option<i64>, // carried through in edit mode; config_from_fields ignores it in favour of folder_index
     pub last_connected: Option<String>,
     pub connect_count: u32,
@@ -406,7 +405,6 @@ pub fn config_from_fields(fields: &DialogFields, folders: &[Folder]) -> SessionC
 // The GTK4 constructors and helpers are only used by the UI layer; unit
 // tests target the pure `config_from_fields` function.  Silence dead-code
 // warnings in non-test builds until the dialog is exercised end-to-end.
-#[allow(dead_code)]
 mod gtk_dialog {
     use gtk4::prelude::*;
 

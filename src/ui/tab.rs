@@ -126,12 +126,8 @@ pub(crate) struct PageStatus {
 /// Shared stash handle — main-thread only.
 pub(crate) type PageStatusCell = Rc<RefCell<PageStatus>>;
 
-/// A placeholder terminal tab for a saved session.
-#[allow(dead_code)]
-pub struct SessionTab {
-    session_id: i64,
-    widget: gtk4::Widget,
-}
+/// Namespace for opening and querying session tabs.
+pub struct SessionTab;
 
 impl SessionTab {
     /// Open (or focus if already open) a tab for `session`.
@@ -197,7 +193,6 @@ impl SessionTab {
     /// session is wired). The window-level terminal actions read it back
     /// through [`SessionTab::active_terminal`].
     // The connect flow (P3) is the caller; it lands in that lane.
-    #[allow(dead_code)]
     pub fn attach_terminal(content: &gtk4::Widget, backend: Arc<dyn TerminalBackend>) {
         // SAFETY: the key and value type have a 1:1 relationship; the qdata
         // (and its Arc) is dropped with the widget.
@@ -225,7 +220,6 @@ impl SessionTab {
     ///
     /// Not called yet — the pump drops `TerminalEvent::TitleChanged` today;
     /// the consumer wiring lands with the connect flow.
-    #[allow(dead_code)]
     pub fn apply_terminal_title(notebook: &gtk4::Notebook, title: &str) -> bool {
         let Some(page) = notebook.current_page() else {
             return false;
