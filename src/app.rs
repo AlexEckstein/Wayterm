@@ -97,8 +97,28 @@ fn build_ui(app: &gtk4::Application) {
         }
     };
 
+    // P4-5: the `minimize_to_tray` setting defaults to ON when the row is
+    // absent. Tray init below decides minimize-vs-quit together with it —
+    // read BEFORE the store moves into `MainWindow::new`.
+    let minimize_enabled = crate::ui::tray::minimize_to_tray_enabled(&store);
+
     let main_window = MainWindow::new(app, store);
     // Appended after construction so P3-3's connect-flow hunks inside
     // `MainWindow::new` stay untouched.
     main_window.attach_hotkey_settings(Rc::clone(&engine), Rc::clone(&settings_store));
+    match crate::ui::tray::init_tray(app) {
+        Ok(handle) => {
+            // Keep the runtime + ksni service alive with the window, same
+            // `set_data` pattern as the status bar in main_window.rs.
+            unsafe {
+                main_window.window().set_data("wayterm-tray-handle", handle);
+            }
+            crate::ui::tray::install_close_handler(main_window.window(), true, minimize_enabled);
+        }
+        Err(err) => {
+            // Headless / no D-Bus: fall back to plain quit-on-close.
+            eprintln!("Wayterm: tray unavailable ({err}); close will quit");
+            crate::ui::tray::install_close_handler(main_window.window(), false, minimize_enabled);
+        }
+    }
 }

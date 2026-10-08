@@ -13,6 +13,7 @@ pub mod tab_label;
 
 use sftp_sidebar::SftpSidebar;
 pub mod tab_resilience;
+pub mod tray;
 
 pub use main_window::MainWindow;
 #[cfg(test)]

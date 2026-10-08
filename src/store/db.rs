@@ -456,15 +456,31 @@ impl SessionStore {
     /// `Err` (the database is unreadable) — callers that need a default
     /// supply it themselves, so a missing row never silently becomes an
     /// empty string.
+    /// Read a global setting from the `settings` key-value table.
+    ///
+    /// Returns `Ok(None)` when the row is absent — callers apply the
+    /// documented default (e.g. `tray::minimize_to_tray_enabled` treats a
+    /// missing `minimize_to_tray` row as ON). Added for P4-5; previously
+    /// only the db tests had a private equivalent.
     pub fn get_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT value FROM settings WHERE key = ?1")?;
-        let mut rows = stmt.query(params![key])?;
-        match rows.next()? {
-            Some(row) => Ok(Some(row.get(0)?)),
-            None => Ok(None),
-        }
+        use rusqlite::OptionalExtension as _;
+        self.conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// Upsert a global setting into the `settings` key-value table.
+    pub fn set_setting(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
     }
 }
 
