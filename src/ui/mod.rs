@@ -6,6 +6,7 @@ pub mod main_window;
 pub mod session_dialog;
 pub mod session_tree;
 pub mod sftp_sidebar;
+pub mod settings;
 pub mod status_bar;
 pub mod tab;
 

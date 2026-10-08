@@ -2,6 +2,7 @@ use gtk4::glib;
 
 mod app;
 mod sftp;
+mod hotkeys;
 mod store;
 mod terminal;
 mod transport;
@@ -14,5 +15,10 @@ fn main() -> glib::ExitCode {
     ui::touch_dialog_api();
     ui::touch_sftp_api();
     sftp::touch_public_api();
+    // Phase 4: the hotkey engine's data half (doc 07) is complete and
+    // covered by its inline tests; `HotkeyEngine::install` and the
+    // settings page are the UI task's, and the `#[allow(dead_code)]` on
+    // hotkeys/mod.rs goes away with them. The module stays declared here
+    // so `cargo test --bins` keeps running those tests.
     app::run()
 }

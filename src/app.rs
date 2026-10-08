@@ -1,8 +1,11 @@
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use gtk4::glib;
 use gtk4::prelude::*;
 
+use crate::hotkeys::HotkeyEngine;
 use crate::store::SessionStore;
 use crate::ui::MainWindow;
 
@@ -64,5 +67,38 @@ pub fn default_db_path() -> PathBuf {
 fn build_ui(app: &gtk4::Application) {
     let db_path = default_db_path();
     let store = SessionStore::open(&db_path).expect("failed to open session store");
-    MainWindow::new(app, store);
+
+    // Hotkey persistence (doc 07 §"Persistence"): the engine starts from
+    // the compiled-in defaults, then user-customized rows
+    // (`WHERE is_default = 0`) load over the *current* bindings. Before
+    // this task nothing called `load_from_db` — the engine-side tests
+    // were its only caller — so startup wires it here.
+    let engine = Rc::new(RefCell::new(HotkeyEngine::new()));
+    match engine.borrow_mut().load_from_db(&store) {
+        Ok(report) => {
+            if !report.applied.is_empty() || !report.skipped.is_empty() {
+                eprintln!(
+                    "Wayterm: loaded {} custom hotkey(s), skipped {}",
+                    report.applied.len(),
+                    report.skipped.len()
+                );
+            }
+        }
+        Err(err) => eprintln!("Wayterm: failed to load custom hotkeys: {err}"),
+    }
+    // The settings window needs its own connection: `MainWindow::new`
+    // takes `store` by value, and `SessionStore` hands out extra
+    // connections via `duplicate`.
+    let settings_store = match store.duplicate() {
+        Ok(duplicate) => Rc::new(duplicate),
+        Err(err) => {
+            eprintln!("Wayterm: failed to duplicate store for hotkey settings: {err}");
+            Rc::new(SessionStore::in_memory().expect("failed to create fallback store"))
+        }
+    };
+
+    let main_window = MainWindow::new(app, store);
+    // Appended after construction so P3-3's connect-flow hunks inside
+    // `MainWindow::new` stay untouched.
+    main_window.attach_hotkey_settings(Rc::clone(&engine), Rc::clone(&settings_store));
 }
