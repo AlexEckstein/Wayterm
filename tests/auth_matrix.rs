@@ -39,19 +39,17 @@
 //! a hook to the chain, and it is why the "wrong password / wrong key" cases
 //! assert an EMPTY list: every method was attempted and every one failed.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+mod common;
+
 use std::sync::{Arc, Mutex};
 
-use russh::client::{self, Config, Handle};
+use zeroize::Zeroizing;
 
-use wayterm::store::model::HostKeyPolicy;
+use common::connect_raw_to;
 use wayterm::transport::auth::{
     authenticate_chain, AuthConfig, AuthMethodKind, AuthOutcome, ChallengePrompt,
     ChallengeResponder,
 };
-use wayterm::transport::connection::AppClientHandler;
-use wayterm::transport::hostkey::{HostKeyDecision, HostKeyVerifier};
-use zeroize::Zeroizing;
 
 const MODE_PASSWORD: &str = "password-only";
 const MODE_KBD_INTERACTIVE: &str = "kbd-interactive-only";
@@ -111,33 +109,6 @@ fn gate(name: &str, mode: &str) -> Option<Fixture> {
         return None;
     }
     Some(f)
-}
-
-fn accept_all_verifier() -> HostKeyVerifier {
-    HostKeyVerifier::new(
-        HostKeyPolicy::Off,
-        Arc::new(|_| HostKeyDecision::Accept),
-        None,
-    )
-}
-
-async fn connect_raw(host: &str, port: u16, username: &str) -> Handle<AppClientHandler> {
-    let config = Arc::new(Config::default());
-    let addr = SocketAddr::new(
-        host.parse::<IpAddr>()
-            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-        port,
-    );
-    let handler = AppClientHandler {
-        host: host.into(),
-        port,
-        username: username.into(),
-        host_key_verifier: accept_all_verifier(),
-        state_tx: None,
-    };
-    client::connect(config, addr, handler)
-        .await
-        .expect("raw sshd connection failed")
 }
 
 /// Answers any password-shaped prompt with `answer`. The chain's synthetic
@@ -245,7 +216,7 @@ async fn password_only_rejects_key_even_when_installed() {
         return;
     };
 
-    let mut handle = connect_raw(&f.host, f.port, &f.user).await;
+    let mut handle = connect_raw_to(&f.host, f.port, &f.user).await;
     let config = auth_config(Some(&f.key_path), None, false, false, None);
 
     let outcome = authenticate_chain(&mut handle, &f.user, &config)
@@ -287,7 +258,7 @@ async fn password_only_chain_falls_through_to_password() {
         return;
     };
 
-    let mut handle = connect_raw(&f.host, f.port, &f.user).await;
+    let mut handle = connect_raw_to(&f.host, f.port, &f.user).await;
     let config = auth_config(
         Some(&f.key_path),
         Some(&f.password),
@@ -318,7 +289,7 @@ async fn password_only_wrong_password_fails_cleanly_after_one_retry() {
     };
 
     let seen = Arc::new(Mutex::new(Vec::<String>::new()));
-    let mut handle = connect_raw(&f.host, f.port, &f.user).await;
+    let mut handle = connect_raw_to(&f.host, f.port, &f.user).await;
     let config = auth_config(
         Some(&f.key_path),
         Some("definitely-wrong-password"),
@@ -368,7 +339,7 @@ async fn kbd_interactive_only_rejects_password_even_when_correct() {
         return;
     };
 
-    let mut handle = connect_raw(&f.host, f.port, &f.user).await;
+    let mut handle = connect_raw_to(&f.host, f.port, &f.user).await;
     let config = auth_config(
         None,
         Some(&f.password),
@@ -415,7 +386,7 @@ async fn kbd_interactive_only_chain_reaches_keyboard_interactive() {
     };
 
     let seen = Arc::new(Mutex::new(Vec::<String>::new()));
-    let mut handle = connect_raw(&f.host, f.port, &f.user).await;
+    let mut handle = connect_raw_to(&f.host, f.port, &f.user).await;
     let config = auth_config(
         Some(&f.key_path),
         Some(&f.password),
@@ -457,7 +428,7 @@ async fn key_only_rejects_password_and_keyboard_interactive() {
         return;
     };
 
-    let mut handle = connect_raw(&f.host, f.port, &f.user).await;
+    let mut handle = connect_raw_to(&f.host, f.port, &f.user).await;
     let config = auth_config(
         None,
         Some(&f.password),
@@ -484,7 +455,7 @@ async fn key_only_chain_succeeds_with_key() {
         return;
     };
 
-    let mut handle = connect_raw(&f.host, f.port, &f.user).await;
+    let mut handle = connect_raw_to(&f.host, f.port, &f.user).await;
     let config = auth_config(
         Some(&f.key_path),
         Some(&f.password),
@@ -512,7 +483,7 @@ async fn key_only_wrong_key_path_reports_failed_cleanly() {
         return;
     };
 
-    let mut handle = connect_raw(&f.host, f.port, &f.user).await;
+    let mut handle = connect_raw_to(&f.host, f.port, &f.user).await;
     let config = auth_config(
         Some(WRONG_KEY_PATH),
         Some(&f.password),
