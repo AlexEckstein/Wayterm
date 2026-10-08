@@ -3,13 +3,31 @@ use gtk4::Widget;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+/// One interaction call routed through [`TerminalBackend`]'s doc-02
+/// interaction/scrollback section. Recorded by [`FakeBackend`] so tests can
+/// assert which action reached the backend — the action-to-terminal routing
+/// table (`crate::ui::main_window::route_terminal_action`) is exercised
+/// display-free through this.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Interaction {
+    CopySelection,
+    Paste(String),
+    SelectAll,
+    Clear,
+    Search { text: String, reverse: bool },
+    ScrollToTop,
+    ScrollToBottom,
+}
+
 /// In-memory backend for transport tests — no widget, no GTK.
 /// Records every [`write`](TerminalBackend::write) call so tests can assert
-/// what the remote actually received.
+/// what the remote actually received, plus every interaction call (see
+/// [`Interaction`]) so the terminal-action routing can be tested display-free.
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct FakeBackend {
     written: Arc<Mutex<Vec<u8>>>,
+    interactions: Arc<Mutex<Vec<Interaction>>>,
     features_override: Option<TerminalFeatures>,
     // Test-only event hook. The handle returned by [`create_terminal`](super::create_terminal)
     // owns the receiver; this sender lets tests push synthetic events through
@@ -23,6 +41,7 @@ impl FakeBackend {
     pub fn new() -> Self {
         Self {
             written: Arc::new(Mutex::new(Vec::new())),
+            interactions: Arc::new(Mutex::new(Vec::new())),
             features_override: None,
             event_tx: None,
         }
@@ -33,6 +52,7 @@ impl FakeBackend {
     pub fn with_features(features: TerminalFeatures) -> Self {
         Self {
             written: Arc::new(Mutex::new(Vec::new())),
+            interactions: Arc::new(Mutex::new(Vec::new())),
             features_override: Some(features),
             event_tx: None,
         }
@@ -45,6 +65,22 @@ impl FakeBackend {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// All interaction calls routed to this backend, in order.
+    #[allow(dead_code)]
+    pub fn interactions(&self) -> Vec<Interaction> {
+        self.interactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn record(&self, interaction: Interaction) {
+        self.interactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(interaction);
     }
 
     /// Test helper: emit a synthetic event into the channel held by the
@@ -104,17 +140,34 @@ impl TerminalBackend for FakeBackend {
     fn selected_text(&self) -> Option<String> {
         None
     }
-    fn copy_selection(&self) {}
-    fn paste(&self, _text: &str) {}
-    fn select_all(&self) {}
-    fn clear(&self) {}
+    fn copy_selection(&self) {
+        self.record(Interaction::CopySelection);
+    }
+    fn paste(&self, text: &str) {
+        self.record(Interaction::Paste(text.to_string()));
+    }
+    fn select_all(&self) {
+        self.record(Interaction::SelectAll);
+    }
+    fn clear(&self) {
+        self.record(Interaction::Clear);
+    }
 
-    fn search(&self, _text: &str, _reverse: bool) {}
+    fn search(&self, text: &str, reverse: bool) {
+        self.record(Interaction::Search {
+            text: text.to_string(),
+            reverse,
+        });
+    }
     fn scrollback_text(&self) -> Option<String> {
         None
     }
-    fn scroll_to_top(&self) {}
-    fn scroll_to_bottom(&self) {}
+    fn scroll_to_top(&self) {
+        self.record(Interaction::ScrollToTop);
+    }
+    fn scroll_to_bottom(&self) {
+        self.record(Interaction::ScrollToBottom);
+    }
 
     fn reset(&self) {}
 

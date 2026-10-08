@@ -233,6 +233,11 @@ fn wire_size(terminal: &VteTerminal, tx: mpsc::Sender<TerminalEvent>) {
     });
 }
 
+// Interaction + scrollback methods below all drive the live widget, so they
+// are only verifiable under a display: the xvfb path is the ignored
+// `vte_scrollback_roundtrip` test in `tests/terminal_polish.rs` (see
+// `scrollback_text`). Display-free routing of the actions that reach them is
+// covered by the FakeBackend tests in the same file.
 impl TerminalBackend for VteBackend {
     fn widget(&self) -> Widget {
         self.terminal.clone().upcast::<Widget>()
@@ -308,25 +313,67 @@ impl TerminalBackend for VteBackend {
     }
 
     fn search(&self, text: &str, reverse: bool) {
-        // vte4 0.10 exposes `search_set_regex`; regex construction is kept
-        // minimal (PCRE, case-sensitive) because search UI polish is later.
-        if let Ok(regex) = vte4::Regex::for_match(text, 0) {
-            self.terminal.search_set_regex(Some(&regex), 0);
-            if reverse {
-                self.terminal.search_find_previous();
-            } else {
-                self.terminal.search_find_next();
-            }
+        // vte4 0.10 exposes `search_set_regex(&Regex, flags)` — the GTK3-era
+        // `search_set_gregex` does not exist in the GTK4 binding. Regexes are
+        // PCRE2 via `vte4::Regex::for_match`; flags 0 = case-sensitive,
+        // unanchored (doc 02 leaves match flags to the implementation).
+        if text.is_empty() {
+            // Empty query clears the highlight instead of keeping the last
+            // match selected.
+            self.terminal.search_set_regex(None::<&vte4::Regex>, 0);
+            return;
         }
+        let Ok(regex) = vte4::Regex::for_match(text, 0) else {
+            // Invalid regex (e.g. a dangling '('): clear any previous match
+            // rather than stepping with a stale one.
+            self.terminal.search_set_regex(None::<&vte4::Regex>, 0);
+            return;
+        };
+        // Configure wrap-around *before* stepping so the very first
+        // forward/backward step already wraps.
         self.terminal.search_set_wrap_around(true);
+        self.terminal.search_set_regex(Some(&regex), 0);
+        if reverse {
+            self.terminal.search_find_previous();
+        } else {
+            self.terminal.search_find_next();
+        }
     }
 
     fn scrollback_text(&self) -> Option<String> {
-        // vte4 0.10 auto-generates `text_range` as an unimplemented stub, so
-        // we use the implemented `text_selected` path. Full scrollback text
-        // capture requires a working `text_range` or `write_contents_sync`
-        // implementation and is intentionally not part of P2-2.
-        None
+        // vte4 0.10 leaves `text_range` commented out (the callback argument
+        // has no binding conversion); the generated replacement is
+        // `text_range_format` (VTE >= 0.72, crate feature `v0_72`).
+        //
+        // Row 0 is the oldest line of the buffer (verified under xvfb) and
+        // `row_count` counts *screen* rows only, so the range end must span
+        // the scrollback ring limit + screen rows; VTE clamps past the last
+        // line that exists. `scrollback_lines()` is the configured limit
+        // (negative = unlimited) — for unlimited rings fall back to a large
+        // fixed window (the ring is scanned, not the number).
+        //
+        // Widget-dependent: not reachable from display-free tests. The
+        // xvfb verification path is the `vte_scrollback_roundtrip` test in
+        // `tests/terminal_polish.rs`, run via:
+        //   xvfb-run -a cargo test --test terminal_polish -- --ignored
+        let rows = self.terminal.row_count();
+        let cols = self.terminal.column_count();
+        if rows <= 0 || cols <= 0 {
+            return None;
+        }
+        let scrollback = self.terminal.scrollback_lines();
+        let ring = if scrollback >= 0 {
+            scrollback
+        } else {
+            // Unlimited scrollback: any fixed end is a guess; VTE only holds
+            // the lines actually written, and clamps the range.
+            100_000
+        };
+        let end_row = ring + rows - 1;
+        let (text, _len) =
+            self.terminal
+                .text_range_format(vte4::Format::Text, 0, 0, end_row, cols - 1);
+        text.map(|g| g.to_string())
     }
 
     fn scroll_to_top(&self) {

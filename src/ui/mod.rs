@@ -9,6 +9,7 @@ pub mod sftp_sidebar;
 pub mod settings;
 pub mod status_bar;
 pub mod tab;
+pub mod tab_label;
 
 use sftp_sidebar::SftpSidebar;
 
