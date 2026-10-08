@@ -431,6 +431,16 @@ impl MainWindow {
         let home_label = gtk4::Label::new(Some("Welcome to Wayterm"));
         notebook.append_page(&home_label, Some(&gtk4::Label::new(Some("Home"))));
 
+        // Doc 04 §Lifecycle reads `confirm_close` / `reconnect_on_drop`
+        // from the settings table (doc 06 §Default Data). Resolve them once
+        // here, before the store moves into the session tree — this is the
+        // only place the window holds it. A missing or unreadable row keeps
+        // the documented default (ON).
+        crate::ui::tab_resilience::install_settings(
+            read_setting(&store, crate::ui::tab_resilience::CONFIRM_CLOSE_SETTING).as_deref(),
+            read_setting(&store, crate::ui::tab_resilience::RECONNECT_ON_DROP_SETTING).as_deref(),
+        );
+
         let notebook_for_tree = notebook.clone();
         let store_for_tree = store.duplicate().unwrap_or_else(|e| {
             eprintln!("Wayterm: failed to duplicate store for session tree: {e}");
@@ -536,6 +546,16 @@ impl MainWindow {
         // the active tab's terminal once the connect flow attaches one.
         install_terminal_actions(&window, &notebook);
 
+        // Doc 07 §Default Actions: `reconnect` (Ctrl+Shift+R) and
+        // `disconnect` (Ctrl+Shift+X) resolve against the active tab.
+        // Registered unbound — the hotkey lane (doc 07's
+        // ShortcutController) owns the accelerators, so the two lanes do
+        // not both claim the chords.
+        let notebook_for_actions = notebook.clone();
+        crate::ui::tab_resilience::install_connection_actions(&window, move || {
+            crate::ui::tab::current_session_id(&notebook_for_actions)
+        });
+
         window.present();
 
         Self { window }
@@ -635,6 +655,18 @@ impl MainWindow {
             .and_then(|child| child.downcast::<gtk4::Box>().ok())
         {
             root.prepend(&settings_button);
+        }
+    }
+}
+
+/// Read one settings row, returning `None` for a missing row or a read
+/// error (the caller keeps its default either way).
+fn read_setting(store: &SessionStore, key: &str) -> Option<String> {
+    match store.get_setting(key) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("Wayterm: failed to read setting '{key}': {err}");
+            None
         }
     }
 }

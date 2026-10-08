@@ -1,8 +1,8 @@
 use gtk4::glib;
 
 mod app;
-mod sftp;
 mod hotkeys;
+mod sftp;
 mod store;
 mod terminal;
 mod transport;

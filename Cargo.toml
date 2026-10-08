@@ -46,3 +46,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("backend-g
 
 [dev-dependencies]
 tempfile = "3"
+# test-util enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,
+# which the reconnect driver's backoff tests use to assert the doc 04 curve
+# against virtual time (doc 04 §Lifecycle & Cancellation).
+tokio = { version = "1", features = ["test-util"] }

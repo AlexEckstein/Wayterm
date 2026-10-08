@@ -449,6 +449,23 @@ impl SessionStore {
         tx.commit()?;
         Ok(removed)
     }
+
+    /// Read one row from the key-value `settings` table (doc 06).
+    ///
+    /// `Ok(None)` means the key is absent, which is distinct from an
+    /// `Err` (the database is unreadable) — callers that need a default
+    /// supply it themselves, so a missing row never silently becomes an
+    /// empty string.
+    pub fn get_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
 }
 
 /// One `hotkeys` row with `is_default = 0`, as
