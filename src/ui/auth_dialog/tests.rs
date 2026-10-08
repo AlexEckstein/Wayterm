@@ -1,8 +1,5 @@
-//! Unit tests for the display-free logic of [`super::auth_dialog`].
-//!
-//! GTK dialog construction needs a display, so these tests exercise only the
-//! prompt/field mapping, the response formatting, and the closure adapters
-//! (with an injected fake runner instead of the real dialog).
+//! The dialog's display-free logic and its closure adapter (with a fake
+//! runner in place of the dialog).
 
 use std::sync::Arc;
 
@@ -10,35 +7,13 @@ use crate::transport::auth::{ChallengePrompt, ChallengeResponder};
 
 use super::*;
 
-/// Make the default [`glib::MainContext`] owned by THIS thread so the
-/// marshalling closures run inline deterministically.
-///
-/// `run_on_gtk_main_thread` has two paths: inline when the calling thread
-/// owns the default context, otherwise `invoke` + blocking `recv()` against
-/// a context whose delivery depends on glib's inline-run optimization —
-/// i.e. on a race with any other test thread touching glib at the same
-/// moment (observed: intermittent 60s+ hangs with default test
-/// parallelism, never with `--test-threads=1`). Acquiring the context
-/// removes the race: the guard pins ownership for the test's body and the
-/// inline path is taken every time.
+/// Own the default main context for the test's body, so
+/// `run_on_gtk_main_thread` takes its inline path. Without this, another
+/// test thread touching glib can make `invoke` queue the work on a context
+/// nobody iterates, and the test hangs. Never leak the guard: ownership is
+/// thread-bound and would block every other test.
 #[cfg(test)]
 pub(crate) fn acquire_default_ctx() -> gtk4::glib::MainContextAcquireGuard<'static> {
-    // AVOID the non-owner path of `run_on_gtk_main_thread` in tests.
-    //
-    // That path is `ctx.invoke(work)` + a blocking `recv()` on a channel the
-    // invoked closure fills. Delivery relies on glib's inline-run
-    // optimization: when the default context has NO owner and nobody is
-    // iterating it, `invoke` runs the function on the calling thread
-    // immediately. When some other thread transiently touches the context,
-    // the closure is queued instead — and nothing ever iterates it, so the
-    // test hangs forever (observed: intermittent 60s+ hangs at default
-    // test parallelism; identical runs pass at `--test-threads=1`).
-    //
-    // Fix: each marshalling test holds the returned guard for its body and
-    // releases it on drop. Do NOT mem::forget the guard: a leaked acquire
-    // poisons the context for every other thread, because glib ownership is
-    // thread-bound and nothing releases it. While one test holds the
-    // context, callers retry briefly; test bodies are sub-millisecond.
     let ctx: &'static gtk4::glib::MainContext =
         Box::leak(Box::new(gtk4::glib::MainContext::default()));
     let mut attempts = 0;

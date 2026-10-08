@@ -1,57 +1,19 @@
-//! SFTP sidebar — the GTK half of doc 09.
+//! The SFTP sidebar — the GTK half of doc 09. It holds an [`SftpClient`],
+//! sends commands, and applies the replies from `spawn_local` futures, so
+//! no GTK callback ever awaits.
 //!
-//! The tokio half already exists ([`crate::sftp`]): the sidebar holds an
-//! [`SftpClient`], pushes [`SftpCommand`]s over the bounded channel, and
-//! bridges the oneshot replies back onto the GTK main thread with
-//! `glib::MainContext::spawn_local`. **No GTK callback ever awaits** — a
-//! callback queues a command and spawns a local future that awaits the reply
-//! and then updates the widgets.
-//!
-//! # Layout
-//!
-//! Doc 09's [`gtk4::Paned`] is owned by the *tab*, not by the window: an SSH
-//! tab's page is a paned whose start child is this sidebar and whose end
-//! child is the terminal, so every tab browses its own connection and the
-//! window's session-tree/tab paned is untouched. The sidebar itself is a
-//! vertical box: path bar, toolbar ([Upload][Download][Delete][Rename]
-//! [Refresh][Mkdir]), inline error line, file listing (GtkTreeView +
-//! GtkTreeStore with icon/name/size/modified/permissions columns), a progress
-//! bar with a Cancel button, and the transfer status line.
-//!
-//! # Split
-//!
-//! Like `session_tree` and `status_bar`, the module is a display-free data
-//! layer ([`SftpView`] plus row mapping, column formatting, toolbar rules,
-//! `text/uri-list` parsing and the pending-command queue) and a thin GTK layer
-//! ([`SftpSidebar`]) that only renders a view. The data layer is covered by the
-//! tests in [`tests`] without a display.
-//!
-//! # Adaptations vs. doc 09 (reported, not silent)
-//!
-//! * **Two drop targets instead of one multi-type target.** GTK's documented
-//!   single-target multi-type API (`gtk_drop_target_set_gtypes`, which would
-//!   accept `GdkFileList` *and* `text/uri-list` on one target) is unbound in
-//!   gtk4-rs 0.11. The tree view therefore carries two `GtkDropTarget`s — a
-//!   `GdkFileList` one and a `text/uri-list` fallback — and both funnel into
-//!   the same upload queue, so both formats are accepted.
-//! * **The client is attached later.** Doc 09 has the sidebar receive an
-//!   `Arc<SshConnection>`; [`SftpSidebar::attach`] is that seam. Until the
-//!   connect flow calls it the sidebar renders as an empty skeleton with the
-//!   toolbar disabled — it never pretends to be connected.
-//! * **No `getcwd`.** `Cd` answers with entries only (P3-1 dropped `ListAll`
-//!   and did not add `realpath`), so the path bar shows the path that was
-//!   requested; [`START_PATH`] is `.`, i.e. the home directory an SFTP
-//!   subsystem channel starts in.
+//! [`SftpView`] and the helpers above it are display-free (the listing,
+//! toolbar rules, `text/uri-list` parsing); [`SftpSidebar`] only renders.
+//! Drops are accepted as `GdkFileList` and as `text/uri-list` through two
+//! drop targets, because gtk4-rs does not bind the multi-type API. The
+//! path bar shows the requested path (the protocol has no `getcwd`), and
+//! browsing starts at `.`, the SFTP home directory.
 
-// Doc 09 specifies the GTK4 widget set this module builds (GtkTreeView +
-// GtkTreeStore, FileChooserNative); GTK 4.10 deprecated all of them in favour
-// of GtkListView and GtkFileDialog. `session_tree.rs` carries the same
-// allowance for the same reason — that migration is UI polish, not a
-// docs-contract change.
+// GtkTreeView/TreeStore and FileChooserNative are deprecated since GTK
+// 4.10; migrating is UI polish, not a contract change.
 #![allow(deprecated)]
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -60,10 +22,11 @@ use gtk4::prelude::*;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::backpressure::PendingQueue;
 use crate::sftp::{DirEntry, Progress, SftpClient, SftpCommand};
 use crate::store::model::SessionType;
 use crate::transport::connection::SshConnection;
-use crate::ui::session_tree::prompt_text;
+use crate::ui::widgets::{confirm, prompt_text, set_margins, window_of};
 
 use gdk4 as gdk;
 use gio;
@@ -82,14 +45,10 @@ pub const COL_SIZE: u32 = 2;
 pub const COL_MODIFIED: u32 = 3;
 /// Column index of the permission bits in the listing's `GtkTreeStore`.
 pub const COL_PERMS: u32 = 4;
-/// Hidden column holding the row's index into [`SftpView::rows`], so a
-/// selection resolves back to its row without walking the model —
-/// `session_tree.rs` keeps its row ids the same way. The listing is a flat
-/// store, so the index is unique.
+/// Hidden column: the row's index into [`SftpView::rows`].
 pub const COL_ROW: u32 = 5;
 
-/// Name of the synthetic "go up" row. Doc 09 does not mention it; the sidebar
-/// layer owns it, not the SFTP task.
+/// The synthetic "go up" row.
 pub const PARENT_ROW: &str = "..";
 
 /// Where the sidebar starts browsing.
@@ -106,10 +65,7 @@ pub const SESSION_ENDED: &str = "SFTP session ended — reconnect?";
 /// The command could not be queued at all (task gone, channel closed).
 pub const COMMAND_FAILED: &str = "SFTP command could not be queued";
 
-/// One row of the file listing, ready for the `GtkTreeStore`.
-///
-/// Row order *is* store order, so the GTK layer resolves a selection back to
-/// a row by index.
+/// One listing row, in store order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RowView {
     pub icon: &'static str,
@@ -153,10 +109,8 @@ pub fn row_from_entry(entry: &DirEntry) -> RowView {
     }
 }
 
-/// Build the listing for `path`: the [`PARENT_ROW`] row first (unless `path`
-/// is the filesystem root), then one row per entry in the order the SFTP task
-/// already sorted them — directories first, then case-insensitive
-/// alphabetical (doc 09 §Directory Listing).
+/// The listing for `path`: [`PARENT_ROW`] first (except at `/`), then the
+/// entries in the task's order.
 pub fn listing_rows(path: &str, entries: &[DirEntry]) -> Vec<RowView> {
     let mut rows = Vec::with_capacity(entries.len() + 1);
     if parent_path(path).is_some() {
@@ -166,9 +120,7 @@ pub fn listing_rows(path: &str, entries: &[DirEntry]) -> Vec<RowView> {
     rows
 }
 
-/// Join a directory and an entry name into a remote path.
-///
-/// An absolute `name` wins; an empty `dir` yields `name` unchanged.
+/// `dir/name`; an absolute `name` or an empty `dir` yields `name`.
 pub fn join_path(dir: &str, name: &str) -> String {
     if name.starts_with('/') || dir.is_empty() {
         return name.to_string();
@@ -180,8 +132,7 @@ pub fn join_path(dir: &str, name: &str) -> String {
     }
 }
 
-/// Parent directory of `path`, or `None` at the filesystem root (and for an
-/// empty path) — the target of the [`PARENT_ROW`] row.
+/// The [`PARENT_ROW`] target; `None` at the root or for an empty path.
 pub fn parent_path(path: &str) -> Option<String> {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
@@ -194,8 +145,7 @@ pub fn parent_path(path: &str) -> Option<String> {
     }
 }
 
-/// Last path component: the remote name of an upload, the suggested local
-/// name of a download.
+/// The last path component.
 pub fn file_name(path: &str) -> String {
     path.trim_end_matches('/')
         .rsplit('/')
@@ -219,8 +169,7 @@ pub fn format_size(bytes: u64) -> String {
     format!("{value:.1} {}", UNITS[unit])
 }
 
-/// Progress bar fraction, clamped to `0.0..=1.0`. A zero total (the server
-/// sent no size) shows an empty bar instead of dividing by zero.
+/// Bar fraction in `0.0..=1.0`; an unknown (zero) total shows empty.
 pub fn progress_fraction(transferred: u64, total: u64) -> f64 {
     if total == 0 {
         return 0.0;
@@ -247,7 +196,7 @@ pub fn running_status(label: &str, transferred: u64, total: u64) -> String {
     format!("{label} — {}", progress_text(transferred, total))
 }
 
-/// Status line for a finished transfer (doc 09 §Transfers).
+/// Status line for a finished transfer.
 pub fn done_status(label: &str, bytes: u64) -> String {
     format!("{label} — done — {bytes} bytes")
 }
@@ -257,7 +206,7 @@ pub fn failed_status(label: &str, err: &str) -> String {
     format!("{label} — failed: {err}")
 }
 
-/// The selected listing row, reduced to what the toolbar rules need.
+/// What the toolbar rules need to know about the selection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Selection {
     pub name: String,
@@ -265,7 +214,7 @@ pub struct Selection {
     pub is_parent: bool,
 }
 
-/// Which buttons are sensitive — doc 09's six toolbar buttons plus Cancel.
+/// Button sensitivity: doc 09's six toolbar buttons plus Cancel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToolbarState {
     pub upload: bool,
@@ -290,17 +239,9 @@ impl ToolbarState {
     };
 }
 
-/// Toolbar enable/disable rules.
-///
-/// * Without a client: everything off (doc 09 §Availability — the sidebar needs
-///   an active `SshConnection`).
-/// * `Upload`/`Refresh`/`Mkdir` act on the current directory, so a client is
-///   all they need.
-/// * `Download` needs a selected *file*: the SFTP task transfers one file per
-///   command and has no recursive download.
-/// * `Delete`/`Rename` take any picked row except [`PARENT_ROW`]; the task's
-///   `Delete` handles files and (empty) directories.
-/// * `Cancel` is live only while a transfer runs.
+/// Nothing works without a client; Download needs a selected file (no
+/// recursive transfers); Delete and Rename need any row but `..`; Cancel
+/// needs a running transfer.
 pub fn toolbar_state(
     selected: Option<&Selection>,
     connected: bool,
@@ -330,13 +271,8 @@ pub fn selection_of(row: Option<&RowView>) -> Option<Selection> {
     })
 }
 
-/// Parse a `text/uri-list` payload into local paths.
-///
-/// Both drag formats doc 09 asks for end up here: GTK4 file managers offer
-/// `GdkFileList` (handled by the GTK layer) and older ones only
-/// `text/uri-list`. Comment and blank lines are skipped, an empty or
-/// `localhost` authority is accepted, other authorities are rejected (a
-/// remote file cannot be uploaded), and percent escapes are decoded.
+/// Local paths from a `text/uri-list` drop: comments and blanks skipped,
+/// only `file://` URIs with an empty or `localhost` host, percent-decoded.
 pub fn parse_uri_list(text: &str) -> Vec<String> {
     let mut paths = Vec::new();
     for line in text.lines() {
@@ -391,69 +327,6 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-/// Outcome of one pending-queue flush.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct DrainReport {
-    /// Commands still waiting because the channel filled up again.
-    pub remaining: usize,
-    /// The channel closed: the SFTP task is gone and the rest was dropped.
-    pub closed: bool,
-}
-
-/// Commands that could not be queued because the bounded channel was full.
-///
-/// Doc 09 wants `try_send` from the UI plus a queue flushed from an idle
-/// callback (the pattern doc 02 uses for keystrokes), so rapid navigation
-/// clicks neither block the main thread nor lose a command. Order is
-/// preserved: a flush stops at the first command the client still cannot take.
-#[derive(Default)]
-pub struct PendingCommands {
-    queue: VecDeque<SftpCommand>,
-}
-
-impl PendingCommands {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn push(&mut self, cmd: SftpCommand) {
-        self.queue.push_back(cmd);
-    }
-
-    pub fn clear(&mut self) {
-        self.queue.clear();
-    }
-
-    /// Try to hand every queued command to `send`, oldest first.
-    ///
-    /// Stops at the first command `send` refuses and keeps it — and everything
-    /// behind it — queued so the caller can retry from an idle callback. A
-    /// closed channel drops the remainder: the SFTP task has ended and those
-    /// commands can never run.
-    pub fn drain_with(
-        &mut self,
-        mut send: impl FnMut(SftpCommand) -> Result<(), TrySendError<SftpCommand>>,
-    ) -> DrainReport {
-        let mut report = DrainReport::default();
-        while let Some(cmd) = self.queue.pop_front() {
-            match send(cmd) {
-                Ok(()) => {}
-                Err(TrySendError::Full(cmd)) => {
-                    self.queue.push_front(cmd);
-                    break;
-                }
-                Err(TrySendError::Closed(_)) => {
-                    self.queue.clear();
-                    report.closed = true;
-                    break;
-                }
-            }
-        }
-        report.remaining = self.queue.len();
-        report
-    }
-}
-
 /// One running transfer, in start order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferState {
@@ -462,10 +335,7 @@ pub struct TransferState {
     pub label: String,
 }
 
-/// Everything the sidebar displays, computed without touching GTK.
-///
-/// The GTK layer only renders: handlers mutate this struct and then call
-/// `render`, which is why every rule here is unit-testable.
+/// Everything the sidebar shows; handlers mutate it, then render.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SftpView {
     /// Directory the current listing belongs to ("" before the first one).
@@ -486,13 +356,11 @@ pub struct SftpView {
     pub visible: bool,
     /// Whether a live SFTP client is attached.
     pub connected: bool,
-    /// Running transfers, oldest first. The display is deliberately simple:
-    /// last updated wins (doc 09: "a stale-but-moving bar is fine").
+    /// Running transfers, oldest first; the bar shows whichever updated last.
     pub transfers: Vec<TransferState>,
     /// Derived button sensitivity.
     pub toolbar: ToolbarState,
-    /// The selected listing row, kept so toolbar rules can be recomputed
-    /// without re-reading the tree view.
+    /// The selected row, so toolbar rules can be recomputed.
     selected: Option<RowView>,
 }
 
@@ -540,8 +408,7 @@ impl SftpView {
         self.recompute_toolbar();
     }
 
-    /// Report a failed `Cd`: the listing and the path bar stay where they
-    /// were — a rejected navigation must not move the sidebar.
+    /// A failed `Cd` leaves the listing and path bar where they were.
     pub fn set_listing_failed(&mut self, err: &str) {
         self.set_error(err);
     }
@@ -562,8 +429,7 @@ impl SftpView {
         self.recompute_toolbar();
     }
 
-    /// Remote path of the selected row, or `None` when nothing usable is
-    /// selected — the [`PARENT_ROW`] row is not an operation target.
+    /// Remote path of the selected row (never `..`).
     pub fn selected_path(&self) -> Option<String> {
         let row = self.selected.as_ref()?;
         if row.is_parent {
@@ -611,8 +477,7 @@ impl SftpView {
         self.recompute_toolbar();
     }
 
-    /// Transfer the Cancel button targets — the most recently started one,
-    /// matching the last-updated progress display.
+    /// Cancel targets the most recently started transfer.
     pub fn cancel_target(&self) -> Option<u64> {
         self.transfers.last().map(|transfer| transfer.id)
     }
@@ -644,8 +509,7 @@ impl SftpView {
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// The six doc-09 toolbar buttons plus Cancel, grouped so `render` can set
-/// their sensitivity in one place.
+/// The toolbar buttons plus Cancel.
 struct Buttons {
     upload: gtk4::Button,
     download: gtk4::Button,
@@ -656,9 +520,7 @@ struct Buttons {
     cancel: gtk4::Button,
 }
 
-/// Widgets plus mutable sidebar state. Shared as `Rc` because the GTK
-/// callbacks and the `spawn_local` futures awaiting SFTP replies all touch it
-/// from the main thread.
+/// Widgets plus state, shared by the callbacks and reply futures.
 struct SidebarInner {
     container: gtk4::Box,
     path_entry: gtk4::Entry,
@@ -671,45 +533,32 @@ struct SidebarInner {
     state: RefCell<SftpView>,
     /// The live client, once [`SftpSidebar::attach`] has been called.
     client: RefCell<Option<SftpClient>>,
-    /// Commands waiting for room in the bounded queue (doc 09 §SFTP Task).
-    pending: RefCell<PendingCommands>,
-    /// Idle-callback source flushing `pending`, when scheduled. `glib::SourceId`
-    /// is deliberately not `Clone`, so the slot is taken (and dropped, without
-    /// removing the source) when the flush finishes.
+    /// Commands waiting for room in the bounded channel.
+    pending: RefCell<PendingQueue<SftpCommand>>,
+    /// The idle flush of `pending`, while scheduled.
     flush_source: RefCell<Option<glib::SourceId>>,
     /// Keeps an open file chooser alive until its response arrives.
     chooser: RefCell<Option<gtk4::FileChooserNative>>,
 }
 
-/// The SFTP sidebar widget (doc 09).
-///
-/// Clones share one widget set, one [`SftpClient`] and one pending queue.
-/// Dropping the last clone drops the client, which is what ends the SFTP task
-/// (doc 09: "channel close = cleanup") — it never touches the shared SSH
-/// connection, which belongs to the supervisor (doc 04).
+/// The SFTP sidebar (doc 09). Clones share everything; dropping the last
+/// one ends the SFTP task, never the shared SSH connection.
 #[derive(Clone)]
 pub struct SftpSidebar {
     inner: Rc<SidebarInner>,
 }
 
 impl SftpSidebar {
-    /// Build the sidebar with no client attached: an empty listing, the
-    /// toolbar disabled and an inline error line saying why. The connect flow
-    /// attaches the real client with [`attach`](Self::attach).
+    /// A sidebar with no client yet: empty and disabled until
+    /// [`attach`](Self::attach).
     pub fn new() -> Self {
         Self {
             inner: build_sidebar(),
         }
     }
 
-    /// Bind a live SSH connection and list the directory the sidebar starts
-    /// in ([`START_PATH`]).
-    ///
-    /// Doc 09 §Connection Model: the sidebar runs its SFTP task over the
-    /// *shared* connection (doc 04), never the transport's private channel.
-    /// Must be called on the GTK main thread inside a tokio runtime — the
-    /// client spawns the SFTP task. Re-attaching replaces the client, which
-    /// drops the previous one and ends its task.
+    /// Start an SFTP task over the shared connection and list
+    /// [`START_PATH`]. Re-attaching replaces (and ends) the previous task.
     pub fn attach(&self, connection: Arc<SshConnection>) {
         *self.inner.client.borrow_mut() = Some(SftpClient::new(connection));
         self.inner.state.borrow_mut().attach();
@@ -718,13 +567,12 @@ impl SftpSidebar {
         self.inner.cd(start);
     }
 
-    /// The sidebar's root widget — the start child of the tab's paned.
+    /// The root widget (the start child of the tab's paned).
     pub fn widget(&self) -> &gtk4::Widget {
         self.inner.container.upcast_ref()
     }
 
-    /// Show or hide the sidebar; returns the new visibility. This is what
-    /// doc 09's `toggle_sftp` action calls on the active SSH tab.
+    /// Show or hide the sidebar (`toggle_sftp`); returns the new state.
     pub fn toggle_visible(&self) -> bool {
         self.inner.toggle_visible()
     }
@@ -757,11 +605,7 @@ fn add_column(tree_view: &gtk4::TreeView, title: &str, column: u32, expand: bool
     tree_view.append_column(&view_column);
 }
 
-/// Local paths behind a file chooser's selection.
-///
-/// `FileChooser::files` hands back a `GListModel` in gtk4-rs 0.11, and an
-/// entry without a path (a portal that only resolved a document URI) is
-/// skipped rather than guessed at.
+/// Local paths of a chooser's selection (entries without one are skipped).
 fn chooser_paths(chooser: &gtk4::FileChooserNative) -> Vec<String> {
     let model = chooser.files();
     (0..model.n_items())
@@ -772,15 +616,12 @@ fn chooser_paths(chooser: &gtk4::FileChooserNative) -> Vec<String> {
         .collect()
 }
 
-/// Whether this session type gets an SFTP sidebar (doc 09 §Availability: SSH
-/// sessions only — RDP/VNC/serial have no SSH connection to browse, and a
-/// local shell needs no SFTP).
+/// Only SSH sessions get a sidebar (doc 09 §Availability).
 pub fn supports_sftp(session_type: &SessionType) -> bool {
     matches!(session_type, SessionType::SSH)
 }
 
-/// Build every widget, wire every signal, and return the shared handle the
-/// callbacks live on.
+/// Build and wire the widgets.
 fn build_sidebar() -> Rc<SidebarInner> {
     // 1. Path bar (doc 09 §Layout): Enter navigates.
     let path_entry = gtk4::Entry::new();
@@ -860,10 +701,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
     status_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
 
     let container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    container.set_margin_top(4);
-    container.set_margin_bottom(4);
-    container.set_margin_start(4);
-    container.set_margin_end(4);
+    set_margins(&container, 4);
     container.append(&path_entry);
     container.append(&toolbar);
     container.append(&error_label);
@@ -882,7 +720,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
         buttons,
         state: RefCell::new(SftpView::detached()),
         client: RefCell::new(None),
-        pending: RefCell::new(PendingCommands::new()),
+        pending: RefCell::default(),
         flush_source: RefCell::new(None),
         chooser: RefCell::new(None),
     });
@@ -893,8 +731,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
 }
 
 impl SidebarInner {
-    /// Wire every widget callback. Each one only queues work or updates the
-    /// model — the `.await` happens in a `spawn_local` future.
+    /// Callbacks only queue work or update the model.
     fn connect_signals(self: &Rc<Self>) {
         // Enter in the path bar navigates to what is typed.
         let for_entry = Rc::clone(self);
@@ -972,13 +809,7 @@ impl SidebarInner {
             .connect_clicked(move |_| for_cancel.cancel_transfer());
     }
 
-    /// Doc 09 §Drag-Drop: accept both formats file managers send.
-    ///
-    /// GTK's documented single-target multi-type API
-    /// (`gtk_drop_target_set_gtypes`) is unbound in gtk4-rs 0.11, so the tree
-    /// view carries two targets: a `GdkFileList` one (what GTK4 file managers
-    /// offer) and a `text/uri-list` one (older managers). Both funnel into
-    /// [`SidebarInner::queue_uploads`].
+    /// Uploads from drops: a `GdkFileList` target and a `text/uri-list` one.
     fn connect_drag_drop(self: &Rc<Self>) {
         let files_target =
             gtk4::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
@@ -1024,11 +855,10 @@ impl SidebarInner {
         visible
     }
 
-    /// Render the model into the widgets.
+    /// Render the view into the widgets.
     fn render(&self) {
-        // The rows are copied out first: `model.clear()` fires the selection
-        // callback, which borrows the state mutably — the borrow must not be
-        // held across it.
+        // Copy the rows out: `model.clear()` fires the selection callback,
+        // which borrows the state mutably.
         let rows = self.state.borrow().rows.clone();
         self.model.clear();
         for (index, row) in rows.iter().enumerate() {
@@ -1067,11 +897,8 @@ impl SidebarInner {
         self.render_toolbar();
     }
 
-    /// Apply the derived button sensitivity.
-    ///
-    /// Separate from [`render`](Self::render) because the selection callback
-    /// runs *inside* `TreeStore::clear` — re-entering `render` there would
-    /// clear the model from under the signal being emitted.
+    /// Separate from `render`, which must not re-enter from the selection
+    /// callback that `TreeStore::clear` emits.
     fn render_toolbar(&self) {
         let toolbar = self.state.borrow().toolbar;
         self.buttons.upload.set_sensitive(toolbar.upload);
@@ -1083,9 +910,7 @@ impl SidebarInner {
         self.buttons.cancel.set_sensitive(toolbar.cancel);
     }
 
-    /// Push the path-bar text from the model, after a navigation attempt —
-    /// successful or not, so a rejected `cd` leaves the bar on the directory
-    /// the sidebar is actually in.
+    /// Reset the path bar to the directory actually shown.
     fn sync_path_entry(&self) {
         let text = self.state.borrow().path_text.clone();
         self.path_entry.set_text(&text);
@@ -1100,9 +925,8 @@ impl SidebarInner {
         self.render();
     }
 
-    /// Queue a command: straight into the bounded channel, or into the pending
-    /// queue for an idle-callback flush when that channel is full (doc 09's
-    /// try-send + queue pattern). `false` means the command was not delivered.
+    /// Send a command, parking it for an idle flush if the channel is full.
+    /// `false` when it cannot be delivered at all.
     fn send(self: &Rc<Self>, cmd: SftpCommand) -> bool {
         let Some(client) = self.client() else {
             self.set_error(NOT_CONNECTED);
@@ -1123,8 +947,7 @@ impl SidebarInner {
         }
     }
 
-    /// Flush the pending queue from an idle callback (doc 02's flush pattern).
-    /// One callback stays scheduled while commands remain.
+    /// One idle callback flushes `pending` until it is empty.
     fn schedule_flush(self: &Rc<Self>) {
         if self.flush_source.borrow().is_some() {
             return;
@@ -1141,8 +964,7 @@ impl SidebarInner {
         *self.flush_source.borrow_mut() = Some(source);
     }
 
-    /// Try to hand every queued command to the client. `true` when nothing is
-    /// left waiting.
+    /// `true` when nothing is left waiting.
     fn flush_pending(&self) -> bool {
         let Some(client) = self.client() else {
             self.pending.borrow_mut().clear();
@@ -1165,9 +987,7 @@ impl SidebarInner {
         self.cd(path);
     }
 
-    /// Navigate to `path`: queue a `Cd`, then apply the listing — or the
-    /// inline error — when the reply arrives. This is the one place a GTK
-    /// callback turns into a future.
+    /// Queue a `Cd` and apply the listing (or the error) when it answers.
     fn cd(self: &Rc<Self>, path: String) {
         if self.client().is_none() {
             self.set_error(NOT_CONNECTED);
@@ -1233,9 +1053,7 @@ impl SidebarInner {
         });
     }
 
-    /// Run one transfer: pre-generate its id (P3-1), queue the command, pump
-    /// the progress channel onto the main thread, and refresh the listing when
-    /// the transfer ends.
+    /// Queue a transfer, mirror its progress, and refresh when it ends.
     fn run_transfer(
         self: &Rc<Self>,
         label: String,
@@ -1265,8 +1083,7 @@ impl SidebarInner {
             return;
         }
 
-        // Progress pump: a dropped sample is fine (doc 09 §Transfers), so the
-        // channel is drained as fast as it fills.
+        // Dropped samples are fine; drain as fast as they come.
         let pump = Rc::clone(self);
         glib::MainContext::default().spawn_local(async move {
             while let Some(sample) = progress_rx.recv().await {
@@ -1300,7 +1117,7 @@ impl SidebarInner {
         let _ = self.send(SftpCommand::Cancel { transfer_id });
     }
 
-    /// Run a file operation that answers with `()` and refresh on success.
+    /// A file operation answering `()`; refresh on success.
     fn run_simple(
         self: &Rc<Self>,
         cmd: impl FnOnce(oneshot::Sender<Result<(), String>>) -> SftpCommand,
@@ -1315,7 +1132,6 @@ impl SidebarInner {
                 Ok(Ok(())) => {
                     sidebar.state.borrow_mut().clear_error();
                     sidebar.render();
-                    // Doc 09: every file operation ends with a refresh.
                     sidebar.refresh();
                 }
                 Ok(Err(err)) => sidebar.set_error(&err),
@@ -1324,33 +1140,18 @@ impl SidebarInner {
         });
     }
 
-    /// Delete the selected row after an `AlertDialog` confirmation.
+    /// Delete the selected row after confirmation.
     fn delete_selected(self: &Rc<Self>) {
         let Some((path, name)) = self.selected_target() else {
             return;
         };
-        let dialog = gtk4::AlertDialog::builder()
-            .message(format!("Delete '{name}'?"))
-            .detail("This cannot be undone. Directories must be empty.")
-            .modal(true)
-            .build();
-        dialog.set_buttons(&["Cancel", "Delete"]);
-        dialog.set_cancel_button(0);
-        dialog.set_default_button(1);
-
         let sidebar = Rc::clone(self);
-        dialog.choose(
+        confirm(
             self.parent_window().as_ref(),
-            gio::Cancellable::NONE,
-            move |res| {
-                if !matches!(res, Ok(1)) {
-                    return;
-                }
-                sidebar.run_simple(|reply| SftpCommand::Delete {
-                    path: path.clone(),
-                    reply,
-                });
-            },
+            &format!("Delete '{name}'?"),
+            "This cannot be undone. Directories must be empty.",
+            "Delete",
+            move || sidebar.run_simple(|reply| SftpCommand::Delete { path, reply }),
         );
     }
 
@@ -1388,8 +1189,7 @@ impl SidebarInner {
         self.run_simple(|reply| SftpCommand::Mkdir { path, reply });
     }
 
-    /// The selected row's remote path and name, or `None` when the selection
-    /// cannot be operated on (nothing selected, or the `..` row).
+    /// The selected row's path and name (never `..`).
     fn selected_target(&self) -> Option<(String, String)> {
         let state = self.state.borrow();
         let path = state.selected_path()?;
@@ -1452,8 +1252,6 @@ impl SidebarInner {
                     .file()
                     .and_then(|file| file.path())
                     .map(|path| path.to_string_lossy().into_owned());
-                // The chooser callback is `Fn`, so it clones the captured
-                // paths rather than moving them out.
                 if let Some(local) = local {
                     sidebar.download(remote.clone(), local);
                 }
@@ -1462,16 +1260,9 @@ impl SidebarInner {
         });
     }
 
-    /// The window the sidebar lives in — parent for dialogs and choosers.
-    /// Same parent walk as `session_tree.rs::gtk_window_for`.
+    /// The parent for dialogs and file choosers.
     fn parent_window(&self) -> Option<gtk4::Window> {
-        let mut widget: gtk4::Widget = self.tree_view.clone().upcast();
-        loop {
-            if let Ok(window) = widget.clone().downcast::<gtk4::Window>() {
-                return Some(window);
-            }
-            widget = widget.parent()?;
-        }
+        window_of(&self.tree_view)
     }
 }
 

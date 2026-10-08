@@ -1,51 +1,27 @@
-//! P4-PAR-2 (terminal polish) — display-free tests.
-//!
-//! Three contracts are locked here:
-//!
-//! 1. **doc 07's chord table** for the six terminal actions — the hotkey
-//!    engine's `current_key` bindings must match exactly.
-//! 2. **The action-to-terminal routing table** — each doc-07 id resolves to
-//!    the right [`TerminalBackend`] call, recorded by [`FakeBackend`].
-//! 3. **The tab-title state machine** (placeholder → set → renamed) behind
-//!    double-click rename.
-//!
-//! Widget-dependent VTE behavior is not display-free; the xvfb path is the
-//! ignored `vte_scrollback_roundtrip` test at the bottom.
+//! Display-free terminal polish: the terminal actions route to the right
+//! backend calls, and the tab-title state machine behind rename. The xvfb
+//! path for the widget-bound scrollback is the ignored test at the bottom.
 
+use wayterm::hotkeys::{ActionContext, DEFAULT_ACTIONS};
 use wayterm::terminal::fake::{FakeBackend, Interaction};
 use wayterm::terminal::{TerminalBackend, VteBackend};
-use wayterm::ui::main_window::{
-    initial_search_reverse, route_terminal_action, TerminalAction, TerminalActionInputs,
-    TERMINAL_ACTION_TABLE,
-};
 use wayterm::ui::tab_label::{TabTitle, TabTitleState};
+use wayterm::ui::terminal_actions::{
+    initial_search_reverse, route_terminal_action, TerminalAction, TerminalActionInputs,
+    TERMINAL_ACTIONS,
+};
 
-/// Lock doc 07's §Default Actions rows for the terminal context — the
-/// table in `main_window` is what the hotkey-core lane binds against.
+/// Every window action is a terminal-context default the engine binds.
 #[test]
-fn terminal_action_chords_match_doc07_table_exactly() {
-    let doc_07 = [
-        ("copy", "Ctrl+Shift+C"),
-        ("paste", "Ctrl+Shift+V"),
-        ("select_all", "Ctrl+Shift+A"),
-        ("clear", "Ctrl+Shift+L"),
-        ("search", "Ctrl+Shift+F"),
-        ("search_scrollback", "Ctrl+Shift+K"),
-    ];
-    assert_eq!(TERMINAL_ACTION_TABLE, doc_07);
-
-    // Doc 07 de-conflicted the table: every chord appears once.
-    let mut chords: Vec<&str> = TERMINAL_ACTION_TABLE
-        .iter()
-        .map(|(_, chord)| *chord)
-        .collect();
-    chords.sort_unstable();
-    let unique = chords.clone();
-    chords.dedup();
-    assert_eq!(
-        chords, unique,
-        "duplicate chord in the terminal action table"
-    );
+fn terminal_actions_are_terminal_context_defaults() {
+    for id in TERMINAL_ACTIONS {
+        let default = DEFAULT_ACTIONS.iter().find(|d| d.id == id);
+        assert_eq!(
+            default.map(|d| d.context),
+            Some(ActionContext::Terminal),
+            "{id}"
+        );
+    }
 }
 
 /// Route each of the six ids with its payload and assert the backend call

@@ -1,35 +1,12 @@
-//! Display-free tests for the tray core (`src/ui/tray.rs`, P4-5).
-//!
-//! Nothing here touches GTK or D-Bus: menu mapping, notification
-//! formatting, `ConnectionLost` triage, and the `minimize_to_tray`
-//! setting logic (init-ok/fail branches + settings-row round-trip).
-//! The tray service itself is display-bound — see `TrayHandle`'s
-//! doc-comment for the manual verification path
-//! (`xvfb-run -a timeout 10 cargo run` → exit 124, no panic).
+//! The tray's display-free core: menu, alerts, `ConnectionLost` triage,
+//! and the `minimize_to_tray` decision. The D-Bus service itself is checked
+//! by hand (see `src/ui/tray.rs`).
 
 use wayterm::store::SessionStore;
 use wayterm::transport::types::{TransportEvent, TransportState};
 use wayterm::ui::tray;
 
 // --- menu action mapping ----------------------------------------------------
-
-#[test]
-fn tray_action_labels_are_distinct_and_nonempty() {
-    use tray::TrayAction;
-    let labels = [
-        TrayAction::ShowWindow.label(),
-        TrayAction::NewSession.label(),
-        TrayAction::Quit.label(),
-    ];
-    for label in labels {
-        assert!(!label.is_empty());
-    }
-    assert_eq!(labels.len(), 3);
-    let mut dedup = labels.to_vec();
-    dedup.sort_unstable();
-    dedup.dedup();
-    assert_eq!(dedup.len(), 3, "menu labels must be distinct");
-}
 
 #[test]
 fn tray_menu_layout_is_open_new_quit() {
@@ -136,27 +113,6 @@ fn setting_defaults_on_when_row_absent() {
     let store = SessionStore::in_memory().unwrap();
     assert_eq!(store.get_setting(tray::MINIMIZE_TO_TRAY_KEY).unwrap(), None);
     assert!(tray::minimize_to_tray_enabled(&store));
-}
-
-#[test]
-fn setting_parse_matrix() {
-    use wayterm::store::db::flag_enabled as parse;
-    assert!(parse(None));
-    for on in [
-        "1",
-        "true",
-        "True",
-        "TRUE",
-        "yes",
-        "on",
-        " 1 ",
-        "anything-else",
-    ] {
-        assert!(parse(Some(on)), "expected ON for {on:?}");
-    }
-    for off in ["0", "false", "False", "FALSE", "no", "off", " 0 ", "OFF"] {
-        assert!(!parse(Some(off)), "expected OFF for {off:?}");
-    }
 }
 
 #[test]

@@ -1,30 +1,18 @@
-//! System tray icon + disconnect notifications (doc 10 Phase 4).
+//! Tray icon and disconnect notifications (doc 10 Phase 4).
 //!
-//! Standard + crate choice are researched in `docs/tray-research.md`:
-//! StatusNotifierItem (SNI) over D-Bus via the pure-Rust [`ksni`] crate
-//! (tokio-native, no system libs), notifications via [`gio::Notification`]
-//! (zero new deps, portal-friendly).
+//! The icon is a StatusNotifierItem over D-Bus via `ksni` (pure Rust,
+//! tokio-native); notifications go through `gio::Notification`. Without a
+//! session bus or a tray host (headless CI, GNOME without the AppIndicator
+//! extension) [`init_tray`] fails and closing the window simply quits.
 //!
-//! The module is split in two:
-//!
-//! * **Display-free core** (pure functions + an async forwarder, all unit
-//!   tested in `tests/tray.rs`): [`TrayAction`] mapping, [`DisconnectAlert`]
-//!   formatting, [`triage_transport_event`], [`forward_disconnect_alerts`],
-//!   and the `minimize_to_tray` setting logic ([`minimize_to_tray_enabled`],
-//!   [`should_minimize_to_tray`]).
-//! * **Display-bound shell** (manual verification only — see the
-//!   doc-comment on [`init_tray`]): [`WaytermTray`] (the ksni item),
-//!   [`init_tray`], [`register_actions`], [`handle_app_action`],
-//!   [`install_close_handler`], [`send_disconnect_notification`].
-//!
-//! Fallback contract: every display-bound entry point degrades to "no
-//! tray" without panicking. [`init_tray`] returns
-//! `Err(`[`TrayInitError`]`)` when D-Bus is unreachable (headless CI,
-//! containers); the app then keeps its default quit-on-close behavior
-//! ([`should_minimize_to_tray`] is false whenever `tray_available` is
-//! false, regardless of the setting).
+//! Manual check: `xvfb-run -a timeout 10 cargo run` exits 124 without a
+//! panic. On a desktop with a tray: left-click restores the window, the
+//! menu offers Open / New Session / Quit, closing hides the window (when
+//! `minimize_to_tray` is on), and a dropped session posts
+//! "`<session>` connection lost".
 
 use std::cell::RefCell;
+use std::sync::mpsc as std_mpsc;
 
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -34,39 +22,24 @@ use tokio::sync::mpsc;
 use crate::store::SessionStore;
 use crate::transport::types::TransportEvent;
 
-// ---------------------------------------------------------------------------
-// Display-free core
-// ---------------------------------------------------------------------------
-
-/// Settings-table key for minimize-to-tray (default ON when absent).
-///
-/// Deliberately NOT added to the `db.rs` seed rows: the 10-row seed is
-/// pinned by doc 06 and its tests. A missing row means ON (fail-open).
+/// Settings row; a missing row means on (not seeded).
 pub const MINIMIZE_TO_TRAY_KEY: &str = "minimize_to_tray";
-
-/// Desktop notification title for all Wayterm alerts.
 pub const NOTIFICATION_TITLE: &str = "Wayterm";
-
-/// SNI id: unique + stable across sessions, per the spec.
+/// The SNI id: unique and stable.
 pub const TRAY_ID: &str = crate::app::APP_ID;
-
-/// Freedesktop icon name for the tray (always in hicolor; installing a
-/// `com.alex-eckstein.wayterm` icon is Phase 9 packaging work).
+/// Always present in hicolor; a Wayterm icon is packaging work (Phase 9).
 pub const TRAY_ICON_NAME: &str = "utilities-terminal";
 
-/// Actions reachable from the tray menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrayAction {
-    /// Present / un-hide the main window.
+    /// Un-hide and present the main window.
     ShowWindow,
-    /// Present the main window so the user can pick a session.
+    /// Present the window, where the session tree creates sessions.
     NewSession,
-    /// Quit the application.
     Quit,
 }
 
 impl TrayAction {
-    /// Human-readable menu label.
     pub fn label(self) -> &'static str {
         match self {
             Self::ShowWindow => "Open Wayterm",
@@ -76,9 +49,13 @@ impl TrayAction {
     }
 }
 
-/// The tray menu in display order: Open, New Session, separator, Quit.
-///
-/// The `bool` marks separators so tests can pin the layout without GTK.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MenuEntry {
+    Item(TrayAction),
+    Separator,
+}
+
+/// The tray menu, top to bottom.
 pub fn tray_menu_layout() -> Vec<MenuEntry> {
     vec![
         MenuEntry::Item(TrayAction::ShowWindow),
@@ -88,37 +65,24 @@ pub fn tray_menu_layout() -> Vec<MenuEntry> {
     ]
 }
 
-/// One row of the tray menu, without any GTK/D-Bus types.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MenuEntry {
-    Item(TrayAction),
-    Separator,
-}
-
-/// The `minimize_to_tray` setting; on unless explicitly off.
+/// On unless explicitly off (see [`crate::store::db::flag_enabled`]).
 pub fn minimize_to_tray_enabled(store: &SessionStore) -> bool {
     store.flag(MINIMIZE_TO_TRAY_KEY)
 }
 
-/// Close-request decision: minimize (hide) only when the tray actually
-/// initialized AND the setting is on. Any init failure → quit, i.e. the
-/// pre-tray behavior is preserved exactly.
+/// Hide instead of quitting only when a tray exists to bring it back.
 pub fn should_minimize_to_tray(tray_available: bool, setting_enabled: bool) -> bool {
     tray_available && setting_enabled
 }
 
-/// A desktop notification ready to send.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisconnectAlert {
     pub title: String,
     pub body: String,
-    /// Stable per-session id so repeated alerts replace, not stack.
+    /// Per session, so repeated alerts replace each other.
     pub notification_id: String,
 }
 
-/// Build the disconnect alert for `session_name`.
-///
-/// Body contract (task P4-5): `"<session> connection lost"`.
 pub fn disconnect_alert(session_name: &str) -> DisconnectAlert {
     DisconnectAlert {
         title: NOTIFICATION_TITLE.to_string(),
@@ -127,26 +91,17 @@ pub fn disconnect_alert(session_name: &str) -> DisconnectAlert {
     }
 }
 
-/// Triage one transport event: only [`TransportEvent::ConnectionLost`]
-/// produces an alert; data/state/error traffic is ignored (status bar and
-/// reconnect flows own those paths).
+/// Only `ConnectionLost` alerts; everything else belongs to the status bar.
 pub fn triage_transport_event(
     session_name: &str,
     event: &TransportEvent,
 ) -> Option<DisconnectAlert> {
-    match event {
-        TransportEvent::ConnectionLost => Some(disconnect_alert(session_name)),
-        _ => None,
-    }
+    matches!(event, TransportEvent::ConnectionLost).then(|| disconnect_alert(session_name))
 }
 
-/// Forward [`TransportEvent::ConnectionLost`] from a tab's state channel
-/// (doc 04 §Wiring "second glib channel", taken via
-/// `TerminalTab::take_state_rx`) to `on_alert`.
-///
-/// Display-free: `on_alert` is where the display-bound
-/// [`send_disconnect_notification`] plugs in (via a main-thread hop).
-/// Ends when the sender is dropped (tab closed).
+/// Call `on_alert` for each `ConnectionLost` on a tab's state channel,
+/// until the channel closes. `on_alert` must hop to the main thread before
+/// calling [`send_disconnect_notification`].
 pub async fn forward_disconnect_alerts(
     session_name: String,
     mut state_rx: mpsc::UnboundedReceiver<TransportEvent>,
@@ -159,61 +114,24 @@ pub async fn forward_disconnect_alerts(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Display-bound shell (manual verification — see `init_tray`)
-// ---------------------------------------------------------------------------
-
-/// Failure to bring up the tray. Never fatal: the caller falls back to
-/// quit-on-close.
+/// Never fatal: the caller falls back to quit-on-close.
 #[derive(Debug, thiserror::Error)]
 pub enum TrayInitError {
-    /// No Tokio runtime for the ksni service.
     #[error("tray runtime failed: {0}")]
     Runtime(#[from] std::io::Error),
-    /// D-Bus unreachable or SNI registration refused — the headless-CI
-    /// branch.
+    /// No D-Bus, or no StatusNotifierWatcher.
     #[error("tray D-Bus service failed: {0}")]
     Spawn(#[from] ksni::Error),
 }
 
-/// Wake channel from ksni menu tasks to the GTK main thread.
-///
-/// ksni invokes menu closures on its own async tasks while GTK objects
-/// (incl. `gtk4::Application`, which is `!Send`) may only be touched on
-/// the main thread. The bridge is a std mpsc queue plus
-/// `MainContext::invoke` (thread-safe, `FnOnce() + Send`): `fire` queues
-/// the action and invokes a capturable-free closure; the closure runs on
-/// the main thread, where the app handle + receiver live in a
-/// main-thread-local installed by [`init_tray`]. Both bridge halves are
-/// `Send`, so the tray struct satisfies ksni's `Tray: Send` bound with no
-/// GTK types crossing threads.
-struct ActionBridge {
-    queue: std::sync::mpsc::Sender<TrayAction>,
-}
-
-impl ActionBridge {
-    fn fire(&self, action: TrayAction) {
-        // Queue first so the invoked closure never wakes to an empty
-        // queue; a failed send means the UI is gone, in which case the
-        // invoke is a harmless no-op.
-        if self.queue.send(action).is_ok() {
-            glib::MainContext::default().invoke(drain_queued_actions);
-        }
-    }
-}
-
-// Main-thread dispatch installed by [`init_tray`].
-//
-// `RefCell` (not `Mutex`): only ever touched on the GTK main thread —
-// written once at init, read from `invoke`d closures. Never crosses
-// threads, so `!Sync` is fine.
+// ksni calls the menu on its own tasks, but the `gtk4::Application` may
+// only be touched on the main thread. Menu clicks are queued and drained
+// on the main thread, where the app and the receiver live.
 thread_local! {
-    static TRAY_DISPATCH: RefCell<
-        Option<(gtk4::Application, std::sync::mpsc::Receiver<TrayAction>)>,
-    > = const { RefCell::new(None) };
+    static TRAY_DISPATCH: RefCell<Option<(gtk4::Application, std_mpsc::Receiver<TrayAction>)>> =
+        const { RefCell::new(None) };
 }
 
-/// Runs on the GTK main thread via `MainContext::invoke`.
 fn drain_queued_actions() {
     TRAY_DISPATCH.with(|cell| {
         if let Some((app, rx)) = cell.borrow().as_ref() {
@@ -224,34 +142,23 @@ fn drain_queued_actions() {
     });
 }
 
-/// Owns the tray's Tokio runtime + ksni service handle.
-///
-/// MANUAL VERIFICATION:
-///
-/// - `xvfb-run -a timeout 10 cargo run` must exit 124 (timeout-kill, i.e.
-///   the app ran) with no panic — with or without a session bus.
-/// - On a real desktop with an SNI host (Plasma panel, GNOME +
-///   AppIndicator/Status-Tray extension), check: icon visible; left-click
-///   restores the window; menu shows Open / New Session / Quit; closing
-///   the window hides it (setting ON); `Quit` exits; disconnecting a
-///   session posts a "Wayterm / `<session>` connection lost" notification.
+/// Keeps the tray's runtime and D-Bus service alive; drop it to remove
+/// the icon.
 pub struct TrayHandle {
-    // Held only for lifetime: dropping the runtime shuts down the ksni
-    // service, dropping the handle unregisters the SNI item.
     _runtime: tokio::runtime::Runtime,
     _handle: ksni::Handle<WaytermTray>,
 }
 
-/// The ksni status-notifier item. Menu/activate callbacks run on ksni
-/// tasks (NOT the GTK main thread), so they only push through the
-/// [`ActionBridge`] — never touch widgets.
+/// The status-notifier item.
 pub struct WaytermTray {
-    bridge: ActionBridge,
+    queue: std_mpsc::Sender<TrayAction>,
 }
 
 impl WaytermTray {
     fn fire(&self, action: TrayAction) {
-        self.bridge.fire(action);
+        if self.queue.send(action).is_ok() {
+            glib::MainContext::default().invoke(drain_queued_actions);
+        }
     }
 }
 
@@ -269,57 +176,43 @@ impl ksni::Tray for WaytermTray {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        let item = |action: TrayAction| ksni::menu::StandardItem {
-            label: action.label().to_string(),
-            activate: Box::new(move |tray: &mut Self| tray.fire(action)),
-            ..Default::default()
-        };
-        vec![
-            item(TrayAction::ShowWindow).into(),
-            item(TrayAction::NewSession).into(),
-            ksni::MenuItem::Separator,
-            item(TrayAction::Quit).into(),
-        ]
+        tray_menu_layout()
+            .into_iter()
+            .map(|entry| match entry {
+                MenuEntry::Separator => ksni::MenuItem::Separator,
+                MenuEntry::Item(action) => ksni::menu::StandardItem {
+                    label: action.label().to_string(),
+                    activate: Box::new(move |tray: &mut Self| tray.fire(action)),
+                    ..Default::default()
+                }
+                .into(),
+            })
+            .collect()
     }
 
-    /// Left-click restores the window (same as "Open Wayterm").
+    /// Left-click restores the window.
     fn activate(&mut self, _x: i32, _y: i32) {
         self.fire(TrayAction::ShowWindow);
     }
 }
 
-/// Start the tray service. Call once from `build_ui` on the GTK main
-/// thread: builds a dedicated single-worker Tokio runtime, block_ons the
-/// D-Bus handshake (fast fail when headless), then attaches the
-/// [`ActionBridge`] drain to the main loop.
-///
-/// `Err` = no tray; caller MUST keep quit-on-close in that case.
+/// Start the tray. Call once on the main thread; it runs the D-Bus
+/// handshake on a dedicated one-worker runtime, failing fast when headless.
 pub fn init_tray(app: &gtk4::Application) -> Result<TrayHandle, TrayInitError> {
-    let (queue_tx, queue_rx) = std::sync::mpsc::channel::<TrayAction>();
+    let (queue, queue_rx) = std_mpsc::channel();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_name("wayterm-tray")
         .enable_all()
         .build()?;
-    let tray = WaytermTray {
-        bridge: ActionBridge { queue: queue_tx },
-    };
-    let handle = runtime.block_on(tray.spawn())?;
-
-    // Main-thread dispatch for the `invoke`d drain: app + queue stay on
-    // this thread for the process lifetime, so no `Send` is required.
+    let handle = runtime.block_on(WaytermTray { queue }.spawn())?;
     TRAY_DISPATCH.set(Some((app.clone(), queue_rx)));
-
     Ok(TrayHandle {
         _runtime: runtime,
         _handle: handle,
     })
 }
 
-/// GAction dispatch. `ShowWindow` un-hides (close-to-tray state) and
-/// presents; `NewSession` presents the window where the session tree owns
-/// session creation (full new-session dialog wiring is a follow-up once
-/// `MainWindow` exposes it — this stays additive); `Quit` exits.
 pub fn handle_app_action(app: &gtk4::Application, action: TrayAction) {
     match action {
         TrayAction::ShowWindow | TrayAction::NewSession => {
@@ -328,26 +221,19 @@ pub fn handle_app_action(app: &gtk4::Application, action: TrayAction) {
                 window.present();
             }
         }
-        TrayAction::Quit => {
-            app.quit();
-        }
+        TrayAction::Quit => app.quit(),
     }
 }
 
-/// Install close-to-tray on `window`.
-///
-/// When `should_minimize_to_tray(tray_available, setting_enabled)` the
-/// close request hides the window and stops the event; otherwise the
-/// event proceeds (existing quit-on-close). Intentionally installed from
-/// `app.rs`, not `main_window.rs` (owned by another P4 task).
+/// Hide on close instead of quitting, when the tray allows it.
 pub fn install_close_handler(
     window: &gtk4::ApplicationWindow,
     tray_available: bool,
     setting_enabled: bool,
 ) {
-    window.connect_close_request(move |win| {
+    window.connect_close_request(move |window| {
         if should_minimize_to_tray(tray_available, setting_enabled) {
-            win.set_visible(false);
+            window.set_visible(false);
             glib::Propagation::Stop
         } else {
             glib::Propagation::Proceed
@@ -355,11 +241,7 @@ pub fn install_close_handler(
     });
 }
 
-/// Post a disconnect notification for `session_name` on the main thread.
-///
-/// Must be called on the GTK main thread (the [`forward_disconnect_alerts`]
-/// `on_alert` is expected to hop there, e.g. via `glib::idle_add` or a
-/// `MainContext` invoke).
+/// Post the disconnect notification. Main thread only.
 pub fn send_disconnect_notification(app: &gtk4::Application, session_name: &str) {
     let alert = disconnect_alert(session_name);
     let notification = gio::Notification::new(&alert.title);

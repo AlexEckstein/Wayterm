@@ -1,7 +1,7 @@
 //! SQLite persistence for folders, sessions, hotkeys, and settings
 //! (doc 06). No credential material ever passes through this layer.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::types::Value;
 use rusqlite::{
@@ -12,11 +12,10 @@ use serde::Serialize;
 use crate::store::model::{Folder, SessionConfig};
 use crate::ui::tab_state::{self, TabState};
 
-/// A SQLite-backed store of session folders and saved sessions.
+/// A SQLite-backed store of session folders and saved sessions. Not
+/// `Send`: the UI shares one through an `Rc` on the main thread.
 pub struct SessionStore {
     conn: Connection,
-    /// `None` for an in-memory store.
-    path: Option<PathBuf>,
 }
 
 impl SessionStore {
@@ -25,32 +24,14 @@ impl SessionStore {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let mut conn = Connection::open(path)?;
         initialize(&mut conn)?;
-        Ok(Self {
-            conn,
-            path: Some(path.to_path_buf()),
-        })
+        Ok(Self { conn })
     }
 
     /// An in-memory store with the same schema and seed (tests).
     pub fn in_memory() -> rusqlite::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         initialize(&mut conn)?;
-        Ok(Self { conn, path: None })
-    }
-
-    /// Another connection to the same store: the same file re-opened, or a
-    /// snapshot copy of an in-memory store.
-    pub fn duplicate(&self) -> rusqlite::Result<Self> {
-        let Some(path) = &self.path else {
-            let mut conn = Connection::open_in_memory()?;
-            rusqlite::backup::Backup::new(&self.conn, &mut conn)?.run_to_completion(
-                100,
-                std::time::Duration::from_millis(1),
-                None,
-            )?;
-            return Ok(Self { conn, path: None });
-        };
-        Self::open(path)
+        Ok(Self { conn })
     }
 
     pub fn insert_folder(&self, name: &str, parent_id: Option<i64>) -> rusqlite::Result<i64> {

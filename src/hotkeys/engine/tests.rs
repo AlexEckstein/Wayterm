@@ -380,7 +380,7 @@ fn save_never_touches_the_seed_rows() {
 fn two_writers_leave_one_custom_row() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (writer_a, raw) = file_store(dir.path());
-    let writer_b = writer_a.duplicate().expect("second connection");
+    let writer_b = SessionStore::open(&dir.path().join("wayterm.db")).expect("second connection");
 
     writer_a
         .save_custom_hotkey("copy", "Ctrl+Y", "terminal", true)

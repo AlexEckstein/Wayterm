@@ -1,8 +1,5 @@
-//! Unit tests for the display-free mapping logic of [`super::SessionDialog`].
-//!
-//! GTK dialog construction needs a display, so these tests exercise only
-//! [`config_from_fields`], the [`DialogFields`] mapping, and the per-type
-//! helpers (port defaults, resolution parsing, DropDown index ⇄ type).
+//! The dialog's display-free mapping: [`config_from_fields`] and the
+//! per-type helpers.
 
 use crate::store::model::{
     AuthMethod, Folder, SessionType, RDP_COLOR_DEPTHS, SERIAL_DATA_BITS, SERIAL_FLOW_CONTROLS,
@@ -123,7 +120,6 @@ fn edit_mode_preserves_identity_fields() {
     let folders = sample_folders();
     let fields = DialogFields {
         id: 42,
-        folder_id: Some(99),
         last_connected: Some("2026-10-02T12:34:56Z".to_string()),
         connect_count: 7,
         name: "updated".to_string(),
@@ -145,7 +141,6 @@ fn edit_mode_preserves_identity_fields() {
         Some("2026-10-02T12:34:56Z".to_string())
     );
     assert_eq!(config.connect_count, 7);
-    // folder_id from DialogFields is ignored; folder_index resolves it.
     assert_eq!(config.folder_id, Some(1));
 }
 

@@ -13,6 +13,8 @@ pub mod tab_label;
 pub mod tab_resilience;
 pub mod tab_restore;
 pub mod tab_state;
+pub mod terminal_actions;
 pub mod tray;
+pub mod widgets;
 
 pub use main_window::MainWindow;

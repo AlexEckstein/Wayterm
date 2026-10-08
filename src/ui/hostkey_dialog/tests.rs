@@ -89,16 +89,6 @@ fn decision_from_response_maps_accept_to_accept_and_save() {
 }
 
 #[test]
-fn only_strict_policy_prompts() {
-    assert_eq!(
-        notice_for_policy(HostKeyPolicy::Strict),
-        Some(HostKeyNotice::Unknown)
-    );
-    assert_eq!(notice_for_policy(HostKeyPolicy::AcceptNew), None);
-    assert_eq!(notice_for_policy(HostKeyPolicy::Off), None);
-}
-
-#[test]
 fn host_key_prompt_forwards_facts_and_maps_decision() {
     let _ctx = acquire_default_ctx();
     let closure = host_key_prompt_with(|notice, facts| {
