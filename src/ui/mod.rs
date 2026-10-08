@@ -7,6 +7,7 @@ pub mod session_dialog;
 pub mod session_tree;
 pub mod status_bar;
 pub mod tab;
+pub mod tray;
 
 pub use main_window::MainWindow;
 #[cfg(test)]
