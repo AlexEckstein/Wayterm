@@ -21,6 +21,9 @@ use crate::store::model::{
     SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES, SERIAL_PARITY_DEFAULT,
     SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT, TMUX_NAME_PREFIX,
 };
+// Re-exported only for src/transport/serial.rs, which still imports it from
+// here (a lane-owned file); drop once that import reads the store.
+pub use crate::store::model::DEFAULT_SERIAL_BAUD;
 use crate::ui::widgets::{ok_cancel_row, set_margins, Modal};
 
 // Type DropDown indices, in doc 06 order.
@@ -32,9 +35,6 @@ pub const TYPE_INDEX_LOCAL: u32 = 4;
 
 const TYPE_LABELS: [&str; 5] = ["ssh", "rdp", "vnc", "serial", "local"];
 const AUTH_LABELS: [&str; 5] = ["password", "key", "agent", "keyboard-interactive", "none"];
-
-/// The serial group's starting baud rate (doc 06 names no default).
-pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 
 /// Shown in the Port spin for types without a port (it cannot show
 /// "unset"); nothing is stored for them.

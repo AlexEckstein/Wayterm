@@ -171,3 +171,11 @@ fn color_kind_hex_colors_are_distinct() {
         );
     }
 }
+
+#[test]
+fn a_port_of_zero_shows_the_bare_description() {
+    let view = status_view_from(&TransportState::Connected, "/bin/bash", 0, None);
+    assert_eq!(view.text(), "Connected to /bin/bash");
+    let view = status_view_from(&TransportState::Connected, "db", 22, None);
+    assert_eq!(view.text(), "Connected to db:22");
+}
