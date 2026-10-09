@@ -39,6 +39,7 @@ ksni = "0.3"
 serialport = { version = "4.10.1", default-features = false }
 
 [dev-dependencies]
+libc = "0.2.190"
 tempfile = "3"
 # test-util enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,
 # which the reconnect driver's backoff tests use to assert the doc 04 curve
