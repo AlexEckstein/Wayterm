@@ -104,12 +104,10 @@ impl VncPixels {
         let visible_h = h.min(usize::from(self.height).saturating_sub(y));
         for row in 0..visible_h {
             let src = &bytes[row * w * 4..(row * w + visible_w) * 4];
+            let (src, _) = src.as_chunks::<4>();
             let dst = (y + row) * stride + x;
-            for (px, chunk) in self.pixels[dst..dst + visible_w]
-                .iter_mut()
-                .zip(src.chunks_exact(4))
-            {
-                *px = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) | ALPHA_OPAQUE;
+            for (px, bgra) in self.pixels[dst..dst + visible_w].iter_mut().zip(src) {
+                *px = u32::from_le_bytes(*bgra) | ALPHA_OPAQUE;
             }
         }
         Ok(())
