@@ -36,6 +36,7 @@ use crate::ui::hostkey_dialog;
 use crate::ui::main_window::{route_status, SUPERVISOR_KEY};
 use crate::ui::sftp_sidebar::{supports_sftp, SftpSidebar};
 use crate::ui::tab_label;
+use crate::ui::vnc_tab;
 use crate::ui::widgets::{centered_label, data, set_data, set_margins, window_of};
 
 /// The session id on a tab's page (read back by tab persistence).
@@ -83,7 +84,7 @@ impl SessionTab {
         set_data(&page, TAB_LABEL_KEY, tab_label);
         if matches!(
             session.session_type,
-            SessionType::SSH | SessionType::LocalShell | SessionType::Serial
+            SessionType::SSH | SessionType::LocalShell | SessionType::Serial | SessionType::VNC
         ) {
             start_connect(notebook, &page, &session);
         }
@@ -134,6 +135,12 @@ fn find_tab(notebook: &gtk4::Notebook, session_id: i64) -> Option<(u32, gtk4::Wi
 fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<SessionConfig>) {
     let gen = bump_gen(page);
     close_terminal(page);
+
+    // VNC has no byte stream: its own dial (with the password prompt) and
+    // engine, no supervisor or terminal (doc 08 §VNC).
+    if session.session_type == SessionType::VNC {
+        return vnc_tab::start(notebook, page, session, gen);
+    }
 
     // Nothing to dial or authenticate: no supervisor, host key or credential
     // machinery (doc 04 §Local and serial transports).
@@ -365,7 +372,8 @@ fn transport_auth_method(session: &SessionConfig) -> connection::AuthMethod {
 }
 
 /// Keyring first, then a one-field challenge dialog (doc 11).
-fn credential_manager(session_name: &str) -> CredentialManager {
+// used by ui::vnc_tab
+pub(crate) fn credential_manager(session_name: &str) -> CredentialManager {
     let name = session_name.to_string();
     let prompt = PromptSource::new(Arc::new(move |_session_id, secret_type| {
         let label = match secret_type {
@@ -391,7 +399,8 @@ fn credential_manager(session_name: &str) -> CredentialManager {
 // Page views and bookkeeping
 // ---------------------------------------------------------------------------
 
-fn set_terminal_area(page: &gtk4::Widget, child: &impl IsA<gtk4::Widget>) {
+// used by ui::vnc_tab
+pub(crate) fn set_terminal_area(page: &gtk4::Widget, child: &impl IsA<gtk4::Widget>) {
     if let Some(paned) = page.downcast_ref::<gtk4::Paned>() {
         paned.set_end_child(Some(child));
     }
@@ -407,7 +416,8 @@ fn view_box() -> gtk4::Box {
     view
 }
 
-fn show_connecting_view(page: &gtk4::Widget, host: &str, port: u16) {
+// used by ui::vnc_tab
+pub(crate) fn show_connecting_view(page: &gtk4::Widget, host: &str, port: u16) {
     let view = view_box();
     view.append(&centered_label(&format!("Connecting to {host}:{port}…")));
     let cancel = gtk4::Button::with_label("Cancel");
@@ -423,7 +433,8 @@ fn show_connecting_view(page: &gtk4::Widget, host: &str, port: u16) {
 }
 
 /// The error message with Retry and Close Tab.
-fn show_error_view(
+// used by ui::vnc_tab
+pub(crate) fn show_error_view(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
     session: &Rc<SessionConfig>,
@@ -467,7 +478,8 @@ fn show_error_view(
 }
 
 /// Record `state` on the page and show it if the page is current.
-fn publish_status(page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
+// used by ui::vnc_tab
+pub(crate) fn publish_status(page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
     let status = SessionTab::page_status(page).unwrap_or_else(|| {
         let cell = Rc::new(RefCell::new(PageStatus {
             state: TransportState::Disconnected,
@@ -509,7 +521,8 @@ fn bump_gen(page: &gtk4::Widget) -> u64 {
     slot.get()
 }
 
-fn current_gen(page: &gtk4::Widget) -> u64 {
+// used by ui::vnc_tab
+pub(crate) fn current_gen(page: &gtk4::Widget) -> u64 {
     gen_slot(page).get()
 }
 
@@ -537,7 +550,7 @@ fn page_content(session: &SessionConfig) -> gtk4::Widget {
         paned.upcast()
     } else if matches!(
         session.session_type,
-        SessionType::LocalShell | SessionType::Serial
+        SessionType::LocalShell | SessionType::Serial | SessionType::VNC
     ) {
         let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
         paned.set_end_child(Some(&placeholder));
