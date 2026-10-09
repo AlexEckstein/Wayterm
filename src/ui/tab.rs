@@ -2,7 +2,8 @@
 //!
 //! An SSH tab's page is a paned: the SFTP sidebar (doc 09) on the left —
 //! per tab, since each browses its own connection — and the terminal area
-//! on the right. Other session types get a placeholder page.
+//! on the right. Local and serial tabs get the terminal area alone; other
+//! session types get a placeholder page.
 //!
 //! Connecting: validate the row, show "Connecting…", get a shared
 //! connection from the window's supervisor (prompts run on the GTK thread
@@ -67,8 +68,8 @@ type TerminalSlot = Rc<RefCell<Option<TerminalTab>>>;
 pub struct SessionTab;
 
 impl SessionTab {
-    /// Open a tab for `session`, or focus the one already open. SSH tabs
-    /// start connecting. Returns the page widget.
+    /// Open a tab for `session`, or focus the one already open. SSH, local
+    /// and serial tabs start connecting. Returns the page widget.
     pub fn open(notebook: &gtk4::Notebook, session: &SessionConfig) -> gtk4::Widget {
         if let Some((page_num, page)) = find_tab(notebook, session.id) {
             notebook.set_current_page(Some(page_num));
@@ -80,7 +81,10 @@ impl SessionTab {
         let page_num = notebook.append_page(&page, Some(&tab_label));
         notebook.set_current_page(Some(page_num));
         set_data(&page, TAB_LABEL_KEY, tab_label);
-        if session.session_type == SessionType::SSH {
+        if matches!(
+            session.session_type,
+            SessionType::SSH | SessionType::LocalShell | SessionType::Serial
+        ) {
             start_connect(notebook, &page, &session);
         }
         page
@@ -130,6 +134,21 @@ fn find_tab(notebook: &gtk4::Notebook, session_id: i64) -> Option<(u32, gtk4::Wi
 fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<SessionConfig>) {
     let gen = bump_gen(page);
     close_terminal(page);
+
+    // Nothing to dial or authenticate: no supervisor, host key or credential
+    // machinery (doc 04 §Local and serial transports).
+    if matches!(
+        session.session_type,
+        SessionType::LocalShell | SessionType::Serial
+    ) {
+        let (notebook, page, session) = (notebook.clone(), page.clone(), session.clone());
+        glib::MainContext::default().spawn_local(async move {
+            if current_gen(&page) == gen {
+                finish_connect(&notebook, &session, &page, None).await;
+            }
+        });
+        return;
+    }
 
     let filled = |value: &Option<String>| value.clone().filter(|v| !v.trim().is_empty());
     let Some(host) = filled(&session.host) else {
@@ -198,7 +217,7 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
             return;
         }
         let error = match result {
-            Ok(Ok(conn)) => return finish_connect(&notebook, &session, &page, conn).await,
+            Ok(Ok(conn)) => return finish_connect(&notebook, &session, &page, Some(conn)).await,
             // A cancelled prompt is a clean disconnect, not an error.
             Ok(Err(TransportError::Cancelled | TransportError::Disconnected)) => {
                 set_terminal_area(&page, &centered_label("Disconnected"));
@@ -213,12 +232,13 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
 }
 
 /// Embed the terminal, measure its real grid, wire the transport, and
-/// attach the sidebar to the same connection.
+/// attach the sidebar to the same connection (SSH only: local and serial
+/// pass no connection and get no sidebar).
 async fn finish_connect(
     notebook: &gtk4::Notebook,
     session: &Rc<SessionConfig>,
     page: &gtk4::Widget,
-    conn: Arc<SshConnection>,
+    conn: Option<Arc<SshConnection>>,
 ) {
     let handle = create_terminal();
     let backend = handle.backend.clone();
@@ -239,19 +259,39 @@ async fn finish_connect(
     };
 
     let main_ctx = glib::MainContext::default();
-    let wired = TerminalTab::new(session, Some(conn.clone()), handle, &main_ctx, rows, cols);
+    let wired = TerminalTab::new(session, conn.clone(), handle, &main_ctx, rows, cols);
     let (terminal_tab, state_rx) = match wired {
         Ok(wired) => wired,
         Err(err) => return show_error_view(notebook, page, session, &err.to_string()),
     };
+    let (host, port) = status_endpoint(session, terminal_tab.description());
     terminal_slot(page).replace(Some(terminal_tab));
     set_data(page, TERMINAL_BACKEND_KEY, backend);
-    spawn_state_drain(notebook.clone(), page.clone(), session.clone(), state_rx);
+    spawn_state_drain(
+        notebook.clone(),
+        page.clone(),
+        session.clone(),
+        host,
+        port,
+        state_rx,
+    );
 
-    if let Some(sidebar) = SessionTab::sidebar_for_page(page) {
+    if let (Some(conn), Some(sidebar)) = (conn, SessionTab::sidebar_for_page(page)) {
         sidebar.attach(conn);
     }
     follow_terminal_title(page, &widget, &session.name);
+}
+
+/// What the status bar shows for a tab: `host:port` for SSH, the
+/// transport's description (no port, `0`) for local and serial.
+fn status_endpoint(session: &SessionConfig, description: &str) -> (String, u16) {
+    match session.session_type {
+        SessionType::LocalShell | SessionType::Serial => (description.to_string(), 0),
+        _ => (
+            session.host.clone().unwrap_or_default(),
+            session.port.unwrap_or(22),
+        ),
+    }
 }
 
 /// Replay the tab's transport events into its page status and views.
@@ -259,10 +299,10 @@ fn spawn_state_drain(
     notebook: gtk4::Notebook,
     page: gtk4::Widget,
     session: Rc<SessionConfig>,
+    host: String,
+    port: u16,
     mut rx: UnboundedReceiver<TransportEvent>,
 ) {
-    let host = session.host.clone().unwrap_or_default();
-    let port = session.port.unwrap_or(22);
     glib::MainContext::default().spawn_local(async move {
         while let Some(event) = rx.recv().await {
             match event {
@@ -481,8 +521,8 @@ fn gen_slot(page: &gtk4::Widget) -> Rc<Cell<u64>> {
     })
 }
 
-/// The page: the sidebar and terminal area for SSH, a placeholder
-/// otherwise. Tagged with the session id for dedup and persistence.
+/// The page: the sidebar and terminal area for SSH, the terminal area alone
+/// for local and serial, a placeholder otherwise. Tagged with the session id for dedup and persistence.
 fn page_content(session: &SessionConfig) -> gtk4::Widget {
     let placeholder = centered_label(&format!("{}\nnot connected", session.name));
     let page: gtk4::Widget = if supports_sftp(&session.session_type) {
@@ -494,6 +534,15 @@ fn page_content(session: &SessionConfig) -> gtk4::Widget {
         paned.set_vexpand(true);
         paned.set_hexpand(true);
         set_data(&paned, SIDEBAR_KEY, sidebar);
+        paned.upcast()
+    } else if matches!(
+        session.session_type,
+        SessionType::LocalShell | SessionType::Serial
+    ) {
+        let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
+        paned.set_end_child(Some(&placeholder));
+        paned.set_vexpand(true);
+        paned.set_hexpand(true);
         paned.upcast()
     } else {
         placeholder.upcast()
@@ -528,6 +577,26 @@ mod tests {
         assert_eq!(tab_title("db-prod", "root@db-prod:~"), "root@db-prod:~");
         assert_eq!(tab_title("db-prod", ""), "db-prod");
         assert_eq!(tab_title("db-prod", "   \n"), "db-prod");
+    }
+
+    #[test]
+    fn status_endpoint_uses_the_description_only_without_a_host() {
+        let ssh = SessionConfig {
+            host: Some("db".into()),
+            port: Some(2222),
+            ..Default::default()
+        };
+        assert_eq!(status_endpoint(&ssh, "ignored"), ("db".into(), 2222));
+        for session_type in [SessionType::LocalShell, SessionType::Serial] {
+            let config = SessionConfig {
+                session_type,
+                ..Default::default()
+            };
+            assert_eq!(
+                status_endpoint(&config, "/dev/ttyUSB0@115200"),
+                ("/dev/ttyUSB0@115200".into(), 0)
+            );
+        }
     }
 
     #[test]

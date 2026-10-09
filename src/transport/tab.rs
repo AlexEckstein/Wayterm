@@ -73,6 +73,7 @@ pub struct TerminalTab {
     pump_task: Option<JoinHandle<()>>,
     bridge_task: Option<JoinHandle<()>>,
     cancel: CancellationToken,
+    description: String,
 }
 
 impl TerminalTab {
@@ -106,6 +107,7 @@ impl TerminalTab {
             events: mut term_rx,
         } = terminal;
         let cancel = CancellationToken::new();
+        let description = transport.description();
 
         // Drain: bounded, so a stalled main thread backs up into the
         // bridge, the reader, and finally SSH flow control.
@@ -179,8 +181,15 @@ impl TerminalTab {
             pump_task: Some(pump_task),
             bridge_task: Some(bridge_task),
             cancel,
+            description,
         };
         (tab, state_rx)
+    }
+
+    /// The transport's description (shell path, `device@baud`), shown in
+    /// the status bar for sessions without a host.
+    pub fn description(&self) -> &str {
+        &self.description
     }
 
     /// Cancel both tasks and wait for them (doc 04 §Lifecycle). The pump gets

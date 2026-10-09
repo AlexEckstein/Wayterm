@@ -64,7 +64,13 @@ pub fn status_view_from(
     let host = (!host.is_empty()).then(|| host.to_string());
     let endpoint = host
         .as_ref()
-        .map(|h| format!("{h}:{port}"))
+        .map(|h| {
+            if port == 0 {
+                h.clone()
+            } else {
+                format!("{h}:{port}")
+            }
+        })
         .unwrap_or_default();
 
     let (text, color) = match state {
