@@ -1,6 +1,7 @@
 pub mod app;
 pub mod backpressure;
 pub mod hotkeys;
+pub mod rdp;
 pub mod sftp;
 pub mod store;
 pub mod terminal;

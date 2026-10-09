@@ -21,6 +21,7 @@ const TABLES: &[&str] = &[
     "hotkeys",
     "settings",
     "connection_history",
+    "rdp_trust",
 ];
 
 /// Names of the indexes `open` must create (doc 06 §"Database Schema").
@@ -581,4 +582,67 @@ fn flags_are_on_unless_explicitly_off() {
     for off in ["0", "false", "False", "no", "off", " 0 ", "OFF"] {
         assert!(!flag_enabled(Some(off)), "{off:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// RDP trust (TOFU fingerprints, one row per endpoint)
+// ---------------------------------------------------------------------------
+
+const FP_ONE: &str = "111e9442b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c7fe1";
+const FP_TWO: &str = "222e9442b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c7fe2";
+
+fn rdp_first_seen(store: &SessionStore, host: &str, port: u16) -> i64 {
+    store
+        .conn
+        .query_row(
+            "SELECT first_seen FROM rdp_trust WHERE host = ?1 AND port = ?2",
+            params![host, i64::from(port)],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn rdp_trust_unknown_endpoint_returns_none() {
+    let store = SessionStore::in_memory().unwrap();
+    assert_eq!(store.rdp_trust("never.seen.lan", 3389).unwrap(), None);
+}
+
+#[test]
+fn rdp_trust_record_and_read_roundtrip() {
+    let store = SessionStore::in_memory().unwrap();
+    store
+        .rdp_trust_record("rdp.example.lan", 3389, FP_ONE)
+        .unwrap();
+    assert_eq!(
+        store.rdp_trust("rdp.example.lan", 3389).unwrap(),
+        Some(FP_ONE.to_string())
+    );
+    // Keyed by (host, port): a different port is still unknown, and a
+    // different host with the same port is too.
+    assert_eq!(store.rdp_trust("rdp.example.lan", 3390).unwrap(), None);
+    assert_eq!(store.rdp_trust("other.example.lan", 3389).unwrap(), None);
+}
+
+#[test]
+fn rdp_trust_rerecord_replaces_fingerprint_but_keeps_first_seen() {
+    let store = SessionStore::in_memory().unwrap();
+    store
+        .rdp_trust_record("rdp.example.lan", 3389, FP_ONE)
+        .unwrap();
+    let first = rdp_first_seen(&store, "rdp.example.lan", 3389);
+    assert!(first > 0);
+
+    store
+        .rdp_trust_record("rdp.example.lan", 3389, FP_TWO)
+        .unwrap();
+    assert_eq!(
+        store.rdp_trust("rdp.example.lan", 3389).unwrap(),
+        Some(FP_TWO.to_string())
+    );
+    assert_eq!(
+        rdp_first_seen(&store, "rdp.example.lan", 3389),
+        first,
+        "re-recording must not move first_seen"
+    );
 }
