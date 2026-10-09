@@ -69,6 +69,11 @@ pub const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 pub const RING_CAPACITY: usize = 200;
 /// Substring marking a FreeRDP connection failure on stderr.
 pub const CONNECT_ERROR_MARKER: &str = "ERRCONNECT_";
+/// Spawn attempts in [`RdpProcess::run`] before a transient `ETXTBSY`
+/// becomes a hard error (bounds the worst case at ~100 ms).
+const SPAWN_RETRIES: usize = 20;
+/// Delay between spawn retries.
+const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(5);
 
 /// Binary names probed in order: newDistro name first, legacy second.
 pub const BINARY_NAMES: [&str; 2] = ["xfreerdp3", "xfreerdp"];
@@ -414,7 +419,35 @@ impl RdpProcess {
             // signal anything outside our own session.
             cmd.as_std_mut().process_group(0);
         }
-        let mut child = cmd.spawn()?;
+        // Exec can transiently fail with ETXTBSY while the binary is being
+        // replaced on disk (a package update swapping xfreerdp mid-connect
+        // — or a freshly-written helper racing concurrent forks). Retry a
+        // few times; a persistent failure still surfaces as an error.
+        let mut child: Option<Child> = None;
+        for attempt in 0..SPAWN_RETRIES {
+            match cmd.spawn() {
+                Ok(c) => {
+                    child = Some(c);
+                    break;
+                }
+                Err(e)
+                    if e.kind() == io::ErrorKind::ExecutableFileBusy
+                        && attempt + 1 < SPAWN_RETRIES =>
+                {
+                    tokio::time::sleep(SPAWN_RETRY_DELAY).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        let mut child = match child {
+            Some(c) => c,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::ExecutableFileBusy,
+                    "xfreerdp binary busy (ETXTBSY): still being replaced?",
+                ));
+            }
+        };
         let stdin = child
             .stdin
             .take()
@@ -883,6 +916,32 @@ mod tests {
             .error_digest()
             .iter()
             .any(|l| l.contains("ERRCONNECT_LOGON_FAILURE")));
+    }
+
+    #[tokio::test]
+    async fn spawn_retries_past_transient_text_file_busy() {
+        // Holding the binary open for writing makes every exec of it fail
+        // with ETXTBSY; releasing it from a timer lets the retry loop in
+        // run() succeed. Guards the fix for the flake seen under parallel
+        // gate runs (spawn racing concurrent forks failed with
+        // `ExecutableFileBusy`).
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(&dir, "read -r line\necho hi >&2\nexit 3");
+        let held = std::fs::OpenOptions::new().write(true).open(&bin).unwrap();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            drop(held);
+        });
+        let mut proc =
+            RdpProcess::new(bin, &test_spec(), None).with_connected_delay(Duration::from_secs(60));
+        let (tx, mut rx) = mpsc::channel(8);
+        let password = Zeroizing::new(b"pw".to_vec());
+        proc.run(&password, tx).await.unwrap();
+        assert!(matches!(
+            rx.recv().await,
+            Some(RdpProcessEvent::Ended { code: Some(3), .. })
+        ));
+        assert_eq!(rx.recv().await, None, "Ended is always last");
     }
 
     #[tokio::test]
