@@ -318,34 +318,6 @@ fn tab_bar_order_survives_a_relaunch() {
     assert_eq!(labels_of(&restored), ["web1", "web2"]);
 }
 
-// ---------------------------------------------------------------------------
-// The seam the UI actually uses
-// ---------------------------------------------------------------------------
-
-#[test]
-fn a_duplicate_connection_writes_what_the_next_launch_reads() {
-    // `MainWindow` hands tab persistence a `store.duplicate()`, because
-    // GTK closures cannot share the one `Connection` (doc 06). This is
-    // the test that says that arrangement actually persists.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("wayterm.sqlite3");
-    let store = SessionStore::open(&path).unwrap();
-
-    let for_the_window = store.duplicate().unwrap();
-    for_the_window
-        .save_open_tabs(&[
-            TabState::session(1, "prod-db", 1, 0),
-            TabState::session(2, "web1", 2, 1),
-        ])
-        .unwrap();
-
-    let relaunched = SessionStore::open(&path).unwrap();
-    assert_eq!(
-        labels_of(&relaunched.load_open_tabs().unwrap()),
-        ["prod-db", "web1"]
-    );
-}
-
 #[test]
 fn session_ids_roundtrip_against_real_session_rows() {
     // The saved ids have to be usable with the rest of the store, since

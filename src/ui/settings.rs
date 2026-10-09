@@ -1,50 +1,12 @@
-//! Hotkey settings window — rebinding, capture, conflicts, reset
-//! (doc 07 §"Settings UI", §"Conflict Detection", §"Persistence").
+//! The hotkey settings window (doc 07 §Settings UI): every action with its
+//! binding, a Capture button that records the next chord, and Reset.
 //!
-//! Split, following `auth_dialog` / `session_dialog`:
-//!
-//! * a **display-free data layer** ([`SettingsRow`], [`SettingsView`],
-//!   [`SettingsError`]) which the integration tests in
-//!   `tests/settings_ui.rs` exercise without a display;
-//! * a **thin GTK layer** ([`create_hotkey_settings_window`],
-//!   [`show_hotkey_settings`]) that renders the rows and drives the
-//!   capture / override / reset flows through the data layer.
-//!
-//! ## ListView-vs-ListBox choice
-//!
-//! Doc 07 sketches the list as `GtkListView` / `GtkColumnView`. That
-//! pairing needs a `ListStore` + `SingleSelection` + per-column factory
-//! assembly for what is a fixed 37-row table with two buttons per row.
-//! A [`gtk4::ListBox`] with one row widget per action renders the same
-//! four columns (display name | current key | context | reset button,
-//! plus the doc's "Capture Key" button) with far less machinery, stays
-//! keyboard-navigable, and keeps every behaviour the doc mandates. The
-//! column content is identical — only the container widget differs.
-//!
-//! ## Capture path
-//!
-//! The "Capture Key" button opens a small modal window carrying a
-//! [`gtk4::EventControllerKey`]. The next key press is read as doc 07
-//! mandates — `key()` + `modifier_state()` — into a [`KeyChord`], which
-//! renders the UI-format string both the list and the database store
-//! ([`KeyChord::to_ui_key`]); strings are never re-parsed on this path.
-//! `Escape` cancels capture, and a bare modifier press is ignored so the
-//! dialog keeps waiting for the real chord. While the modal capture
-//! dialog has focus no other widget can receive the key press, so the
-//! captured chord cannot fire any action on its way in.
-//!
-//! ## Conflict + persistence rules (doc 07 verbatim behaviour)
-//!
-//! * [`SettingsView::conflicts`] wraps `HotkeyEngine::conflicts_for`;
-//!   a non-empty loser set raises an "… is already bound to 'X'.
-//!   Override?" confirm built by [`SettingsView::override_prompt`].
-//! * Confirm rebinds with [`ConflictPolicy::Override`], which unbinds
-//!   (clears) the loser; decline changes nothing.
-//! * Reset rebinds `current_key` back to `default_key`, flipping
-//!   `is_default` — never by mutating `default_key`.
-//! * Every successful rebind or reset is saved through
-//!   `HotkeyEngine::save_to_db`, so bindings survive a restart; loading
-//!   happens once at startup in `app::build_ui` via `load_from_db`.
+//! [`SettingsView`] is the display-free logic (rows, capture formatting,
+//! conflicts, rebind-then-save); the GTK functions only render it. A
+//! captured chord that is taken raises "… is already bound to 'X'.
+//! Override?"; overriding unbinds the loser. Every change is saved at once.
+//! A `ListBox` stands in for doc 07's `ColumnView`: same columns, far less
+//! machinery for a fixed 37-row table.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -55,48 +17,35 @@ use thiserror::Error;
 
 use crate::hotkeys::{Action, ActionContext, ConflictPolicy, HotkeyEngine, KeyChord, RebindError};
 use crate::store::SessionStore;
+use crate::ui::widgets::{confirm, set_margins};
 
 // ---------------------------------------------------------------------------
 // Display-free data layer
 // ---------------------------------------------------------------------------
 
-/// What a rebind-or-reset through the settings UI can fail with.
+/// Why a rebind or reset through the UI failed.
 #[derive(Debug, Error)]
 pub enum SettingsError {
-    /// The engine refused the binding (unknown action, unparsable key,
-    /// or a conflict under the `Reject` policy).
     #[error(transparent)]
     Rebind(#[from] RebindError),
-    /// The rebind applied but persisting it to SQLite failed.
     #[error(transparent)]
     Db(#[from] rusqlite::Error),
 }
 
-/// One row of the settings list: the list-columns projection of an
-/// [`Action`] (doc 07 §"Settings UI": action name | key sequence |
-/// context | reset-to-default).
+/// One list row: name | key | context, plus reset state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsRow {
-    /// Registry id (`"new_tab"`).
     pub id: String,
-    /// Human-readable name (`"New Tab"`).
     pub display_name: String,
-    /// Effective binding in UI format (`"Ctrl+Shift+T"`).
     pub current_key: String,
-    /// Compiled-in binding in UI format.
     pub default_key: String,
-    /// Which tier binds the action.
     pub context: ActionContext,
-    /// Rendered context for the list's context column.
     pub context_label: String,
-    /// Whether `current_key` still equals the compiled-in binding.
     pub is_default: bool,
-    /// Whether the action currently holds a chord.
     pub enabled: bool,
 }
 
 impl SettingsRow {
-    /// Project one registry action into its list row.
     pub fn from_action(action: &Action) -> Self {
         Self {
             id: action.id.clone(),
@@ -111,7 +60,7 @@ impl SettingsRow {
     }
 }
 
-/// Rendered context for the settings list's context column.
+/// The context column's text.
 pub fn context_label(context: ActionContext) -> &'static str {
     match context {
         ActionContext::Global => "Global",
@@ -123,20 +72,15 @@ pub fn context_label(context: ActionContext) -> &'static str {
     }
 }
 
-/// The settings list's logic: row mapping, capture formatting, conflict
-/// wiring, and the rebind/reset-then-save flows.
-///
-/// Unit struct — every method takes the engine (or chord) it works on,
-/// so the GTK layer stays a thin renderer over these.
+/// The settings logic; every function takes what it works on.
 pub struct SettingsView;
 
 impl SettingsView {
-    /// Every registered action as a list row, in doc 07 table order.
+    /// Every action as a row, in table order.
     pub fn rows(engine: &HotkeyEngine) -> Vec<SettingsRow> {
         Self::rows_from_registry(engine.registry())
     }
 
-    /// Every action of a registry as a list row, in doc 07 table order.
     pub fn rows_from_registry(registry: &crate::hotkeys::ActionRegistry) -> Vec<SettingsRow> {
         registry
             .ordered_actions()
@@ -145,26 +89,17 @@ impl SettingsView {
             .collect()
     }
 
-    /// Render a captured chord as the UI-format string the list and the
-    /// database store (`KeyChord::to_ui_key` — the doc's capture path).
-    ///
-    /// `None` when GDK has no canonical name for the key.
+    /// A captured chord in UI format; `None` if GDK cannot name the key.
     pub fn capture_label(chord: KeyChord) -> Option<String> {
         chord.to_ui_key()
     }
 
-    /// Whether a captured key press cancels capture (`Escape`).
-    ///
-    /// Pure keyval comparison — no display needed.
+    /// Escape cancels capture.
     pub fn is_cancel_key(key: gdk4::Key) -> bool {
         key == gdk4::Key::Escape
     }
 
-    /// Whether a captured key press is a bare modifier (or lock key)
-    /// rather than a real chord: the capture dialog ignores these and
-    /// keeps waiting for the chord.
-    ///
-    /// Pure keyval comparison — no display needed.
+    /// A bare modifier or lock key: capture keeps waiting for the chord.
     pub fn is_modifier_only(key: gdk4::Key) -> bool {
         matches!(
             key,
@@ -185,9 +120,7 @@ impl SettingsView {
         )
     }
 
-    /// The actions (other than `action_id` itself) that already hold
-    /// `new_key` in a context that can fire alongside it — the losers an
-    /// "Override?" confirm would clear (doc 07 §"Conflict Detection").
+    /// The actions an override of `new_key` would unbind.
     pub fn conflicts(engine: &HotkeyEngine, action_id: &str, new_key: &str) -> Vec<SettingsRow> {
         engine
             .conflicts_for(action_id, new_key)
@@ -196,11 +129,7 @@ impl SettingsView {
             .collect()
     }
 
-    /// The override confirm's message (doc 07: "`Ctrl+Shift+T` is already
-    /// bound to 'New Tab'. Override?").
-    ///
-    /// Multiple losers are named comma-separated; with no losers there is
-    /// nothing to confirm and the message reports the chord is free.
+    /// "Ctrl+Shift+T is already bound to 'New Tab'. Override?"
     pub fn override_prompt(new_key: &str, losers: &[SettingsRow]) -> String {
         if losers.is_empty() {
             return format!("{new_key} is not bound to any other action.");
@@ -215,13 +144,8 @@ impl SettingsView {
         )
     }
 
-    /// Rebind `action_id` to `new_key` under `policy`, then persist the
-    /// surviving deviations via the engine's save path so the binding
-    /// survives a restart.
-    ///
-    /// Returns the displaced action ids (meaningful under
-    /// [`ConflictPolicy::Override`]). Nothing is persisted unless the
-    /// rebind itself succeeded.
+    /// Rebind under `policy` and save; returns the displaced ids. Nothing
+    /// is saved if the rebind fails.
     pub fn apply_rebind(
         engine: &mut HotkeyEngine,
         store: &SessionStore,
@@ -234,9 +158,7 @@ impl SettingsView {
         Ok(displaced)
     }
 
-    /// Restore `action_id`'s compiled-in binding (per-row "Reset to
-    /// Default": `current_key` back to `default_key`, `is_default` true)
-    /// and persist, so the reset survives a restart.
+    /// Reset to the compiled-in binding and save.
     pub fn reset_action(
         engine: &mut HotkeyEngine,
         store: &SessionStore,
@@ -252,18 +174,13 @@ impl SettingsView {
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// Shared settings state handed to every GTK closure on the main thread.
+/// What every settings callback needs.
 struct SettingsState {
     engine: Rc<RefCell<HotkeyEngine>>,
     store: Rc<SessionStore>,
 }
 
-/// Build the dedicated hotkey settings window (doc 07 §"Settings UI").
-///
-/// A standalone [`gtk4::Window`] — not a notebook page — listing every
-/// registered action as display name | current key | context | Capture +
-/// Reset buttons. The caller presents the returned window, e.g. via
-/// [`show_hotkey_settings`].
+/// The settings window (unpresented).
 pub fn create_hotkey_settings_window(
     engine: Rc<RefCell<HotkeyEngine>>,
     store: Rc<SessionStore>,
@@ -304,10 +221,7 @@ pub fn create_hotkey_settings_window(
          Rebinding a shortcut already in use asks before overriding it.",
     ));
     hint.set_wrap(true);
-    hint.set_margin_top(6);
-    hint.set_margin_bottom(6);
-    hint.set_margin_start(12);
-    hint.set_margin_end(12);
+    set_margins(&hint, 6);
 
     let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     root.append(&hint);
@@ -317,7 +231,7 @@ pub fn create_hotkey_settings_window(
     window
 }
 
-/// Build, parent, and present the hotkey settings window.
+/// Build and present the settings window.
 pub fn show_hotkey_settings(
     engine: Rc<RefCell<HotkeyEngine>>,
     store: Rc<SessionStore>,
@@ -330,7 +244,7 @@ pub fn show_hotkey_settings(
     window.present();
 }
 
-/// Rebuild every list row from the engine's current registry state.
+/// Rebuild the rows from the engine.
 fn refresh_list(list_box: &gtk4::ListBox, state: &Rc<SettingsState>) {
     while let Some(child) = list_box.first_child() {
         list_box.remove(&child);
@@ -340,8 +254,7 @@ fn refresh_list(list_box: &gtk4::ListBox, state: &Rc<SettingsState>) {
     }
 }
 
-/// One action's row: display name | current key | context | Capture +
-/// Reset buttons.
+/// name | key | context | Capture | Reset.
 fn build_row(
     row: SettingsRow,
     list_box: &gtk4::ListBox,
@@ -407,7 +320,7 @@ fn build_row(
     gtk4::ListBoxRow::builder().child(&hbox).build()
 }
 
-/// Open the modal "press the new shortcut" capture dialog for one action.
+/// The modal "press the new shortcut" window.
 fn open_capture_dialog(
     action_id: &str,
     display_name: &str,
@@ -430,10 +343,7 @@ fn open_capture_dialog(
     let prompt = gtk4::Label::new(Some(&format!(
         "Press the new shortcut for '{display_name}'.\nEsc cancels."
     )));
-    prompt.set_margin_top(18);
-    prompt.set_margin_bottom(18);
-    prompt.set_margin_start(18);
-    prompt.set_margin_end(18);
+    set_margins(&prompt, 18);
     dialog.set_child(Some(&prompt));
 
     let key_controller = gtk4::EventControllerKey::new();
@@ -466,8 +376,7 @@ fn open_capture_dialog(
     dialog.present();
 }
 
-/// Apply one captured chord: rebind directly when free, otherwise raise
-/// the "… is already bound to 'X'. Override?" confirm first.
+/// Rebind to a captured chord, asking first if it is taken.
 fn handle_captured_key(
     action_id: &str,
     new_key: &str,
@@ -490,83 +399,27 @@ fn handle_captured_key(
         return;
     }
 
-    open_override_confirm(action_id, new_key, losers, list_box, state);
-}
-
-/// Modal "… is already bound to 'X'. Override?" confirm.
-///
-/// Confirm rebinds with [`ConflictPolicy::Override`] — clearing (unbinding)
-/// the loser per doc 07 — then persists; decline changes nothing.
-fn open_override_confirm(
-    action_id: &str,
-    new_key: &str,
-    losers: Vec<SettingsRow>,
-    list_box: &gtk4::ListBox,
-    state: &Rc<SettingsState>,
-) {
-    let message = SettingsView::override_prompt(new_key, &losers);
-    let dialog = gtk4::Window::builder()
-        .title("Shortcut Conflict")
-        .default_width(400)
-        .default_height(140)
-        .modal(true)
-        .build();
-    if let Some(parent) = list_box
+    let (action_id, new_key) = (action_id.to_string(), new_key.to_string());
+    let (list_box, state) = (list_box.clone(), Rc::clone(state));
+    let parent = list_box
         .root()
-        .and_then(|root| root.downcast::<gtk4::Window>().ok())
-    {
-        dialog.set_transient_for(Some(&parent));
-    }
-
-    let label = gtk4::Label::new(Some(&message));
-    label.set_wrap(true);
-    label.set_margin_top(18);
-    label.set_margin_start(18);
-    label.set_margin_end(18);
-
-    let override_button = gtk4::Button::with_label("Override");
-    override_button.add_css_class("destructive-action");
-    let cancel_button = gtk4::Button::with_label("Cancel");
-
-    let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    buttons.set_halign(gtk4::Align::End);
-    buttons.set_margin_top(12);
-    buttons.set_margin_bottom(18);
-    buttons.set_margin_start(18);
-    buttons.set_margin_end(18);
-    buttons.append(&cancel_button);
-    buttons.append(&override_button);
-
-    {
-        let dialog = dialog.clone();
-        let action_id = action_id.to_string();
-        let new_key = new_key.to_string();
-        let list_box = list_box.clone();
-        let state = Rc::clone(state);
-        override_button.connect_clicked(move |_| {
-            match SettingsView::apply_rebind(
-                &mut state.engine.borrow_mut(),
-                &state.store,
-                &action_id,
-                &new_key,
-                ConflictPolicy::Override,
-            ) {
-                Ok(_) => refresh_list(&list_box, &state),
-                Err(err) => {
-                    eprintln!("Wayterm: failed to override hotkey {action_id} to {new_key}: {err}");
-                }
+        .and_then(|root| root.downcast::<gtk4::Window>().ok());
+    confirm(
+        parent.as_ref(),
+        &SettingsView::override_prompt(&new_key, &losers),
+        "The other action will be left without a shortcut.",
+        "Override",
+        move || match SettingsView::apply_rebind(
+            &mut state.engine.borrow_mut(),
+            &state.store,
+            &action_id,
+            &new_key,
+            ConflictPolicy::Override,
+        ) {
+            Ok(_) => refresh_list(&list_box, &state),
+            Err(err) => {
+                eprintln!("Wayterm: failed to override hotkey {action_id} to {new_key}: {err}")
             }
-            dialog.close();
-        });
-    }
-    {
-        let dialog = dialog.clone();
-        cancel_button.connect_clicked(move |_| dialog.close());
-    }
-
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    root.append(&label);
-    root.append(&buttons);
-    dialog.set_child(Some(&root));
-    dialog.present();
+        },
+    );
 }

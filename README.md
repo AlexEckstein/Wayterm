@@ -1,77 +1,57 @@
 # Wayterm
 
-An open source, multi-protocol connection manager and terminal for Linux.
+An open source, multi-protocol connection manager and terminal for Linux,
+in the spirit of MobaXterm but built for a desktop that already has the
+tools: saved sessions in a tree, tabbed SSH terminals with an SFTP
+sidebar, configurable hotkeys, and (planned) RDP and VNC tabs.
 
-Inspired by MobaXterm on Windows, but built for Linux where most of MobaXterm's
-bundled tools already exist natively. The focus is on what's genuinely missing
-in the open source Linux landscape:
-
-- **Session management** — saved connections, credential vault, organized tree
-- **SSH tabs** — tabbed terminal sessions with full VT emulation
-- **Custom hotkeys** — configurable, per-action keybinding system
-- **RDP/VNC** — remote desktop protocols embedded in-window as tabs
-- **SFTP sidebar** — integrated remote file browser alongside the terminal
-
-Project identity: **Wayterm** — app id `com.alex-eckstein.wayterm`, repo
-`github.com/AlexEckstein/Wayterm`.
-
-## Tech Stack (Chosen)
-
-| Component | Choice | Rationale |
-|---|---|---|
-| Language | Rust | Memory safety for network-facing app, compiler-enforced concurrency, async I/O, contributor enthusiasm |
-| Framework | GTK 4 | Native Linux toolkit, VTE integration, Flatpak-native, Remmina reference |
-| Terminal backend | VTE (libvte), pluggable trait | Gold standard terminal widget — powers GNOME Terminal, Tilix, and dozens more |
-| Async runtime | tokio | Unified async for SSH sessions, SFTP transfers, network I/O |
-| SSH transport | russh (pure Rust) | No C dependency, tokio-integrated, actively maintained |
-| SSH auth/host keys | russh known_hosts + keyboard-interactive | Spec in 11-ssh-auth-security.md — TOFU/strict policies, 2FA support |
-| RDP | FreeRDP (xfreerdp subprocess + X11 reparent) | Rock-solid, X11 foreign surface via GDK X11 API; credentials via `/from-stdin` |
-| VNC | libvncclient via FFI, or pure Rust vnc-rs | Native framebuffer rendering via Cairo |
-| SFTP | russh-sftp (over existing SSH channel) | Same connection as terminal, no separate process |
-| Session store | SQLite via rusqlite | Lightweight, portable, well-supported in Rust |
-| Credentials | libsecret via gsecret/secret-rs | OS keyring integration |
-| Session persistence | Optional tmux backend | Per-session toggle for disconnect resilience |
-
-## Why Rust + GTK4 (Not Qt/C++)
-
-The original analysis favored Qt for Konsole KPart and KIO SFTP. Subsequent
-design decisions removed those advantages:
-
-1. **KIO SFTP rejected** — chose libssh/russh SFTP to avoid KDE dependency
-   lock-in. Both frameworks now use the same SFTP library.
-2. **Plugin abstraction designed** — terminal widget is swappable, so the
-   widget shouldn't drive the framework choice.
-3. **VTE is not a downgrade** — it powers more terminal apps than any other
-   widget. LGPL, lighter dependencies than Konsole KPart + KDE Frameworks.
-4. **Rust advantages are structural** — memory safety for a network-facing
-   app processing untrusted data (escape sequences, SSH packets, SFTP
-   listings, VNC framebuffers). Compiler-enforced thread safety for
-   concurrent SSH/SFTP/VNC sessions. tokio async for managing dozens of
-   connections. These are not aesthetic preferences.
-5. **Contributor ecosystem** — alacritty, wezterm, helix, zellij, bottom,
-   ripgrep — the developers building modern terminal tools are writing
-   them in Rust. A Rust connection manager attracts contributors.
-6. **Build system** — Cargo is simpler than CMake + Qt MOC. Lower
-   friction for open source contributors building from source.
-
-## Design Documents
-
-- [Architecture Overview](01-architecture.md)
-- [Terminal Backend Abstraction](02-terminal-backend-abstraction.md)
-- [Terminal Widget Comparison](03-terminal-widget-comparison.md)
-- [Transport Layer Design](04-transport-layer.md)
-- [Plugin System](05-plugin-system.md)
-- [Session Store Schema](06-session-store.md)
-- [Hotkey Engine](07-hotkey-engine.md)
-- [RDP-VNC Embedding](08-rdp-vnc-embedding.md)
-- [SFTP Sidebar](09-sftp-sidebar.md)
-- [Build Order / MVP Roadmap](10-build-order.md)
-- [SSH Authentication & Security](11-ssh-auth-security.md)
+App id `com.alex-eckstein.wayterm` · [github.com/AlexEckstein/Wayterm](https://github.com/AlexEckstein/Wayterm) · Apache-2.0
 
 ## Status
 
-Phase 1 complete — skeleton app with session management. GTK4 shell,
-SQLite session store (29 store-layer tests), session tree with full
-folder/session CRUD, session config dialog, placeholder tabs (Phase 2
-terminal seam). Rust + GTK4 + VTE, per docs 01–11. Build: `cargo build`;
-run: `cargo run`. 39 tests green, clippy `-D warnings` clean.
+Phases 1–4 of the [build order](docs/10-build-order.md) are done: session
+management, SSH terminal tabs with host-key verification and the full auth
+chain, the SFTP sidebar, hotkey settings, tab restore, and a tray icon.
+Doc 10 lists what is still to be wired (hotkey accelerators, reconnect)
+and what comes next (local shell and serial, VNC, RDP).
+
+## Build and test
+
+Needs GTK 4, VTE for GTK 4 (≥ 0.72) and SQLite headers (Debian/Ubuntu:
+`libgtk-4-dev libvte-2.91-gtk4-dev libsqlite3-dev`).
+
+```sh
+cargo run
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+scripts/run-sshd-tests.sh        # suites against a throwaway local sshd (needs sudo)
+xvfb-run -a cargo test -- --ignored   # tests that need a display
+```
+
+## Stack
+
+| | Choice | Why |
+|---|---|---|
+| Language, UI | Rust, GTK 4 | memory safety for a network-facing app; native Linux toolkit |
+| Terminal | VTE behind a `TerminalBackend` trait | the standard GTK terminal widget; an engine backend can follow |
+| Async | tokio | SSH, SFTP, and reconnects off the UI thread |
+| SSH, SFTP | russh, russh-sftp | pure Rust; SFTP reuses the terminal's SSH session |
+| Store | SQLite (rusqlite) | sessions, settings, hotkey overrides |
+| Secrets | OS keyring (libsecret) | never in the database |
+| RDP, VNC | xfreerdp + X11 reparenting; libvncclient or vnc-rs | planned (doc 08) |
+| Tray | StatusNotifierItem via ksni | no GTK3 dependency |
+
+## Design documents
+
+1. [Architecture](docs/01-architecture.md)
+2. [Terminal backend abstraction](docs/02-terminal-backend-abstraction.md)
+3. [Terminal widget comparison](docs/03-terminal-widget-comparison.md)
+4. [Transport layer](docs/04-transport-layer.md)
+5. [Backend plugins](docs/05-plugin-system.md)
+6. [Session store](docs/06-session-store.md)
+7. [Hotkey engine](docs/07-hotkey-engine.md)
+8. [RDP and VNC embedding](docs/08-rdp-vnc-embedding.md)
+9. [SFTP sidebar](docs/09-sftp-sidebar.md)
+10. [Build order](docs/10-build-order.md)
+11. [SSH authentication and security](docs/11-ssh-auth-security.md)
+
+Contributors and agents: read [AGENTS.md](AGENTS.md) first.

@@ -58,7 +58,7 @@ fn rows_arrive_in_doc07_table_order() {
     let mut expected: Vec<&str> = DEFAULT_ACTIONS.iter().map(|a| a.id).collect();
     expected.sort_by_key(|id| {
         let action = engine.action(id).expect("default action registered");
-        (action.context.rank(), action.id.clone())
+        (action.context, action.id.clone())
     });
     assert_eq!(ids, expected);
 }

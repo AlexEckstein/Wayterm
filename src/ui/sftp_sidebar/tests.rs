@@ -5,9 +5,6 @@
 //! command queue and the whole [`SftpView`] state machine. The GTK layer only
 //! renders a view, so none of it needs a display.
 
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::oneshot;
-
 use super::*;
 
 fn entry(name: &str, is_dir: bool, size: u64) -> DirEntry {
@@ -26,23 +23,6 @@ fn entry(name: &str, is_dir: bool, size: u64) -> DirEntry {
 
 fn listing() -> Vec<DirEntry> {
     vec![entry("docs", true, 0), entry("notes.txt", false, 1234)]
-}
-
-/// A `SftpCommand` that can be queued and identified for ordering checks.
-fn cd_command(path: &str) -> SftpCommand {
-    let (reply, _rx) = oneshot::channel();
-    SftpCommand::Cd {
-        path: path.to_string(),
-        reply,
-    }
-}
-
-/// Name a `Cd` command carries, for asserting the queue kept its order.
-fn cd_path_of(cmd: &SftpCommand) -> String {
-    match cmd {
-        SftpCommand::Cd { path, .. } => path.clone(),
-        _ => panic!("expected a Cd command"),
-    }
 }
 
 // --- row mapping and columns ----------------------------------------------
@@ -312,86 +292,6 @@ fn progress_and_status_lines_use_human_sizes() {
         "Upload a.txt — failed: permission denied"
     );
     assert_eq!(started_status("Upload a.txt"), "Upload a.txt — starting…");
-}
-
-// --- pending command queue -------------------------------------------------
-
-#[test]
-fn pending_queue_preserves_order_when_it_drains() {
-    let mut queue = PendingCommands::new();
-    queue.push(cd_command("/one"));
-    queue.push(cd_command("/two"));
-
-    let mut sent = Vec::new();
-    let report = queue.drain_with(|cmd| {
-        sent.push(cd_path_of(&cmd));
-        Ok(())
-    });
-    assert_eq!(sent, ["/one", "/two"]);
-    assert_eq!(report.remaining, 0);
-    assert!(!report.closed);
-}
-
-#[test]
-fn pending_queue_stops_at_a_full_channel_and_keeps_the_rest() {
-    let mut queue = PendingCommands::new();
-    for path in ["/one", "/two", "/three"] {
-        queue.push(cd_command(path));
-    }
-
-    let mut attempts = Vec::new();
-    let report = queue.drain_with(|cmd| {
-        let path = cd_path_of(&cmd);
-        attempts.push(path.clone());
-        if attempts.len() < 2 {
-            Ok(())
-        } else {
-            Err(TrySendError::Full(cmd))
-        }
-    });
-
-    assert_eq!(
-        attempts,
-        vec!["/one".to_string(), "/two".to_string()],
-        "the flush stops at the first refusal — /three is never offered"
-    );
-    assert_eq!(report.remaining, 2, "/two and /three stay queued in order");
-    assert!(!report.closed);
-}
-
-#[test]
-fn pending_queue_drops_everything_when_the_task_is_gone() {
-    let mut queue = PendingCommands::new();
-    queue.push(cd_command("/one"));
-    queue.push(cd_command("/two"));
-
-    let report = queue.drain_with(|cmd| Err(TrySendError::Closed(cmd)));
-    assert!(report.closed);
-    assert_eq!(report.remaining, 0);
-}
-
-#[test]
-fn pending_queue_second_drain_finishes_what_the_first_left() {
-    let mut queue = PendingCommands::new();
-    queue.push(cd_command("/one"));
-    queue.push(cd_command("/two"));
-
-    let first = queue.drain_with(|cmd| {
-        if cd_path_of(&cmd) == "/one" {
-            Ok(())
-        } else {
-            Err(TrySendError::Full(cmd))
-        }
-    });
-    assert_eq!(first.remaining, 1);
-
-    let mut sent = Vec::new();
-    let second = queue.drain_with(|cmd| {
-        sent.push(cd_path_of(&cmd));
-        Ok(())
-    });
-    assert_eq!(sent, ["/two"]);
-    assert_eq!(second.remaining, 0);
 }
 
 // --- the view state machine ------------------------------------------------

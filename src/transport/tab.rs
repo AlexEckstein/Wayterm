@@ -1,48 +1,19 @@
-//! TerminalTab — the transport ↔ terminal-backend wiring layer.
+//! [`TerminalTab`]: the wiring between one transport and one terminal
+//! backend (doc 04 §Wiring).
 //!
-//! Doc 04 §Wiring defines this type: one pump per tab forwards
-//! [`TerminalEvent`]s to the [`Transport`], and a bridge task routes
-//! [`TransportEvent`]s back to the terminal on the GTK main thread.
+//! Three tasks per tab, each crossing the GTK/tokio boundary once:
 //!
-//! # Placement
+//! * the **pump** (tokio) connects the transport, then forwards
+//!   [`TerminalEvent`]s to `write`/`resize`, and disconnects last;
+//! * the **bridge** (tokio) routes [`TransportEvent`]s: output to the
+//!   terminal, everything else to the state channel returned by
+//!   [`TerminalTab::new`];
+//! * the **drain** (GTK main context) feeds output into `backend.write`.
 //!
-//! Doc 04 (the transport-layer design) owns [`TerminalTab`] and the struct
-//! holds a `Box<dyn Transport>`, so this module lives in `src/transport/`,
-//! not `src/ui/` (which holds the GTK notebook widgets, P2-7).
-//!
-//! # Deviations from doc 04's sketch (reported, not silent)
-//!
-//! * **`glib::MainContext::channel` no longer exists** in the pinned glib
-//!   0.22 (removed upstream after doc 04 was written). The doc's "channel
-//!   attached to `main_ctx`, receiver runs `backend.write` on the main
-//!   thread" becomes a bounded `tokio::sync::mpsc` drained by a
-//!   `spawn_local` future on `main_ctx` — cross-thread wake is handled by
-//!   glib's own task-source waker, and the main-thread-only invariant
-//!   holds because the drain future is `!Send`. Output is bounded (256)
-//!   so the doc's backpressure chain holds: main thread stalls → bridge
-//!   blocks → `event_rx` fills → reader awaits → SSH flow control slows
-//!   the server. The second (state) channel is unbounded and handed to
-//!   the UI as a receiver.
-//! * **`new()` takes the terminal-event receiver** (`events`): doc 04's
-//!   sketch creates the term channel inside `new()` while also stating the
-//!   backend was already constructed with `term_tx` — the caller has to
-//!   own that channel (see [`create_terminal`](crate::terminal::create_terminal)),
-//!   so the receiver half is a parameter and `term_tx` goes to the backend
-//!   before `new()` is called. It also returns `Result` — the sketch's `?`
-//!   implies it, and doc 04 forbids panicking on a malformed session row.
-//! * **No `transport` field**: the sketch moves `transport` into the pump
-//!   task, so the struct field could never be populated. Connection state
-//!   reaches the UI through the second channel instead (deliverable: status
-//!   bar / reconnect prompt, consumed in P2-7).
-//! * **Task handles are `Option<JoinHandle>`** so `close()` can take, join
-//!   and be idempotent — the same discipline `SSHTransport::disconnect`
-//!   applies to its reader task.
-//! * **The `TransportEvent` bridge is its own task** (doc 04's diagram
-//!   shows the pump and the channel-reader path as separate tasks). Folding
-//!   it into the pump would deadlock under simultaneous full-duplex load:
-//!   a blocked `transport.write` would stop draining `event_rx`, which
-//!   closes the SSH receive window, which blocks the server, which stops
-//!   it reading our writes.
+//! The bridge is separate from the pump on purpose: if it were folded in, a
+//! `transport.write` blocked on a full SSH window would stop draining
+//! output, the server's window would close in turn, and both sides would
+//! deadlock under full-duplex load.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,22 +24,16 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::store::model::{SessionConfig, SessionType};
-use crate::terminal::{TerminalBackend, TerminalEvent};
+use crate::terminal::{TerminalEvent, TerminalHandle};
 use crate::transport::connection::SshConnection;
 use crate::transport::ssh::SSHTransport;
 use crate::transport::types::{Transport, TransportError, TransportEvent};
 
-/// How long `close()` gives the pump to exit on the cancel token before it
-/// aborts the task outright (doc 04 §Lifecycle: "abort tasks").
+/// How long [`TerminalTab::close`] lets the pump disconnect before aborting it.
 const CLOSE_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Transport factory (doc 04 §Transport Factory).
-///
-/// Maps a [`SessionConfig`] to the byte-stream transport for that session
-/// type. Local PTY and serial transports are Phase 5 (doc 04 describes
-/// their design; they are not implemented yet), and RDP/VNC are not
-/// byte-stream transports at all — both return `Err`, never panic, so a
-/// malformed session row cannot crash the app.
+/// Transport factory (doc 04 §Transport Factory). Unsupported session types
+/// are errors, never panics — a malformed row must not crash the app.
 pub fn create_transport(
     config: &SessionConfig,
     connection: Option<Arc<SshConnection>>,
@@ -76,21 +41,11 @@ pub fn create_transport(
     initial_rows: u32,
     initial_cols: u32,
 ) -> Result<Box<dyn Transport>, TransportError> {
-    match &config.session_type {
+    match config.session_type {
         SessionType::SSH => {
-            let mut transport = SSHTransport::new(
-                connection.ok_or_else(|| TransportError::ChannelError("no connection".into()))?,
-                event_tx,
-                initial_rows,
-                initial_cols,
-            );
-            // Doc 04 §Tmux Session Persistence: the toggle is per-session and
-            // must be set pre-connect, since `connect()` execs
-            // `tmux new -A -s wayterm-<name>` instead of a shell. The stored
-            // name is the bare suffix — the transport prepends `wayterm-`
-            // itself — and `tmux_session_suffix` resolves an absent name from
-            // the session name at this one place, so the remote always sees a
-            // non-empty `wayterm-` session.
+            let connection =
+                connection.ok_or_else(|| TransportError::ChannelError("no connection".into()))?;
+            let mut transport = SSHTransport::new(connection, event_tx, initial_rows, initial_cols);
             if let Some(suffix) = config.tmux_session_suffix() {
                 transport.set_tmux_enabled(true, suffix);
             }
@@ -99,269 +54,185 @@ pub fn create_transport(
         SessionType::LocalShell | SessionType::Serial => Err(TransportError::ChannelError(
             "local PTY and serial transports are Phase 5 (doc 04)".into(),
         )),
-        // RDP/VNC return Err, not panic!() — a malformed session row in the
-        // DB must not crash the app (doc 04 §Transport Factory).
         SessionType::RDP | SessionType::VNC => Err(TransportError::ChannelError(
             "RDP/VNC don't use byte-stream transport (doc 08)".into(),
         )),
     }
 }
 
-/// One wired-up terminal tab: a [`Transport`], a shared
-/// [`TerminalBackend`], and the two tasks that shuttle bytes between them
-/// (doc 04 §Wiring + §Lifecycle & Cancellation).
-///
-/// The transport itself is owned by the pump task (see the module docs);
-/// `close()` tears both tasks down in order.
+/// A transport wired to a terminal backend. Dropping it cancels the tasks
+/// (the pump still disconnects on its way out); [`close`](Self::close) also
+/// waits for them.
 pub struct TerminalTab {
-    /// GTK-side handle to the terminal — the tab UI embeds
-    /// `backend.widget()` (P2-7) and the output-path future writes into it.
-    backend: Arc<dyn TerminalBackend>,
-
-    /// The pump task: `TerminalEvent` → `Transport::write` / `resize`,
-    /// plus `transport.disconnect()` as its last act.
     pump_task: Option<JoinHandle<()>>,
-
-    /// The bridge task: `TransportEvent` → terminal output channel /
-    /// state channel. Separate from the pump (see module docs).
     bridge_task: Option<JoinHandle<()>>,
-
-    /// Cancelled by [`TerminalTab::close`]; both tasks select on it.
     cancel: CancellationToken,
-
-    /// Second channel (doc 04 §Wiring: "status bar, reconnect prompt"):
-    /// every `TransportEvent` that is not terminal output. The UI attaches
-    /// a consumer in P2-7 via [`TerminalTab::take_state_rx`].
-    state_rx: Option<mpsc::UnboundedReceiver<TransportEvent>>,
 }
 
 impl TerminalTab {
-    /// Wire a transport for `config` to `backend` (doc 04 §Wiring).
+    /// Wire a transport for `config` to `terminal`. `initial_rows` and
+    /// `initial_cols` are the widget's measured grid (never a hardcoded
+    /// 80×24). Returns the tab and its state channel: every transport event
+    /// that is not terminal output, including the pump's connect failure.
     ///
-    /// `events` is the receiver half of the backend's `TerminalEvent`
-    /// channel: the caller creates that channel, passes the sender to
-    /// [`create_terminal`](crate::terminal::create_terminal) when it builds
-    /// the backend, and passes the receiver here. `initial_rows` /
-    /// `initial_cols` set the PTY size requested at connect time — they
-    /// come from the real terminal widget at the UI integration step, never
-    /// a hardcoded 80×24 (doc 10, Phase 2).
-    ///
-    /// Must be called from the thread that runs `main_ctx` (it attaches the
-    /// output-path future there) and inside a tokio runtime (it spawns the
-    /// pump and bridge tasks).
+    /// Must run on the thread that owns `main_ctx`, inside a tokio runtime.
     pub fn new(
         config: &SessionConfig,
         connection: Option<Arc<SshConnection>>,
-        backend: Arc<dyn TerminalBackend>,
-        events: mpsc::Receiver<TerminalEvent>,
+        terminal: TerminalHandle,
         main_ctx: &glib::MainContext,
         initial_rows: u32,
         initial_cols: u32,
-    ) -> Result<Self, TransportError> {
+    ) -> Result<(Self, mpsc::UnboundedReceiver<TransportEvent>), TransportError> {
         let (event_tx, event_rx) = mpsc::channel(256);
         let transport = create_transport(config, connection, event_tx, initial_rows, initial_cols)?;
-        Ok(Self::wire(transport, event_rx, backend, events, main_ctx))
+        Ok(Self::wire(transport, event_rx, terminal, main_ctx))
     }
 
-    /// Test seam: wire a hand-built transport (e.g. a mock) to `backend`
-    /// without going through [`create_transport`]. The caller pairs
-    /// `event_rx` with the `event_tx` it handed to the transport.
-    #[cfg(test)]
-    fn for_test(
-        transport: Box<dyn Transport>,
-        event_rx: mpsc::Receiver<TransportEvent>,
-        backend: Arc<dyn TerminalBackend>,
-        events: mpsc::Receiver<TerminalEvent>,
-        main_ctx: &glib::MainContext,
-    ) -> Self {
-        Self::wire(transport, event_rx, backend, events, main_ctx)
-    }
-
-    /// The wiring itself: output path, state channel, bridge task, pump
-    /// task (doc 04 §Wiring steps 1–3).
     fn wire(
         mut transport: Box<dyn Transport>,
-        event_rx: mpsc::Receiver<TransportEvent>,
-        backend: Arc<dyn TerminalBackend>,
-        events: mpsc::Receiver<TerminalEvent>,
+        mut event_rx: mpsc::Receiver<TransportEvent>,
+        terminal: TerminalHandle,
         main_ctx: &glib::MainContext,
-    ) -> Self {
-        // 1. GTK side: terminal output arrives as `Vec<u8>` chunks; the
-        //    drain future runs on the main context, so `backend.write`
-        //    stays on the main thread.
-        let (gtk_tx, mut gtk_rx) = mpsc::channel::<Vec<u8>>(256);
-        {
-            let backend = backend.clone();
-            let _drain = main_ctx.spawn_local(async move {
-                while let Some(chunk) = gtk_rx.recv().await {
-                    backend.write(&chunk);
-                }
-            });
-        }
-
-        // 2. Second channel: StateChanged / Error / ConnectionLost —
-        //    status bar, reconnect prompt (doc 04 §Wiring). Unbounded:
-        //    these are rare and must never block the bridge.
-        let (state_tx, state_rx) = mpsc::unbounded_channel::<TransportEvent>();
-        // The pump reports its own connect failures on this channel too,
-        // so the UI never sees a tab that silently died at startup.
-        let pump_state_tx = state_tx.clone();
-
+    ) -> (Self, mpsc::UnboundedReceiver<TransportEvent>) {
+        let TerminalHandle {
+            backend,
+            events: mut term_rx,
+        } = terminal;
         let cancel = CancellationToken::new();
 
-        // 3a. Bridge task: `TransportEvent` → the two GTK-side channels.
-        let bridge_task = {
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                let mut event_rx = event_rx;
-                'bridge: loop {
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => break,
-                        ev = event_rx.recv() => match ev {
-                            // Transport gone (pump finished, transport dropped).
-                            None => break,
-                            Some(TransportEvent::DataReceived(chunk)) => {
-                                // Output path; select on cancel so close()
-                                // stays responsive even when the main
-                                // thread is stalled and the queue is full.
-                                tokio::select! {
-                                    biased;
-                                    _ = cancel.cancelled() => break 'bridge,
-                                    res = gtk_tx.send(chunk) => {
-                                        if res.is_err() {
-                                            break 'bridge; // main-side future gone
-                                        }
-                                    }
-                                }
-                            }
-                            // StateChanged / Error / ConnectionLost.
-                            Some(ev) => {
-                                // Receiver dropped only when the UI is done
-                                // with it; keep bridging output either way.
-                                let _ = state_tx.send(ev);
-                            }
+        // Drain: bounded, so a stalled main thread backs up into the
+        // bridge, the reader, and finally SSH flow control.
+        let (output_tx, mut output_rx) = mpsc::channel::<Vec<u8>>(256);
+        main_ctx.spawn_local(async move {
+            while let Some(chunk) = output_rx.recv().await {
+                backend.write(&chunk);
+            }
+        });
+
+        // State events are rare and must never block the bridge.
+        let (state_tx, state_rx) = mpsc::unbounded_channel();
+        let pump_state_tx = state_tx.clone();
+
+        let bridge_cancel = cancel.clone();
+        let bridge_task = tokio::spawn(async move {
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    _ = bridge_cancel.cancelled() => break,
+                    event = event_rx.recv() => event,
+                };
+                match event {
+                    None => break,
+                    Some(TransportEvent::DataReceived(chunk)) => {
+                        // Still cancellable while the drain is backed up.
+                        let sent = tokio::select! {
+                            biased;
+                            _ = bridge_cancel.cancelled() => break,
+                            sent = output_tx.send(chunk) => sent,
+                        };
+                        if sent.is_err() {
+                            break;
                         }
                     }
-                }
-            })
-        };
-
-        // 4. Tokio side: pump task (doc 04 §Wiring sketch).
-        let pump_task = {
-            let cancel = cancel.clone();
-            tokio::spawn(async move {
-                let mut events = events;
-                if let Err(err) = transport.connect().await {
-                    // Surface the failure before tearing the half-open
-                    // transport down (doc 04 §Lifecycle: close from any
-                    // state → disconnect), so the UI can show an error
-                    // view instead of a permanently blank tab.
-                    let _ = pump_state_tx.send(TransportEvent::Error(err.to_string()));
-                    transport.disconnect().await.ok();
-                    return;
-                }
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => break,
-                        ev = events.recv() => match ev {
-                            Some(TerminalEvent::DataOut(d)) => {
-                                transport.write(&d).await.ok();
-                            }
-                            Some(TerminalEvent::SizeChange { rows, cols }) => {
-                                transport.resize(rows, cols).await.ok();
-                            }
-                            Some(TerminalEvent::Closed) | None => break,
-                            _ => {}
-                        },
+                    Some(other) => {
+                        let _ = state_tx.send(other);
                     }
                 }
-                transport.disconnect().await.ok();
-            })
-        };
+            }
+        });
 
-        Self {
-            backend,
+        let pump_cancel = cancel.clone();
+        let pump_task = tokio::spawn(async move {
+            if let Err(err) = transport.connect().await {
+                let _ = pump_state_tx.send(TransportEvent::Error(err.to_string()));
+                transport.disconnect().await.ok();
+                return;
+            }
+            loop {
+                let event = tokio::select! {
+                    biased;
+                    _ = pump_cancel.cancelled() => break,
+                    event = term_rx.recv() => event,
+                };
+                match event {
+                    Some(TerminalEvent::DataOut(data)) => {
+                        transport.write(&data).await.ok();
+                    }
+                    Some(TerminalEvent::SizeChange { rows, cols }) => {
+                        transport.resize(rows, cols).await.ok();
+                    }
+                    Some(TerminalEvent::Closed) | None => break,
+                    Some(_) => {}
+                }
+            }
+            transport.disconnect().await.ok();
+        });
+
+        let tab = Self {
             pump_task: Some(pump_task),
             bridge_task: Some(bridge_task),
             cancel,
-            state_rx: Some(state_rx),
-        }
+        };
+        (tab, state_rx)
     }
 
-    /// Cancel both tasks and wait for them (doc 04 §Lifecycle: cancel →
-    /// pump exits → `transport.disconnect()`).
-    ///
-    /// The pump gets [`CLOSE_JOIN_TIMEOUT`] to exit cleanly — its last act
-    /// is `disconnect()` — before it is aborted. Idempotent: subsequent
-    /// calls are no-ops.
+    /// Cancel both tasks and wait for them (doc 04 §Lifecycle). The pump gets
+    /// [`CLOSE_JOIN_TIMEOUT`] to disconnect before it is aborted. Idempotent.
     pub async fn close(&mut self) {
         self.cancel.cancel();
-        if let Some(task) = self.pump_task.take() {
-            let deadline = tokio::time::Instant::now() + CLOSE_JOIN_TIMEOUT;
-            while !task.is_finished() && tokio::time::Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(1)).await;
+        if let Some(mut pump) = self.pump_task.take() {
+            if tokio::time::timeout(CLOSE_JOIN_TIMEOUT, &mut pump)
+                .await
+                .is_err()
+            {
+                pump.abort();
+                let _ = pump.await;
             }
-            if !task.is_finished() {
-                task.abort();
-            }
-            let _ = task.await;
         }
-        if let Some(task) = self.bridge_task.take() {
-            let _ = task.await;
+        if let Some(bridge) = self.bridge_task.take() {
+            let _ = bridge.await;
         }
     }
+}
 
-    /// The terminal to embed in the tab UI (P2-7).
-    pub fn backend(&self) -> &Arc<dyn TerminalBackend> {
-        &self.backend
-    }
-
-    /// Take the receiver half of the state channel (doc 04 §Wiring's
-    /// "second glib channel"). The UI consumes it once, in P2-7.
-    pub fn take_state_rx(&mut self) -> Option<mpsc::UnboundedReceiver<TransportEvent>> {
-        self.state_rx.take()
+/// The tasks keep each other alive (drain → backend → widget signals →
+/// pump → transport → bridge → drain), so a tab dropped without `close`
+/// — a page removed from the notebook — must still cancel them, or the SSH
+/// channel and its connection are never released.
+impl Drop for TerminalTab {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
     use std::time::Instant;
 
     use async_trait::async_trait;
 
+    use super::*;
     use crate::terminal::FakeBackend;
     use crate::transport::types::{TransportState, TransportType};
 
-    #[derive(Clone)]
-    struct MockHandle {
+    /// Shared record of what the pump did to the mock transport.
+    #[derive(Clone, Default)]
+    struct Calls {
         writes: Arc<Mutex<Vec<Vec<u8>>>>,
         resizes: Arc<Mutex<Vec<(u32, u32)>>>,
         connects: Arc<AtomicUsize>,
         disconnects: Arc<AtomicUsize>,
-        event_tx: mpsc::Sender<TransportEvent>,
     }
 
-    impl MockHandle {
-        /// Push a canned transport event — the mock's reader task.
-        fn push(&self, ev: TransportEvent) {
-            self.event_tx.try_send(ev).expect("event channel open");
-        }
+    impl Calls {
         fn writes(&self) -> Vec<Vec<u8>> {
-            self.writes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
+            self.writes.lock().unwrap().clone()
         }
         fn resizes(&self) -> Vec<(u32, u32)> {
-            self.resizes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
+            self.resizes.lock().unwrap().clone()
         }
         fn connects(&self) -> usize {
             self.connects.load(Ordering::SeqCst)
@@ -371,81 +242,44 @@ mod tests {
         }
     }
 
-    /// Test transport: records writes/resizes/disconnects. The reader half
-    /// of a real transport is its own task pushing into `event_tx`; the
-    /// mock's "reader" is the test thread pushing via [`MockHandle`].
     struct MockTransport {
-        state: TransportState,
-        writes: Arc<Mutex<Vec<Vec<u8>>>>,
-        resizes: Arc<Mutex<Vec<(u32, u32)>>>,
-        connects: Arc<AtomicUsize>,
-        disconnects: Arc<AtomicUsize>,
+        calls: Calls,
         fail_connect: bool,
-    }
-
-    impl MockTransport {
-        fn new(event_tx: mpsc::Sender<TransportEvent>) -> (Self, MockHandle) {
-            let handle = MockHandle {
-                writes: Arc::new(Mutex::new(Vec::new())),
-                resizes: Arc::new(Mutex::new(Vec::new())),
-                connects: Arc::new(AtomicUsize::new(0)),
-                disconnects: Arc::new(AtomicUsize::new(0)),
-                event_tx,
-            };
-            let transport = Self {
-                state: TransportState::Disconnected,
-                writes: handle.writes.clone(),
-                resizes: handle.resizes.clone(),
-                connects: handle.connects.clone(),
-                disconnects: handle.disconnects.clone(),
-                fail_connect: false,
-            };
-            (transport, handle)
-        }
-
-        /// A transport whose `connect` always fails — the display-free way
-        /// to exercise the pump's failure path.
-        fn failing(event_tx: mpsc::Sender<TransportEvent>) -> (Self, MockHandle) {
-            let (mut transport, handle) = Self::new(event_tx);
-            transport.fail_connect = true;
-            (transport, handle)
-        }
+        connected: bool,
     }
 
     #[async_trait]
     impl Transport for MockTransport {
         async fn connect(&mut self) -> Result<(), TransportError> {
-            self.connects.fetch_add(1, Ordering::SeqCst);
+            self.calls.connects.fetch_add(1, Ordering::SeqCst);
             if self.fail_connect {
                 return Err(TransportError::ConnectionFailed("connect refused".into()));
             }
-            self.state = TransportState::Connected;
+            self.connected = true;
             Ok(())
         }
 
         async fn disconnect(&mut self) -> Result<(), TransportError> {
-            self.disconnects.fetch_add(1, Ordering::SeqCst);
-            self.state = TransportState::Disconnected;
+            self.calls.disconnects.fetch_add(1, Ordering::SeqCst);
+            self.connected = false;
             Ok(())
         }
 
         fn state(&self) -> TransportState {
-            self.state.clone()
+            if self.connected {
+                TransportState::Connected
+            } else {
+                TransportState::Disconnected
+            }
         }
 
         async fn write(&mut self, data: &[u8]) -> Result<(), TransportError> {
-            self.writes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(data.to_vec());
+            self.calls.writes.lock().unwrap().push(data.to_vec());
             Ok(())
         }
 
         async fn resize(&mut self, rows: u32, cols: u32) -> Result<(), TransportError> {
-            self.resizes
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push((rows, cols));
+            self.calls.resizes.lock().unwrap().push((rows, cols));
             Ok(())
         }
 
@@ -460,33 +294,46 @@ mod tests {
         }
     }
 
+    /// A wired tab over a mock transport. The test plays both outer ends:
+    /// `transport_tx` is the transport's reader task, `term_tx` the backend.
     struct Harness {
         tab: TerminalTab,
+        state_rx: mpsc::UnboundedReceiver<TransportEvent>,
         ctx: glib::MainContext,
-        handle: MockHandle,
-        fake: FakeBackend,
+        calls: Calls,
+        transport_tx: mpsc::Sender<TransportEvent>,
+        term_tx: mpsc::Sender<TerminalEvent>,
+        backend: FakeBackend,
     }
 
-    fn harness() -> Harness {
+    fn harness(fail_connect: bool) -> Harness {
         let ctx = glib::MainContext::new();
-        let (event_tx, event_rx) = mpsc::channel(256);
-        let (transport, handle) = MockTransport::new(event_tx);
-        let (term_tx, term_rx) = mpsc::channel(256);
-        let fake = FakeBackend::new();
-        let mut emitter = fake.clone();
-        emitter.event_tx = Some(term_tx);
-        let tab =
-            TerminalTab::for_test(Box::new(transport), event_rx, Arc::new(fake), term_rx, &ctx);
+        let (transport_tx, event_rx) = mpsc::channel(256);
+        let (term_tx, events) = mpsc::channel(256);
+        let calls = Calls::default();
+        let transport = MockTransport {
+            calls: calls.clone(),
+            fail_connect,
+            connected: false,
+        };
+        let backend = FakeBackend::new();
+        let terminal = TerminalHandle {
+            backend: Arc::new(backend.clone()),
+            events,
+        };
+        let (tab, state_rx) = TerminalTab::wire(Box::new(transport), event_rx, terminal, &ctx);
         Harness {
             tab,
+            state_rx,
             ctx,
-            handle,
-            fake: emitter,
+            calls,
+            transport_tx,
+            term_tx,
+            backend,
         }
     }
 
-    /// Drive `main_ctx` (and, via its sleeps, the tokio tasks) until
-    /// `ready()` holds. Display-free: `iteration(false)` needs no GTK.
+    /// Drive `ctx` (and, via the sleeps, the tokio tasks) until `ready()`.
     fn drive(ctx: &glib::MainContext, what: &str, mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(2);
         while !ready() {
@@ -496,156 +343,119 @@ mod tests {
         }
     }
 
-    /// Pump path: a backend `DataOut` event reaches `Transport::write`.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn pump_forwards_keystrokes_to_transport() {
-        let mut h = harness();
-        h.fake.emit(TerminalEvent::DataOut(b"ls\r".to_vec()));
-        drive(&h.ctx, "transport.write", || !h.handle.writes().is_empty());
-        assert_eq!(h.handle.writes(), vec![b"ls\r".to_vec()]);
-        h.tab.close().await;
-        assert_eq!(h.handle.disconnects(), 1);
-    }
-
-    /// Reader path: `DataReceived` reaches `backend.write` on the main
-    /// context (doc 04 §Wiring step 1).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn reader_routes_data_received_into_backend() {
-        let mut h = harness();
-        h.handle
-            .push(TransportEvent::DataReceived(b"hello".to_vec()));
-        drive(&h.ctx, "backend.write", || !h.fake.written().is_empty());
-        assert_eq!(h.fake.written(), b"hello");
-        h.tab.close().await;
-        assert_eq!(h.handle.disconnects(), 1);
-    }
-
-    /// Cancellation: close() joins the pump (which disconnects), and a
-    /// second close() is a no-op (SSHTransport::disconnect discipline).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn close_cancels_pump_disconnects_once_and_is_idempotent() {
-        let mut h = harness();
-        drive(&h.ctx, "transport.connect", || h.handle.connects() == 1);
-        h.tab.close().await;
-        assert_eq!(h.handle.disconnects(), 1);
-        h.tab.close().await;
-        assert_eq!(h.handle.disconnects(), 1);
-    }
-
-    /// Resize propagation: `SizeChange` through the pump reaches
-    /// `Transport::resize` with rows/cols in doc 04's order.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn size_change_reaches_transport_resize() {
-        let mut h = harness();
-        h.fake.emit(TerminalEvent::SizeChange {
-            rows: 40,
-            cols: 120,
-        });
-        drive(&h.ctx, "transport.resize", || {
-            !h.handle.resizes().is_empty()
-        });
-        assert_eq!(h.handle.resizes(), vec![(40, 120)]);
-        h.tab.close().await;
-        assert_eq!(h.handle.disconnects(), 1);
-    }
-
-    /// The second channel: non-data transport events reach the state
-    /// receiver, in order (doc 04 §Wiring: status bar, reconnect prompt).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn non_data_transport_events_reach_state_channel() {
-        let mut h = harness();
-        h.handle
-            .push(TransportEvent::StateChanged(TransportState::Connected));
-        h.handle.push(TransportEvent::Error("boom".into()));
-        h.handle.push(TransportEvent::ConnectionLost);
-        let mut rx = h.tab.take_state_rx().expect("state receiver taken once");
-
-        let mut received = Vec::new();
-        for _ in 0..3 {
-            received.push(
-                tokio::time::timeout(Duration::from_secs(2), rx.recv())
-                    .await
-                    .expect("state event before timeout")
-                    .expect("state channel open"),
-            );
-        }
-        assert!(matches!(
-            received[0],
-            TransportEvent::StateChanged(TransportState::Connected)
-        ));
-        assert!(matches!(received[1], TransportEvent::Error(ref m) if m == "boom"));
-        assert!(matches!(received[2], TransportEvent::ConnectionLost));
-        assert!(h.tab.take_state_rx().is_none());
-        h.tab.close().await;
-    }
-
-    /// A failed `transport.connect()` reports `TransportEvent::Error` on the
-    /// state channel (so the UI can show an error view) and still tears the
-    /// half-open transport down exactly once.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn connect_failure_emits_error_to_state_channel() {
-        let ctx = glib::MainContext::new();
-        let (event_tx, event_rx) = mpsc::channel(256);
-        let (transport, handle) = MockTransport::failing(event_tx);
-        let (term_tx, term_rx) = mpsc::channel(256);
-        let fake = FakeBackend::new();
-        let mut emitter = fake.clone();
-        emitter.event_tx = Some(term_tx);
-        let mut tab =
-            TerminalTab::for_test(Box::new(transport), event_rx, Arc::new(fake), term_rx, &ctx);
-
-        let mut rx = tab.take_state_rx().expect("state receiver taken once");
-        let ev = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+    async fn next_state(rx: &mut mpsc::UnboundedReceiver<TransportEvent>) -> TransportEvent {
+        tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
             .expect("state event before timeout")
-            .expect("state channel open");
-        assert!(
-            matches!(ev, TransportEvent::Error(ref m) if m.contains("connect refused")),
-            "expected connect error, got {ev:?}"
-        );
-
-        drive(&ctx, "transport.disconnect", || handle.disconnects() == 1);
-        tab.close().await;
-        assert_eq!(handle.disconnects(), 1);
+            .expect("state channel open")
     }
 
-    /// Doc 04 §Transport Factory mapping — every non-SSH type is an error,
-    /// never a panic (malformed session rows must not crash the app).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pump_forwards_keystrokes_and_resizes_to_the_transport() {
+        let mut h = harness(false);
+        h.term_tx
+            .try_send(TerminalEvent::DataOut(b"ls\r".to_vec()))
+            .unwrap();
+        h.term_tx
+            .try_send(TerminalEvent::SizeChange {
+                rows: 40,
+                cols: 120,
+            })
+            .unwrap();
+        drive(&h.ctx, "transport.resize", || !h.calls.resizes().is_empty());
+        assert_eq!(h.calls.writes(), vec![b"ls\r".to_vec()]);
+        assert_eq!(h.calls.resizes(), vec![(40, 120)]);
+        h.tab.close().await;
+        assert_eq!(h.calls.disconnects(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bridge_routes_output_to_the_backend_on_the_main_context() {
+        let mut h = harness(false);
+        h.transport_tx
+            .try_send(TransportEvent::DataReceived(b"hello".to_vec()))
+            .unwrap();
+        drive(&h.ctx, "backend.write", || !h.backend.written().is_empty());
+        assert_eq!(h.backend.written(), b"hello");
+        h.tab.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_disconnects_once_and_is_idempotent() {
+        let mut h = harness(false);
+        drive(&h.ctx, "transport.connect", || h.calls.connects() == 1);
+        h.tab.close().await;
+        h.tab.close().await;
+        assert_eq!(h.calls.disconnects(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_the_tab_still_disconnects() {
+        let h = harness(false);
+        drive(&h.ctx, "transport.connect", || h.calls.connects() == 1);
+        drop(h.tab);
+        drive(&h.ctx, "transport.disconnect", || {
+            h.calls.disconnects() == 1
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn non_output_events_reach_the_state_channel_in_order() {
+        let mut h = harness(false);
+        for event in [
+            TransportEvent::StateChanged(TransportState::Connected),
+            TransportEvent::Error("boom".into()),
+            TransportEvent::ConnectionLost,
+        ] {
+            h.transport_tx.try_send(event).unwrap();
+        }
+        assert!(matches!(
+            next_state(&mut h.state_rx).await,
+            TransportEvent::StateChanged(TransportState::Connected)
+        ));
+        assert!(
+            matches!(next_state(&mut h.state_rx).await, TransportEvent::Error(m) if m == "boom")
+        );
+        assert!(matches!(
+            next_state(&mut h.state_rx).await,
+            TransportEvent::ConnectionLost
+        ));
+        h.tab.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_connect_failure_is_reported_and_tears_down_once() {
+        let mut h = harness(true);
+        let event = next_state(&mut h.state_rx).await;
+        assert!(
+            matches!(event, TransportEvent::Error(ref m) if m.contains("connect refused")),
+            "expected connect error, got {event:?}"
+        );
+        drive(&h.ctx, "transport.disconnect", || {
+            h.calls.disconnects() == 1
+        });
+        h.tab.close().await;
+        assert_eq!(h.calls.disconnects(), 1);
+    }
+
     #[test]
-    fn create_transport_maps_session_types_per_doc04() {
-        let (tx, _rx) = mpsc::channel::<TransportEvent>(1);
-        let cfg = |session_type| SessionConfig {
-            session_type,
-            ..SessionConfig::default()
+    fn create_transport_rejects_what_it_cannot_build() {
+        let (tx, _rx) = mpsc::channel(1);
+        let error = |session_type| {
+            let config = SessionConfig {
+                session_type,
+                ..SessionConfig::default()
+            };
+            match create_transport(&config, None, tx.clone(), 24, 80) {
+                Err(TransportError::ChannelError(message)) => message,
+                Err(other) => panic!("unexpected error: {other}"),
+                Ok(_) => panic!("must not build a transport"),
+            }
         };
-
-        let ssh = cfg(SessionType::SSH);
-        match create_transport(&ssh, None, tx.clone(), 24, 80) {
-            Err(TransportError::ChannelError(m)) => assert_eq!(m, "no connection"),
-            Err(e) => panic!("unexpected error: {e}"),
-            Ok(_) => panic!("SSH without a connection must fail"),
-        }
-
-        for unimplemented in [SessionType::LocalShell, SessionType::Serial] {
-            let cfg = cfg(unimplemented);
-            match create_transport(&cfg, None, tx.clone(), 24, 80) {
-                Err(TransportError::ChannelError(m)) => {
-                    assert!(m.contains("Phase 5"), "got: {m}")
-                }
-                Err(e) => panic!("unexpected error: {e}"),
-                Ok(_) => panic!("{cfg:?} must not build a transport yet"),
-            }
-        }
-
-        for non_stream in [SessionType::RDP, SessionType::VNC] {
-            let cfg = cfg(non_stream);
-            match create_transport(&cfg, None, tx.clone(), 24, 80) {
-                Err(TransportError::ChannelError(m)) => {
-                    assert_eq!(m, "RDP/VNC don't use byte-stream transport (doc 08)")
-                }
-                Err(e) => panic!("unexpected error: {e}"),
-                Ok(_) => panic!("{cfg:?} must not build a byte-stream transport"),
-            }
-        }
+        assert_eq!(error(SessionType::SSH), "no connection");
+        assert!(error(SessionType::LocalShell).contains("Phase 5"));
+        assert!(error(SessionType::Serial).contains("Phase 5"));
+        assert!(error(SessionType::RDP).contains("doc 08"));
+        assert!(error(SessionType::VNC).contains("doc 08"));
     }
 }

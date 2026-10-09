@@ -1,85 +1,23 @@
-//! Integration tests for the P3-3 connect flow against a real sshd.
-//!
-//! Skipped unless the environment variables are set:
-//!   SSH_TEST_HOST, SSH_TEST_PORT, SSH_TEST_USER, SSH_TEST_PASSWORD,
-//!   SSH_TEST_KEY_PATH
-//!
-//! Run through `scripts/run-sshd-tests.sh`, which provisions a throwaway
-//! sshd and exports the fixture (see its TEST_CMD). The tests focus on the
-//! supervisor + shared-connection semantics; channel/PTY behaviour itself is
-//! covered by `transport_sshd.rs`.
+//! The connect flow's supervisor semantics against a real sshd (see
+//! `common`): one shared connection per identity, kept alive by any
+//! consumer, released after the last.
+
+mod common;
 
 use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
+use common::*;
 use wayterm::sftp::{commands::DirEntry, SftpClient, SftpCommand};
 use wayterm::store::model::{HostKeyPolicy, SessionConfig, SessionType};
-use wayterm::transport::auth::ChallengeResponder;
 use wayterm::transport::connection::{AuthMethod, SshConnection};
-use wayterm::transport::credentials::{CredentialManager, PromptSource};
 use wayterm::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
 use wayterm::transport::supervisor::{ConnectParams, ConnectionSupervisor};
 use wayterm::transport::tab::create_transport;
-use wayterm::transport::types::{TransportError, TransportEvent};
-
-struct Fixture {
-    host: String,
-    port: u16,
-    user: String,
-    password: String,
-}
-
-fn read_fixture() -> Option<Fixture> {
-    let host = std::env::var("SSH_TEST_HOST").ok()?;
-    let port = std::env::var("SSH_TEST_PORT").ok()?.parse().ok()?;
-    let user = std::env::var("SSH_TEST_USER").ok()?;
-    let password = std::env::var("SSH_TEST_PASSWORD").ok()?;
-    Some(Fixture {
-        host,
-        port,
-        user,
-        password,
-    })
-}
-
-fn skip() {
-    // Keep the exact wording `scripts/run-sshd-tests.sh` greps for.
-    println!(
-        "Skipping sshd integration test: set SSH_TEST_HOST, SSH_TEST_PORT, \
-         SSH_TEST_USER, SSH_TEST_PASSWORD, and SSH_TEST_KEY_PATH to run it."
-    );
-}
-
-fn accept_all_verifier() -> HostKeyVerifier {
-    HostKeyVerifier::new(
-        HostKeyPolicy::Off,
-        Arc::new(|_| HostKeyDecision::Accept),
-        None,
-    )
-}
-
-fn password_cred_manager(password: &str) -> CredentialManager {
-    let prompt_source = PromptSource::new(Arc::new({
-        let password = password.to_string();
-        move |_session_id, secret_type| match secret_type {
-            "password" => Some(zeroize::Zeroizing::new(password.clone().into_bytes())),
-            _ => None,
-        }
-    }));
-    CredentialManager::new(vec![Box::new(prompt_source)])
-}
-
-fn password_responder(password: &str) -> ChallengeResponder {
-    Arc::new({
-        let password = password.to_string();
-        move |prompts: &[wayterm::transport::auth::ChallengePrompt]| {
-            Some(prompts.iter().map(|_| password.clone()).collect::<Vec<_>>())
-        }
-    })
-}
+use wayterm::transport::types::TransportError;
 
 fn connect_params(f: &Fixture) -> ConnectParams {
     ConnectParams {
@@ -99,58 +37,17 @@ fn ssh_session(f: &Fixture) -> SessionConfig {
     }
 }
 
-async fn collect_echo(rx: &mut mpsc::Receiver<TransportEvent>, needle: &str, deadline: Duration) {
-    let result = tokio::time::timeout(deadline, async {
-        let mut output = String::new();
-        loop {
-            match rx.recv().await {
-                Some(TransportEvent::DataReceived(bytes)) => {
-                    output.push_str(&String::from_utf8_lossy(&bytes));
-                    if output.contains(needle) {
-                        return output;
-                    }
-                }
-                Some(TransportEvent::ConnectionLost) => {
-                    panic!("connection lost before seeing '{}'", needle)
-                }
-                Some(_) => {}
-                None => panic!("event channel closed before seeing '{}'", needle),
-            }
-        }
-    })
-    .await;
-    result.unwrap_or_else(|_| panic!("timed out waiting for '{}'", needle));
-}
-
-async fn sftp_cmd<T>(
-    client: &SftpClient,
-    make: impl FnOnce(oneshot::Sender<Result<T, String>>) -> SftpCommand,
-) -> Result<T, String> {
-    let (tx, rx) = oneshot::channel();
-    client
-        .request(make(tx))
-        .await
-        .expect("sftp task queue closed");
-    tokio::time::timeout(Duration::from_secs(30), rx)
-        .await
-        .expect("sftp command timed out")
-        .expect("sftp task ended before replying")
-}
-
-/// Poll until every strong reference to the released connection is gone.
-///
-/// The supervisor's release monitor polls every 250 ms (non-test build, which
-/// is what integration tests see); a generous deadline asserts the semantics
-/// (release happens), not the scheduling.
+/// Wait until every strong reference is gone (the release monitor polls
+/// every 250 ms).
 async fn assert_released(weak: &Weak<SshConnection>) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if weak.upgrade().is_none() {
-            return;
-        }
+    while weak.upgrade().is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "connection not released within 10s"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("connection was not released within 10s of its last consumer dropping");
 }
 
 /// Doc 04 §Connection Supervisor: one dial per key, reuse while a consumer
@@ -158,10 +55,7 @@ async fn assert_released(weak: &Weak<SshConnection>) {
 /// it, and a fresh dial afterwards.
 #[tokio::test]
 async fn supervisor_reuses_dial_and_releases_when_idle() {
-    let Some(f) = read_fixture() else {
-        skip();
-        return;
-    };
+    let Some(f) = fixture() else { return };
 
     let supervisor = ConnectionSupervisor::new();
     let params = connect_params(&f);
@@ -171,7 +65,7 @@ async fn supervisor_reuses_dial_and_releases_when_idle() {
         .get_or_connect(
             &params,
             &method,
-            &password_cred_manager(&f.password),
+            &password_creds(&f.password),
             accept_all_verifier(),
             Some(password_responder(&f.password)),
         )
@@ -181,7 +75,7 @@ async fn supervisor_reuses_dial_and_releases_when_idle() {
         .get_or_connect(
             &params,
             &method,
-            &password_cred_manager(&f.password),
+            &password_creds(&f.password),
             accept_all_verifier(),
             Some(password_responder(&f.password)),
         )
@@ -203,7 +97,7 @@ async fn supervisor_reuses_dial_and_releases_when_idle() {
         .get_or_connect(
             &params,
             &method,
-            &password_cred_manager(&f.password),
+            &password_creds(&f.password),
             accept_all_verifier(),
             None,
         )
@@ -214,16 +108,13 @@ async fn supervisor_reuses_dial_and_releases_when_idle() {
     assert_released(&fresh_weak).await;
 }
 
-/// The P3-3 end-to-end shape: transport over the supervisor connection, tab
+/// The connect flow end to end: transport over the supervisor connection, tab
 /// close (transport disconnect) does NOT kill the shared session, the SFTP
 /// sidebar keeps working on it, and the supervisor disconnects only after
 /// the sidebar releases it too (doc 04 + doc 09 §Connection Model).
 #[tokio::test]
 async fn shared_connection_survives_tab_close_for_sftp() {
-    let Some(f) = read_fixture() else {
-        skip();
-        return;
-    };
+    let Some(f) = fixture() else { return };
 
     let supervisor = ConnectionSupervisor::new();
     let params = connect_params(&f);
@@ -231,7 +122,7 @@ async fn shared_connection_survives_tab_close_for_sftp() {
         .get_or_connect(
             &params,
             &AuthMethod::Password(f.password.clone()),
-            &password_cred_manager(&f.password),
+            &password_creds(&f.password),
             accept_all_verifier(),
             Some(password_responder(&f.password)),
         )
@@ -247,12 +138,7 @@ async fn shared_connection_survives_tab_close_for_sftp() {
         .write(b"echo 'wayterm-connect-flow-echo'\n")
         .await
         .expect("write failed");
-    collect_echo(
-        &mut event_rx,
-        "wayterm-connect-flow-echo",
-        Duration::from_secs(10),
-    )
-    .await;
+    collect_echo(&mut event_rx, "wayterm-connect-flow-echo").await;
 
     // Tab close: the transport disconnects its channel — but the SshConnection
     // belongs to the supervisor and must survive for the sidebar.
@@ -281,13 +167,10 @@ async fn shared_connection_survives_tab_close_for_sftp() {
 
 /// Host-key rejection under Strict policy surfaces as
 /// [`TransportError::HostKeyRejected`] from the supervisor — the connect
-/// flow maps that onto the error view (P3-3 3), never a panic.
+/// flow maps that onto the error view, never a panic.
 #[tokio::test]
 async fn strict_policy_reject_surfaces_host_key_rejected() {
-    let Some(f) = read_fixture() else {
-        skip();
-        return;
-    };
+    let Some(f) = fixture() else { return };
 
     let supervisor = ConnectionSupervisor::new();
     let params = connect_params(&f);
@@ -305,7 +188,7 @@ async fn strict_policy_reject_surfaces_host_key_rejected() {
         .get_or_connect(
             &params,
             &AuthMethod::Password(f.password.clone()),
-            &password_cred_manager(&f.password),
+            &password_creds(&f.password),
             reject_verifier,
             None,
         )

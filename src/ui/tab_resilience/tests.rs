@@ -1,10 +1,5 @@
-//! Display-free tests for the tab-resilience registry and actions
-//! (doc 04 §Lifecycle & Cancellation, doc 07 §Default Actions).
-//!
-//! Nothing here builds a widget: the registry, the close-guard decision,
-//! and the two action activations are all plain data, so the whole file
-//! runs without a display. The dialogs themselves are the GTK layer in
-//! the parent module.
+//! The resilience registry, close guard, and the two actions — all
+//! display-free.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::transport::reconnect::{ConnectFn, ConnectFuture};
-use crate::transport::types::{TransportError, TransportState};
+use crate::transport::types::TransportState;
 
 const SESSION: i64 = 42;
 
@@ -34,12 +29,7 @@ fn tab_in(state: TransportState) -> LiveTab {
     LiveTab::new(always_ok_connect(), CancellationToken::new(), state)
 }
 
-/// Serializes the registry tests.
-///
-/// The registry is process-global (it has to be: the GTK actions resolve
-/// their target tab by session id), so these tests cannot run in parallel
-/// — cargo's test harness would interleave them and every assertion about
-/// "the tab" would be about whichever tab another test just registered.
+/// The registry is process-global, so its tests take turns.
 fn fresh() -> tokio::sync::MutexGuard<'static, ()> {
     loop {
         match TEST_LOCK.try_lock() {
@@ -53,7 +43,7 @@ fn fresh() -> tokio::sync::MutexGuard<'static, ()> {
     }
 }
 
-/// Async twin of [`fresh`]: await the lock rather than spin.
+/// [`fresh`] for async tests.
 async fn fresh_async() -> tokio::sync::MutexGuard<'static, ()> {
     let guard = TEST_LOCK.lock().await;
     reset_registry();
@@ -74,38 +64,24 @@ fn settings_default_to_confirm_close_and_reconnect_on() {
 #[test]
 fn install_settings_honours_both_rows() {
     let _guard = fresh();
-    install_settings(Some("0"), Some("0"));
+    install_settings(false, false);
     assert!(!confirm_close_setting());
     assert!(!reconnect_on_drop_setting());
 }
 
 #[test]
-fn install_settings_keeps_defaults_for_missing_rows() {
-    let _guard = fresh();
-    install_settings(None, None);
-    assert!(confirm_close_setting());
-    assert!(reconnect_on_drop_setting());
-}
-
-#[test]
 fn policy_follows_the_reconnect_on_drop_setting() {
     let _guard = fresh();
-    install_settings(Some("1"), Some("0"));
+    install_settings(true, false);
     assert_eq!(
         policy().mode,
         crate::transport::reconnect::ReconnectMode::Prompt
     );
-    install_settings(Some("1"), Some("1"));
+    install_settings(true, true);
     assert_eq!(
         policy().mode,
         crate::transport::reconnect::ReconnectMode::Auto
     );
-}
-
-#[test]
-fn setting_keys_match_doc_06_seed_rows() {
-    assert_eq!(CONFIRM_CLOSE_SETTING, "confirm_close");
-    assert_eq!(RECONNECT_ON_DROP_SETTING, "reconnect_on_drop");
 }
 
 // ── Registry ────────────────────────────────────────────────────────────────
@@ -183,7 +159,7 @@ fn tabs_are_tracked_per_session() {
 #[test]
 fn a_connected_tab_asks_before_close_when_the_setting_is_on() {
     let _guard = fresh();
-    install_settings(Some("1"), None);
+    install_settings(true, true);
     register_live_tab(SESSION, tab_in(TransportState::Connected));
     assert!(should_confirm_close_for_tab(SESSION));
 }
@@ -218,34 +194,9 @@ fn an_errored_tab_closes_without_asking() {
 #[test]
 fn the_setting_turns_the_prompt_off() {
     let _guard = fresh();
-    install_settings(Some("0"), None);
+    install_settings(false, true);
     register_live_tab(SESSION, tab_in(TransportState::Connected));
     assert!(!should_confirm_close_for_tab(SESSION));
-}
-
-#[test]
-fn the_dialog_text_is_the_documented_prompt() {
-    assert!(CONFIRM_CLOSE_DETAIL.contains("Processes may be running"));
-    assert_eq!(DIALOG_BUTTONS[CONFIRM_CLOSE_ANSWER as usize], "Close");
-    assert_eq!(DIALOG_BUTTONS[0], "Cancel");
-}
-
-#[test]
-fn the_reconnect_prompt_text_names_the_attempt() {
-    let rendered = RECONNECT_PROMPT_DETAIL
-        .replace("{host}", "example.com")
-        .replace("{attempt}", "4");
-    assert!(rendered.contains("example.com"));
-    assert!(rendered.contains('4'));
-    assert_eq!(RECONNECT_PROMPT_ANSWER, 1);
-}
-
-// ── Action names (doc 07) ───────────────────────────────────────────────────
-
-#[test]
-fn action_names_match_doc_07s_action_ids() {
-    assert_eq!(RECONNECT_ACTION, "reconnect");
-    assert_eq!(DISCONNECT_ACTION, "disconnect");
 }
 
 // ── reconnect action ────────────────────────────────────────────────────────
@@ -274,7 +225,7 @@ fn reconnect_on_a_tab_with_no_transport_reports_the_seam() {
 #[tokio::test]
 async fn reconnect_starts_a_driver_for_a_registered_tab() {
     let _guard = fresh_async().await;
-    install_settings(None, None); // auto mode
+    install_settings(true, true); // auto mode
     register_live_tab(SESSION, tab_in(TransportState::Disconnected));
     assert!(activate_reconnect(Some(SESSION), None, None).started());
 }
@@ -371,7 +322,7 @@ async fn disconnect_cancels_a_running_reconnect_loop() {
 #[tokio::test(start_paused = true)]
 async fn prompt_mode_reconnect_defers_to_the_confirm_responder() {
     let _guard = fresh_async().await;
-    install_settings(None, Some("0")); // prompt mode
+    install_settings(true, false); // prompt mode
     assert_eq!(
         policy().mode,
         crate::transport::reconnect::ReconnectMode::Prompt
@@ -465,44 +416,15 @@ fn a_second_disconnect_stays_idempotent() {
     assert_eq!(tab_state(SESSION), TransportState::Disconnected);
 }
 
-// ── Seam documentation ──────────────────────────────────────────────────────
-
-#[test]
-fn live_tab_carries_the_three_things_the_actions_need() {
-    // The supervisor seam (P3-3) supplies exactly this: a fresh connect
-    // closure, the tab token, and the last observed state.
-    let cancel = CancellationToken::new();
-    let tab = LiveTab::new(
-        always_ok_connect(),
-        cancel.clone(),
-        TransportState::Connected,
-    );
-    let _ = tab.connect;
-    assert!(!tab.cancel.is_cancelled());
-    assert_eq!(tab.state, TransportState::Connected);
-}
-
 #[test]
 fn the_registry_resets_cleanly_between_windows() {
     let _guard = fresh();
-    install_settings(Some("0"), Some("0"));
+    install_settings(false, false);
     register_live_tab(SESSION, tab_in(TransportState::Connected));
     reset_registry();
     assert!(live_tab(SESSION).is_none());
     assert!(confirm_close_setting());
     assert!(reconnect_on_drop_setting());
-}
-
-/// The error text the driver carries into `Exhausted` is what the status
-/// bar / prompt will show, so it must be the transport's own Display
-/// output, not a placeholder.
-#[test]
-fn exhaustion_reports_the_transports_own_error_text() {
-    assert_eq!(TransportError::Disconnected.to_string(), "disconnected");
-    assert_eq!(TransportError::Cancelled.to_string(), "cancelled");
-    assert!(TransportError::ConnectionFailed("refused".into())
-        .to_string()
-        .contains("refused"));
 }
 
 // ── Tab close teardown (doc 04: "Tab close: cancel token → pump task

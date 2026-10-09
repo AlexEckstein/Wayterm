@@ -1,4 +1,4 @@
-# Base sshd config for the server-gated auth-method matrix (doc 11 §Testing item 3).
+# Base sshd config for the server-gated auth-method matrix (doc 11 §Testing Strategy, item 3).
 #
 # Rendered by scripts/auth-matrix-sshd.sh — one throwaway instance PER MODE, on
 # its own port, from its own rendered copy. The system sshd on port 22 and

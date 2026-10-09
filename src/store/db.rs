@@ -1,92 +1,39 @@
-//! SQLite persistence for saved sessions (doc 06).
-//!
-//! [`SessionStore::open`] creates the database file if needed, applies
-//! the schema (§"Database Schema") and default seed data (§"Default
-//! Data") — both transcribed verbatim — and arms the WAL and
-//! foreign-keys pragmas.
-//!
-//! No credential material ever passes through this layer (doc 06
-//! §"Credential Storage"): the database stores connection parameters
-//! only; secrets live in the OS keyring (libsecret, doc 11).
+//! SQLite persistence for folders, sessions, hotkeys, and settings
+//! (doc 06). No credential material ever passes through this layer.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::types::Value;
+use rusqlite::{
+    params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
+};
+use serde::Serialize;
 
 use crate::store::model::{Folder, SessionConfig};
+use crate::ui::tab_state::{self, TabState};
 
-/// A SQLite-backed store of session folders and saved sessions.
-#[allow(dead_code)]
+/// A SQLite-backed store of session folders and saved sessions. Not
+/// `Send`: the UI shares one through an `Rc` on the main thread.
 pub struct SessionStore {
     conn: Connection,
-    /// `Some(path)` for a file-backed store, `None` for an in-memory store.
-    /// Duplicating a file-backed store re-opens the same file so that UI
-    /// handlers and the tree refresh see the same persisted data.
-    path: Option<PathBuf>,
 }
 
-#[allow(dead_code)]
 impl SessionStore {
-    /// Open the store at `path`, creating the file (parent directory
-    /// must exist), the schema, and the default seed data on first
-    /// open.
-    ///
-    /// Calling `open` again on an existing database succeeds: schema
-    /// creation is `IF NOT EXISTS` and the seed runs only when the
-    /// defaults are not already present.
+    /// Open (creating if needed) the database at `path`: pragmas, schema,
+    /// and the first-run seed. Idempotent on an existing database.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let mut conn = Connection::open(path)?;
         initialize(&mut conn)?;
-        Ok(Self {
-            conn,
-            path: Some(path.to_path_buf()),
-        })
+        Ok(Self { conn })
     }
 
-    /// Open an in-memory store with the same schema and seed data.
-    ///
-    /// For tests and CI. `journal_mode=WAL` is a no-op on `:memory:`
-    /// databases (SQLite reports `memory`); everything else is
-    /// identical to a file-backed store.
+    /// An in-memory store with the same schema and seed (tests).
     pub fn in_memory() -> rusqlite::Result<Self> {
         let mut conn = Connection::open_in_memory()?;
         initialize(&mut conn)?;
-        Ok(Self { conn, path: None })
+        Ok(Self { conn })
     }
 
-    /// Return another connection to the same store.
-    ///
-    /// For a file-backed store this re-opens the same database file (with
-    /// WAL + foreign keys enabled), so mutations made on one connection are
-    /// visible to the other. For an in-memory store this copies the current
-    /// state into a new `:memory:` database, which is the best isolation the
-    /// SQLite backup API allows for ephemeral stores.
-    ///
-    /// The UI uses this to give GTK reference-counted closures their own
-    /// connection while keeping the store single-threaded (the underlying
-    /// `rusqlite::Connection` is neither `Send` nor `Sync`).
-    pub fn duplicate(&self) -> rusqlite::Result<Self> {
-        match &self.path {
-            Some(path) => Self::open(path),
-            None => {
-                let mut new_conn = Connection::open_in_memory()?;
-                {
-                    let backup = rusqlite::backup::Backup::new(&self.conn, &mut new_conn)?;
-                    backup.run_to_completion(100, std::time::Duration::from_millis(1), None)?;
-                }
-                Ok(Self {
-                    conn: new_conn,
-                    path: None,
-                })
-            }
-        }
-    }
-
-    /// Insert a folder and return its generated row id.
-    ///
-    /// `parent_id` is `None` for a root folder. The new row starts
-    /// with `sort_order = 0` and `updated_at` from the default
-    /// trigger-equivalent (doc 06 §"Database Schema").
     pub fn insert_folder(&self, name: &str, parent_id: Option<i64>) -> rusqlite::Result<i64> {
         self.conn.execute(
             "INSERT INTO folders (name, parent_id) VALUES (?1, ?2)",
@@ -95,37 +42,17 @@ impl SessionStore {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// List the direct children of a folder.
-    ///
-    /// `parent_id = None` lists root folders. Results are ordered by
-    /// `sort_order` ascending, then `name` ascending — the contract
-    /// the session-tree UI relies on (doc 06 §"Database Operations").
+    /// Direct children of `parent_id` (`None` = root), by `sort_order` then
+    /// name.
     pub fn list_folders(&self, parent_id: Option<i64>) -> rusqlite::Result<Vec<Folder>> {
-        let sql = match parent_id {
-            Some(_) => {
-                "SELECT id, name, parent_id, sort_order, icon \
-                 FROM folders WHERE parent_id = ?1 \
-                 ORDER BY sort_order ASC, name ASC"
-            }
-            None => {
-                "SELECT id, name, parent_id, sort_order, icon \
-                 FROM folders WHERE parent_id IS NULL \
-                 ORDER BY sort_order ASC, name ASC"
-            }
-        };
-        let mut stmt = self.conn.prepare(sql)?;
-        let rows = match parent_id {
-            Some(pid) => stmt.query_map(params![pid], row_to_folder)?,
-            None => stmt.query_map([], row_to_folder)?,
-        };
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, parent_id, sort_order, icon FROM folders \
+             WHERE parent_id IS ?1 ORDER BY sort_order ASC, name ASC",
+        )?;
+        let rows = stmt.query_map([parent_id], row_to_folder)?;
         rows.collect()
     }
 
-    /// Rename an existing folder.
-    ///
-    /// Re-running with the same name is a no-op update; updating a
-    /// non-existent id silently affects zero rows, matching the simple
-    /// contract used in doc 06 §"Database Operations".
     pub fn rename_folder(&self, id: i64, new_name: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE folders SET name = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -134,260 +61,74 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Delete a folder, cascading to sub-folders and orphaning any
-    /// sessions that lived inside it.
-    ///
-    /// The cascade comes from the schema itself:
-    /// `folders.parent_id ON DELETE CASCADE` recursively removes
-    /// descendant folders, while `sessions.folder_id ON DELETE SET
-    /// NULL` preserves the sessions at the root (doc 06 §"Database
-    /// Schema").
+    /// Delete a folder. The schema cascades to sub-folders and moves the
+    /// sessions inside to the root (`ON DELETE SET NULL`).
     pub fn delete_folder(&self, id: i64) -> rusqlite::Result<()> {
         self.conn
-            .execute("DELETE FROM folders WHERE id = ?1", params![id])?;
+            .execute("DELETE FROM folders WHERE id = ?1", [id])?;
         Ok(())
     }
 
-    /// Insert a saved session and return its generated row id.
-    ///
-    /// JSON columns (`ssh_options`, `rdp_options`, `vnc_options`,
-    /// `forward_rules`) are serialized via serde. `session_type` and
-    /// `auth_method` store their serde wire strings (doc 06
-    /// §"Session Config Struct"). No credential material is stored.
+    /// Insert a session and return its id.
     pub fn insert_session(&self, config: &SessionConfig) -> rusqlite::Result<i64> {
-        self.conn.execute(
-            "INSERT INTO sessions (
-                name, type, folder_id, sort_order,
-                host, port, username, auth_method, host_key_policy,
-                key_path, tmux_enabled, tmux_session_name, ssh_options,
-                jump_session_id, forward_rules,
-                rdp_domain, rdp_width, rdp_height, rdp_color_depth, rdp_compression, rdp_options,
-                vnc_color_depth, vnc_options,
-                serial_device, serial_baud_rate, serial_data_bits, serial_parity,
-                serial_stop_bits, serial_flow_control,
-                local_shell, local_working_dir,
-                terminal_backend, color_scheme, font_family, font_size, opacity,
-                notes
-            ) VALUES (
-                ?1, ?2, ?3, ?4,
-                ?5, ?6, ?7, ?8, ?9,
-                ?10, ?11, ?12, ?13,
-                ?14, ?15,
-                ?16, ?17, ?18, ?19, ?20, ?21,
-                ?22, ?23,
-                ?24, ?25, ?26, ?27,
-                ?28, ?29,
-                ?30, ?31,
-                ?32, ?33, ?34, ?35, ?36,
-                ?37
-            )",
-            params![
-                config.name,
-                serde_json::to_string(&config.session_type)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                config.folder_id,
-                0,
-                config.host,
-                config.port,
-                config.username,
-                config
-                    .auth_method
-                    .as_ref()
-                    .map(|a| serde_json::to_string(a).unwrap()),
-                config
-                    .host_key_policy
-                    .as_ref()
-                    .map(|p| serde_json::to_string(p).unwrap()),
-                config.key_path,
-                config.tmux_enabled as i32,
-                config.tmux_session_name,
-                config
-                    .ssh_options
-                    .as_ref()
-                    .map(|o| serde_json::to_string(o).unwrap()),
-                config.jump_session_id,
-                config
-                    .forward_rules
-                    .as_ref()
-                    .map(|r| serde_json::to_string(r).unwrap()),
-                config.rdp_domain,
-                config.rdp_width,
-                config.rdp_height,
-                config.rdp_color_depth,
-                config.rdp_compression as i32,
-                config
-                    .rdp_options
-                    .as_ref()
-                    .map(|o| serde_json::to_string(o).unwrap()),
-                config.vnc_color_depth,
-                config
-                    .vnc_options
-                    .as_ref()
-                    .map(|o| serde_json::to_string(o).unwrap()),
-                config.serial_device,
-                config.serial_baud_rate,
-                config.serial_data_bits,
-                config.serial_parity,
-                config.serial_stop_bits,
-                config.serial_flow_control,
-                config.local_shell,
-                config.local_working_dir,
-                config.preferred_backend,
-                config.color_scheme,
-                config.font_family,
-                config.font_size,
-                config.opacity,
-                config.notes,
-            ],
-        )?;
+        let sql = format!(
+            "INSERT INTO sessions ({SESSION_COLUMNS}) VALUES ({})",
+            placeholders(SESSION_COLUMN_COUNT)
+        );
+        self.conn
+            .execute(&sql, params_from_iter(session_values(config)?))?;
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Read one saved session by id.
-    ///
-    /// Returns `QueryReturnedNoRows` if the id does not exist.
+    /// `QueryReturnedNoRows` if `id` does not exist.
     pub fn get_session(&self, id: i64) -> rusqlite::Result<SessionConfig> {
-        self.conn.query_row(
-            "SELECT * FROM sessions WHERE id = ?1",
-            params![id],
-            row_to_session,
-        )
+        self.conn
+            .query_row("SELECT * FROM sessions WHERE id = ?1", [id], row_to_session)
     }
 
-    /// List direct children of a folder, ordered by `sort_order` then `name`.
-    ///
-    /// `folder_id = None` lists root sessions (rows where `folder_id IS NULL`).
+    /// Sessions directly in `folder_id` (`None` = root), by `sort_order`
+    /// then name.
     pub fn list_sessions(&self, folder_id: Option<i64>) -> rusqlite::Result<Vec<SessionConfig>> {
-        let sql = match folder_id {
-            Some(_) => {
-                "SELECT * FROM sessions WHERE folder_id = ?1 ORDER BY sort_order ASC, name ASC"
-            }
-            None => {
-                "SELECT * FROM sessions WHERE folder_id IS NULL ORDER BY sort_order ASC, name ASC"
-            }
-        };
-        let mut stmt = self.conn.prepare(sql)?;
-        let rows = match folder_id {
-            Some(fid) => stmt.query_map(params![fid], row_to_session)?,
-            None => stmt.query_map([], row_to_session)?,
-        };
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM sessions WHERE folder_id IS ?1 ORDER BY sort_order ASC, name ASC",
+        )?;
+        let rows = stmt.query_map([folder_id], row_to_session)?;
         rows.collect()
     }
 
-    /// Persist changes to an existing session.
-    ///
-    /// The row is matched by `config.id`. `updated_at` is refreshed to
-    /// `datetime('now')`; `connect_count` and `last_connected` are left
-    /// untouched (use [`touch_connected`] to bump them).
+    /// Persist `config` over the row with its id. `connect_count` and
+    /// `last_connected` are left alone (see [`Self::touch_connected`]).
     pub fn update_session(&self, config: &SessionConfig) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET
-                name = ?1, type = ?2, folder_id = ?3, sort_order = ?4,
-                host = ?5, port = ?6, username = ?7, auth_method = ?8, host_key_policy = ?9,
-                key_path = ?10, tmux_enabled = ?11, tmux_session_name = ?12, ssh_options = ?13,
-                jump_session_id = ?14, forward_rules = ?15,
-                rdp_domain = ?16, rdp_width = ?17, rdp_height = ?18, rdp_color_depth = ?19,
-                rdp_compression = ?20, rdp_options = ?21,
-                vnc_color_depth = ?22, vnc_options = ?23,
-                serial_device = ?24, serial_baud_rate = ?25, serial_data_bits = ?26,
-                serial_parity = ?27, serial_stop_bits = ?28, serial_flow_control = ?29,
-                local_shell = ?30, local_working_dir = ?31,
-                terminal_backend = ?32, color_scheme = ?33, font_family = ?34, font_size = ?35,
-                opacity = ?36,
-                notes = ?37,
-                updated_at = datetime('now')
-             WHERE id = ?38",
-            params![
-                config.name,
-                serde_json::to_string(&config.session_type)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                config.folder_id,
-                0,
-                config.host,
-                config.port,
-                config.username,
-                config
-                    .auth_method
-                    .as_ref()
-                    .map(|a| serde_json::to_string(a).unwrap()),
-                config
-                    .host_key_policy
-                    .as_ref()
-                    .map(|p| serde_json::to_string(p).unwrap()),
-                config.key_path,
-                config.tmux_enabled as i32,
-                config.tmux_session_name,
-                config
-                    .ssh_options
-                    .as_ref()
-                    .map(|o| serde_json::to_string(o).unwrap()),
-                config.jump_session_id,
-                config
-                    .forward_rules
-                    .as_ref()
-                    .map(|r| serde_json::to_string(r).unwrap()),
-                config.rdp_domain,
-                config.rdp_width,
-                config.rdp_height,
-                config.rdp_color_depth,
-                config.rdp_compression as i32,
-                config
-                    .rdp_options
-                    .as_ref()
-                    .map(|o| serde_json::to_string(o).unwrap()),
-                config.vnc_color_depth,
-                config
-                    .vnc_options
-                    .as_ref()
-                    .map(|o| serde_json::to_string(o).unwrap()),
-                config.serial_device,
-                config.serial_baud_rate,
-                config.serial_data_bits,
-                config.serial_parity,
-                config.serial_stop_bits,
-                config.serial_flow_control,
-                config.local_shell,
-                config.local_working_dir,
-                config.preferred_backend,
-                config.color_scheme,
-                config.font_family,
-                config.font_size,
-                config.opacity,
-                config.notes,
-                config.id,
-            ],
-        )?;
+        let sql = format!(
+            "UPDATE sessions SET ({SESSION_COLUMNS}) = ({}), updated_at = datetime('now') \
+             WHERE id = ?",
+            placeholders(SESSION_COLUMN_COUNT)
+        );
+        let mut values = session_values(config)?.to_vec();
+        values.push(config.id.into());
+        self.conn.execute(&sql, params_from_iter(values))?;
         Ok(())
     }
 
-    /// Delete a saved session by id.
     pub fn delete_session(&self, id: i64) -> rusqlite::Result<()> {
         self.conn
-            .execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+            .execute("DELETE FROM sessions WHERE id = ?1", [id])?;
         Ok(())
     }
 
-    /// Mark a session as just-connected.
-    ///
-    /// Bumps `connect_count` and sets `last_connected = datetime('now')`.
+    /// Bump `connect_count` and stamp `last_connected`.
     pub fn touch_connected(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE sessions SET last_connected = datetime('now'), \
              connect_count = connect_count + 1 WHERE id = ?1",
-            params![id],
+            [id],
         )?;
         Ok(())
     }
 
-    /// Read the user-customized hotkey rows: `WHERE is_default = 0`,
-    /// oldest first (doc 07 §"Persistence", step 2).
-    ///
-    /// Rows seeded with `is_default = 1` are first-run data and are
-    /// never returned — doc 07 is explicit that they "are never loaded
-    /// back over the registry's compiled-in defaults", and filtering
-    /// here is what guarantees that even if a seed row is edited by
-    /// hand. `context` is not returned: doc 07 applies a row by action
-    /// id, and the context is a property of the registered action.
+    /// User-customized hotkey rows (`is_default = 0`), oldest first. Seeded
+    /// `is_default = 1` rows never load over the compiled-in defaults
+    /// (doc 07 §Persistence).
     pub fn load_custom_hotkeys(&self) -> rusqlite::Result<Vec<CustomHotkeyRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT action, key_sequence, enabled FROM hotkeys \
@@ -399,20 +140,10 @@ impl SessionStore {
         rows.collect()
     }
 
-    /// Write one user-customized hotkey row (`is_default = 0`).
-    ///
-    /// Doc 06 §"Default Data": "user rebinding writes is_default = 0
-    /// rows which override at load time". Rebinding the same action
-    /// twice replaces the row rather than appending a second one, which
-    /// is what the missing `UNIQUE (action, context)` constraint cannot
-    /// enforce on its own: the delete and the insert share one
-    /// `BEGIN IMMEDIATE` transaction, so the write lock is taken before
-    /// the read of the row set and two writers cannot interleave into
-    /// duplicates. `UNIQUE (action, context)` remains doc 06's
-    /// schema-v2 candidate; `db.rs` still has a single
-    /// `CREATE TABLE IF NOT EXISTS` migration and no version table, so
-    /// adding a second one is a migration-system decision, not a hotkey
-    /// one.
+    /// Write one customized hotkey row, replacing any earlier one for the
+    /// action. The schema has no `UNIQUE (action, context)` yet, so the
+    /// delete and insert share a `BEGIN IMMEDIATE` transaction to keep two
+    /// writers from interleaving into duplicates.
     pub fn save_custom_hotkey(
         &self,
         action: &str,
@@ -423,159 +154,112 @@ impl SessionStore {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         tx.execute(
             "DELETE FROM hotkeys WHERE action = ?1 AND is_default = 0",
-            params![action],
+            [action],
         )?;
         tx.execute(
             "INSERT INTO hotkeys (action, key_sequence, context, enabled, is_default) \
              VALUES (?1, ?2, ?3, ?4, 0)",
-            params![action, key_sequence, context, enabled as i32],
+            params![action, key_sequence, context, enabled],
         )?;
         tx.commit()
     }
 
-    /// Drop a user-customized hotkey row, returning the number of rows
-    /// removed.
-    ///
-    /// Called when an action is back at its compiled-in binding: with no
-    /// `is_default = 0` row, [`Self::load_custom_hotkeys`] has nothing to
-    /// say about it and the compiled-in default applies again. Seeded
-    /// `is_default = 1` rows are never in scope for this statement.
+    /// Drop an action's customized row (it is back at its default);
+    /// returns the number of rows removed.
     pub fn delete_custom_hotkey(&self, action: &str) -> rusqlite::Result<usize> {
-        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
-        let removed = tx.execute(
+        self.conn.execute(
             "DELETE FROM hotkeys WHERE action = ?1 AND is_default = 0",
-            params![action],
-        )?;
-        tx.commit()?;
-        Ok(removed)
+            [action],
+        )
     }
 
-    /// Read one row from the key-value `settings` table (doc 06).
-    ///
-    /// `Ok(None)` means the key is absent, which is distinct from an
-    /// `Err` (the database is unreadable) — callers that need a default
-    /// supply it themselves, so a missing row never silently becomes an
-    /// empty string.
-    /// Read a global setting from the `settings` key-value table.
-    ///
-    /// Returns `Ok(None)` when the row is absent — callers apply the
-    /// documented default (e.g. `tray::minimize_to_tray_enabled` treats a
-    /// missing `minimize_to_tray` row as ON). Added for P4-5; previously
-    /// only the db tests had a private equivalent.
+    /// One `settings` row; `Ok(None)` when absent.
     pub fn get_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
-        use rusqlite::OptionalExtension as _;
         self.conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                params![key],
-                |row| row.get(0),
-            )
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
             .optional()
     }
 
-    /// Upsert a global setting into the `settings` key-value table.
+    /// A boolean settings row (see [`flag_enabled`]). A row that cannot be
+    /// read counts as missing, i.e. on.
+    pub fn flag(&self, key: &str) -> bool {
+        let value = self.get_setting(key).unwrap_or_else(|err| {
+            eprintln!("Wayterm: failed to read setting '{key}': {err}");
+            None
+        });
+        flag_enabled(value.as_deref())
+    }
+
+    /// Upsert one `settings` row.
     pub fn set_setting(&self, key: &str, value: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        )?;
-        Ok(())
-    }
-    /// Persist the list of open tabs so the next launch can restore it
-    /// (doc 10 Phase 4: "Remember open tabs on exit, restore on
-    /// launch").
-    ///
-    /// # Why a `settings` row and not a table
-    ///
-    /// The open-tab list is one value that is always read whole and
-    /// written whole, and doc 06 already ships `settings(key TEXT
-    /// PRIMARY KEY, value TEXT)` for exactly that shape. A dedicated
-    /// `open_tabs` table would need its own CREATE in
-    /// [`MIGRATION_001`], its own idempotency story for databases that
-    /// are already on disk, and indexes — all to hold what a single
-    /// key-value row holds natively. The row is therefore written with
-    /// an upsert so repeated saves replace it instead of colliding on
-    /// the primary key.
-    ///
-    /// An empty list is stored as `[]`, not deleted: "no tabs open" is
-    /// a state worth remembering, and keeping the row means a fresh
-    /// store and a deliberately-emptied one are distinguishable.
-    ///
-    /// Only tab identity is stored — no credentials (doc 06
-    /// §"Credential Storage").
-    pub fn save_open_tabs(&self, tabs: &[crate::ui::tab_state::TabState]) -> rusqlite::Result<()> {
-        let json = crate::ui::tab_state::tabs_to_json(tabs)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        self.conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![crate::ui::tab_state::OPEN_TABS_SETTING_KEY, json],
+            [key, value],
         )?;
         Ok(())
     }
 
-    /// Read the persisted open-tab list.
-    ///
-    /// Returns an empty list when nothing was ever saved — a fresh
-    /// database has no `open_tabs` row, which is the same thing as "no
-    /// tabs to restore". Malformed JSON surfaces as a
-    /// [`rusqlite::Error::FromSqlConversionFailure`] rather than an
-    /// empty list: silently restoring nothing would look identical to a
-    /// successful launch with no saved tabs, and the caller can log it
-    /// and carry on.
-    pub fn load_open_tabs(&self) -> rusqlite::Result<Vec<crate::ui::tab_state::TabState>> {
-        let json: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                params![crate::ui::tab_state::OPEN_TABS_SETTING_KEY],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(json) = json else {
-            return Ok(Vec::new());
-        };
-        crate::ui::tab_state::tabs_from_json(&json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })
+    /// Persist the open-tab list (doc 10 Phase 4) as one JSON settings row —
+    /// it is always read and written whole. `[]` is stored, not deleted, so
+    /// "no tabs open" is remembered too. Tab identity only, no credentials.
+    pub fn save_open_tabs(&self, tabs: &[TabState]) -> rusqlite::Result<()> {
+        let json = tab_state::tabs_to_json(tabs)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.set_setting(tab_state::OPEN_TABS_SETTING_KEY, &json)
+    }
+
+    /// The saved open-tab list; empty when never saved. Malformed JSON is an
+    /// error, not an empty list, so the caller can tell the two apart.
+    pub fn load_open_tabs(&self) -> rusqlite::Result<Vec<TabState>> {
+        match self.get_setting(tab_state::OPEN_TABS_SETTING_KEY)? {
+            None => Ok(Vec::new()),
+            Some(json) => tab_state::tabs_from_json(&json).map_err(from_sql_error),
+        }
     }
 }
 
-/// One `hotkeys` row with `is_default = 0`, as
-/// `(action, key_sequence, enabled)`.
-///
-/// A plain tuple in the table's column order: the hotkey row carries no
-/// JSON and no typed model (doc 06 §"Database Schema"), and
-/// [`SessionStore::load_custom_hotkeys`] is its only reader.
+#[cfg(test)]
+impl SessionStore {
+    /// The seeded `is_default = 1` hotkey rows as `(action, key, context)`.
+    pub(crate) fn seeded_hotkeys(&self) -> rusqlite::Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT action, key_sequence, context FROM hotkeys WHERE is_default = 1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect()
+    }
+}
+
+/// Parse a boolean settings value. Every flag Wayterm stores defaults to on,
+/// so a missing row is on, and only an explicit `0`/`false`/`no`/`off` (any
+/// case, surrounding blanks ignored) turns one off — a typo never silently
+/// disables a safety prompt.
+pub fn flag_enabled(raw: Option<&str>) -> bool {
+    !raw.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+/// `(action, key_sequence, enabled)` of one `is_default = 0` hotkey row.
 pub type CustomHotkeyRow = (String, String, bool);
 
-/// Shared setup for both constructors: pragmas, schema, seed.
-#[allow(dead_code)]
 fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
-    // Doc 06 §"Rust Schema Definition": pragmas first, then the
-    // migration. `foreign_keys` is per-connection and re-armed on
-    // every open; `journal_mode=WAL` persists in the database file
-    // and is idempotent.
+    // `foreign_keys` is per connection; WAL persists in the file.
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     conn.execute_batch(MIGRATION_001)?;
-    seed_defaults(conn)
-}
-
-/// Insert doc 06's default hotkeys and settings exactly once.
-///
-/// The seed runs inside a transaction so a half-applied seed can
-/// never commit; the `settings` probe below then reliably detects
-/// "already seeded" on re-open. The probe — not `IF NOT EXISTS` —
-/// is what keeps `open` idempotent for the seed: `hotkeys` has no
-/// UNIQUE constraint on `action`, so re-running the seed verbatim
-/// would insert duplicate rows.
-#[allow(dead_code)]
-fn seed_defaults(conn: &mut Connection) -> rusqlite::Result<()> {
-    let seeded: i64 = conn.query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |row| {
+    // `hotkeys` has no UNIQUE constraint, so re-running the seed would
+    // duplicate rows: seed exactly once, atomically, keyed on an empty
+    // `settings` table.
+    let seeded: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |row| {
         row.get(0)
     })?;
-    if seeded == 0 {
+    if !seeded {
         let tx = conn.transaction()?;
         tx.execute_batch(SEED_DEFAULTS)?;
         tx.commit()?;
@@ -583,13 +267,88 @@ fn seed_defaults(conn: &mut Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Initial schema — doc 06 §"Database Schema", copied verbatim.
-///
-/// The only edit: `IF NOT EXISTS` on every CREATE (as doc 06's own
-/// Rust sketch shows) so re-opening an existing database succeeds.
-/// Includes the 2026-08 revision columns `host_key_policy`,
-/// `jump_session_id`, and `forward_rules`.
-#[allow(dead_code)]
+/// `sessions` columns written by insert/update, in parameter order.
+const SESSION_COLUMNS: &str = "name, type, folder_id, sort_order, \
+    host, port, username, auth_method, host_key_policy, \
+    key_path, tmux_enabled, tmux_session_name, ssh_options, jump_session_id, forward_rules, \
+    rdp_domain, rdp_width, rdp_height, rdp_color_depth, rdp_compression, rdp_options, \
+    vnc_color_depth, vnc_options, \
+    serial_device, serial_baud_rate, serial_data_bits, serial_parity, serial_stop_bits, \
+    serial_flow_control, local_shell, local_working_dir, \
+    terminal_backend, color_scheme, font_family, font_size, opacity, notes";
+const SESSION_COLUMN_COUNT: usize = 37;
+
+fn placeholders(count: usize) -> String {
+    vec!["?"; count].join(", ")
+}
+
+/// [`SESSION_COLUMNS`]' values for `config`. Enum and struct columns hold
+/// their serde JSON (doc 06); `type` included, which is why it is stored
+/// quoted.
+fn session_values(c: &SessionConfig) -> rusqlite::Result<[Value; SESSION_COLUMN_COUNT]> {
+    Ok([
+        c.name.clone().into(),
+        json(Some(&c.session_type))?,
+        c.folder_id.into(),
+        0.into(), // sort_order: not editable yet
+        c.host.clone().into(),
+        c.port.into(),
+        c.username.clone().into(),
+        json(c.auth_method.as_ref())?,
+        json(c.host_key_policy.as_ref())?,
+        c.key_path.clone().into(),
+        c.tmux_enabled.into(),
+        c.tmux_session_name.clone().into(),
+        json(c.ssh_options.as_ref())?,
+        c.jump_session_id.into(),
+        json(c.forward_rules.as_ref())?,
+        c.rdp_domain.clone().into(),
+        c.rdp_width.into(),
+        c.rdp_height.into(),
+        c.rdp_color_depth.into(),
+        c.rdp_compression.into(),
+        json(c.rdp_options.as_ref())?,
+        c.vnc_color_depth.into(),
+        json(c.vnc_options.as_ref())?,
+        c.serial_device.clone().into(),
+        c.serial_baud_rate.into(),
+        c.serial_data_bits.into(),
+        c.serial_parity.clone().into(),
+        c.serial_stop_bits.into(),
+        c.serial_flow_control.clone().into(),
+        c.local_shell.clone().into(),
+        c.local_working_dir.clone().into(),
+        c.preferred_backend.clone().into(),
+        c.color_scheme.clone().into(),
+        c.font_family.clone().into(),
+        c.font_size.into(),
+        c.opacity.into(),
+        c.notes.clone().into(),
+    ])
+}
+
+fn json<T: Serialize>(value: Option<&T>) -> rusqlite::Result<Value> {
+    value
+        .map(serde_json::to_string)
+        .transpose()
+        .map(Value::from)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
+
+fn from_sql_error(e: serde_json::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+}
+
+fn optional_json_column<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row,
+    name: &str,
+) -> rusqlite::Result<Option<T>> {
+    row.get::<_, Option<String>>(name)?
+        .map(|text| serde_json::from_str(&text).map_err(from_sql_error))
+        .transpose()
+}
+
+/// Schema v1 — doc 06 §Database Schema verbatim, plus `IF NOT EXISTS`.
 const MIGRATION_001: &str = r#"
 -- Session folders for tree organization
 CREATE TABLE IF NOT EXISTS folders (
@@ -705,12 +464,9 @@ CREATE INDEX IF NOT EXISTS idx_history_session ON connection_history(session_id)
 CREATE INDEX IF NOT EXISTS idx_history_recent ON connection_history(connected_at DESC);
 "#;
 
-/// Default rows — doc 06 §"Default Data", copied verbatim.
-///
-/// 28 hotkeys and 10 settings, inserted only into a fresh database by
-/// [`seed_defaults`]. The hotkeys MUST stay in sync with doc 07's
-/// default-actions table.
-#[allow(dead_code)]
+/// First-run seed (doc 06 §Default Data). The hotkey rows are
+/// informational (`is_default = 1` rows never load); doc 07's table in
+/// `hotkeys::defaults` is the source of truth.
 const SEED_DEFAULTS: &str = r#"
 -- Default hotkeys — MUST stay in sync with doc 07's default-actions table.
 -- (These rows are the seed data for is_default=1; user rebinding writes
@@ -773,15 +529,8 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
     Ok(SessionConfig {
         id: row.get("id")?,
         name: row.get("name")?,
-        session_type: serde_json::from_str(row.get::<_, String>("type")?.as_str()).map_err(
-            |e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            },
-        )?,
+        session_type: serde_json::from_str(&row.get::<_, String>("type")?)
+            .map_err(from_sql_error)?,
         folder_id: row.get("folder_id")?,
         host: row.get("host")?,
         port: row.get("port")?,
@@ -791,14 +540,14 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
         host_key_policy: optional_json_column(row, "host_key_policy")?,
         jump_session_id: row.get("jump_session_id")?,
         forward_rules: optional_json_column(row, "forward_rules")?,
-        tmux_enabled: row.get::<_, i32>("tmux_enabled")? != 0,
+        tmux_enabled: row.get("tmux_enabled")?,
         tmux_session_name: row.get("tmux_session_name")?,
         ssh_options: optional_json_column(row, "ssh_options")?,
         rdp_domain: row.get("rdp_domain")?,
         rdp_width: row.get("rdp_width")?,
         rdp_height: row.get("rdp_height")?,
         rdp_color_depth: row.get("rdp_color_depth")?,
-        rdp_compression: row.get::<_, i32>("rdp_compression")? != 0,
+        rdp_compression: row.get("rdp_compression")?,
         rdp_options: optional_json_column(row, "rdp_options")?,
         vnc_color_depth: row.get("vnc_color_depth")?,
         vnc_options: optional_json_column(row, "vnc_options")?,
@@ -817,28 +566,8 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
         opacity: row.get("opacity")?,
         notes: row.get("notes")?,
         last_connected: row.get("last_connected")?,
-        connect_count: row.get::<_, i32>("connect_count")? as u32,
+        connect_count: row.get("connect_count")?,
     })
-}
-
-fn optional_json_column<T: serde::de::DeserializeOwned>(
-    row: &rusqlite::Row,
-    name: &str,
-) -> rusqlite::Result<Option<T>> {
-    let text: Option<String> = row.get(name)?;
-    match text {
-        Some(s) => {
-            let value = serde_json::from_str(&s).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
-            Ok(Some(value))
-        }
-        None => Ok(None),
-    }
 }
 
 #[cfg(test)]

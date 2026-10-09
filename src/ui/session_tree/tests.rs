@@ -1,7 +1,4 @@
-//! Unit tests for the display-free data layer of [`super::SessionTree`].
-//!
-//! These tests avoid GTK initialization and exercise only
-//! [`collect_rows`] and [`icon_for_session_type`].
+//! The display-free half of the session tree: row collection and icons.
 
 use crate::store::model::{SessionConfig, SessionType};
 use crate::store::SessionStore;
@@ -125,12 +122,7 @@ fn collect_rows_sorts_folders_then_sessions_at_each_level() {
     assert_eq!(names, ["A", "Child", "child-session", "Z", "root-session",]);
 }
 
-/// Persistence smoke test: a file-backed `SessionStore` round-trips a
-/// session through a fresh connection to the same file.
-///
-/// This exercises the same `duplicate()` + re-open path that the GTK
-/// context-menu handlers rely on, proving that UI mutations will survive
-/// across app restarts.
+/// A session saved through one connection is there for the next launch.
 #[test]
 fn session_persists_across_fresh_connection() {
     let tmp = tempfile::tempdir().unwrap();
@@ -151,8 +143,6 @@ fn session_persists_across_fresh_connection() {
     };
     let id = store_a.insert_session(&session).unwrap();
 
-    // Re-open the same file with a new connection — this is what the next
-    // app launch will do.
     let store_b = SessionStore::open(&db_path).unwrap();
     let loaded = store_b.get_session(id).unwrap();
     assert_eq!(loaded.name, "prod-db");

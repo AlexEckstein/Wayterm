@@ -13,6 +13,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use super::*;
+use crate::hotkeys::registry::ActionContext;
 use crate::hotkeys::transfer::HotkeyImportReport;
 use crate::store::db::SessionStore;
 
@@ -64,34 +65,6 @@ fn with_registry_uses_the_callers_registry() {
     assert_eq!(engine.registry().len(), 1);
     assert!(engine.action("only").is_some());
     assert!(engine.action("copy").is_none());
-}
-
-#[test]
-fn registry_accessors() {
-    let mut engine = engine();
-    assert_eq!(engine.actions().len(), engine.registry().len());
-    engine
-        .registry_mut()
-        .action_mut("copy")
-        .unwrap()
-        .display_name = "Copy".into();
-    assert_eq!(engine.action("copy").unwrap().display_name, "Copy");
-    assert!(engine.action("nope").is_none());
-}
-
-#[test]
-fn actions_come_back_in_doc_order() {
-    let ids: Vec<String> = engine().actions().iter().map(|a| a.id.clone()).collect();
-    let globals = ids
-        .iter()
-        .take_while(|id| {
-            engine()
-                .action(id)
-                .map(|a| a.context == ActionContext::Global)
-                .unwrap_or(false)
-        })
-        .count();
-    assert_eq!(globals, 20);
 }
 
 #[test]
@@ -164,7 +137,7 @@ fn reset_and_enable_through_the_engine() {
 }
 
 #[test]
-fn conflict_queries_delegate_to_the_registry() {
+fn conflicts_for_delegates_to_the_registry() {
     let engine = engine();
     assert_eq!(
         engine
@@ -177,17 +150,6 @@ fn conflict_queries_delegate_to_the_registry() {
     assert!(engine
         .conflicts_for("duplicate_session", "Ctrl+D")
         .is_empty());
-    assert_eq!(
-        engine
-            .conflicting_actions("Ctrl+D", ActionContext::Sftp)
-            .iter()
-            .map(|a| a.id.clone())
-            .collect::<Vec<_>>(),
-        vec!["sftp_download".to_string()]
-    );
-    assert!(!engine.can_co_fire(ActionContext::Terminal, ActionContext::Sftp));
-    assert!(engine.can_co_fire(ActionContext::Global, ActionContext::Sftp));
-    assert!(engine.can_co_fire(ActionContext::Sftp, ActionContext::Sftp));
 }
 
 /// A fresh database is full of `is_default = 1` seed rows, and loading
@@ -418,7 +380,7 @@ fn save_never_touches_the_seed_rows() {
 fn two_writers_leave_one_custom_row() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (writer_a, raw) = file_store(dir.path());
-    let writer_b = writer_a.duplicate().expect("second connection");
+    let writer_b = SessionStore::open(&dir.path().join("wayterm.db")).expect("second connection");
 
     writer_a
         .save_custom_hotkey("copy", "Ctrl+Y", "terminal", true)

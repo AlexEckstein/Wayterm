@@ -23,7 +23,7 @@ const TABLES: &[&str] = &[
     "connection_history",
 ];
 
-/// Names of the indexes `open` must create (doc 06 §"Indexes").
+/// Names of the indexes `open` must create (doc 06 §"Database Schema").
 const INDEXES: &[&str] = &[
     "idx_sessions_folder",
     "idx_sessions_type",
@@ -64,9 +64,8 @@ impl SessionStore {
             .flatten()
     }
 
-    /// Raw session row for CRUD tests: (folder_id,) by id. Session
-    /// CRUD is Task 5; these tests go around the typed API on
-    /// purpose — they exist to pin the schema's ON DELETE behavior.
+    /// Raw `folder_id` of a session, bypassing the typed API to pin the
+    /// schema's ON DELETE behavior.
     fn session_folder_id(&self, id: i64) -> Option<i64> {
         self.conn
             .query_row(
@@ -79,8 +78,7 @@ impl SessionStore {
             .flatten()
     }
 
-    /// Direct SQL session insert for FK-behavior tests (Task 5 adds
-    /// the typed API). Columns per doc 06 §"Database Schema".
+    /// Raw session insert for the FK-behavior tests.
     fn insert_session_row(&self, name: &str, folder_id: Option<i64>) -> i64 {
         self.conn
             .execute(
@@ -348,7 +346,7 @@ fn delete_childless_folder_is_noop() {
 }
 
 // ---------------------------------------------------------------------------
-// Session CRUD (Task 5)
+// Session CRUD
 // ---------------------------------------------------------------------------
 
 use crate::store::model::{
@@ -574,40 +572,13 @@ fn json_columns_survive_roundtrip() {
     assert_session_eq(&loaded, &config);
 }
 
-/// Regression test for the Task-8 bug: `SessionStore::duplicate()` must
-/// re-open the same file so that mutations made through a duplicate are
-/// visible to the original connection. An in-memory snapshot would hide the
-/// mutation.
 #[test]
-fn duplicate_of_file_store_sees_mutations_on_original_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("wayterm.sqlite3");
-
-    let original = SessionStore::open(&path).unwrap();
-    let duplicate = original.duplicate().unwrap();
-
-    // Mutate through the duplicate.
-    duplicate.insert_folder("persisted", None).unwrap();
-
-    // Verify through the original (and its own fresh query).
-    let folders = original.list_folders(None).unwrap();
-    assert_eq!(folders.len(), 1);
-    assert_eq!(folders[0].name, "persisted");
-}
-
-/// `duplicate()` on an in-memory store still produces an isolated snapshot
-/// (the only thing SQLite's backup API allows for `:memory:`).
-#[test]
-fn duplicate_of_in_memory_store_is_isolated_snapshot() {
-    let original = SessionStore::in_memory().unwrap();
-    original.insert_folder("original-only", None).unwrap();
-
-    let duplicate = original.duplicate().unwrap();
-
-    // The duplicate should see what existed at copy time.
-    assert_eq!(duplicate.list_folders(None).unwrap().len(), 1);
-
-    // Mutations on the duplicate must not leak back.
-    duplicate.insert_folder("duplicate-only", None).unwrap();
-    assert_eq!(original.list_folders(None).unwrap().len(), 1);
+fn flags_are_on_unless_explicitly_off() {
+    assert!(flag_enabled(None));
+    for on in ["1", "true", "TRUE", "yes", "on", " 1 ", "anything-else"] {
+        assert!(flag_enabled(Some(on)), "{on:?}");
+    }
+    for off in ["0", "false", "False", "no", "off", " 0 ", "OFF"] {
+        assert!(!flag_enabled(Some(off)), "{off:?}");
+    }
 }

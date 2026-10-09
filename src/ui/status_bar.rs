@@ -1,18 +1,6 @@
-//! Status bar — connection state, host and connection duration
-//! (doc 10 Phase 2 checklist item "Status bar: connection state, host,
-//! duration"; state values from doc 04's `TransportState`).
-//!
-//! Split into a display-free data layer ([`StatusView`],
-//! [`status_view_from`], [`format_elapsed`]) and a thin GTK layer
-//! ([`StatusBar`]), the same split used by `session_tree` and
-//! `session_dialog`.  All mapping and formatting logic lives in the data
-//! layer and is exercised by the tests in [`tests`] without a display;
-//! the GTK layer only renders a [`StatusView`].
-//!
-//! **Scope:** this task builds and displays the bar only.  Resetting to
-//! `Disconnected` on tab switch/close, and pushing real transport state
-//! from the tabs, is the caller's job (P2-7b) — this module exposes
-//! nothing but [`StatusBar::set_state`].
+//! The status bar: connection state, host, and time connected (doc 10
+//! Phase 2). [`status_view_from`] decides what to show; [`StatusBar`]
+//! only renders it. Which tab drives it is the window's business.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,19 +11,18 @@ use gtk4::prelude::*;
 
 use crate::transport::types::TransportState;
 
-/// Colour family of the state indicator.
+/// The indicator's colour family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ColorKind {
-    /// Connected and healthy.
+    /// Connected.
     Green,
-    /// Transient — connecting, verifying, authenticating, reconnecting.
+    /// On the way: connecting, verifying, authenticating, reconnecting.
     Yellow,
-    /// Terminal failure or no connection.
+    /// Disconnected or failed.
     Red,
 }
 
 impl ColorKind {
-    /// Hex foreground colour of the state indicator dot.
     pub fn hex(self) -> &'static str {
         match self {
             Self::Green => "#4caf50",
@@ -45,22 +32,19 @@ impl ColorKind {
     }
 }
 
-/// Everything the status bar displays, computed without touching GTK.
+/// What the bar shows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatusView {
-    /// Human-readable state text, e.g. "Connected to example.com:22".
+    /// E.g. "Connected to example.com:22".
     pub state: String,
-    /// Colour family of the indicator.
     pub color: ColorKind,
-    /// Host shown next to the state; `None` when there is no host yet.
     pub host: Option<String>,
-    /// Elapsed connection time in seconds, only set while connected.
+    /// Only while connected.
     pub elapsed_secs: Option<u64>,
 }
 
 impl StatusView {
-    /// The full line of text the bar shows, e.g.
-    /// "Connected to example.com:22 — 12:34".
+    /// E.g. "Connected to example.com:22 — 12:34".
     pub fn text(&self) -> String {
         match self.elapsed_secs {
             Some(secs) => format!("{} — {}", self.state, format_elapsed(secs)),
@@ -69,12 +53,8 @@ impl StatusView {
     }
 }
 
-/// Build the display-free view for a transport state.
-///
-/// `host` is reported as-is and appears in the state text whenever it is
-/// non-empty (doc 01 shows the host in the status bar).  `elapsed_secs`
-/// only applies to [`TransportState::Connected`]; it is dropped for every
-/// other state so a stale duration can never be displayed.
+/// The view for `state`. The elapsed time is kept only while connected, so
+/// a stale duration is never shown.
 pub fn status_view_from(
     state: &TransportState,
     host: &str,
@@ -118,7 +98,7 @@ pub fn status_view_from(
     }
 }
 
-/// Format an elapsed duration as `mm:ss`, or `h:mm:ss` from one hour on.
+/// `m:ss`, or `h:mm:ss` from one hour on.
 pub fn format_elapsed(secs: u64) -> String {
     let hours = secs / 3600;
     let minutes = (secs % 3600) / 60;
@@ -130,21 +110,13 @@ pub fn format_elapsed(secs: u64) -> String {
     }
 }
 
-/// Live state of the elapsed-connection timer.
 #[derive(Default)]
 struct TimerState {
-    /// Source id of the running glib timeout, if any.
     id: Option<glib::SourceId>,
-    /// Instant the current connection started counting from.
     connected_at: Option<Instant>,
 }
 
-/// GTK status bar for the bottom of the main window.
-///
-/// Shows a coloured state indicator, the state text (including host and
-/// port while connected) and — once connected — a per-second elapsed
-/// connection timer.  Callers drive it exclusively through
-/// [`set_state`](StatusBar::set_state).
+/// A coloured dot, the state text, and a per-second timer while connected.
 pub struct StatusBar {
     container: gtk4::Box,
     dot: gtk4::Label,
@@ -153,8 +125,7 @@ pub struct StatusBar {
 }
 
 impl StatusBar {
-    /// Build a status bar showing the initial `Disconnected` state with no
-    /// host; the first [`set_state`](Self::set_state) call replaces it.
+    /// Starts out Disconnected.
     pub fn new() -> Self {
         let dot = gtk4::Label::new(None);
         dot.set_use_markup(true);
@@ -188,17 +159,11 @@ impl StatusBar {
         this
     }
 
-    /// Return the status bar's root widget for insertion into the layout.
     pub fn widget(&self) -> &gtk4::Widget {
         self.container.upcast_ref()
     }
 
-    /// Show `state` for the connection to `host:port`.
-    ///
-    /// Entering [`TransportState::Connected`] (re)starts the per-second
-    /// elapsed timer; every other state stops it, so no glib source
-    /// survives a state change.  The bar is a passive display: deciding
-    /// *which* state to show is the caller's business.
+    /// Show `state`; Connected (re)starts the timer, anything else stops it.
     pub fn set_state(&self, state: &TransportState, host: &str, port: u16) {
         match state {
             TransportState::Connected => {
@@ -212,7 +177,6 @@ impl StatusBar {
         }
     }
 
-    /// Restart the elapsed timer for a fresh connection to `host:port`.
     fn start_timer(&self, host: &str, port: u16) {
         let timer = Rc::clone(&self.timer);
         *timer.borrow_mut() = TimerState {
@@ -240,15 +204,9 @@ impl StatusBar {
             glib::ControlFlow::Continue
         });
 
-        let mut state = timer.borrow_mut();
-        // A state change between scheduling and storing the id would have
-        // cleared the cell, but set_state runs on this same main thread, so
-        // the slot is always empty here.
-        debug_assert!(state.id.is_none());
-        state.id = Some(source);
+        timer.borrow_mut().id = Some(source);
     }
 
-    /// Stop the elapsed timer, if one is running.
     fn stop_timer(&self) {
         if let Some(id) = self.timer.borrow_mut().id.take() {
             id.remove();
@@ -256,7 +214,6 @@ impl StatusBar {
         self.timer.borrow_mut().connected_at = None;
     }
 
-    /// Render a view into the widgets.
     fn render(&self, view: &StatusView) {
         self.dot.set_markup(&format!(
             "<span foreground=\"{}\">●</span>",

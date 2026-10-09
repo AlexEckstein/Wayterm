@@ -1,49 +1,32 @@
-//! Hotkey config export/import as JSON (doc 07 §"Persistence", last
-//! paragraph: "hotkey configs export to JSON independently of sessions,
-//! for sharing keyboard layouts between machines").
-//!
-//! Only *deviations* from doc 07's compiled-in table are exported: an
-//! action still at its default needs no row, and leaving them out means
-//! an import onto a newer build keeps that build's defaults instead of
-//! pinning the old ones. The `is_default` flag travels with every
-//! entry anyway, so the document is self-describing and an entry that
-//! later *does* name the default key round-trips to "no deviation".
-//!
-//! Import applies the doc's load semantics to the file it is given:
-//! an entry for an action this build does not know is skipped and
-//! reported, never an error — a shared layout may have been written by a
-//! build with more actions.
-//!
-//! No credential material is involved: bindings are chord strings, not
-//! connection parameters (doc 06 §"Credential Storage").
+//! Hotkey layouts as JSON, for sharing between machines (doc 07
+//! §Persistence). Only deviations from the defaults are exported, so an
+//! import onto a newer build keeps that build's defaults; entries for
+//! unknown actions are skipped and reported, never an error.
 
 use serde::{Deserialize, Serialize};
 
 use crate::hotkeys::registry::{ActionContext, ActionRegistry, ConflictPolicy};
 
-/// Schema version of the export document.
+/// Export document schema version.
 pub const HOTKEY_EXPORT_VERSION: u32 = 1;
 
 /// A hotkey export document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotkeyExport {
     pub version: u32,
-    /// Actions that deviate from the compiled-in defaults, in doc 07
-    /// table order.
+    /// Deviating actions, in table order.
     pub bindings: Vec<ExportedBinding>,
 }
 
 /// One exported binding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportedBinding {
-    /// Action id (doc 07 §"Action Registry": `"new_tab"`).
     pub action: String,
-    /// Human-readable name at export time, for review before import.
+    /// For review before import.
     pub display_name: String,
-    /// UI-format key (`"Ctrl+Shift+T"`), or `""` for an action an
-    /// override unbound.
+    /// UI format; `""` for an action an override unbound.
     pub key: String,
-    /// The action's context, as the `hotkeys.context` wire string.
+    /// The `hotkeys.context` wire string.
     pub context: String,
     pub enabled: bool,
     pub is_default: bool,
@@ -52,21 +35,14 @@ pub struct ExportedBinding {
 /// What [`import_json`] did with an export document.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HotkeyImportReport {
-    /// Action ids whose binding the import changed.
     pub applied: Vec<String>,
-    /// Action ids this build does not know — skipped (doc 07's
-    /// skip-unknown rule).
+    /// Unknown actions, wrong contexts, or keys that no longer bind.
     pub skipped: Vec<String>,
-    /// Actions the import unbound because it overrode their chord.
+    /// Actions unbound because an imported chord overrode theirs.
     pub displaced: Vec<String>,
 }
 
 /// Serialize the registry's deviating bindings.
-///
-/// ```text
-/// {"version":1,"bindings":[{"action":"copy","display_name":"Copy Selection",
-///  "key":"Ctrl+Shift+C","context":"terminal","enabled":true,"is_default":false}]}
-/// ```
 pub fn export_json(registry: &ActionRegistry) -> serde_json::Result<String> {
     let bindings = registry
         .custom_actions()
@@ -86,18 +62,9 @@ pub fn export_json(registry: &ActionRegistry) -> serde_json::Result<String> {
     })
 }
 
-/// Apply an export document to `registry`.
-///
-/// The document is authoritative: an incoming chord overrides whatever
-/// holds it now (doc 07's "Override?" answered once for the whole
-/// file), and the losers are unbound. Entries for unknown action ids are
-/// skipped and reported. An entry whose key no longer binds (a default
-/// that changed under it) is skipped too, rather than stored dead.
-///
-/// A `version` other than [`HOTKEY_EXPORT_VERSION`] is still applied:
-/// unknown *fields* are ignored by serde and unknown *action ids* are
-/// skipped, so a forward-compatible document degrades to a partial
-/// import instead of failing outright.
+/// Apply an export document. Its chords override whatever holds them now
+/// (the losers are unbound). Any `version` is accepted: unknown fields and
+/// actions degrade to a partial import.
 pub fn import_json(
     registry: &mut ActionRegistry,
     json: &str,
@@ -114,15 +81,12 @@ pub fn import_json(
             continue;
         };
         if Some(context) != registry.context_of(&binding.action) {
-            // The document moves the action to a context this build
-            // gives a different tier; rebinding across tiers would
-            // create conflicts the file never resolved.
+            // A different tier here: its conflicts were never resolved.
             report.skipped.push(binding.action);
             continue;
         }
         if binding.key.is_empty() {
-            // An unbound action: apply the unbind directly, since there
-            // is no chord to check for conflicts.
+            // An unbind has no chord to check.
             if let Some(action) = registry.action_mut(&binding.action) {
                 action.current_key.clear();
                 action.enabled = binding.enabled;

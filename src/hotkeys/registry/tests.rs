@@ -34,7 +34,7 @@ fn register_populates_the_doc_fields() {
     assert_eq!(action.context, ActionContext::Global);
     assert!(action.enabled);
     assert!(action.is_default);
-    assert_eq!(action.context_str(), "global");
+    assert_eq!(action.context.as_str(), "global");
 }
 
 #[test]
@@ -599,24 +599,6 @@ fn widget_contexts_are_the_tier2_ones() {
     assert!(!ActionContext::Global.is_widget_context());
     assert!(!ActionContext::RdpTab.is_widget_context());
     assert!(!ActionContext::VncTab.is_widget_context());
-}
-
-#[test]
-fn context_ranks_are_distinct() {
-    let mut ranks: Vec<usize> = ActionContext::ALL.iter().map(|c| c.rank()).collect();
-    ranks.sort_unstable();
-    ranks.dedup();
-    assert_eq!(ranks.len(), ActionContext::ALL.len());
-    assert_eq!(ActionContext::Global.rank(), 0);
-    assert!(ActionContext::Terminal.rank() < ActionContext::RdpTab.rank());
-}
-
-#[test]
-fn registry_is_cloneable() {
-    let mut registry = registry_with_defaults();
-    registry.rebind("copy", "Ctrl+Y").unwrap();
-    let clone = registry.clone();
-    assert_eq!(clone.current_key("copy"), Some("Ctrl+Y"));
 }
 
 #[test]

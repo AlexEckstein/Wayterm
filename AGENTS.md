@@ -13,10 +13,9 @@ multi-protocol connection manager and terminal for Linux. Rust + GTK4 +
 VTE, russh SSH, rusqlite, libsecret keyring.
 Repo: github.com/AlexEckstein/Wayterm.
 
-**Current state: design phase.** The numbered docs (`01-…` through
-`11-…`) at the repo root are the source of truth for architecture —
-reviewed, fact-checked (versions verified 2026-08-28), and committed.
-No Rust code exists yet; Phase 1 (doc 10) creates the scaffold.
+**Current state:** Phases 1–4 are implemented (doc 10 has the status
+and the remaining gaps). The design docs `docs/01-…` through
+`docs/11-…` are the source of truth for architecture.
 
 ## Non-negotiable rules
 
@@ -34,9 +33,9 @@ No Rust code exists yet; Phase 1 (doc 10) creates the scaffold.
    report, not the diff.
 5. **Verification is part of the task.** Done means `cargo fmt
    --check`, `cargo clippy -- -D warnings`, and `cargo test` all pass,
-   plus the task's acceptance criteria (doc 10 for phase-level work).
-   In design phase, done means every doc you touched stays consistent
-   with every cross-referenced doc.
+   plus the task's acceptance criteria (doc 10 for phase-level work),
+   and every doc you touched stays consistent with every
+   cross-referenced doc.
 6. **Small, single-purpose commits.** Conventional-commit style
    (`feat:`, `fix:`, `docs:`, `test:`, `chore:`). Never amend or
    rebase a branch someone else may have fetched.
@@ -75,10 +74,10 @@ No Rust code exists yet; Phase 1 (doc 10) creates the scaffold.
   the rust and audit jobs.
 - **docs** — always runs: validates that relative links across the
   design docs resolve.
-- **rust** — activates automatically at Phase 1: fmt check, clippy
-  `-D warnings`, `cargo test`, plus a local sshd for transport
-  integration tests (`SSH_TEST_*` env vars, doc 11 §Testing). Phase
-  2's definition of done requires this job.
+- **rust** — fmt check, clippy `--all-targets -D warnings`, `cargo
+  test` (sshd-gated suites skip themselves), then a real sshd for
+  `tests/transport_sshd.rs` (`SSH_TEST_*` env vars, doc 11 §Testing
+  Strategy).
 - **audit** — weekly cargo advisory sweep once `Cargo.lock` exists.
 
 Do not disable or bypass checks to get green. Do not push with
@@ -93,16 +92,17 @@ Do not disable or bypass checks to get green. Do not push with
 - The agent runtime (herdr, tmux, bare terminals) is a per-machine
   choice; this file and the repo are the shared contract.
 
-## Repository layout (target; docs move to docs/ at Phase 1)
+## Repository layout
 
 ```
-docs/           ← design docs 01–11
-src/transport/  ← Transport trait + SSH/Local/Serial impls (doc 04)
-src/backend/    ← TerminalBackend + VteBackend + FakeBackend (doc 02)
-src/connection/ ← SshConnection, supervisor (docs 04/11)
-src/sftp/       ← SFTP task + commands (doc 09)
-src/ui/         ← GTK window, tabs, session tree, sidebar (docs 01/07/09)
-src/store/      ← SQLite session store (doc 06)
-src/hotkeys/    ← ActionRegistry, HotkeyEngine (doc 07)
-tests/          ← integration tests incl. sshd CI tests (doc 11)
+docs/            ← design docs 01–11
+src/terminal/    ← TerminalBackend, VteBackend, FakeBackend (doc 02)
+src/transport/   ← Transport, SSHTransport, SshConnection, supervisor,
+                   auth, host keys, credentials, reconnect, TerminalTab (docs 04/11)
+src/sftp/        ← SFTP task + commands (doc 09)
+src/store/       ← SQLite session store and model (doc 06)
+src/hotkeys/     ← ActionRegistry, HotkeyEngine (doc 07)
+src/ui/          ← GTK window, tabs, dialogs, session tree, sidebar, tray (docs 01/07/09)
+tests/           ← integration tests; tests/common is the shared sshd fixture (doc 11)
+scripts/         ← local sshd runners for the integration suites
 ```

@@ -1,8 +1,6 @@
 //! Reconnect-driver integration tests against a real sshd.
 //!
-//! Skipped unless the environment variables are set:
-//!   SSH_TEST_HOST, SSH_TEST_PORT, SSH_TEST_USER, SSH_TEST_PASSWORD,
-//!   SSH_TEST_KEY_PATH
+//! Needs the `common` sshd fixture.
 //!
 //! # What this does and does not prove
 //!
@@ -20,108 +18,26 @@
 //! Covered here: the driver's connect closure, its cancellation, and the
 //! `TransportState` transitions on a real [`SshConnection`]. Not covered:
 //! `ConnectionLost` detection itself, which lives in `SSHTransport`'s
-//! reader task (asserted by that lane's `tests/transport_sshd.rs`).
+//! reader task (asserted by `tests/transport_sshd.rs`).
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+mod common;
+
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use russh::client::{self, Config, Handle};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
-use wayterm::store::model::HostKeyPolicy;
-use wayterm::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
-use wayterm::transport::credentials::{CredentialManager, PromptSource};
-use wayterm::transport::hostkey::{HostKeyDecision, HostKeyVerifier};
+use common::*;
+use wayterm::transport::connection::SshConnection;
 use wayterm::transport::reconnect::{
     ConnectFn, ConnectFuture, ReconnectDriver, ReconnectEvent, ReconnectOutcome, ReconnectPolicy,
 };
 use wayterm::transport::ssh::SSHTransport;
 use wayterm::transport::types::{Transport, TransportError, TransportEvent, TransportState};
-use zeroize::Zeroizing;
-
-struct Fixture {
-    host: String,
-    port: u16,
-    user: String,
-    password: String,
-}
-
-fn read_fixture() -> Option<Fixture> {
-    let host = std::env::var("SSH_TEST_HOST").ok()?;
-    let port = std::env::var("SSH_TEST_PORT").ok()?.parse().ok()?;
-    let user = std::env::var("SSH_TEST_USER").ok()?;
-    let password = std::env::var("SSH_TEST_PASSWORD").ok()?;
-    Some(Fixture {
-        host,
-        port,
-        user,
-        password,
-    })
-}
-
-fn skip() {
-    println!(
-        "Skipping reconnect sshd integration test: set SSH_TEST_HOST, SSH_TEST_PORT, \
-         SSH_TEST_USER, and SSH_TEST_PASSWORD to run it."
-    );
-}
-
-fn accept_all_verifier() -> HostKeyVerifier {
-    HostKeyVerifier::new(
-        HostKeyPolicy::Off,
-        Arc::new(|_| HostKeyDecision::Accept),
-        None,
-    )
-}
-
-async fn connect_raw(host: &str, port: u16, username: &str) -> Handle<AppClientHandler> {
-    let config = Arc::new(Config::default());
-    let addr = SocketAddr::new(
-        host.parse::<IpAddr>()
-            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-        port,
-    );
-    let handler = AppClientHandler {
-        host: host.into(),
-        port,
-        username: username.into(),
-        host_key_verifier: accept_all_verifier(),
-        state_tx: None,
-    };
-    client::connect(config, addr, handler)
-        .await
-        .expect("raw sshd connection failed")
-}
-
-fn password_cred_manager(password: &str) -> CredentialManager {
-    let prompt_source = PromptSource::new(Arc::new({
-        let password = password.to_string();
-        move |_session_id, secret_type| match secret_type {
-            "password" => Some(Zeroizing::new(password.clone().into_bytes())),
-            _ => None,
-        }
-    }));
-    CredentialManager::new(vec![Box::new(prompt_source)])
-}
-
-async fn authenticated_connection(f: &Fixture) -> Arc<SshConnection> {
-    let handle = connect_raw(&f.host, f.port, &f.user).await;
-    let connection = SshConnection::new(handle, f.host.clone(), f.port, f.user.clone());
-    connection
-        .authenticate(
-            &AuthMethod::Password(f.password.clone()),
-            &password_cred_manager(&f.password),
-            None,
-        )
-        .await
-        .expect("authentication failed");
-    Arc::new(connection)
-}
 
 /// A reconnectable transport slot standing in for the supervisor: one
 /// shared [`SshConnection`], a fresh [`SSHTransport`] per attempt, exactly
@@ -209,34 +125,6 @@ impl Supervisor {
     }
 }
 
-/// Wait for `needle` to appear on the transport's event channel.
-async fn collect_echo(
-    rx: &mut mpsc::Receiver<TransportEvent>,
-    needle: &str,
-    deadline: Duration,
-) -> String {
-    let result = timeout(deadline, async {
-        let mut output = String::new();
-        loop {
-            match rx.recv().await {
-                Some(TransportEvent::DataReceived(bytes)) => {
-                    output.push_str(&String::from_utf8_lossy(&bytes));
-                    if output.contains(needle) {
-                        return output;
-                    }
-                }
-                Some(TransportEvent::ConnectionLost) => {
-                    panic!("connection lost before seeing '{needle}'")
-                }
-                Some(_) => {}
-                None => panic!("event channel closed before seeing '{needle}'"),
-            }
-        }
-    })
-    .await;
-    result.unwrap_or_else(|_| panic!("timed out waiting for '{needle}'"))
-}
-
 /// Drain the driver's progress channel into a vector.
 fn drain_events(rx: &mut mpsc::UnboundedReceiver<ReconnectEvent>) -> Vec<ReconnectEvent> {
     let mut out = Vec::new();
@@ -251,12 +139,9 @@ fn drain_events(rx: &mut mpsc::UnboundedReceiver<ReconnectEvent>) -> Vec<Reconne
 /// transport actually executes a remote command.
 #[tokio::test]
 async fn driver_reconnects_against_a_real_server_and_exec_works() {
-    let Some(f) = read_fixture() else {
-        skip();
-        return;
-    };
+    let Some(f) = fixture() else { return };
 
-    let connection = authenticated_connection(&f).await;
+    let connection = connect_password(&f).await;
     let (supervisor, mut rx) = Supervisor::new(connection);
     let supervisor = Arc::new(supervisor);
     let connect = supervisor.connect_fn();
@@ -267,7 +152,7 @@ async fn driver_reconnects_against_a_real_server_and_exec_works() {
         .write(b"echo 'before-drop'\n")
         .await
         .expect("write failed");
-    collect_echo(&mut rx, "before-drop", Duration::from_secs(10)).await;
+    collect_echo(&mut rx, "before-drop").await;
 
     // Drop it, the way a network fault looks from here.
     supervisor.disconnect().await.expect("disconnect failed");
@@ -291,7 +176,7 @@ async fn driver_reconnects_against_a_real_server_and_exec_works() {
         .write(b"echo 'after-reconnect'\n")
         .await
         .expect("write after reconnect failed");
-    collect_echo(&mut rx, "after-reconnect", Duration::from_secs(10)).await;
+    collect_echo(&mut rx, "after-reconnect").await;
 
     let log = drain_events(&mut event_rx);
     assert!(matches!(
@@ -327,12 +212,9 @@ async fn driver_reconnects_against_a_real_server_and_exec_works() {
 /// auto-mode unit tests walk on virtual time, here on a live server.
 #[tokio::test]
 async fn driver_retries_a_failed_attempt_then_connects_for_real() {
-    let Some(f) = read_fixture() else {
-        skip();
-        return;
-    };
+    let Some(f) = fixture() else { return };
 
-    let connection = authenticated_connection(&f).await;
+    let connection = connect_password(&f).await;
     let (supervisor, _rx) = Supervisor::new(connection);
     let supervisor = Arc::new(supervisor);
     let connect = supervisor.connect_fn();
@@ -377,12 +259,9 @@ async fn driver_retries_a_failed_attempt_then_connects_for_real() {
 /// assert, here measured in real seconds.
 #[tokio::test]
 async fn cancel_mid_backoff_opens_no_further_channel() {
-    let Some(f) = read_fixture() else {
-        skip();
-        return;
-    };
+    let Some(f) = fixture() else { return };
 
-    let connection = authenticated_connection(&f).await;
+    let connection = connect_password(&f).await;
     let (supervisor, _rx) = Supervisor::new(connection);
     let supervisor = Arc::new(supervisor);
     let connect = supervisor.connect_fn();
@@ -415,12 +294,9 @@ async fn cancel_mid_backoff_opens_no_further_channel() {
 /// driver must never touch the transport.
 #[tokio::test]
 async fn prompt_mode_declined_never_opens_a_channel() {
-    let Some(f) = read_fixture() else {
-        skip();
-        return;
-    };
+    let Some(f) = fixture() else { return };
 
-    let connection = authenticated_connection(&f).await;
+    let connection = connect_password(&f).await;
     let (supervisor, _rx) = Supervisor::new(connection);
     let supervisor = Arc::new(supervisor);
     let connect = supervisor.connect_fn();
@@ -448,12 +324,9 @@ async fn prompt_mode_declined_never_opens_a_channel() {
 /// "needs a fresh connect".
 #[tokio::test]
 async fn a_dropped_real_transport_reads_disconnected_and_needs_a_fresh_connect() {
-    let Some(f) = read_fixture() else {
-        skip();
-        return;
-    };
+    let Some(f) = fixture() else { return };
 
-    let connection = authenticated_connection(&f).await;
+    let connection = connect_password(&f).await;
     let (supervisor, mut rx) = Supervisor::new(connection);
     let supervisor = Arc::new(supervisor);
     let connect = supervisor.connect_fn();
@@ -464,7 +337,7 @@ async fn a_dropped_real_transport_reads_disconnected_and_needs_a_fresh_connect()
         .write(b"echo 'marker-1'\n")
         .await
         .expect("write failed");
-    collect_echo(&mut rx, "marker-1", Duration::from_secs(10)).await;
+    collect_echo(&mut rx, "marker-1").await;
 
     supervisor.disconnect().await.expect("disconnect failed");
     assert_eq!(supervisor.state().await, TransportState::Disconnected);
@@ -483,7 +356,7 @@ async fn a_dropped_real_transport_reads_disconnected_and_needs_a_fresh_connect()
         .write(b"echo 'marker-3'\n")
         .await
         .expect("write after reconnect failed");
-    collect_echo(&mut rx, "marker-3", Duration::from_secs(10)).await;
+    collect_echo(&mut rx, "marker-3").await;
 
     supervisor
         .disconnect()
@@ -496,12 +369,9 @@ async fn a_dropped_real_transport_reads_disconnected_and_needs_a_fresh_connect()
 /// reconnect restores full state).
 #[tokio::test]
 async fn reconnected_transport_keeps_its_pty_size() {
-    let Some(f) = read_fixture() else {
-        skip();
-        return;
-    };
+    let Some(f) = fixture() else { return };
 
-    let connection = authenticated_connection(&f).await;
+    let connection = connect_password(&f).await;
     let (mut raw_supervisor, mut rx) = Supervisor::new(connection);
     raw_supervisor.rows = 42;
     raw_supervisor.cols = 137;
@@ -513,7 +383,7 @@ async fn reconnected_transport_keeps_its_pty_size() {
         .write(b"stty size\n")
         .await
         .expect("write failed");
-    collect_echo(&mut rx, "42 137", Duration::from_secs(10)).await;
+    collect_echo(&mut rx, "42 137").await;
 
     supervisor.disconnect().await.expect("disconnect failed");
 
@@ -529,7 +399,7 @@ async fn reconnected_transport_keeps_its_pty_size() {
         .write(b"stty size\n")
         .await
         .expect("write after reconnect failed");
-    collect_echo(&mut rx, "42 137", Duration::from_secs(10)).await;
+    collect_echo(&mut rx, "42 137").await;
 
     supervisor
         .disconnect()

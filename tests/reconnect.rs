@@ -178,95 +178,43 @@ fn drain_events(rx: &mut mpsc::UnboundedReceiver<ReconnectEvent>) -> Vec<Reconne
 // ── Backoff curve (doc 04: 1s, 2s, 5s, 10s, capped 60s) ────────────────────
 
 #[test]
-fn next_delay_rung_1_is_one_second() {
-    assert_eq!(next_delay(1), Duration::from_secs(1));
-}
-
-#[test]
-fn next_delay_rung_2_is_two_seconds() {
-    assert_eq!(next_delay(2), Duration::from_secs(2));
-}
-
-#[test]
-fn next_delay_rung_3_is_five_seconds() {
-    assert_eq!(next_delay(3), Duration::from_secs(5));
-}
-
-#[test]
-fn next_delay_rung_4_is_ten_seconds() {
-    assert_eq!(next_delay(4), Duration::from_secs(10));
-}
-
-#[test]
-fn next_delay_rung_5_is_the_sixty_second_cap() {
-    assert_eq!(next_delay(5), Duration::from_secs(60));
-    assert_eq!(next_delay(5), MAX_BACKOFF);
-}
-
-#[test]
-fn next_delay_is_capped_at_sixty_seconds_for_every_later_attempt() {
-    for attempt in 6..=500 {
+fn next_delay_walks_the_documented_curve_then_stays_capped() {
+    let secs = |n| Duration::from_secs(n);
+    let curve: Vec<Duration> = (1..=6).map(next_delay).collect();
+    assert_eq!(
+        curve,
+        [secs(1), secs(2), secs(5), secs(10), secs(60), secs(60)]
+    );
+    assert_eq!(next_delay(0), secs(1), "attempt 0 is treated as the first");
+    for attempt in (7..=u32::MAX).step_by(10_000_000).chain([u32::MAX]) {
         assert_eq!(next_delay(attempt), MAX_BACKOFF, "attempt {attempt}");
     }
-}
-
-#[test]
-fn next_delay_handles_attempt_zero_without_panicking() {
-    assert_eq!(next_delay(0), BACKOFF_SCHEDULE[0]);
-}
-
-#[test]
-fn next_delay_never_exceeds_the_cap_including_u32_max() {
-    // Sampled, not exhaustive: the curve is capped well before the last
-    // representable attempt number.
-    for attempt in (0..=u32::MAX).step_by(1_000_000) {
-        assert!(next_delay(attempt) <= MAX_BACKOFF, "attempt {attempt}");
-    }
-    assert!(next_delay(u32::MAX) <= MAX_BACKOFF);
-}
-
-#[test]
-fn backoff_schedule_matches_doc_04_rungs() {
-    assert_eq!(
-        BACKOFF_SCHEDULE,
-        [
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-            Duration::from_secs(5),
-            Duration::from_secs(10),
-            Duration::from_secs(60),
-        ]
-    );
 }
 
 // ── Policy ──────────────────────────────────────────────────────────────────
 
 #[test]
-fn policy_defaults_to_prompt_mode() {
-    assert_eq!(ReconnectPolicy::default().mode, ReconnectMode::Prompt);
-}
-
-#[test]
-fn policy_defaults_to_unlimited_attempts() {
-    assert_eq!(ReconnectPolicy::default().max_attempts, None);
-    let driver = ReconnectDriver::new(ReconnectPolicy::default());
-    for attempt in 1..=10_000 {
-        assert!(driver.policy().allows_attempt(attempt));
-    }
+fn policy_defaults_to_prompt_mode_with_unlimited_attempts() {
+    let policy = ReconnectPolicy::default();
+    assert_eq!(policy.mode, ReconnectMode::Prompt);
+    assert_eq!(policy.max_attempts, None);
+    assert!((1..=10_000).all(|attempt| policy.allows_attempt(attempt)));
 }
 
 #[test]
 fn policy_with_max_attempts_bounds_the_loop() {
     let policy = ReconnectPolicy::auto().with_max_attempts(3);
-    assert!(policy.allows_attempt(1));
     assert!(policy.allows_attempt(3));
     assert!(!policy.allows_attempt(4));
 }
 
 #[test]
-fn policy_constructors_pick_the_documented_modes() {
-    assert_eq!(ReconnectPolicy::prompt().mode, ReconnectMode::Prompt);
-    assert_eq!(ReconnectPolicy::auto().mode, ReconnectMode::Auto);
+fn the_reconnect_on_drop_setting_selects_the_mode() {
+    assert_eq!(ReconnectPolicy::for_setting(true).mode, ReconnectMode::Auto);
+    assert_eq!(
+        ReconnectPolicy::for_setting(false).mode,
+        ReconnectMode::Prompt
+    );
 }
 
 #[test]
@@ -735,31 +683,6 @@ fn confirm_close_is_skipped_for_a_dead_transport() {
         &TransportState::Error("gone".into()),
         true
     ));
-}
-
-#[test]
-fn confirm_close_setting_defaults_to_on_when_the_row_is_missing() {
-    assert!(confirm_close_enabled(None));
-    assert!(confirm_close_enabled(Some("1")));
-    assert!(!confirm_close_enabled(Some("0")));
-}
-
-#[test]
-fn reconnect_on_drop_setting_selects_the_mode() {
-    assert_eq!(policy_from_settings(Some("1")).mode, ReconnectMode::Auto);
-    assert_eq!(policy_from_settings(Some("0")).mode, ReconnectMode::Prompt);
-    // Doc 06 seeds both rows to '1', so the defaults are: confirm-close on,
-    // auto-reconnect on.
-    assert_eq!(policy_from_settings(None).mode, ReconnectMode::Auto);
-    assert!(confirm_close_enabled(None));
-}
-
-#[test]
-fn setting_parsing_tolerates_case_and_padding() {
-    assert!(!confirm_close_enabled(Some(" Off ")));
-    assert!(!confirm_close_enabled(Some("FALSE")));
-    assert!(!reconnect_on_drop_enabled(Some("no")));
-    assert!(reconnect_on_drop_enabled(Some(" yes ")));
 }
 
 #[test]

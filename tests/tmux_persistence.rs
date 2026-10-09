@@ -1,14 +1,8 @@
 //! End-to-end tmux persistence against a real sshd (doc 04 §Tmux Session
 //! Persistence, doc 10 Phase 8).
 //!
-//! Skipped unless the same environment variables as `tests/transport_sshd.rs`
-//! are set:
-//!   SSH_TEST_HOST, SSH_TEST_PORT, SSH_TEST_USER, SSH_TEST_PASSWORD,
-//!   SSH_TEST_KEY_PATH
-//!
-//! The remote host must have `tmux` installed; the tests probe for it and
-//! skip (rather than fail) when it is missing, so the same sshd fixture CI
-//! provisions works on hosts without tmux.
+//! Needs the `common` sshd fixture and `tmux` on the remote host (the
+//! tests skip without either).
 //!
 //! What is actually proven here:
 //!
@@ -29,110 +23,22 @@
 //! Tests share one sshd and one tmux server, so the harness runs them with
 //! `--test-threads=1`.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+mod common;
 
-use russh::client::{self, Config, Handle};
+use std::sync::Arc;
+use std::time::Duration;
+
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-mod app_support {
-    pub use wayterm::store::model::{HostKeyPolicy, SessionConfig, SessionType, TMUX_NAME_PREFIX};
-    pub use wayterm::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
-    pub use wayterm::transport::credentials::{CredentialManager, PromptSource};
-    pub use wayterm::transport::hostkey::{HostKeyDecision, HostKeyVerifier};
-    pub use wayterm::transport::tab::create_transport;
-    pub use wayterm::transport::types::{Transport, TransportEvent, TransportState};
-}
-use app_support::*;
-use wayterm::transport::auth::ChallengePrompt;
-
-struct Fixture {
-    host: String,
-    port: u16,
-    user: String,
-    password: String,
-}
-
-fn read_fixture() -> Option<Fixture> {
-    let host = std::env::var("SSH_TEST_HOST").ok()?;
-    let port = std::env::var("SSH_TEST_PORT").ok()?.parse().ok()?;
-    let user = std::env::var("SSH_TEST_USER").ok()?;
-    let password = std::env::var("SSH_TEST_PASSWORD").ok()?;
-    Some(Fixture {
-        host,
-        port,
-        user,
-        password,
-    })
-}
+use common::*;
+use wayterm::store::model::{SessionConfig, SessionType, TMUX_NAME_PREFIX};
+use wayterm::transport::connection::SshConnection;
+use wayterm::transport::tab::create_transport;
+use wayterm::transport::types::{Transport, TransportEvent, TransportState};
 
 fn skip(reason: &str) {
     println!("Skipping tmux persistence test: {reason}");
-}
-
-fn accept_all_verifier() -> HostKeyVerifier {
-    HostKeyVerifier::new(
-        HostKeyPolicy::Off,
-        Arc::new(|_| HostKeyDecision::Accept),
-        None,
-    )
-}
-
-async fn connect_authenticated(f: &Fixture) -> Arc<SshConnection> {
-    let config = Arc::new(Config::default());
-    let addr = SocketAddr::new(
-        f.host
-            .parse::<IpAddr>()
-            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-        f.port,
-    );
-    let handler = AppClientHandler {
-        host: f.host.clone(),
-        port: f.port,
-        username: f.user.clone(),
-        host_key_verifier: accept_all_verifier(),
-        state_tx: None,
-    };
-    let handle: Handle<AppClientHandler> = client::connect(config, addr, handler)
-        .await
-        .expect("raw sshd connection failed");
-    let connection = SshConnection::new(handle, f.host.clone(), f.port, f.user.clone());
-
-    let password = f.password.clone();
-    let creds = CredentialManager::new(vec![Box::new(PromptSource::new(Arc::new(
-        move |_session_id, secret_type| {
-            (secret_type == "password")
-                .then(|| zeroize::Zeroizing::new(password.clone().into_bytes()))
-        },
-    )))]);
-    let password_for_prompt = f.password.clone();
-    let responder: wayterm::transport::auth::ChallengeResponder =
-        Arc::new(move |prompts: &[ChallengePrompt]| {
-            Some(
-                prompts
-                    .iter()
-                    .map(|p| {
-                        if p.prompt.to_ascii_lowercase().contains("password") {
-                            password_for_prompt.clone()
-                        } else {
-                            String::new()
-                        }
-                    })
-                    .collect(),
-            )
-        });
-
-    connection
-        .authenticate(
-            &AuthMethod::Password(f.password.clone()),
-            &creds,
-            Some(responder),
-        )
-        .await
-        .expect("authentication failed");
-    Arc::new(connection)
 }
 
 /// A transport over `connection`, optionally with tmux persistence enabled
@@ -153,7 +59,7 @@ fn ssh_transport(
 /// (`tmux has-session`, `command -v tmux`) so assertions never depend on the
 /// tmux session's own echo.
 async fn probe_transport(f: &Fixture) -> (Box<dyn Transport>, mpsc::Receiver<TransportEvent>) {
-    let connection = connect_authenticated(f).await;
+    let connection = connect_password(f).await;
     let config = SessionConfig {
         name: "tmux-probe".to_string(),
         session_type: SessionType::SSH,
@@ -215,14 +121,9 @@ async fn run(
     .unwrap_or_else(|_| panic!("`{cmd}` produced no terminal output within the deadline"))
 }
 
-/// Unique per run so a stale session from an earlier run can never satisfy an
-/// assertion, and so parallel test binaries cannot collide.
+/// Unique per run, so a stale session never satisfies an assertion.
 fn unique_suffix(tag: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock before epoch")
-        .as_nanos();
-    format!("p3tmux-{tag}-{nanos:x}")
+    format!("tmux-{tag}-{}", unique_tag())
 }
 
 /// Is `tmux` installed on the remote host? Probed over a plain shell so the
@@ -269,10 +170,7 @@ fn tmux_session_config(name: &str, suffix: &str) -> SessionConfig {
 
 #[tokio::test]
 async fn tmux_session_survives_disconnect_and_reconnect_attaches_to_it() {
-    let Some(f) = read_fixture() else {
-        skip("set SSH_TEST_HOST, SSH_TEST_PORT, SSH_TEST_USER, SSH_TEST_PASSWORD, and SSH_TEST_KEY_PATH");
-        return;
-    };
+    let Some(f) = fixture() else { return };
     if !remote_has_tmux(&f).await {
         skip("tmux is not installed on the remote host");
         return;
@@ -286,7 +184,7 @@ async fn tmux_session_survives_disconnect_and_reconnect_attaches_to_it() {
     // --- First connect: the transport execs `tmux new -A -s wayterm-…` ----
     let first_session_id;
     {
-        let connection = connect_authenticated(&f).await;
+        let connection = connect_password(&f).await;
         let (mut transport, mut rx) = ssh_transport(&config, connection);
         transport.connect().await.expect("connect failed");
 
@@ -348,7 +246,7 @@ async fn tmux_session_survives_disconnect_and_reconnect_attaches_to_it() {
 
     // --- Reconnect over a brand-new connection: `-A` re-attaches ---------
     {
-        let connection = connect_authenticated(&f).await;
+        let connection = connect_password(&f).await;
         let (mut transport, mut rx) = ssh_transport(&config, connection);
         transport.connect().await.expect("reconnect failed");
 
@@ -459,10 +357,7 @@ async fn set_session_env(
 
 #[tokio::test]
 async fn tmux_disabled_leaves_the_shell_outside_tmux() {
-    let Some(f) = read_fixture() else {
-        skip("set SSH_TEST_HOST, SSH_TEST_PORT, SSH_TEST_USER, SSH_TEST_PASSWORD, and SSH_TEST_KEY_PATH");
-        return;
-    };
+    let Some(f) = fixture() else { return };
     if !remote_has_tmux(&f).await {
         skip("tmux is not installed on the remote host");
         return;
@@ -476,7 +371,7 @@ async fn tmux_disabled_leaves_the_shell_outside_tmux() {
     let mut config = tmux_session_config("tmux off", &suffix);
     config.tmux_enabled = false;
 
-    let connection = connect_authenticated(&f).await;
+    let connection = connect_password(&f).await;
     let (mut transport, mut rx) = ssh_transport(&config, connection);
     transport.connect().await.expect("connect failed");
 
