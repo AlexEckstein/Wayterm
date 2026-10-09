@@ -2789,6 +2789,7 @@ dependencies = [
  "gio",
  "gtk4",
  "ksni",
+ "libc",
  "pango",
  "rusqlite",
  "russh",
