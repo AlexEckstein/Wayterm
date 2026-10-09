@@ -85,6 +85,11 @@ pub struct SessionTree {
     store: Rc<SessionStore>,
     tree_view: gtk4::TreeView,
     model: gtk4::TreeStore,
+    scroll: gtk4::ScrolledWindow,
+    /// The context menu, reused for every right-click. It hangs off
+    /// `scroll`: a TreeView keeps its column buttons under an internal CSS
+    /// node, so a popover parented to it trips a GTK assertion.
+    popover: gtk4::PopoverMenu,
 }
 
 impl SessionTree {
@@ -111,11 +116,26 @@ impl SessionTree {
             tree_view.append_column(&view_column);
         }
         tree_view.selection().set_mode(gtk4::SelectionMode::Single);
+        let scroll = gtk4::ScrolledWindow::builder()
+            .child(&tree_view)
+            .vexpand(true)
+            .hexpand(true)
+            .build();
+        let popover = gtk4::PopoverMenu::from_model(None::<&gio::MenuModel>);
+        popover.set_parent(&scroll);
+        // The scrolled window only unparents the children it knows about.
+        scroll.connect_destroy(glib::clone!(
+            #[strong]
+            popover,
+            move |_| popover.unparent()
+        ));
 
         let tree = Self {
             store,
             tree_view,
             model,
+            scroll,
+            popover,
         };
 
         let for_activate = tree.clone();
@@ -169,8 +189,9 @@ impl SessionTree {
         }
     }
 
+    /// The tree inside its scrolled window.
     pub fn widget(&self) -> gtk4::Widget {
-        self.tree_view.clone().upcast()
+        self.scroll.clone().upcast()
     }
 
     fn selected(&self) -> Option<Selected> {
@@ -272,12 +293,22 @@ impl SessionTree {
             );
         }
 
-        let popover = gtk4::PopoverMenu::from_model(Some(&menu));
-        popover.set_parent(&self.tree_view);
-        // Anchor at the click, not at the sidebar's edge.
-        popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 0, 0)));
-        popover.insert_action_group("tree", Some(&group));
-        popover.popup();
+        self.popover.set_menu_model(Some(&menu));
+        self.popover.insert_action_group("tree", Some(&group));
+        // Anchor at the click (tree coordinates, moved into the popover
+        // parent's), not at the sidebar's edge.
+        let click = gtk4::graphene::Point::new(x as f32, y as f32);
+        let at = self
+            .tree_view
+            .compute_point(&self.scroll, &click)
+            .unwrap_or(click);
+        self.popover.set_pointing_to(Some(&gdk::Rectangle::new(
+            at.x() as i32,
+            at.y() as i32,
+            0,
+            0,
+        )));
+        self.popover.popup();
     }
 
     /// Create (`None`) or edit a session through the session dialog.
@@ -311,3 +342,49 @@ impl SessionTree {
 
 #[cfg(test)]
 mod tests;
+
+/// Widget checks; they need a display and run from `ui::gtk_tests`.
+#[cfg(test)]
+pub(super) mod gtk_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Repeated right-clicks reuse one menu, and parenting it raises no GTK
+    /// criticals (a popover on the TreeView itself did, once per click).
+    pub(in crate::ui) fn context_menu_is_reused_and_parented_cleanly() {
+        let criticals = Arc::new(AtomicUsize::new(0));
+        let count = criticals.clone();
+        let handler = glib::log_set_handler(
+            Some("Gtk"),
+            glib::LogLevels::LEVEL_CRITICAL,
+            false,
+            false,
+            move |_, _, message| {
+                eprintln!("Gtk-CRITICAL: {message}");
+                count.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        let store = Rc::new(SessionStore::in_memory().unwrap());
+        store.insert_folder("A", None).unwrap();
+        let tree = SessionTree::new(store, |_| {});
+        tree.refresh();
+        let window = gtk4::Window::new();
+        window.set_child(Some(&tree.widget()));
+        window.present();
+        for _ in 0..3 {
+            tree.show_context_menu(5.0, 5.0);
+            glib::MainContext::default().iteration(false);
+        }
+        glib::log_remove_handler(Some("Gtk"), handler);
+
+        assert_eq!(criticals.load(Ordering::SeqCst), 0);
+        let mut child = tree.tree_view.first_child();
+        while let Some(widget) = child {
+            assert!(!widget.is::<gtk4::Popover>(), "popover on the TreeView");
+            child = widget.next_sibling();
+        }
+        window.destroy();
+    }
+}

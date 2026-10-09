@@ -726,16 +726,12 @@ impl SessionDialog {
 #[cfg(test)]
 mod tests;
 
-/// Widget tests: they need a display (`xvfb-run -a cargo test -- --ignored
-/// gtk_tests`). One test, because only one may initialize GTK per process.
+/// Widget checks; they need a display and run from `ui::gtk_tests`.
 #[cfg(test)]
-mod gtk_tests {
+pub(super) mod gtk_tests {
     use super::*;
 
-    #[test]
-    #[ignore = "needs a display; run under xvfb-run"]
-    fn tmux_group_entry_follows_name_until_user_edits() {
-        gtk4::init().expect("gtk init");
+    pub(in crate::ui) fn tmux_group_entry_follows_name_until_user_edits() {
         let revealed = |g: &gtk4::Revealer| g.reveals_child();
 
         let parent = gtk4::Window::new();

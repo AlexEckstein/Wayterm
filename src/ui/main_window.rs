@@ -101,15 +101,10 @@ impl MainWindow {
             })
         };
         session_tree.refresh();
-        let tree_scroll = gtk4::ScrolledWindow::builder()
-            .child(&session_tree.widget())
-            .vexpand(true)
-            .hexpand(true)
-            .build();
 
         let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
         paned.set_position(280);
-        paned.set_start_child(Some(&tree_scroll));
+        paned.set_start_child(Some(&session_tree.widget()));
         paned.set_end_child(Some(&notebook));
         paned.set_vexpand(true);
         paned.set_hexpand(true);

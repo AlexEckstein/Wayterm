@@ -18,3 +18,17 @@ pub mod tray;
 pub mod widgets;
 
 pub use main_window::MainWindow;
+
+/// Widget tests: they need a display (`xvfb-run -a cargo test -- --ignored
+/// gtk_tests`). GTK binds to the first thread that initializes it, so every
+/// widget check in the library runs from this one test.
+#[cfg(test)]
+mod gtk_tests {
+    #[test]
+    #[ignore = "needs a display; run under xvfb-run"]
+    fn widgets() {
+        gtk4::init().expect("gtk init");
+        super::session_dialog::gtk_tests::tmux_group_entry_follows_name_until_user_edits();
+        super::session_tree::gtk_tests::context_menu_is_reused_and_parented_cleanly();
+    }
+}
