@@ -228,6 +228,8 @@ pub const SERIAL_DATA_BITS: [u8; 4] = [5, 6, 7, 8];
 pub const SERIAL_DATA_BITS_DEFAULT: u8 = 8;
 pub const SERIAL_STOP_BITS: [u8; 2] = [1, 2];
 pub const SERIAL_STOP_BITS_DEFAULT: u8 = 1;
+/// The serial group's starting baud rate (doc 06 names no default).
+pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 /// Bits per pixel; doc 08 falls back to 32.
 pub const RDP_COLOR_DEPTHS: [u32; 3] = [16, 24, 32];
 pub const RDP_COLOR_DEPTH_DEFAULT: u32 = 32;

@@ -17,9 +17,9 @@ use gtk4::prelude::*;
 
 use crate::store::model::{
     strip_tmux_prefix, vocab_index, vocab_value, AuthMethod, Folder, SessionConfig, SessionType,
-    RDP_COLOR_DEPTHS, RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT,
-    SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES, SERIAL_PARITY_DEFAULT,
-    SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT, TMUX_NAME_PREFIX,
+    DEFAULT_SERIAL_BAUD, RDP_COLOR_DEPTHS, RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS,
+    SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES,
+    SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT, TMUX_NAME_PREFIX,
 };
 use crate::ui::widgets::{ok_cancel_row, set_margins, Modal};
 
@@ -32,9 +32,6 @@ pub const TYPE_INDEX_LOCAL: u32 = 4;
 
 const TYPE_LABELS: [&str; 5] = ["ssh", "rdp", "vnc", "serial", "local"];
 const AUTH_LABELS: [&str; 5] = ["password", "key", "agent", "keyboard-interactive", "none"];
-
-/// The serial group's starting baud rate (doc 06 names no default).
-pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 
 /// Shown in the Port spin for types without a port (it cannot show
 /// "unset"); nothing is stored for them.

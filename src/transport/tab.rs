@@ -26,6 +26,8 @@ use tokio_util::sync::CancellationToken;
 use crate::store::model::{SessionConfig, SessionType};
 use crate::terminal::{TerminalEvent, TerminalHandle};
 use crate::transport::connection::SshConnection;
+use crate::transport::local::LocalTransport;
+use crate::transport::serial::SerialTransport;
 use crate::transport::ssh::SSHTransport;
 use crate::transport::types::{Transport, TransportError, TransportEvent};
 
@@ -51,9 +53,13 @@ pub fn create_transport(
             }
             Ok(Box::new(transport))
         }
-        SessionType::LocalShell | SessionType::Serial => Err(TransportError::ChannelError(
-            "local PTY and serial transports are Phase 5 (doc 04)".into(),
-        )),
+        SessionType::Serial => Ok(Box::new(SerialTransport::new(config, event_tx))),
+        SessionType::LocalShell => Ok(Box::new(LocalTransport::new(
+            config,
+            event_tx,
+            initial_rows,
+            initial_cols,
+        ))),
         SessionType::RDP | SessionType::VNC => Err(TransportError::ChannelError(
             "RDP/VNC don't use byte-stream transport (doc 08)".into(),
         )),
@@ -67,6 +73,7 @@ pub struct TerminalTab {
     pump_task: Option<JoinHandle<()>>,
     bridge_task: Option<JoinHandle<()>>,
     cancel: CancellationToken,
+    description: String,
 }
 
 impl TerminalTab {
@@ -100,6 +107,7 @@ impl TerminalTab {
             events: mut term_rx,
         } = terminal;
         let cancel = CancellationToken::new();
+        let description = transport.description();
 
         // Drain: bounded, so a stalled main thread backs up into the
         // bridge, the reader, and finally SSH flow control.
@@ -173,8 +181,15 @@ impl TerminalTab {
             pump_task: Some(pump_task),
             bridge_task: Some(bridge_task),
             cancel,
+            description,
         };
         (tab, state_rx)
+    }
+
+    /// The transport's description (shell path, `device@baud`), shown in
+    /// the status bar for sessions without a host.
+    pub fn description(&self) -> &str {
+        &self.description
     }
 
     /// Cancel both tasks and wait for them (doc 04 §Lifecycle). The pump gets
@@ -453,9 +468,27 @@ mod tests {
             }
         };
         assert_eq!(error(SessionType::SSH), "no connection");
-        assert!(error(SessionType::LocalShell).contains("Phase 5"));
-        assert!(error(SessionType::Serial).contains("Phase 5"));
         assert!(error(SessionType::RDP).contains("doc 08"));
         assert!(error(SessionType::VNC).contains("doc 08"));
+        let serial = SessionConfig {
+            session_type: SessionType::Serial,
+            ..SessionConfig::default()
+        };
+        let transport = create_transport(&serial, None, tx.clone(), 24, 80).unwrap();
+        assert!(matches!(transport.transport_type(), TransportType::Serial));
+    }
+
+    #[test]
+    fn create_transport_builds_a_local_shell() {
+        let (tx, _rx) = mpsc::channel(1);
+        let config = SessionConfig {
+            session_type: SessionType::LocalShell,
+            ..SessionConfig::default()
+        };
+        let transport = create_transport(&config, None, tx, 24, 80).expect("local transport");
+        assert!(matches!(
+            transport.transport_type(),
+            TransportType::LocalPTY
+        ));
     }
 }

@@ -9,7 +9,7 @@ the last. Phase numbers are referenced from code and other docs.
 | 2 | SSH terminal tabs, host keys, full auth chain | done |
 | 3 | SFTP sidebar | done |
 | 4 | Hotkeys and polish | done, with gaps below |
-| 5 | Local shell and serial | not started |
+| 5 | Local shell and serial | done |
 | 6 | VNC tabs | not started |
 | 7 | RDP tabs | not started |
 | 8 | tmux persistence | persistence done; reconnect wiring pending |
@@ -60,11 +60,23 @@ Gaps, each a wiring task rather than new design:
 - The disconnect-notification forwarder is not attached to tabs.
 - The keyring credential source is a stub; secrets are prompted for.
 
-## Phase 5: Local shell and serial
+## Phase 5: Local shell and serial — done
 
-`LocalTransport` (`forkpty`, `AsyncFd`) and `SerialTransport`
-(`serialport`), doc 04. **Verify:** a local shell runs commands; a USB
-serial console shows output and takes input.
+`LocalTransport` (`forkpty`, an `AsyncFd` reader, `TIOCSWINSZ` resize,
+reap-on-exit) and `SerialTransport` (`serialport` opened by path,
+blocking reads on `spawn_blocking`, no-op resize), both behind the
+existing `create_transport` factory (doc 04 §Local and serial
+transports). The connect flow opens local and serial sessions from the
+tree: no dial, no sidebar, the transport's `description()` in the
+status bar. Known gaps, each small:
+
+- `mark`/`space` parity is stored but not representable by
+  `serialport`; connecting with either fails clearly (doc 04 has the
+  note). Linux `CMSPAR` support would lift it.
+- The `SERIAL_TEST_PEER` hardware test (two cabled USB-serial ports)
+  has not run against real hardware — the PTY-pair suite is the
+  exercised path.
+- Reconnect policy for a vanished device is untested.
 
 ## Phase 6: VNC
 
