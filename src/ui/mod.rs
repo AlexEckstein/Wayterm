@@ -15,6 +15,7 @@ pub mod tab_restore;
 pub mod tab_state;
 pub mod terminal_actions;
 pub mod tray;
+pub mod vnc_tab;
 pub mod widgets;
 
 pub use main_window::MainWindow;
@@ -30,5 +31,6 @@ mod gtk_tests {
         gtk4::init().expect("gtk init");
         super::session_dialog::gtk_tests::tmux_group_entry_follows_name_until_user_edits();
         super::session_tree::gtk_tests::context_menu_is_reused_and_parented_cleanly();
+        super::vnc_tab::gtk_tests::vnc_view_draws_and_routes_input();
     }
 }
