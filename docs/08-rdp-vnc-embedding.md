@@ -1,8 +1,8 @@
 # RDP and VNC Embedding
 
 RDP and VNC sessions are to be tabs in the same notebook as SSH, embedded
-in-window rather than in separate windows. Not started: VNC is Phase 6,
-RDP Phase 7 (doc 10).
+in-window rather than in separate windows. VNC is Phase 6 and shipped
+(as built below); RDP is Phase 7 (doc 10).
 
 ## RDP
 
@@ -69,25 +69,60 @@ Wayland-native); there, ask the user whether to relaunch under
 `GDK_BACKEND=x11` or open xfreerdp un-embedded — never silently open a
 second window.
 
-## VNC
+## VNC (Phase 6, as built)
 
 VNC renders natively: a `gtk::DrawingArea` blits a `cairo::ImageSurface`
 that holds the framebuffer.
 
-- **Path A — libvncclient via FFI.** A poll thread runs
-  `WaitForMessage`/`HandleRFBServerMessage` and writes updated rects into
-  the shared surface under a lock. Every widget call (`queue_draw`, the
-  clipboard) hops to the main thread with `MainContext::invoke`.
-  Configure the client through libvncclient's API, not by poking its
-  struct. Send input to the poll thread over a channel rather than calling
-  into libvncclient from GTK callbacks.
-- **Path B — a pure-Rust client (vnc-rs)** if it matures by Phase 6: no
-  FFI, and the poll loop becomes a tokio task feeding the same kind of
-  channel as SSH output.
+**Path B shipped.** The Path B condition ("a pure-Rust client if it
+matures by Phase 6") was met by `vnc-rs` 0.6.0 (2026-09-21, tokio-native,
+MIT/Apache-2.0): no FFI, and the whole client is a tokio task feeding the
+same kind of channel as SSH output. Path A (libvncclient FFI) was never
+needed. Layout (`src/vnc/`, `src/ui/vnc_tab.rs`):
 
-Keys need no table: GDK keyvals *are* X11 keysyms. Pointer input comes from
-`EventControllerMotion` and `GestureClick`. The VNC password lives in the
-keyring (doc 06).
+- **Engine, display-free (`src/vnc/`).** `VncSession::connect` does the
+  RFB handshake + auth (bounded at 15 s — the crate has no handshake
+  timeout of its own), then `spawn()` runs the engine task: it owns an
+  `Arc<Mutex<VncPixels>>` framebuffer (plain BGRA32 `Vec<u32>`, not a
+  cairo type — cairo surface types are not `Send`), drains the input
+  channel, maps `poll_event` results into framebuffer writes and UI
+  events (`Dirtied`/`Resolved`/`Bell`/`Clipboard`/`Ended`), and closes
+  the client on cancel/error (doc 04 §Threading model).
+- **GTK side.** The tab's draw handler snapshots `VncPixels` into a
+  cached `cairo::ImageSurface` (BGRA bytes; scaled draw pads the source
+  so widget-edge blending doesn't darken border pixels) and paints.
+  Input: `EventControllerKey` forwards keyvals as X11 keysyms (no table
+  needed — GDK keyvals *are* keysyms), `EventControllerMotion` +
+  `GestureClick` + scroll wheel build pointer events; view-only mode
+  suppresses all input. VNC tabs attach no Tier-2 shortcut controller
+  (§Tabs).
+- **Credentials.** The VNC password resolves through the credential
+  chain (`vnc_password` secret type, doc 06) before the engine starts;
+  it is `Zeroizing` up to the crate boundary (the crate copies it to a
+  `String` it gives no way to zeroize).
+
+vnc-rs 0.6.0 behavior the code depends on (verified from its source;
+verify again before a version bump — see `src/vnc/client.rs` doc
+comments for the full list):
+
+- Updates are **pull-only**: the crate requests one non-incremental
+  frame after the handshake and never again. The engine sends
+  `X11Event::Refresh` every 30 ms — without it the screen freezes after
+  the first frame.
+- `poll_event` never blocks (a `try_recv` on a 2-slot channel); the
+  engine polls rather than blocking on the client mutex.
+- Pseudo-encodings must be requested explicitly or their rects are
+  fatal decode errors; `DesktopSizePseudo`/`CursorPseudo` are in the
+  default set.
+- Server hang-up is silent (no error event; the event channel closes).
+- Non-ASCII passwords don't work (the crate uses the first 8 UTF-8
+  bytes as the DES key). No quality/compression knob exists.
+
+Wire verification: `tests/common/vnc.rs` is a hand-rolled RFB 3.8 mock
+server (auth both paths, Raw/CopyRect/DesktopSize updates, client-event
+recording, failure modes) driving `tests/vnc_wire.rs` (21 tests) and a
+skip-guarded `tests/vnc_live.rs` (`VNC_TEST_*` env). The GTK widget
+checks run under xvfb (`gtk_tests`).
 
 ## Tabs
 
@@ -100,4 +135,14 @@ rest reach the remote desktop (doc 07).
 
 - RDP: X11/XWayland only; single monitor; credentials via stdin needs
   FreeRDP ≥ 3.20.
-- VNC: plain VNC (tunnel it over SSH); VeNCrypt/TLS later.
+- VNC: plain VNC (tunnel it over SSH); VeNCrypt/TLS later. As built
+  (Phase 6): `vnc_options.quality` is stored but not applied (the crate
+  has no quality/compression knob in 0.6.0); `vnc_color_depth` is
+  stored, not applied — the client always requests BGRA32;
+  clipboard is receive-only (server → GTK; `CopyText` out is a
+  follow-up); the remote cursor shape is not drawn (CursorPseudo is
+  requested, the engine ignores the shape); Bell logs to the status
+  bar only; the keyring source is the documented Phase 4 stub, so VNC
+  prompts for the password on every connect (save-to-keyring is the
+  app-wide follow-up, not VNC-specific); non-ASCII passwords do not
+  authenticate (see the vnc-rs notes above).

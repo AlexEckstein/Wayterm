@@ -10,7 +10,7 @@ the last. Phase numbers are referenced from code and other docs.
 | 3 | SFTP sidebar | done |
 | 4 | Hotkeys and polish | done, with gaps below |
 | 5 | Local shell and serial | done |
-| 6 | VNC tabs | not started |
+| 6 | VNC tabs | done, with gaps below |
 | 7 | RDP tabs | not started |
 | 8 | tmux persistence | persistence done; reconnect wiring pending |
 | 9 | Import/export, packaging | not started |
@@ -78,11 +78,30 @@ status bar. Known gaps, each small:
   exercised path.
 - Reconnect policy for a vanished device is untested.
 
-## Phase 6: VNC
+## Phase 6: VNC — done, with gaps
 
-`VncTab` (libvncclient or vnc-rs), Cairo framebuffer, key/pointer input,
-password in the keyring, resize handling (doc 08). **Verify:** interact
-with x11vnc or TigerVNC.
+Path B (`vnc-rs` 0.6.0, doc 08): `VncSession::connect` + engine task
+(`src/vnc/`) owning a `VncPixels` framebuffer, `VncTab`
+(`src/ui/vnc_tab.rs`) with the cairo blit, key/pointer input, view-only
+mode, no Tier-2 shortcut controller; the password resolves through the
+credential chain (`vnc_password`); tab open/close/retry goes through the
+same session-tab flow as the other types. Protocol correctness comes
+from a hand-rolled RFB 3.8 mock server (`tests/common/vnc.rs` →
+`tests/vnc_wire.rs`, deterministic in CI); the real-server check ran
+against x11vnc on this host (`tests/vnc_live.rs`, `VNC_TEST_*`).
+
+Gaps, each small:
+
+- `vnc_options.quality` and `vnc_color_depth` are stored but not
+  applied (the crate has no quality knob; the client requests BGRA32).
+- Clipboard is receive-only; the remote cursor shape is not drawn;
+  Bell is status-bar-only.
+- The keyring source is the documented Phase 4 stub — VNC prompts every
+  connect (app-wide follow-up, not VNC-specific).
+- Non-ASCII passwords don't authenticate (the crate uses the first 8
+  bytes; doc 08 has the note).
+- Tight/ZRLE decode through the mock server is not pinned (Raw/CopyRect
+  prove the pipeline; ZRLE/Tight run only against real servers).
 
 ## Phase 7: RDP
 
