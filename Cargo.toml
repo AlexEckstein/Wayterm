@@ -38,8 +38,10 @@ russh-sftp = "3.0"
 ksni = "0.3"
 libc = "0.2"
 serialport = { version = "4.10.1", default-features = false }
+vnc-rs = "0.6"
 
 [dev-dependencies]
+des = "0.8"
 tempfile = "3"
 # test-util enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,
 # which the reconnect driver's backoff tests use to assert the doc 04 curve
