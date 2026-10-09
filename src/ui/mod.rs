@@ -3,6 +3,7 @@
 pub mod auth_dialog;
 pub mod hostkey_dialog;
 pub mod main_window;
+pub mod rdp_tab;
 pub mod session_dialog;
 pub mod session_tree;
 pub mod settings;
@@ -32,5 +33,6 @@ mod gtk_tests {
         super::session_dialog::gtk_tests::tmux_group_entry_follows_name_until_user_edits();
         super::session_tree::gtk_tests::context_menu_is_reused_and_parented_cleanly();
         super::vnc_tab::gtk_tests::vnc_view_draws_and_routes_input();
+        super::rdp_tab::gtk_tests::rdp_embed_builds_and_tracks();
     }
 }
