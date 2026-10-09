@@ -109,6 +109,62 @@ pub fn is_valid_fingerprint(s: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
+/// Sentinel fingerprint for the acquisition probe: a fingerprint-mode
+/// connect holding this value can never match a real server certificate
+/// (the all-zero SHA-256), so xfreerdp refuses the handshake and — as
+/// verified on 3.15 — prints the server's actual thumbprint on stderr
+/// while writing nothing to any known-hosts store. The UI flow feeds the
+/// parsed value into the TOFU prompt, then reconnects with the real
+/// [`CERT_ARG_PREFIX`] token.
+pub const PROBE_FINGERPRINT: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+/// The fingerprint the server actually presented, parsed from xfreerdp's
+/// stderr (as captured on 3.15). Two real line shapes exist —
+///
+/// ```text
+/// The fingerprint for the host key sent by the remote host is 11:1e:94:…
+/// Thumbprint:  11:1e:94:…
+/// ```
+///
+/// Both carry colon-separated hex; the value is normalized (colons
+/// stripped, lowercased) and shape-checked before being returned. `None`
+/// when no line carries a parseable fingerprint (nothing is ever
+/// invented). The UI supplies raw stderr lines — the ring's
+/// [`process::RdpProcess::error_digest`] or live lines.
+pub fn parse_seen_fingerprint(lines: &[String]) -> Option<String> {
+    const KEY_MARK: &str = "fingerprint for the host key sent by the remote host is ";
+    const THUMB_MARK: &str = "thumbprint:";
+    for line in lines {
+        let lowered = line.to_lowercase();
+        let segment = if let Some(at) = lowered.find(KEY_MARK) {
+            Some(&lowered[at + KEY_MARK.len()..])
+        } else {
+            lowered
+                .find(THUMB_MARK)
+                .map(|at| &lowered[at + THUMB_MARK.len()..])
+        };
+        let Some(segment) = segment else { continue };
+        // The marker text usually trails its last space, but the cert-info
+        // shape ("Thumbprint:  …") leaves leading whitespace — collect from
+        // the first hex digit, not from the segment head.
+        let from_hex = segment
+            .char_indices()
+            .find(|(_, c)| c.is_ascii_hexdigit())
+            .map(|(at, _)| at)
+            .unwrap_or(segment.len());
+        let hex: String = segment[from_hex..]
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit() || *c == ':')
+            .collect();
+        let compact: String = hex.chars().filter(|c| *c != ':').collect();
+        if is_valid_fingerprint(&compact) {
+            return Some(compact);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +250,75 @@ mod tests {
         assert!(!is_valid_fingerprint(&FP_A.to_uppercase())); // uppercase
         assert!(!is_valid_fingerprint("aa:bb:cc")); // colon-separated
         assert!(!is_valid_fingerprint(&"g".repeat(64))); // non-hex
+    }
+
+    #[test]
+    fn probe_fingerprint_is_all_zeros() {
+        assert_eq!(PROBE_FINGERPRINT.len(), 64);
+        assert!(PROBE_FINGERPRINT.bytes().all(|b| b == b'0'));
+        assert!(is_valid_fingerprint(PROBE_FINGERPRINT));
+    }
+
+    #[test]
+    fn parses_the_host_key_line_as_captured_on_315() {
+        // Real stderr line shape from FreeRDP 3.15 (tls_print_certificate_
+        // error), captured against xrdp this session. Value = rig B's fp.
+        let line = "[15:04:54:650] [118411:0001ce8c] [ERROR][com.freerdp.crypto] \
+                    - [tls_print_certificate_error]: The fingerprint for the \
+                    host key sent by the remote host is \
+                    11:1e:94:42:e0:2a:30:08:13:e5:da:9f:cb:90:85:3d:13:fc:8b:c6:\
+                    68:25:fd:2d:f1:94:06:e4:bb:7f:e1:e3"
+            .to_string();
+        let seen = parse_seen_fingerprint(&[line]).expect("parses");
+        assert_eq!(
+            seen,
+            "111e9442e02a300813e5da9fcb90853d13fc8bc66825fd2df19406e4bb7fe1e3"
+        );
+        assert!(is_valid_fingerprint(&seen));
+    }
+
+    #[test]
+    fn parses_the_thumbprint_line_as_captured_on_315() {
+        // Cert-info dump shape (cert_print_info), same server probe.
+        let line = "Thumbprint:  11:1e:94:42:e0:2a:30:08:13:e5:da:9f:cb:90:85:3d:\
+                    13:fc:8b:c6:68:25:fd:2d:f1:94:06:e4:bb:7f:e1:e3"
+            .to_string();
+        let seen = parse_seen_fingerprint(&[line]).expect("parses");
+        assert_eq!(
+            seen,
+            "111e9442e02a300813e5da9fcb90853d13fc8bc66825fd2df19406e4bb7fe1e3"
+        );
+    }
+
+    #[test]
+    fn parser_ignores_non_fingerprint_lines_and_junk_after() {
+        let lines = vec![
+            "[15:04:54:650] [118411:0001ce8c] [ERROR][com.freerdp.core] \
+             - [transport_default_connect_tls]: ERRCONNECT_TLS_CONNECT_FAILED"
+                .to_string(),
+            "Subject:     CN = rigb".to_string(),
+            "Thumbprint:  zz:zz".to_string(), // shape-invalid: not trusted
+        ];
+        assert_eq!(parse_seen_fingerprint(&lines), None);
+        // A digest line carrying only the connect error yields None too.
+        assert_eq!(
+            parse_seen_fingerprint(&["no fingerprints here".to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn parser_finds_the_fingerprint_across_the_digest() {
+        let digest = vec![
+            "Password: ".to_string(),
+            "[ERROR][com.freerdp.crypto] [tls_print_certificate_error]: New \
+             host key for 127.0.0.1:3391"
+                .to_string(),
+            "The fingerprint for the host key sent by the remote host is \
+             11:1e:94:42:e0:2a:30:08:13:e5:da:9f:cb:90:85:3d:13:fc:8b:c6:68:25:\
+             fd:2d:f1:94:06:e4:bb:7f:e1:e3"
+                .to_string(),
+        ];
+        assert!(parse_seen_fingerprint(&digest).is_some());
     }
 }
