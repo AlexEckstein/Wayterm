@@ -77,9 +77,10 @@ connection stays up.
 ## Transport Factory
 
 `create_transport(config, connection, event_tx, rows, cols)` maps a session
-type to a transport. SSH needs a connection; local and serial return an
-error until Phase 5; RDP/VNC are not byte streams (doc 08). Unsupported
-types are errors, never panics — a malformed row must not crash the app.
+type to a transport. SSH needs a connection; local and serial build their
+transports directly — there is no dial, and `connection` is `None`. RDP/VNC
+are not byte streams (doc 08). Unsupported types are errors, never panics —
+a malformed row must not crash the app.
 
 ## Wiring
 
@@ -142,8 +143,20 @@ scrollback persists on the remote host; that data at rest is out of scope.
 
 ## Local and serial transports (Phase 5)
 
-- **LocalTransport:** `forkpty` the user's shell; an `AsyncFd` reader with
-  the same push model; `TIOCSWINSZ` for resize; `EIO` on the master means
-  the child exited (reap it); `TERM=xterm-256color`, `COLORTERM=truecolor`.
-- **SerialTransport:** `serialport` with its blocking reads on
-  `spawn_blocking`; `resize` is a no-op.
+- **LocalTransport:** `forkpty` the user's shell (`local_shell`, else
+  `$SHELL`, else `/bin/sh`; a set-but-missing shell is a connect error, not
+  a fallback); an `AsyncFd` reader with the same push model; `TIOCSWINSZ`
+  for resize (the kernel delivers SIGWINCH to the child's foreground
+  pgroup); `EIO` on the master means the child exited (reap it — the
+  transport reaps on disconnect and on drop, SIGKILL after 5 s if a hung-up
+  shell lingers); `TERM=xterm-256color`, `COLORTERM=truecolor`.
+  `local_working_dir` becomes the child's cwd when set. tmux is not
+  applicable locally; the setting is accepted and ignored.
+- **SerialTransport:** `serialport` (4.x, opened by device path — the
+  default `libudev` feature is off) with its blocking reads on
+  `spawn_blocking`; `resize` is a no-op. Doc 06's line-settings vocabulary
+  maps to port settings, and an unknown value fails `connect` rather than
+  opening the port with the wrong frame. `mark` and `space` parity are in
+  the doc 06 vocabulary but not representable by `serialport`; connecting
+  with either fails with "not supported by this build" (Linux `CMSPAR`
+  support is a possible follow-up, not a silent default).

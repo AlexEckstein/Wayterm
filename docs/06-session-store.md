@@ -139,7 +139,7 @@ Enum columns hold serde spellings, locked by `src/store/model.rs` tests:
 | `type` | `ssh`, `rdp`, `vnc`, `serial`, `local` (stored as a JSON string, quotes included) |
 | `auth_method` | `password`, `key`, `agent`, `keyboard-interactive`, `none` |
 | `host_key_policy` | `strict`, `accept-new`, `off`; NULL = the global setting |
-| `serial_parity` | `none`, `odd`, `even`, `mark`, `space` |
+| `serial_parity` | `none`, `odd`, `even`, `mark`, `space` — `mark`/`space` are stored but not representable by the `serialport` crate; connecting with either fails instead of silently opening with other framing (doc 04) |
 | `serial_flow_control` | `none`, `hardware`, `software` |
 | `serial_data_bits` / `serial_stop_bits` | 5–8 / 1–2 |
 | `rdp_color_depth` | 16, 24, 32 (NULL → 32) |
