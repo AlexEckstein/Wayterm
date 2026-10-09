@@ -35,7 +35,7 @@ use common::*;
 use wayterm::store::model::{SessionConfig, SessionType, TMUX_NAME_PREFIX};
 use wayterm::transport::connection::SshConnection;
 use wayterm::transport::tab::create_transport;
-use wayterm::transport::types::{Transport, TransportEvent, TransportState};
+use wayterm::transport::types::{Transport, TransportEvent, TransportState, TransportType};
 
 fn skip(reason: &str) {
     println!("Skipping tmux persistence test: {reason}");
@@ -403,10 +403,11 @@ async fn tmux_disabled_leaves_the_shell_outside_tmux() {
     let _ = probe.disconnect().await;
 }
 
-/// A serial session with the tmux flag on stores it, but no transport is
-/// created for it at all — doc 04 scopes the feature to SSH.
+/// A serial session with the tmux flag on stores it, but the flag is inert:
+/// doc 04 scopes tmux to SSH, and a serial console is a device, not a shell
+/// host session.
 #[tokio::test]
-async fn tmux_flag_on_a_serial_session_creates_no_transport() {
+async fn tmux_flag_on_a_serial_session_is_inert() {
     let config = SessionConfig {
         name: "console".to_string(),
         session_type: SessionType::Serial,
@@ -417,10 +418,8 @@ async fn tmux_flag_on_a_serial_session_creates_no_transport() {
     };
 
     let (tx, _rx) = mpsc::channel::<TransportEvent>(1);
-    let result = create_transport(&config, None, tx, 24, 80);
-    assert!(
-        result.is_err(),
-        "serial sessions have no byte-stream transport (doc 10 Phase 5), so the \
-         stored tmux flag is inert"
-    );
+    let transport = create_transport(&config, None, tx, 24, 80)
+        .expect("serial sessions get a SerialTransport (doc 10 Phase 5)");
+    assert!(matches!(transport.transport_type(), TransportType::Serial));
+    assert_eq!(transport.description(), "/dev/ttyUSB0@115200");
 }
