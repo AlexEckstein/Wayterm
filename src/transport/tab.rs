@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 use crate::store::model::{SessionConfig, SessionType};
 use crate::terminal::{TerminalEvent, TerminalHandle};
 use crate::transport::connection::SshConnection;
+use crate::transport::local::LocalTransport;
 use crate::transport::ssh::SSHTransport;
 use crate::transport::types::{Transport, TransportError, TransportEvent};
 
@@ -51,7 +52,13 @@ pub fn create_transport(
             }
             Ok(Box::new(transport))
         }
-        SessionType::LocalShell | SessionType::Serial => Err(TransportError::ChannelError(
+        SessionType::LocalShell => Ok(Box::new(LocalTransport::new(
+            config,
+            event_tx,
+            initial_rows,
+            initial_cols,
+        ))),
+        SessionType::Serial => Err(TransportError::ChannelError(
             "local PTY and serial transports are Phase 5 (doc 04)".into(),
         )),
         SessionType::RDP | SessionType::VNC => Err(TransportError::ChannelError(
@@ -453,9 +460,22 @@ mod tests {
             }
         };
         assert_eq!(error(SessionType::SSH), "no connection");
-        assert!(error(SessionType::LocalShell).contains("Phase 5"));
         assert!(error(SessionType::Serial).contains("Phase 5"));
         assert!(error(SessionType::RDP).contains("doc 08"));
         assert!(error(SessionType::VNC).contains("doc 08"));
+    }
+
+    #[test]
+    fn create_transport_builds_a_local_shell() {
+        let (tx, _rx) = mpsc::channel(1);
+        let config = SessionConfig {
+            session_type: SessionType::LocalShell,
+            ..SessionConfig::default()
+        };
+        let transport = create_transport(&config, None, tx, 24, 80).expect("local transport");
+        assert!(matches!(
+            transport.transport_type(),
+            TransportType::LocalPTY
+        ));
     }
 }
