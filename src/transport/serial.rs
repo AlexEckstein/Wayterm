@@ -9,13 +9,12 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::store::model::{
-    SessionConfig, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITY_DEFAULT,
-    SERIAL_STOP_BITS_DEFAULT,
+    SessionConfig, DEFAULT_SERIAL_BAUD, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROL_DEFAULT,
+    SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS_DEFAULT,
 };
 use crate::transport::types::{
     Transport, TransportError, TransportEvent, TransportState, TransportType,
 };
-use crate::ui::session_dialog::DEFAULT_SERIAL_BAUD;
 
 /// How long one blocking read waits before the reader re-checks its cancel
 /// token. A timeout with no bytes is normal: serial TTYs never EOF.
