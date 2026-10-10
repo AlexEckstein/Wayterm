@@ -507,6 +507,16 @@ impl RdpProcess {
                 }
                 status = child.wait() => {
                     let status = status?;
+                    // A fast-exiting child can beat the stderr arm: the
+                    // pipe still holds unread lines when wait() returns.
+                    // Drain them into the ring (EOF ends it) before
+                    // reporting the exit, so error digests are complete.
+                    while let Ok(line) = lines.next_line().await {
+                        match line {
+                            Some(text) => self.ring.push(text),
+                            None => break,
+                        }
+                    }
                     let _ = events.send(exit_event(&status)).await;
                     break;
                 }
