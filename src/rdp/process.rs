@@ -27,11 +27,22 @@
 //!
 //! [`build_args`] emits, in order: `/v:<host>:<port>`, `/u:<username>`,
 //! `/d:<domain>` (iff set), `/w:`/​`/h:`, `/bpp:` (iff set),
-//! `/from-stdin:force` (always), the feature toggles, `/parent-window:<xid>`
-//! (iff embedded — note the flag name: `/parent-window:`, NOT
-//! `/parent-window-id:`, as verified on 3.15), and the certificate token
-//! (iff resolved). The password never appears in argv — it is not even an
-//! input to the builder, so the compiler enforces what the tests document.
+//! `/from-stdin:force` and `/sec:rdp:off` (always), the feature toggles,
+//! `/parent-window:<xid>` (iff embedded — note the flag name:
+//! `/parent-window:`, NOT `/parent-window-id:`, as verified on 3.15), and
+//! the certificate token (iff resolved). The password never appears in
+//! argv — it is not even an input to the builder, so the compiler enforces
+//! what the tests document.
+//!
+//! `/sec:rdp:off` keeps the certificate pin meaningful. Legacy "Standard
+//! RDP Security" has no TLS handshake, so `/cert:fingerprint:` is never
+//! consulted: a peer that answers the negotiation with
+//! `SSL_NOT_ALLOWED_BY_SERVER` gets a session — and the auto-logon password
+//! — despite a pin that cannot match (verified on FreeRDP 3.32 against a
+//! `freerdp-shadow-cli3 /sec:rdp` server). With the flag the client refuses
+//! with `ERRCONNECT_SECURITY_NEGO_CONNECT_FAILED`; TLS and NLA servers are
+//! unaffected. The `:off` toggle syntax is FreeRDP 3; 2.x spelled it
+//! `-sec-rdp`, which 3.x rejects.
 //!
 //! Toggle forms follow FreeRDP's own `cmdline.h`/man pages (bool options
 //! accept `+`/`-`): clipboard, fonts and compression default ON upstream,
@@ -74,6 +85,9 @@ pub const CONNECT_ERROR_MARKER: &str = "ERRCONNECT_";
 const SPAWN_RETRIES: usize = 20;
 /// Delay between spawn retries.
 const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(5);
+
+/// Refuses the legacy RDP security layer (see the module docs).
+pub const SEC_RDP_OFF: &str = "/sec:rdp:off";
 
 /// Binary names probed in order: newDistro name first, legacy second.
 pub const BINARY_NAMES: [&str; 2] = ["xfreerdp3", "xfreerdp"];
@@ -120,6 +134,9 @@ pub fn build_args(spec: &RdpSpec, parent_xid: Option<u32>) -> Vec<String> {
         args.push(format!("/bpp:{depth}"));
     }
     args.push("/from-stdin:force".to_string());
+    // Never negotiate down to Standard RDP Security: it skips TLS, and with
+    // it the fingerprint pin (module docs).
+    args.push(SEC_RDP_OFF.to_string());
     args.push(
         if spec.clipboard {
             "+clipboard"
@@ -621,6 +638,7 @@ mod tests {
                 "/h:1080",
                 "/bpp:32",
                 "/from-stdin:force",
+                "/sec:rdp:off",
                 "+clipboard",
                 "+fonts",
                 "/printer",
@@ -652,11 +670,25 @@ mod tests {
                 "/w:1920",
                 "/h:1080",
                 "/from-stdin:force",
+                "/sec:rdp:off",
                 "-clipboard",
                 "-fonts",
                 "-compression",
             ]
         );
+    }
+
+    #[test]
+    fn legacy_rdp_security_is_always_refused() {
+        // Without it a peer can skip TLS — and the pin — entirely.
+        let mut spec = full_spec();
+        for cert in [None, spec.cert_arg.clone()] {
+            spec.cert_arg = cert;
+            for xid in [None, Some(1)] {
+                let args = build_args(&spec, xid);
+                assert_eq!(args.iter().filter(|a| *a == SEC_RDP_OFF).count(), 1);
+            }
+        }
     }
 
     #[test]

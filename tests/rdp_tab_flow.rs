@@ -126,6 +126,7 @@ fn spec_ties_into_the_p7_1_argv_contract() {
             "/h:1080",
             "/bpp:32",
             "/from-stdin:force",
+            "/sec:rdp:off",
             "+clipboard",
             "+fonts",
             "+compression",
