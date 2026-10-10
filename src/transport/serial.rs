@@ -41,13 +41,13 @@ impl PortSettings {
     fn from_config(config: &SessionConfig) -> Result<Self, TransportError> {
         let device = config
             .serial_device
-            .clone()
+            .as_deref()
             .filter(|d| !d.is_empty())
             .ok_or_else(|| {
                 TransportError::ConnectionFailed("no serial device configured".into())
             })?;
         Ok(Self {
-            device,
+            device: device.to_string(),
             baud_rate: config.serial_baud_rate.unwrap_or(DEFAULT_SERIAL_BAUD),
             data_bits: map_data_bits(config.serial_data_bits.unwrap_or(SERIAL_DATA_BITS_DEFAULT))?,
             parity: map_parity(
@@ -116,33 +116,50 @@ fn map_stop_bits(value: u8) -> Result<StopBits, TransportError> {
 /// serial transports). Reads block, so the reader runs on tokio's blocking
 /// pool; `resize` is a no-op because a serial line has no window size.
 pub struct SerialTransport {
-    config: SessionConfig,
+    /// The row's port settings, or why it has none: mapped once, reported
+    /// by every `connect`.
+    settings: Result<PortSettings, String>,
+    /// `device@baud`, as the row stores them.
+    description: String,
     /// The write side; the reader task owns a cloned handle.
     port: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
     reader_task: Option<JoinHandle<()>>,
     event_tx: mpsc::Sender<TransportEvent>,
     cancel_token: CancellationToken,
-    state: TransportState,
+    /// Shared with the reader, which ends the connection when the device
+    /// goes away.
+    state: Arc<Mutex<TransportState>>,
 }
 
 impl SerialTransport {
     pub fn new(config: &SessionConfig, event_tx: mpsc::Sender<TransportEvent>) -> Self {
+        let settings = PortSettings::from_config(config).map_err(|err| match err {
+            TransportError::ConnectionFailed(reason) => reason,
+            other => other.to_string(),
+        });
+        let description = format!(
+            "{}@{}",
+            config.serial_device.as_deref().unwrap_or(""),
+            config.serial_baud_rate.unwrap_or(DEFAULT_SERIAL_BAUD)
+        );
         Self {
-            config: config.clone(),
+            settings,
+            description,
             port: None,
             reader_task: None,
             event_tx,
             cancel_token: CancellationToken::new(),
-            state: TransportState::Disconnected,
+            state: Arc::new(Mutex::new(TransportState::Disconnected)),
         }
     }
 
-    fn set_state(&mut self, state: TransportState) {
-        self.state = state;
-        self.state.emit(&self.event_tx);
+    fn set_state(&self, state: TransportState) {
+        let mut current = lock(&self.state);
+        *current = state;
+        current.emit(&self.event_tx);
     }
 
-    fn fail(&mut self, err: TransportError) -> TransportError {
+    fn fail(&self, err: TransportError) -> TransportError {
         self.set_state(TransportState::Error(err.to_string()));
         err
     }
@@ -159,10 +176,17 @@ impl SerialTransport {
     }
 }
 
+fn lock(state: &Mutex<TransportState>) -> std::sync::MutexGuard<'_, TransportState> {
+    state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// The blocking read loop: every chunk becomes `DataReceived`; a read error
-/// (device unplugged, permission revoked) is `ConnectionLost`.
+/// (device unplugged, permission revoked) is `ConnectionLost`, and the
+/// transport is no longer connected — a later `connect` must not be
+/// refused as "already connected".
 fn read_loop(
     mut port: Box<dyn SerialPort>,
+    state: Arc<Mutex<TransportState>>,
     event_tx: mpsc::Sender<TransportEvent>,
     cancel: CancellationToken,
 ) {
@@ -185,7 +209,20 @@ fn read_loop(
                 ) => {}
             Err(_) => {
                 if !cancel.is_cancelled() {
+                    // Recorded before it is reported, so `state()` agrees
+                    // with the event; notified after, as LocalTransport does.
+                    let lost = {
+                        let mut current = lock(&state);
+                        let lost = *current == TransportState::Connected;
+                        if lost {
+                            *current = TransportState::Disconnected;
+                        }
+                        lost
+                    };
                     let _ = event_tx.blocking_send(TransportEvent::ConnectionLost);
+                    if lost {
+                        TransportState::Disconnected.emit(&event_tx);
+                    }
                 }
                 return;
             }
@@ -212,14 +249,17 @@ fn write_all(port: &mut dyn SerialPort, mut data: &[u8]) -> io::Result<()> {
 #[async_trait]
 impl Transport for SerialTransport {
     async fn connect(&mut self) -> Result<(), TransportError> {
-        if self.state == TransportState::Connected {
+        if self.state() == TransportState::Connected {
             return Err(TransportError::ChannelError("already connected".into()));
         }
         self.set_state(TransportState::Connecting);
 
-        let settings = match PortSettings::from_config(&self.config) {
-            Ok(settings) => settings,
-            Err(e) => return Err(self.fail(e)),
+        let settings = match &self.settings {
+            Ok(settings) => settings.clone(),
+            Err(reason) => {
+                let err = TransportError::ConnectionFailed(reason.clone());
+                return Err(self.fail(err));
+            }
         };
         // Opening configures termios and takes a flock: blocking syscalls.
         let opened = tokio::task::spawn_blocking(move || {
@@ -239,10 +279,13 @@ impl Transport for SerialTransport {
 
         // A fresh token per connect: a reconnect must not inherit a cancel.
         self.cancel_token = CancellationToken::new();
-        let event_tx = self.event_tx.clone();
-        let cancel = self.cancel_token.clone();
+        let (state, event_tx, cancel) = (
+            self.state.clone(),
+            self.event_tx.clone(),
+            self.cancel_token.clone(),
+        );
         self.reader_task = Some(tokio::task::spawn_blocking(move || {
-            read_loop(reader, event_tx, cancel)
+            read_loop(reader, state, event_tx, cancel)
         }));
         self.port = Some(Arc::new(Mutex::new(port)));
         self.set_state(TransportState::Connected);
@@ -257,14 +300,14 @@ impl Transport for SerialTransport {
             let _ = tokio::time::timeout(READER_JOIN_TIMEOUT, task).await;
         }
         self.port = None;
-        if self.state != TransportState::Disconnected {
+        if self.state() != TransportState::Disconnected {
             self.set_state(TransportState::Disconnected);
         }
         Ok(())
     }
 
     fn state(&self) -> TransportState {
-        self.state.clone()
+        lock(&self.state).clone()
     }
 
     async fn write(&mut self, data: &[u8]) -> Result<(), TransportError> {
@@ -292,11 +335,7 @@ impl Transport for SerialTransport {
     }
 
     fn description(&self) -> String {
-        format!(
-            "{}@{}",
-            self.config.serial_device.as_deref().unwrap_or(""),
-            self.config.serial_baud_rate.unwrap_or(DEFAULT_SERIAL_BAUD)
-        )
+        self.description.clone()
     }
 }
 

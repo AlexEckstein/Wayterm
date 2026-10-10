@@ -27,11 +27,27 @@
 //!
 //! [`build_args`] emits, in order: `/v:<host>:<port>`, `/u:<username>`,
 //! `/d:<domain>` (iff set), `/w:`/​`/h:`, `/bpp:` (iff set),
-//! `/from-stdin:force` (always), the feature toggles, `/parent-window:<xid>`
-//! (iff embedded — note the flag name: `/parent-window:`, NOT
-//! `/parent-window-id:`, as verified on 3.15), and the certificate token
-//! (iff resolved). The password never appears in argv — it is not even an
-//! input to the builder, so the compiler enforces what the tests document.
+//! `/from-stdin:force` and `/sec:rdp:off` (always), the feature toggles,
+//! `/parent-window:<xid>` (iff embedded — note the flag name:
+//! `/parent-window:`, NOT `/parent-window-id:`, as verified on 3.15), and
+//! the certificate token (iff resolved). The password never appears in
+//! argv — it is not even an input to the builder, so the compiler enforces
+//! what the tests document.
+//!
+//! `/sec:rdp:off` keeps the certificate pin meaningful. Legacy "Standard
+//! RDP Security" has no TLS handshake, so `/cert:fingerprint:` is never
+//! consulted: a peer that answers the negotiation with
+//! `SSL_NOT_ALLOWED_BY_SERVER` gets a session — and the auto-logon password
+//! — despite a pin that cannot match (verified on FreeRDP 3.32 against a
+//! `freerdp-shadow-cli3 /sec:rdp` server). With the flag the client refuses
+//! with `ERRCONNECT_SECURITY_NEGO_CONNECT_FAILED`; TLS and NLA servers are
+//! unaffected. The `:off` toggle syntax is FreeRDP 3; 2.x spelled it
+//! `-sec-rdp`, which 3.x rejects.
+//!
+//! So the contract speaks FreeRDP 3 only: a 2.x binary (still the packaged
+//! `xfreerdp` on Ubuntu 22.04, Debian 12, RHEL 8) is refused at probe time
+//! ([`is_supported_version`]) rather than handed an argv it would
+//! misparse — and nothing here was ever verified on 2.x.
 //!
 //! Toggle forms follow FreeRDP's own `cmdline.h`/man pages (bool options
 //! accept `+`/`-`): clipboard, fonts and compression default ON upstream,
@@ -75,13 +91,20 @@ const SPAWN_RETRIES: usize = 20;
 /// Delay between spawn retries.
 const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(5);
 
+/// Refuses the legacy RDP security layer (see the module docs).
+pub const SEC_RDP_OFF: &str = "/sec:rdp:off";
+
 /// Binary names probed in order: newDistro name first, legacy second.
 pub const BINARY_NAMES: [&str; 2] = ["xfreerdp3", "xfreerdp"];
 
-/// Env allowlist for the child: the X display it needs, plus `PATH` (it
-/// execs helpers) and `HOME` (config/cache lookup). Nothing else is
-/// propagated — notably no secrets, which never travel in env anyway.
-const ALLOWED_ENV: [&str; 3] = ["DISPLAY", "PATH", "HOME"];
+/// Env allowlist for the child: the X display it needs and the cookie
+/// file that authorizes it (`XAUTHORITY` — GDM, SDDM and XWayland keep it
+/// outside `~/.Xauthority`, so without it the display refuses xfreerdp),
+/// `PATH` (it execs helpers), `HOME` (config/cache lookup), and
+/// `XDG_RUNTIME_DIR` (the PulseAudio/PipeWire socket `/audio` plays
+/// through). Nothing else is propagated — notably no secrets, which never
+/// travel in env anyway; these are all paths.
+const ALLOWED_ENV: [&str; 5] = ["DISPLAY", "XAUTHORITY", "PATH", "HOME", "XDG_RUNTIME_DIR"];
 
 /// Everything xfreerdp needs except the password (which only ever goes to
 /// stdin — see the module docs). `cert_arg` is the [`crate::rdp::cert`]
@@ -120,6 +143,9 @@ pub fn build_args(spec: &RdpSpec, parent_xid: Option<u32>) -> Vec<String> {
         args.push(format!("/bpp:{depth}"));
     }
     args.push("/from-stdin:force".to_string());
+    // Never negotiate down to Standard RDP Security: it skips TLS, and with
+    // it the fingerprint pin (module docs).
+    args.push(SEC_RDP_OFF.to_string());
     args.push(
         if spec.clipboard {
             "+clipboard"
@@ -155,6 +181,21 @@ pub fn build_args(spec: &RdpSpec, parent_xid: Option<u32>) -> Vec<String> {
         }
     }
     args
+}
+
+/// The oldest FreeRDP major version the argv contract speaks (module docs).
+pub const MIN_FREERDP_MAJOR: u32 = 3;
+
+/// True when `version` (dotted digits, as [`parse_version`] returns them)
+/// is FreeRDP [`MIN_FREERDP_MAJOR`] or later. An unreadable version is
+/// unsupported: without evidence that the argv will be understood, it is
+/// not run.
+pub fn is_supported_version(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= MIN_FREERDP_MAJOR)
 }
 
 /// Parse `<bin> --version` output. Accepts the parenthesized dotted triple
@@ -338,9 +379,14 @@ impl ErrorRing {
 }
 
 /// Owns one xfreerdp child: its pid (so the UI can only ever kill its own
-/// session), its still-open stdin, and its stderr ring. Tokio-side only;
-/// wrap in `Arc<tokio::sync::Mutex<_>>` to share between the runner task
-/// and the UI (P7-2).
+/// session), its still-open stdin, and its stderr ring. Tokio-side only.
+///
+/// [`run`](Self::run) borrows `&mut self` for the whole session, so when
+/// the wrapper is shared behind an `Arc<tokio::sync::Mutex<_>>` the runner
+/// task holds the lock until the child exits. To stop a live session,
+/// abort the runner task first — dropping the `run` future leaves the child
+/// in `self` — then [`terminate`](Self::terminate) signals and reaps it.
+/// Dropping the wrapper SIGKILLs the child (`kill_on_drop`) as a backstop.
 pub struct RdpProcess {
     binary: String,
     argv: Vec<String>,
@@ -539,7 +585,9 @@ impl RdpProcess {
     }
 
     /// SIGTERM the child's process group, then SIGKILL after the grace
-    /// period. Only ever signals our own child's group (see spawn).
+    /// period. Only ever signals our own child's group (see spawn). Needs
+    /// the wrapper's lock, which a live [`run`](Self::run) holds: abort the
+    /// runner task first (see the type docs).
     pub async fn terminate(&mut self) {
         let Some(child) = self.child.as_mut() else {
             return;
@@ -549,36 +597,43 @@ impl RdpProcess {
             Ok(None) => {}
             _ => return,
         }
-        #[cfg(unix)]
+        signal_group(child, Signal::Term);
+        if tokio::time::timeout(self.terminate_grace, child.wait())
+            .await
+            .is_err()
         {
-            if let Some(pid) = child.id() {
-                // Negative pid = the whole group we created at spawn.
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGTERM);
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = child.kill().await;
-        }
-        let grace = self.terminate_grace;
-        #[cfg(unix)]
-        {
-            if tokio::time::timeout(grace, child.wait()).await.is_err() {
-                if let Some(pid) = child.id() {
-                    unsafe {
-                        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                    }
-                }
-                let _ = child.wait().await;
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = tokio::time::timeout(grace, child.wait()).await;
+            signal_group(child, Signal::Kill);
+            let _ = child.wait().await;
         }
         self.stdin.take();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Signal {
+    Term,
+    Kill,
+}
+
+/// Signal the child's whole process group (created at spawn, so this can
+/// never reach anything outside our own session). A reaped child has no
+/// pid and is left alone.
+fn signal_group(child: &mut Child, signal: Signal) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let signal = match signal {
+            Signal::Term => libc::SIGTERM,
+            Signal::Kill => libc::SIGKILL,
+        };
+        // SAFETY: plain kill(2); the negative pid names the group we made.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), signal);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = signal;
+        let _ = child.start_kill();
     }
 }
 
@@ -621,6 +676,7 @@ mod tests {
                 "/h:1080",
                 "/bpp:32",
                 "/from-stdin:force",
+                "/sec:rdp:off",
                 "+clipboard",
                 "+fonts",
                 "/printer",
@@ -652,11 +708,25 @@ mod tests {
                 "/w:1920",
                 "/h:1080",
                 "/from-stdin:force",
+                "/sec:rdp:off",
                 "-clipboard",
                 "-fonts",
                 "-compression",
             ]
         );
+    }
+
+    #[test]
+    fn legacy_rdp_security_is_always_refused() {
+        // Without it a peer can skip TLS — and the pin — entirely.
+        let mut spec = full_spec();
+        for cert in [None, spec.cert_arg.clone()] {
+            spec.cert_arg = cert;
+            for xid in [None, Some(1)] {
+                let args = build_args(&spec, xid);
+                assert_eq!(args.iter().filter(|a| *a == SEC_RDP_OFF).count(), 1);
+            }
+        }
     }
 
     #[test]
@@ -740,6 +810,16 @@ mod tests {
     }
 
     #[test]
+    fn only_freerdp_3_and_later_is_supported() {
+        for supported in ["3.0.0", "3.15.0", "3.32.1", "4.0"] {
+            assert!(is_supported_version(supported), "{supported}");
+        }
+        for unsupported in ["2.0.0", "2.11.7", "", "x.1", "-3.0"] {
+            assert!(!is_supported_version(unsupported), "{unsupported}");
+        }
+    }
+
+    #[test]
     fn ring_keeps_the_last_200_lines_in_order() {
         let mut ring = ErrorRing::new();
         assert!(ring.is_empty());
@@ -797,8 +877,10 @@ mod tests {
     #[test]
     fn minimal_env_is_allowlisted() {
         for (key, _) in minimal_env() {
-            assert!(["DISPLAY", "PATH", "HOME"].contains(&key.as_str()));
+            assert!(ALLOWED_ENV.contains(&key.as_str()));
         }
+        // The display needs its authorization cookie to admit the child.
+        assert!(ALLOWED_ENV.contains(&"XAUTHORITY"));
     }
 
     #[test]
@@ -874,8 +956,27 @@ mod tests {
         }
     }
 
+    /// Stop a shared, live session the way the tab does: abort the runner
+    /// (which holds the lock for the whole session), then terminate. Fails
+    /// if the child outlived the call or it took anywhere near the fake's
+    /// natural lifetime.
+    async fn abort_and_terminate(
+        proc: &std::sync::Arc<tokio::sync::Mutex<RdpProcess>>,
+        runner: tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let started = std::time::Instant::now();
+        runner.abort();
+        let mut proc = tokio::time::timeout(Duration::from_secs(5), proc.lock())
+            .await
+            .expect("the aborted runner releases the lock");
+        proc.terminate().await;
+        let reaped = proc.child.as_mut().expect("spawned").try_wait().unwrap();
+        assert!(reaped.is_some(), "terminate reaps the child");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     #[tokio::test]
-    async fn run_emits_connected_then_ended_and_terminate_kills() {
+    async fn run_emits_connected_and_terminate_kills_the_live_child() {
         let dir = tempfile::tempdir().unwrap();
         // Reads ONE stdin line (the password), notes stderr, then idles.
         let bin = fake_binary(&dir, "read -r line\necho fake-ready >&2\nsleep 30");
@@ -892,17 +993,8 @@ mod tests {
             tokio::spawn(async move { proc.lock().await.run(&password, tx).await })
         };
         assert_eq!(rx.recv().await, Some(RdpProcessEvent::Connected));
-        proc.lock().await.terminate().await;
-        let run_result = tokio::time::timeout(Duration::from_secs(10), runner)
-            .await
-            .expect("runner must finish after terminate")
-            .expect("runner task panicked");
-        run_result.expect("run itself must not fail");
-        assert!(matches!(
-            rx.recv().await,
-            Some(RdpProcessEvent::Ended { .. })
-        ));
-        assert_eq!(rx.recv().await, None, "Ended is always last");
+        abort_and_terminate(&proc, runner).await;
+        assert_eq!(rx.recv().await, None, "the aborted runner sends nothing");
     }
 
     #[tokio::test]
@@ -977,8 +1069,7 @@ mod tests {
             tokio::spawn(async move { proc.lock().await.run(&password, tx).await })
         };
         assert_eq!(rx.recv().await, Some(RdpProcessEvent::Connected));
-        proc.lock().await.terminate().await;
-        let _ = tokio::time::timeout(Duration::from_secs(10), runner).await;
+        abort_and_terminate(&proc, runner).await;
         let dumped = std::fs::read_to_string(&dump).unwrap();
         // The fake binary is a shebang script, so its interpreter adds
         // PWD/SHLVL/_ itself — those are not leaks. Everything else the
@@ -986,9 +1077,7 @@ mod tests {
         const INTERPRETER_ADDED: [&str; 3] = ["PWD", "SHLVL", "_"];
         assert!(!dumped.contains(secret), "password leaked into env");
         for (key, _) in std::env::vars() {
-            if ["DISPLAY", "PATH", "HOME"].contains(&key.as_str())
-                || INTERPRETER_ADDED.contains(&key.as_str())
-            {
+            if ALLOWED_ENV.contains(&key.as_str()) || INTERPRETER_ADDED.contains(&key.as_str()) {
                 continue;
             }
             assert!(
@@ -1001,7 +1090,7 @@ mod tests {
         for line in dumped.lines() {
             let key = line.split('=').next().unwrap_or("");
             assert!(
-                ["DISPLAY", "PATH", "HOME"].contains(&key) || INTERPRETER_ADDED.contains(&key),
+                ALLOWED_ENV.contains(&key) || INTERPRETER_ADDED.contains(&key),
                 "unexpected env key in child: {key}"
             );
         }

@@ -19,6 +19,14 @@ pub type PixelRect = (u16, u16, u16, u16);
 const OPAQUE_BLACK: u32 = 0xFF00_0000;
 const ALPHA_OPAQUE: u32 = 0xFF00_0000;
 
+/// The widest or tallest desktop the engine holds. Cairo image surfaces
+/// stop at 32767; this still covers multi-monitor 8K walls.
+pub const MAX_DIMENSION: u16 = 16_384;
+/// The most pixels the engine holds (64 Mi — 256 MiB of `u32`, dual 8K
+/// fits). The server picks the size and every pixel is filled up front,
+/// so an unchecked 65535 × 65535 would commit ~17 GB before a frame.
+pub const MAX_PIXELS: usize = 1 << 26;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FramebufferError {
     /// The delivered byte count does not equal `width * height * 4` for the
@@ -47,6 +55,13 @@ impl VncPixels {
 
     pub fn dims(&self) -> (u16, u16) {
         (self.width, self.height)
+    }
+
+    /// Whether a `width` x `height` desktop is within [`MAX_DIMENSION`]
+    /// and [`MAX_PIXELS`]. The engine checks a server's size with this
+    /// before [`resize`](Self::resize) allocates it.
+    pub fn fits(width: u16, height: u16) -> bool {
+        width <= MAX_DIMENSION && height <= MAX_DIMENSION && len(width, height) <= MAX_PIXELS
     }
 
     pub fn pixels(&self) -> &[u32] {
@@ -381,6 +396,22 @@ mod tests {
         assert!(fb.pixels().is_empty());
         fb.resize(2, 2);
         assert_eq!(fb.pixels(), &[B; 4]);
+    }
+
+    #[test]
+    fn size_limit_covers_real_desktops_and_refuses_absurd_ones() {
+        for (w, h) in [
+            (0, 0),
+            (1920, 1080),
+            (7680, 4320),
+            (15360, 4320),
+            (16384, 4096),
+        ] {
+            assert!(VncPixels::fits(w, h), "{w}x{h}");
+        }
+        for (w, h) in [(16385, 1), (1, 16385), (16384, 4097), (u16::MAX, u16::MAX)] {
+            assert!(!VncPixels::fits(w, h), "{w}x{h}");
+        }
     }
 
     #[test]

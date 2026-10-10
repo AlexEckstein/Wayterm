@@ -8,7 +8,8 @@ use std::time::Duration;
 use wayterm::rdp::{build_args, CERT_ARG_PREFIX};
 use wayterm::store::model::{RdpOptions, SessionConfig, SessionType};
 use wayterm::ui::rdp_tab::{
-    changed_cert_text, spec_from_session, unknown_cert_text, warn_below, DEFAULT_PORT,
+    changed_cert_text, freerdp_too_old_text, spec_from_session, unknown_cert_text, warn_below,
+    DEFAULT_PORT,
 };
 
 fn session() -> SessionConfig {
@@ -93,6 +94,17 @@ fn version_warning_fires_below_3_20_only() {
 }
 
 #[test]
+fn freerdp_2_is_refused_with_what_to_install() {
+    for old in ["2.0.0", "2.11.7"] {
+        assert!(!wayterm::rdp::is_supported_version(old), "{old}");
+    }
+    let text = freerdp_too_old_text("xfreerdp", "2.11.7");
+    assert!(text.contains("xfreerdp is FreeRDP 2.11.7"), "{text}");
+    assert!(text.contains("FreeRDP 3 or later"), "{text}");
+    assert!(text.contains("xfreerdp3"), "{text}");
+}
+
+#[test]
 fn unknown_cert_text_names_endpoint_and_fingerprint() {
     let fp = "c".repeat(64);
     let text = unknown_cert_text("rdp.example.lan", 3389, &fp);
@@ -126,6 +138,7 @@ fn spec_ties_into_the_p7_1_argv_contract() {
             "/h:1080",
             "/bpp:32",
             "/from-stdin:force",
+            "/sec:rdp:off",
             "+clipboard",
             "+fonts",
             "+compression",
@@ -202,19 +215,17 @@ async fn rdp_view_live_against_rig() {
         tokio::spawn(async move { proc.lock().await.run(&secret, tx).await })
     };
     // The 15 s heuristic fires Connected while the session is up; then we
-    // tear it down and expect a terminal Ended.
+    // tear it down the way the tab does. `run` holds the process lock for
+    // the whole session, so the runner is aborted before `terminate`.
     match tokio::time::timeout(Duration::from_secs(60), rx.recv()).await {
         Ok(Some(RdpProcessEvent::Connected)) => {}
         other => panic!("expected Connected from the rig, got {other:?}"),
     }
-    proc.lock().await.terminate().await;
-    let run_result = tokio::time::timeout(Duration::from_secs(15), runner)
-        .await
-        .expect("runner finishes after terminate")
-        .expect("runner panicked");
-    run_result.expect("run itself must not fail");
-    assert!(
-        matches!(rx.recv().await, Some(RdpProcessEvent::Ended { .. })),
-        "Ended is always last"
-    );
+    runner.abort();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        proc.lock().await.terminate().await;
+    })
+    .await
+    .expect("terminate finishes once the runner is aborted");
+    assert_eq!(rx.recv().await, None, "the aborted runner sends nothing");
 }

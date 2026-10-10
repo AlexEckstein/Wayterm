@@ -26,6 +26,9 @@ use crate::transport::types::{
 const DEFAULT_SHELL: &str = "/bin/sh";
 /// How long a hung-up child gets to exit before it is sent `SIGKILL`.
 const REAP_KILL_AFTER: Duration = Duration::from_secs(5);
+/// Highest descriptor the pre-5.9-kernel fallback closes in the child
+/// (`close_range(2)` needs no bound).
+const FALLBACK_CLOSE_LIMIT: libc::c_int = 65_536;
 const REAP_POLL: Duration = Duration::from_millis(20);
 
 /// The user's shell on a local PTY. The reader task pushes output from the
@@ -183,6 +186,11 @@ fn spawn_shell(
         .chain(std::iter::once(std::ptr::null()))
         .collect();
     let cwd_c = cwd.map(|dir| to_cstring(dir.as_os_str())).transpose()?;
+    // SAFETY: sysconf has no preconditions.
+    let open_max = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    let close_limit = libc::c_int::try_from(open_max)
+        .unwrap_or(FALLBACK_CLOSE_LIMIT)
+        .clamp(3, FALLBACK_CLOSE_LIMIT);
 
     let mut master: libc::c_int = -1;
     // SAFETY: the out-pointer is valid; null name/termios are allowed.
@@ -201,6 +209,7 @@ fn spawn_shell(
             for signal in 1..32 {
                 libc::signal(signal, libc::SIG_DFL);
             }
+            close_inherited_fds(close_limit);
             if let Some(dir) = &cwd_c {
                 if libc::chdir(dir.as_ptr()) != 0 {
                     libc::_exit(126);
@@ -228,6 +237,37 @@ fn spawn_shell(
         return Err(err.into());
     }
     Ok((master, pid))
+}
+
+/// In the forked child: close every descriptor above stdio, so the shell
+/// inherits only its terminal. Without this it also inherited whatever the
+/// process held without close-on-exec at fork time — notably another
+/// tab's PTY master in the window between `forkpty` and its `FD_CLOEXEC`,
+/// which would let that tab's shell read and type into this one, and keep
+/// its slave from ever reporting `EIO`. Terminal emulators conventionally
+/// do this (VTE does).
+///
+/// # Safety
+///
+/// Child side of a fork only: raw syscalls, async-signal-safe.
+unsafe fn close_inherited_fds(fallback_limit: libc::c_int) {
+    // SAFETY: close_range(3, ~0U, 0) takes plain integers.
+    let closed = unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            libc::c_long::from(3_u32),
+            libc::c_long::from(u32::MAX),
+            libc::c_long::from(0_u32),
+        )
+    };
+    if closed == 0 {
+        return;
+    }
+    // Kernels before 5.9 have no close_range: close one by one.
+    for fd in 3..fallback_limit {
+        // SAFETY: closing a descriptor we may not hold is a harmless EBADF.
+        unsafe { libc::close(fd) };
+    }
 }
 
 /// Take the pid so it is reaped once, by whoever gets there first.
@@ -546,6 +586,27 @@ mod tests {
         let canonical = dir.path().canonicalize().unwrap();
         output_until(&mut rx, &format!("cwd={}.", canonical.display())).await;
         t.disconnect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_shell_inherits_no_descriptors_beyond_its_terminal() {
+        // A descriptor without close-on-exec, at a number nothing else
+        // uses: exactly what a racing fork or a careless library leaves.
+        const PLANTED: libc::c_int = 777;
+        // SAFETY: duplicating our own stderr onto an unused number.
+        assert_eq!(unsafe { libc::dup2(2, PLANTED) }, PLANTED);
+        let (mut t, mut rx) = transport(&sh_config());
+        t.connect().await.unwrap();
+        // The marker is assembled by the shell, so the echoed command line
+        // cannot satisfy the wait by itself.
+        t.write(b"echo \"fd777=$(test -e /proc/$$/fd/777 && echo open || echo closed).\"\n")
+            .await
+            .unwrap();
+        let seen = output_until(&mut rx, "fd777=closed.").await;
+        t.disconnect().await.unwrap();
+        // SAFETY: closing the descriptor planted above.
+        unsafe { libc::close(PLANTED) };
+        assert!(!seen.contains("fd777=open."), "{seen:?}");
     }
 
     #[tokio::test]

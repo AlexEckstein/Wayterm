@@ -34,5 +34,6 @@ mod gtk_tests {
         super::session_tree::gtk_tests::context_menu_is_reused_and_parented_cleanly();
         super::vnc_tab::gtk_tests::vnc_view_draws_and_routes_input();
         super::rdp_tab::gtk_tests::rdp_embed_builds_and_tracks();
+        super::rdp_tab::gtk_tests::rdp_child_follows_the_area_and_dies_with_the_page();
     }
 }

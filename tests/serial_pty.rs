@@ -19,7 +19,7 @@ use tokio::time::timeout;
 
 use wayterm::store::model::{SessionConfig, SessionType};
 use wayterm::transport::serial::SerialTransport;
-use wayterm::transport::types::{Transport, TransportEvent, TransportState};
+use wayterm::transport::types::{Transport, TransportError, TransportEvent, TransportState};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
@@ -195,5 +195,14 @@ async fn hang_up_is_connection_lost() {
         }
     };
     timeout(DEADLINE, lost).await.expect("ConnectionLost");
+    // The transport agrees it is no longer connected, so a reconnect is
+    // attempted (and fails on the vanished device) instead of being refused
+    // as "already connected".
+    assert_eq!(transport.state(), TransportState::Disconnected);
+    let retry = transport.connect().await;
+    assert!(
+        matches!(retry, Err(TransportError::ConnectionFailed(_))),
+        "{retry:?}"
+    );
     transport.disconnect().await.expect("disconnect");
 }

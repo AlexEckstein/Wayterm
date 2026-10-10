@@ -51,12 +51,14 @@
 //! `build_args`). Never a silent second window. This path is untestable on
 //! an X-only host; it is code-review-only quality.
 //!
-//! ## Version notice
+//! ## FreeRDP version
 //!
-//! `/from-stdin` was buggy around 3.5–3.17 (fixed in 3.20). The binary is
-//! probed once per process ([`cached_probe`]) and, when below 3.20, the
-//! connecting overlay carries a warning ([`warn_below`], pure and tested).
-//! It disappears at Connected with the overlay.
+//! The binary is probed once per process ([`cached_probe`]). FreeRDP 2.x is
+//! refused with an error view ([`usable_freerdp`]): the argv speaks
+//! FreeRDP 3 (`rdp::process`). `/from-stdin` was buggy around 3.5–3.17
+//! (fixed in 3.20), so below 3.20 the connecting overlay carries a warning
+//! ([`warn_below`], pure and tested); it disappears at Connected with the
+//! overlay.
 
 use std::cell::{Cell, RefCell};
 use std::io;
@@ -67,13 +69,14 @@ use std::time::Duration;
 use gtk4::glib;
 use gtk4::prelude::*;
 use tokio::sync::mpsc;
+use x11rb::rust_connection::RustConnection;
 use zeroize::Zeroizing;
 
 use crate::app::default_db_path;
 use crate::rdp::cert::{parse_seen_fingerprint, PROBE_FINGERPRINT};
 use crate::rdp::{
-    cert_arg, decide, probe_binary, CertDecision, RdpProcess, RdpProcessEvent, RdpSpec,
-    CERT_ARG_PREFIX,
+    cert_arg, decide, is_supported_version, probe_binary, CertDecision, RdpProcess,
+    RdpProcessEvent, RdpSpec, CERT_ARG_PREFIX, MIN_FREERDP_MAJOR,
 };
 use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
@@ -81,8 +84,7 @@ use crate::transport::credentials::CredentialManager;
 use crate::transport::types::TransportState;
 use crate::ui::auth_dialog::{run_on_gtk_main_thread, top_level_parent};
 use crate::ui::tab::{
-    credential_manager, current_gen, publish_status, set_terminal_area, show_connecting_view,
-    show_error_view,
+    credential_manager, current_gen, publish_status, set_terminal_area, show_error_view,
 };
 use crate::ui::widgets::{centered_label, data, set_data, set_margins};
 
@@ -134,25 +136,12 @@ pub fn spec_from_session(session: &SessionConfig, cert_arg: Option<String>) -> R
         ),
         None => (false, true, true, true),
     };
-    let compression = session
-        .rdp_options
-        .as_ref()
-        .map(|_| session.rdp_compression)
-        .unwrap_or(true);
+    let trimmed = |value: &Option<String>| value.as_deref().unwrap_or_default().trim().to_string();
     RdpSpec {
-        host: session.host.clone().unwrap_or_default().trim().to_string(),
+        host: trimmed(&session.host),
         port: session.port.unwrap_or(DEFAULT_PORT),
-        username: session
-            .username
-            .clone()
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-        domain: session
-            .rdp_domain
-            .clone()
-            .map(|domain| domain.trim().to_string())
-            .filter(|domain| !domain.is_empty()),
+        username: trimmed(&session.username),
+        domain: Some(trimmed(&session.rdp_domain)).filter(|domain| !domain.is_empty()),
         width: session.rdp_width.unwrap_or(1024),
         height: session.rdp_height.unwrap_or(768),
         depth: session.rdp_color_depth,
@@ -160,7 +149,7 @@ pub fn spec_from_session(session: &SessionConfig, cert_arg: Option<String>) -> R
         clipboard,
         fonts,
         printer,
-        compression,
+        compression: session.rdp_options.is_none() || session.rdp_compression,
         cert_arg,
     }
 }
@@ -175,6 +164,16 @@ pub fn warn_below(version: &str) -> bool {
         (Some(major), Some(minor)) => (major, minor) < (3, 20),
         _ => false,
     }
+}
+
+/// The error for a FreeRDP older than the argv speaks: which binary, which
+/// version, and what to install instead.
+pub fn freerdp_too_old_text(binary: &str, version: &str) -> String {
+    format!(
+        "{binary} is FreeRDP {version}, but RDP tabs need FreeRDP \
+         {MIN_FREERDP_MAJOR} or later. Install FreeRDP 3 — Wayterm looks for \
+         xfreerdp3 first, then xfreerdp."
+    )
 }
 
 /// The unknown-certificate prompt body: host:port, the seen SHA-256
@@ -300,9 +299,22 @@ pub fn rdp_trust_record(host: &str, port: u16, fingerprint: &str) -> rusqlite::R
 
 /// The probed `(binary, version)`, once per process. Blocking (one
 /// `--version` spawn): only called from `start` and the dial pool.
-fn cached_probe() -> Option<(String, String)> {
+fn cached_probe() -> Option<&'static (String, String)> {
     static PROBE: OnceLock<Option<(String, String)>> = OnceLock::new();
-    PROBE.get_or_init(probe_binary).clone()
+    PROBE.get_or_init(probe_binary).as_ref()
+}
+
+/// The probed `(binary, version)` if RDP can run on it: on `PATH`, and
+/// FreeRDP 3 or later. `Err` carries the error view's message.
+fn usable_freerdp() -> Result<&'static (String, String), String> {
+    let probe = cached_probe()
+        .ok_or_else(|| "xfreerdp not found on PATH (looked for xfreerdp3, xfreerdp)".to_string())?;
+    let (binary, version) = probe;
+    if is_supported_version(version) {
+        Ok(probe)
+    } else {
+        Err(freerdp_too_old_text(binary, version))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +350,7 @@ fn surface_xid(area: &gtk4::DrawingArea) -> XidState {
 }
 
 /// All current children of the host window; empty when the query fails.
-fn child_windows(conn: &x11rb::rust_connection::RustConnection, host: u32) -> Vec<u32> {
+fn child_windows(conn: &RustConnection, host: u32) -> Vec<u32> {
     use x11rb::protocol::xproto::ConnectionExt;
     conn.query_tree(host)
         .ok()
@@ -363,14 +375,7 @@ fn track_newcomer(baseline: &[u32], children: &[u32]) -> Option<u32> {
 /// Resize our tracked child to the area allocation at the area's
 /// surface-relative origin; a zero child or size is a no-op. Errors are
 /// ignored: the 250 ms poll retries.
-fn configure_child(
-    conn: &x11rb::rust_connection::RustConnection,
-    child: u32,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-) {
+fn configure_child(conn: &RustConnection, child: u32, x: i32, y: i32, width: i32, height: i32) {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ConfigureWindowAux, ConnectionExt};
     if child == 0 || width <= 0 || height <= 0 {
@@ -387,6 +392,21 @@ fn configure_child(
     let _ = conn.flush();
 }
 
+/// Map or unmap our tracked child. GTK knows nothing of the foreign
+/// window, so when the area is hidden (another tab selected, the window
+/// sent to the tray, the tab closed) the remote desktop would otherwise
+/// stay drawn over whatever the toplevel shows next.
+fn set_child_mapped(conn: &RustConnection, child: u32, mapped: bool) {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt;
+    let _ = if mapped {
+        conn.map_window(child)
+    } else {
+        conn.unmap_window(child)
+    };
+    let _ = conn.flush();
+}
+
 /// The area's origin in toplevel-surface coordinates. The host XID comes
 /// from `native().surface()` — the toplevel window, which the area shares —
 /// so the child must sit at the translated origin, not at (0, 0).
@@ -399,7 +419,7 @@ fn area_origin(area: &gtk4::DrawingArea) -> Option<(i32, i32)> {
 /// Hand X input focus to our child when focus sits on the parent window
 /// (gtk owns it). Without this there is no keyboard under a WM. Never
 /// steals focus from anywhere else; on teardown focus is left alone.
-fn hand_focus_to_child(conn: &x11rb::rust_connection::RustConnection, host: u32, child: u32) {
+fn hand_focus_to_child(conn: &RustConnection, host: u32, child: u32) {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ConnectionExt, InputFocus};
     if child == 0 {
@@ -439,28 +459,42 @@ type Proc = Arc<tokio::sync::Mutex<RdpProcess>>;
 #[derive(Clone)]
 struct Attempt {
     notebook: gtk4::Notebook,
-    page: gtk4::Widget,
+    /// Weak: every timer and task of the attempt holds one, and a strong
+    /// ref would keep a closed page alive — with its [`EngineSlot`], so our
+    /// xfreerdp would outlive the tab (doc 04 §Lifecycle).
+    page: glib::WeakRef<gtk4::Widget>,
     session: Rc<SessionConfig>,
+    /// Trimmed, as the dial uses it.
+    host: Rc<str>,
+    port: u16,
     tab_gen: u64,
     our_gen: u64,
 }
 
 impl Attempt {
+    /// The page, while it exists and this is still its newest attempt.
+    fn page(&self) -> Option<gtk4::Widget> {
+        self.page
+            .upgrade()
+            .filter(|page| current_gen(page) == self.tab_gen && rdp_gen_value(page) == self.our_gen)
+    }
+
     fn live(&self) -> bool {
-        current_gen(&self.page) == self.tab_gen && rdp_gen_value(&self.page) == self.our_gen
+        self.page().is_some()
     }
 
-    fn host(&self) -> String {
-        self.session
-            .host
-            .clone()
-            .unwrap_or_default()
-            .trim()
-            .to_string()
+    fn publish(&self, page: &gtk4::Widget, state: TransportState) {
+        publish_status(page, state, &self.host, self.port);
     }
 
-    fn port(&self) -> u16 {
-        self.session.port.unwrap_or(DEFAULT_PORT)
+    fn fail(&self, page: &gtk4::Widget, message: String) {
+        show_error_view(&self.notebook, page, &self.session, &message);
+        self.publish(page, TransportState::Error(message));
+    }
+
+    fn disconnected(&self, page: &gtk4::Widget) {
+        set_terminal_area(page, &centered_label("Disconnected"));
+        self.publish(page, TransportState::Disconnected);
     }
 }
 
@@ -512,9 +546,11 @@ fn retire_slot(page: &gtk4::Widget) {
     set_data(page, ENGINE_KEY, Rc::new(EngineSlot(RefCell::new(None))));
 }
 
-/// Abort the runner and terminate our own child. When no runtime handle is
-/// reachable (off-thread drop in tests), the child's `kill_on_drop` is the
-/// backstop: dropping the last `Arc` reaps it.
+/// Abort the runner and terminate our own child. The runner holds the
+/// process lock for the whole session, so it is aborted first (see
+/// `RdpProcess`). When no runtime handle is reachable (off-thread drop in
+/// tests), the child's `kill_on_drop` is the backstop: dropping the last
+/// `Arc` reaps it.
 fn dispose_process(proc: Proc, runner: tokio::task::JoinHandle<io::Result<()>>) {
     runner.abort();
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -536,57 +572,80 @@ struct ReadyDial {
     proc: Proc,
     runner: tokio::task::JoinHandle<io::Result<()>>,
     events: mpsc::Receiver<RdpProcessEvent>,
-    /// The fingerprint the real spawn was pinned to (for the changed-cert
-    /// check on pre-connect failures).
-    stored: Option<String>,
+    /// The fingerprint the spawn was pinned to (for the changed-cert check
+    /// on pre-connect failures).
+    pinned: String,
 }
 
 /// Resolve the password, then the certificate, then spawn. Blocks on the
-/// prompt and the probe, so it runs on the blocking pool.
-fn dial(session: SessionConfig, parent_xid: Option<u32>, creds: CredentialManager) -> Dial {
-    let host = session.host.clone().unwrap_or_default().trim().to_string();
-    let port = session.port.unwrap_or(DEFAULT_PORT);
-    let id = session.id.to_string();
-    let Some(password) = creds.lookup(&id, PASSWORD_SECRET) else {
+/// prompts and the probe, so it runs on the blocking pool. `base` is the
+/// session's spec without a certificate token.
+fn dial(
+    base: RdpSpec,
+    session_id: &str,
+    parent_xid: Option<u32>,
+    creds: &CredentialManager,
+) -> Dial {
+    let Some(password) = creds.lookup(session_id, PASSWORD_SECRET) else {
         return Dial::Cancelled;
     };
-    let Some((binary, _)) = cached_probe() else {
-        return Dial::Failed("xfreerdp not found on PATH (looked for xfreerdp3, xfreerdp)".into());
+    let (binary, _) = match usable_freerdp() {
+        Ok(probe) => probe,
+        Err(message) => return Dial::Failed(message),
     };
-    // An unreadable store is first contact: the probe resolves trust.
-    let stored = rdp_trust_lookup(&host, port).unwrap_or(None);
-    if let Some(fingerprint) = stored.clone() {
+    // Fail closed: an unreadable store is not first contact. Treating it as
+    // one would re-prompt for — and let the user re-pin — a host whose
+    // stored pin we merely failed to read.
+    let stored = match rdp_trust_lookup(&base.host, base.port) {
+        Ok(stored) => stored,
+        Err(err) => return Dial::Failed(format!("RDP trust store unreadable: {err}")),
+    };
+    let pinned = match stored {
         // Known host: pass-through spawn, xfreerdp enforces the pin.
-        let decision = CertDecision::PassStored { fingerprint };
-        let token = cert_arg(&decision);
-        return spawn_real(
-            &binary,
-            &spec_from_session(&session, token),
-            parent_xid,
-            &password,
-            stored,
-        );
-    }
-    // First contact: probe spawn with the guaranteed-mismatch fingerprint.
-    // xfreerdp refuses at TLS and prints the seen fingerprint; it writes
-    // nothing to any store and exits within ~1 s.
-    let probe_spec = spec_from_session(
-        &session,
-        Some(format!("{CERT_ARG_PREFIX}{PROBE_FINGERPRINT}")),
-    );
-    let mut probe = RdpProcess::new(&binary, &probe_spec, parent_xid);
+        Some(fingerprint) => fingerprint,
+        None => match first_contact(binary, &base, parent_xid) {
+            Ok(fingerprint) => fingerprint,
+            Err(dial) => return dial,
+        },
+    };
+    let spec = RdpSpec {
+        cert_arg: cert_arg(&CertDecision::PassStored {
+            fingerprint: pinned.clone(),
+        }),
+        ..base
+    };
+    spawn_real(binary, &spec, parent_xid, &password, pinned)
+}
+
+/// First contact: learn the server's fingerprint without trusting it, then
+/// ask the user. The probe pins a fingerprint no certificate can match, so
+/// xfreerdp refuses at TLS — after printing what it saw, before any
+/// credential could leave — writes nothing to its own store, and exits
+/// (~1 s on 3.15, ~0.1 s on 3.32). It is fed an empty password regardless:
+/// nothing secret goes to a server the user has not accepted, whatever the
+/// peer negotiates. Returns the accepted (and recorded) fingerprint.
+fn first_contact(binary: &str, base: &RdpSpec, parent_xid: Option<u32>) -> Result<String, Dial> {
+    let (host, port) = (base.host.as_str(), base.port);
+    let probe_spec = RdpSpec {
+        cert_arg: Some(format!("{CERT_ARG_PREFIX}{PROBE_FINGERPRINT}")),
+        ..base.clone()
+    };
+    let mut probe = RdpProcess::new(binary, &probe_spec, parent_xid);
     let (tx, _) = mpsc::channel(8);
-    let outcome = tokio::runtime::Handle::current()
-        .block_on(async { tokio::time::timeout(PROBE_TIMEOUT, probe.run(&password, tx)).await });
+    let runtime = tokio::runtime::Handle::current();
+    let outcome = runtime.block_on(tokio::time::timeout(
+        PROBE_TIMEOUT,
+        probe.run(&Zeroizing::default(), tx),
+    ));
     match outcome {
-        Err(_) => {
-            tokio::runtime::Handle::current().block_on(probe.terminate());
-            return Dial::Failed(format!("certificate probe for {host}:{port} timed out"));
-        }
-        Ok(Err(err)) => {
-            return Dial::Failed(format!("certificate probe failed: {err}"));
-        }
         Ok(Ok(())) => {}
+        Ok(Err(err)) => return Err(Dial::Failed(format!("certificate probe failed: {err}"))),
+        Err(_) => {
+            runtime.block_on(probe.terminate());
+            return Err(Dial::Failed(format!(
+                "certificate probe for {host}:{port} timed out"
+            )));
+        }
     }
     let digest = probe.error_digest();
     let Some(seen) = parse_seen_fingerprint(&digest) else {
@@ -596,31 +655,18 @@ fn dial(session: SessionConfig, parent_xid: Option<u32>, creds: CredentialManage
         } else {
             format!(" ({})", tail.join(" | "))
         };
-        return Dial::Failed(format!("no certificate presented by {host}:{port}{tail}"));
+        return Err(Dial::Failed(format!(
+            "could not read the certificate fingerprint of {host}:{port}{tail}"
+        )));
     };
-    let decision = run_on_gtk_main_thread({
-        let (dialog_host, dialog_seen) = (host.clone(), seen.clone());
-        move || unknown_cert_decision(&dialog_host, port, &dialog_seen)
-    })
-    .flatten();
-    match decision {
-        Some(record) => {
-            if let Err(err) = rdp_trust_record(&record.host, record.port, &record.fingerprint) {
-                eprintln!("Wayterm: RDP trust record failed: {err}");
-            }
-            let token = cert_arg(&CertDecision::PassStored {
-                fingerprint: record.fingerprint.clone(),
-            });
-            spawn_real(
-                &binary,
-                &spec_from_session(&session, token),
-                parent_xid,
-                &password,
-                Some(record.fingerprint),
-            )
-        }
-        None => Dial::Cancelled,
+    let dialog_host = host.to_string();
+    let accepted = run_on_gtk_main_thread(move || unknown_cert_decision(&dialog_host, port, &seen))
+        .flatten()
+        .ok_or(Dial::Cancelled)?;
+    if let Err(err) = rdp_trust_record(&accepted.host, accepted.port, &accepted.fingerprint) {
+        eprintln!("Wayterm: RDP trust record failed: {err}");
     }
+    Ok(accepted.fingerprint)
 }
 
 /// Spawn the real session: the runner task owns a process lock guard only
@@ -630,7 +676,7 @@ fn spawn_real(
     spec: &RdpSpec,
     parent_xid: Option<u32>,
     password: &Zeroizing<Vec<u8>>,
-    stored: Option<String>,
+    pinned: String,
 ) -> Dial {
     let proc: Proc = Arc::new(tokio::sync::Mutex::new(RdpProcess::new(
         binary, spec, parent_xid,
@@ -643,18 +689,20 @@ fn spawn_real(
         proc,
         runner,
         events: rx,
-        stored,
+        pinned,
     })
 }
 
 /// The embedded widgets an attempt spawned into, if any. `baseline` is the
 /// host tree snapshot taken before OUR spawn, so discovery tracks only the
-/// newcomer (see [`track_newcomer`]).
+/// newcomer (see [`track_newcomer`]); `conn` took it and runs maintenance
+/// (`None` when the display refused the connection).
 struct Embed {
     area: gtk4::DrawingArea,
     overlay: gtk4::Overlay,
     status: gtk4::Widget,
     host_xid: u32,
+    conn: Option<RustConnection>,
     baseline: Vec<u32>,
 }
 
@@ -667,14 +715,13 @@ pub(crate) fn start(
     gen: u64,
 ) {
     retire_slot(page);
-    let attempt = Attempt {
-        notebook: notebook.clone(),
-        page: page.clone(),
-        session: session.clone(),
-        tab_gen: gen,
-        our_gen: bump_rdp_gen(page),
-    };
-    let filled = |value: &Option<String>| value.clone().filter(|v| !v.trim().is_empty());
+    let our_gen = bump_rdp_gen(page);
+    fn filled(value: &Option<String>) -> Option<&str> {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
     let Some(host) = filled(&session.host) else {
         return show_error_view(
             notebook,
@@ -691,52 +738,50 @@ pub(crate) fn start(
             "This session has no username configured.",
         );
     };
-    let port = session.port.unwrap_or(DEFAULT_PORT);
-    let Some((_, version)) = cached_probe() else {
-        return show_error_view(
-            notebook,
-            page,
-            session,
-            "xfreerdp not found on PATH (looked for xfreerdp3, xfreerdp)",
-        );
+    let (_, version) = match usable_freerdp() {
+        Ok(probe) => probe,
+        Err(message) => return show_error_view(notebook, page, session, &message),
+    };
+    let attempt = Attempt {
+        notebook: notebook.clone(),
+        page: page.downgrade(),
+        session: session.clone(),
+        host: host.into(),
+        port: session.port.unwrap_or(DEFAULT_PORT),
+        tab_gen: gen,
+        our_gen,
     };
     // The FreeRDP version notice lives in the connecting overlay and
     // disappears at Connected with it.
-    let warning = warn_below(&version).then(|| {
+    let warning = warn_below(version).then(|| {
         format!(
             "FreeRDP {version} — credential pipe buggy band (fixed 3.20); \
              if the password is rejected, check stdin auth"
         )
     });
-    show_connecting_view(page, &host, port);
-    publish_status(page, TransportState::Connecting, &host, port);
+    attempt.publish(page, TransportState::Connecting);
 
     let area = build_area();
     let overlay = gtk4::Overlay::new();
     overlay.set_hexpand(true);
     overlay.set_vexpand(true);
     overlay.set_child(Some(&area));
-    let status = connecting_overlay(&host, port, warning.as_deref(), &attempt);
+    let status = connecting_overlay(&attempt, warning.as_deref());
     overlay.add_overlay(&status);
     set_terminal_area(page, &overlay);
-    wait_for_xid(attempt, area, overlay, status, 0);
+    wait_for_xid(attempt, area, overlay, status);
 }
 
 /// The connecting overlay: host:port, the optional FreeRDP warning, and a
 /// Cancel button. Removed at Connected; any error view replaces the whole
 /// overlay.
-fn connecting_overlay(
-    host: &str,
-    port: u16,
-    warning: Option<&str>,
-    attempt: &Attempt,
-) -> gtk4::Widget {
+fn connecting_overlay(attempt: &Attempt, warning: Option<&str>) -> gtk4::Widget {
     let view = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
     view.set_vexpand(true);
     view.set_hexpand(true);
     view.set_valign(gtk4::Align::Center);
     view.set_halign(gtk4::Align::Center);
-    let mut text = format!("Connecting to {host}:{port}…");
+    let mut text = format!("Connecting to {}:{}…", attempt.host, attempt.port);
     if let Some(warning) = warning {
         text.push('\n');
         text.push_str(warning);
@@ -746,82 +791,72 @@ fn connecting_overlay(
     cancel.set_halign(gtk4::Align::Center);
     let attempt = attempt.clone();
     cancel.connect_clicked(move |_| {
-        bump_rdp_gen(&attempt.page);
-        retire_slot(&attempt.page);
-        set_terminal_area(&attempt.page, &centered_label("Disconnected"));
-        publish_status(
-            &attempt.page,
-            TransportState::Disconnected,
-            &attempt.host(),
-            attempt.port(),
-        );
+        let Some(page) = attempt.page() else {
+            return;
+        };
+        bump_rdp_gen(&page);
+        retire_slot(&page);
+        attempt.disconnected(&page);
     });
     view.append(&cancel);
     view.upcast()
 }
 
-/// Poll for the area's XID, then dial. `ticks` counts down
-/// [`XID_POLLS_MAX`] while unmapped.
+/// Poll for the area's XID, then dial; give up after [`XID_POLLS_MAX`]
+/// polls while unmapped.
 fn wait_for_xid(
     attempt: Attempt,
     area: gtk4::DrawingArea,
     overlay: gtk4::Overlay,
     status: gtk4::Widget,
-    ticks: u32,
 ) {
     let weak_area = area.downgrade();
+    let mut parts = Some((overlay, status));
+    let mut ticks = 0;
     glib::timeout_add_local(XID_POLL, move || {
-        if !attempt.live() {
-            return glib::ControlFlow::Break;
-        }
-        let Some(area) = weak_area.upgrade() else {
+        let (Some(page), Some(area)) = (attempt.page(), weak_area.upgrade()) else {
             return glib::ControlFlow::Break;
         };
         match surface_xid(&area) {
             XidState::Ready(xid) => {
+                let Some((overlay, status)) = parts.take() else {
+                    return glib::ControlFlow::Break;
+                };
                 // Baseline BEFORE the spawn: discovery later tracks only
                 // the newcomer, never GTK's own children or an orphan.
-                let baseline = x11rb::connect(None)
-                    .ok()
-                    .map(|(conn, _)| child_windows(&conn, xid))
+                let conn = x11rb::connect(None).ok().map(|(conn, _)| conn);
+                let baseline = conn
+                    .as_ref()
+                    .map(|conn| child_windows(conn, xid))
                     .unwrap_or_default();
                 launch_dial(
                     &attempt,
                     Some(xid),
                     Some(Embed {
-                        area: area.clone(),
-                        overlay: overlay.clone(),
-                        status: status.clone(),
+                        area,
+                        overlay,
+                        status,
                         host_xid: xid,
+                        conn,
                         baseline,
                     }),
                 );
                 glib::ControlFlow::Break
             }
             XidState::Wayland => {
-                show_wayland_choice(&attempt);
+                show_wayland_choice(&attempt, &page);
                 glib::ControlFlow::Break
             }
             XidState::Unmapped if ticks >= XID_POLLS_MAX => {
-                let message = "The RDP container never mapped to a window.".to_string();
-                show_error_view(&attempt.notebook, &attempt.page, &attempt.session, &message);
-                publish_status(
-                    &attempt.page,
-                    TransportState::Error(message),
-                    &attempt.host(),
-                    attempt.port(),
+                attempt.fail(
+                    &page,
+                    "The RDP container never mapped to a window.".to_string(),
                 );
                 glib::ControlFlow::Break
             }
             XidState::Unmapped => {
-                wait_for_xid(
-                    attempt.clone(),
-                    area.clone(),
-                    overlay.clone(),
-                    status.clone(),
-                    ticks + 1,
-                );
-                glib::ControlFlow::Break
+                ticks += 1;
+                glib::ControlFlow::Continue
             }
         }
     });
@@ -830,142 +865,125 @@ fn wait_for_xid(
 /// Run the dial on the blocking pool and attach its result.
 fn launch_dial(attempt: &Attempt, parent_xid: Option<u32>, embed: Option<Embed>) {
     let creds = credential_manager(&attempt.session.name);
-    let session = attempt.session.as_ref().clone();
-    let task = tokio::task::spawn_blocking(move || dial(session, parent_xid, creds));
-    let (attempt, embed) = (attempt.clone(), embed);
+    let session_id = attempt.session.id.to_string();
+    let base = spec_from_session(&attempt.session, None);
+    let task = tokio::task::spawn_blocking(move || dial(base, &session_id, parent_xid, &creds));
+    let attempt = attempt.clone();
     glib::MainContext::default().spawn_local(async move {
         let result = task.await;
-        if !attempt.live() {
-            // Superseded: a late process must not leak its child.
+        let Some(page) = attempt.page() else {
+            // Superseded or closed: a late process must not leak its child.
             if let Ok(Dial::Ready(ready)) = result {
                 dispose_process(ready.proc, ready.runner);
             }
             return;
-        }
-        let host = attempt.host();
-        let port = attempt.port();
-        let error = match result {
-            Ok(Dial::Ready(ready)) => return attach(&attempt, ready, embed),
-            Ok(Dial::Cancelled) => {
-                set_terminal_area(&attempt.page, &centered_label("Disconnected"));
-                publish_status(&attempt.page, TransportState::Disconnected, &host, port);
-                return;
-            }
-            Ok(Dial::Failed(error)) => error,
-            Err(join_err) => format!("connect task failed: {join_err}"),
         };
-        show_error_view(&attempt.notebook, &attempt.page, &attempt.session, &error);
-        publish_status(&attempt.page, TransportState::Error(error), &host, port);
+        match result {
+            Ok(Dial::Ready(ready)) => attach(&attempt, &page, ready, embed),
+            Ok(Dial::Cancelled) => attempt.disconnected(&page),
+            Ok(Dial::Failed(error)) => attempt.fail(&page, error),
+            Err(join_err) => attempt.fail(&page, format!("connect task failed: {join_err}")),
+        }
     });
 }
 
 /// Show the framebuffer's host area, start X11 maintenance, and pump the
 /// runner's events into the page.
-fn attach(attempt: &Attempt, ready: ReadyDial, embed: Option<Embed>) {
-    let host = attempt.host();
-    let port = attempt.port();
+fn attach(attempt: &Attempt, page: &gtk4::Widget, ready: ReadyDial, embed: Option<Embed>) {
     let ReadyDial {
         proc,
         runner,
         mut events,
-        stored,
+        pinned,
     } = ready;
     set_data(
-        &attempt.page,
+        page,
         ENGINE_KEY,
         Rc::new(EngineSlot::with_runner(proc.clone(), runner)),
     );
-    if let Some(embed) = &embed {
-        start_maintenance(attempt, &embed.area, embed.host_xid, &embed.baseline);
-    }
-    // A top-level window has no host area: say where the desktop went.
-    if embed.is_none() {
-        set_terminal_area(
-            &attempt.page,
-            &centered_label("Running in a separate xfreerdp window…"),
-        );
-    }
+    let overlay = match embed {
+        Some(embed) => {
+            start_maintenance(
+                attempt,
+                &embed.area,
+                embed.conn,
+                embed.host_xid,
+                embed.baseline,
+            );
+            Some((embed.overlay, embed.status))
+        }
+        None => {
+            // A top-level window has no host area: say where the desktop went.
+            set_terminal_area(
+                page,
+                &centered_label("Running in a separate xfreerdp window…"),
+            );
+            None
+        }
+    };
     let attempt = attempt.clone();
     glib::MainContext::default().spawn_local(async move {
         let mut connected = false;
         while let Some(event) = events.recv().await {
-            if !attempt.live() {
+            let Some(page) = attempt.page() else {
                 return;
-            }
+            };
             match event {
                 RdpProcessEvent::Connected => {
                     connected = true;
-                    if let Some(embed) = &embed {
-                        embed.overlay.remove_overlay(&embed.status);
-                    } else {
-                        set_terminal_area(
-                            &attempt.page,
+                    match &overlay {
+                        Some((overlay, status)) => overlay.remove_overlay(status),
+                        None => set_terminal_area(
+                            &page,
                             &centered_label(
                                 "Connected — the desktop is in the separate xfreerdp window.",
                             ),
-                        );
+                        ),
                     }
-                    publish_status(&attempt.page, TransportState::Connected, &host, port);
+                    attempt.publish(&page, TransportState::Connected);
                 }
                 RdpProcessEvent::Ended { code, signal } => {
-                    // A pre-connect failure against a pinned host may be a
-                    // certificate change: xfreerdp enforces the pin and
-                    // prints the seen fingerprint on stderr.
-                    if !connected {
-                        if let Some(stored) = stored.as_deref() {
-                            let digest = proc.lock().await.error_digest();
-                            if let Some(seen) = parse_seen_fingerprint(&digest) {
-                                let expected = CertDecision::ChangedCert {
-                                    stored: stored.to_string(),
-                                    seen: seen.clone(),
-                                };
-                                if decide(Some(stored), Some(&seen)) == expected {
-                                    match changed_cert_decision(&host, port, stored, &seen) {
-                                        ChangeChoice::UpdateAndRetry => {
-                                            if let Err(err) = rdp_trust_record(&host, port, &seen) {
-                                                eprintln!(
-                                                    "Wayterm: RDP trust record failed: {err}"
-                                                );
-                                            }
-                                            start(
-                                                &attempt.notebook,
-                                                &attempt.page,
-                                                &attempt.session,
-                                                attempt.tab_gen,
-                                            );
-                                            return;
-                                        }
-                                        ChangeChoice::KeepRefusing => {
-                                            let message =
-                                                "server certificate changed; connection refused"
-                                                    .to_string();
-                                            show_error_view(
-                                                &attempt.notebook,
-                                                &attempt.page,
-                                                &attempt.session,
-                                                &message,
-                                            );
-                                            publish_status(
-                                                &attempt.page,
-                                                TransportState::Error(message),
-                                                &host,
-                                                port,
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    let digest = proc.lock().await.error_digest();
+                    // A pre-connect failure may be a certificate change:
+                    // xfreerdp enforces the pin and prints the seen
+                    // fingerprint on stderr.
+                    let seen = (!connected)
+                        .then(|| parse_seen_fingerprint(&digest))
+                        .flatten();
+                    if let Some(CertDecision::ChangedCert { stored, seen }) =
+                        seen.map(|seen| decide(Some(pinned.as_str()), Some(seen.as_str())))
+                    {
+                        changed_cert(&attempt, &stored, &seen);
+                    } else {
+                        attempt.fail(&page, ended_message(code, signal, &digest));
                     }
-                    let reason = ended_message(code, signal, &proc.lock().await.error_digest());
-                    show_error_view(&attempt.notebook, &attempt.page, &attempt.session, &reason);
-                    publish_status(&attempt.page, TransportState::Error(reason), &host, port);
                     return;
                 }
             }
         }
     });
+}
+
+/// The pinned connect met a different certificate: warn, and only an
+/// explicit update records it and retries.
+fn changed_cert(attempt: &Attempt, stored: &str, seen: &str) {
+    let choice = changed_cert_decision(&attempt.host, attempt.port, stored, seen);
+    // The modal ran a nested main loop: the tab may be closed or retried.
+    let Some(page) = attempt.page() else {
+        return;
+    };
+    match choice {
+        ChangeChoice::UpdateAndRetry => {
+            if let Err(err) = rdp_trust_record(&attempt.host, attempt.port, seen) {
+                eprintln!("Wayterm: RDP trust record failed: {err}");
+            }
+            start(&attempt.notebook, &page, &attempt.session, attempt.tab_gen);
+        }
+        ChangeChoice::KeepRefusing => attempt.fail(
+            &page,
+            "server certificate changed; connection refused".to_string(),
+        ),
+    }
 }
 
 /// The plain-ended message: exit code/signal plus the stderr tail (which
@@ -984,90 +1002,139 @@ fn ended_message(code: Option<i32>, signal: Option<i32>, digest: &[String]) -> S
     }
 }
 
-/// Start child discovery, configure, and focus maintenance for our tracked
-/// window. Every callback stops itself once the attempt is superseded.
-fn start_maintenance(attempt: &Attempt, area: &gtk4::DrawingArea, host_xid: u32, baseline: &[u32]) {
-    let Ok((conn, _)) = x11rb::connect(None) else {
+/// Start child discovery, visibility, configure, and focus maintenance for
+/// our tracked window. Every callback stops itself once the attempt is
+/// superseded or its page is gone.
+fn start_maintenance(
+    attempt: &Attempt,
+    area: &gtk4::DrawingArea,
+    conn: Option<RustConnection>,
+    host: u32,
+    baseline: Vec<u32>,
+) {
+    let Some(conn) = conn else {
         eprintln!("Wayterm: RDP x11rb connect failed; the child window will not be resized");
         return;
     };
     let maintainer = Rc::new(Maintainer {
         conn,
-        host: host_xid,
+        host,
         child: Cell::new(0),
+        shown: Cell::new(false),
     });
 
     // Discovery: once ~1 s after spawn, once more ~3 s (a late mapper or a
     // retry's second child). Only the newcomer past the pre-spawn baseline
     // is ever tracked; the second pass additionally replaces the tracked
     // window when it died.
+    let baseline: Rc<[u32]> = baseline.into();
     for delay in [DISCOVER_FIRST, DISCOVER_SECOND] {
-        let (attempt, maintainer, baseline) =
-            (attempt.clone(), maintainer.clone(), baseline.to_vec());
+        let (attempt, maintainer, baseline, weak_area) = (
+            attempt.clone(),
+            maintainer.clone(),
+            baseline.clone(),
+            area.downgrade(),
+        );
         glib::timeout_add_local_once(delay, move || {
-            if !attempt.live() {
+            let (true, Some(area)) = (attempt.live(), weak_area.upgrade()) else {
                 return;
-            }
+            };
             let children = child_windows(&maintainer.conn, maintainer.host);
             let Some(newcomer) = track_newcomer(&baseline, &children) else {
                 return;
             };
             let known = maintainer.child.get();
             if delay == DISCOVER_FIRST || known == 0 || !children.contains(&known) {
-                maintainer.child.set(newcomer);
+                maintainer.track(newcomer);
+                maintainer.sync(&area, area.is_mapped());
             }
         });
     }
 
-    // Configure on resize (fast path) plus a 250 ms poll fallback.
-    let configure = Rc::new({
-        let (maintainer, weak_area) = (maintainer.clone(), area.downgrade());
-        move || {
-            let (Some(area), child) = (weak_area.upgrade(), maintainer.child.get()) else {
-                return;
-            };
-            let (x, y) = area_origin(&area).unwrap_or((0, 0));
-            configure_child(&maintainer.conn, child, x, y, area.width(), area.height());
-        }
-    });
+    // Follow the area: hide with it, show with it, fit it on resize, plus a
+    // 250 ms poll fallback.
     {
-        let configure = configure.clone();
-        area.connect_resize(move |_, _, _| configure());
+        let maintainer = maintainer.clone();
+        area.connect_map(move |area| maintainer.sync(area, true));
     }
     {
-        let (attempt, configure) = (attempt.clone(), configure.clone());
+        let maintainer = maintainer.clone();
+        area.connect_unmap(move |area| maintainer.sync(area, false));
+    }
+    {
+        let maintainer = maintainer.clone();
+        area.connect_resize(move |area, _, _| maintainer.sync(area, area.is_mapped()));
+    }
+    {
+        let (attempt, maintainer, weak_area) =
+            (attempt.clone(), maintainer.clone(), area.downgrade());
         glib::timeout_add_local(CONFIGURE_POLL, move || {
-            if !attempt.live() {
+            let (true, Some(area)) = (attempt.live(), weak_area.upgrade()) else {
                 return glib::ControlFlow::Break;
-            }
-            configure();
+            };
+            maintainer.sync(&area, area.is_mapped());
             glib::ControlFlow::Continue
         });
     }
 
     // Focus handoff: when X input focus sits on our parent, hand it to our
-    // child. On teardown the polls stop and focus is left alone.
-    {
-        let (attempt, maintainer) = (attempt.clone(), maintainer.clone());
-        glib::timeout_add_local(FOCUS_POLL, move || {
-            if !attempt.live() {
-                return glib::ControlFlow::Break;
-            }
-            hand_focus_to_child(&maintainer.conn, maintainer.host, maintainer.child.get());
-            glib::ControlFlow::Continue
-        });
-    }
+    // child — only while the area is on screen. On teardown the polls stop
+    // and focus is left alone.
+    let (attempt, weak_area) = (attempt.clone(), area.downgrade());
+    glib::timeout_add_local(FOCUS_POLL, move || {
+        let (true, Some(area)) = (attempt.live(), weak_area.upgrade()) else {
+            return glib::ControlFlow::Break;
+        };
+        maintainer.hand_focus(&area);
+        glib::ControlFlow::Continue
+    });
 }
 
+/// The x11rb side of one embedded attempt: the host window, our tracked
+/// child, and whether we last left that child mapped.
 struct Maintainer {
-    conn: x11rb::rust_connection::RustConnection,
+    conn: RustConnection,
     host: u32,
     child: Cell<u32>,
+    shown: Cell<bool>,
+}
+
+impl Maintainer {
+    /// Track `child`; xfreerdp maps its own window when it creates it.
+    fn track(&self, child: u32) {
+        self.child.set(child);
+        self.shown.set(true);
+    }
+
+    /// Mirror the area onto our child: fitted to the area while `visible`,
+    /// unmapped while it is not.
+    fn sync(&self, area: &gtk4::DrawingArea, visible: bool) {
+        let child = self.child.get();
+        if child == 0 {
+            return;
+        }
+        if visible {
+            let (x, y) = area_origin(area).unwrap_or((0, 0));
+            configure_child(&self.conn, child, x, y, area.width(), area.height());
+        }
+        if visible != self.shown.get() {
+            set_child_mapped(&self.conn, child, visible);
+            self.shown.set(visible);
+        }
+    }
+
+    /// The keyboard follows the desktop only while it is on screen: a
+    /// hidden RDP tab must never take the keys typed into another tab.
+    fn hand_focus(&self, area: &gtk4::DrawingArea) {
+        if area.is_mapped() {
+            hand_focus_to_child(&self.conn, self.host, self.child.get());
+        }
+    }
 }
 
 /// The doc-08 choice for Wayland-native GDK: relaunch under X11 or open
 /// xfreerdp un-embedded. Never a silent second window.
-fn show_wayland_choice(attempt: &Attempt) {
+fn show_wayland_choice(attempt: &Attempt, page: &gtk4::Widget) {
     let view = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
     view.set_vexpand(true);
     view.set_hexpand(true);
@@ -1088,19 +1155,17 @@ fn show_wayland_choice(attempt: &Attempt) {
     relaunch.add_css_class("suggested-action");
     relaunch.connect_clicked(|_| relaunch_under_x11());
     let separate = gtk4::Button::with_label("Open window instead");
-    let separate_attempt = attempt.clone();
+    let attempt = attempt.clone();
     separate.connect_clicked(move |_| {
+        let Some(page) = attempt.page() else {
+            return;
+        };
         set_terminal_area(
-            &separate_attempt.page,
+            &page,
             &centered_label("Running in a separate xfreerdp window…"),
         );
-        publish_status(
-            &separate_attempt.page,
-            TransportState::Connecting,
-            &separate_attempt.host(),
-            separate_attempt.port(),
-        );
-        launch_dial(&separate_attempt, None, None);
+        attempt.publish(&page, TransportState::Connecting);
+        launch_dial(&attempt, None, None);
     });
     let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
     buttons.set_halign(gtk4::Align::Center);
@@ -1109,7 +1174,7 @@ fn show_wayland_choice(attempt: &Attempt) {
     view.append(&heading);
     view.append(&detail);
     view.append(&buttons);
-    set_terminal_area(&attempt.page, &view);
+    set_terminal_area(page, &view);
 }
 
 /// Respawn ourselves with `GDK_BACKEND=x11`, then exit this instance.
@@ -1260,20 +1325,7 @@ pub(super) mod gtk_tests {
         assert_eq!(surface_xid(&area), XidState::Unmapped);
 
         // Real X round-trip: present in a window and wait for the map.
-        let window = gtk4::Window::new();
-        window.set_child(Some(&area));
-        window.present();
-        let mut xid = None;
-        for _ in 0..200 {
-            while glib::MainContext::default().iteration(false) {}
-            if let XidState::Ready(id) = surface_xid(&area) {
-                xid = Some(id);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let host = xid.expect("DrawingArea maps to a real X window under xvfb");
-        assert_ne!(host, 0);
+        let (window, host) = present(&area);
 
         // The host tree round-trips over a real X connection. GTK keeps its
         // own children under the toplevel, so discovery is baseline-relative
@@ -1288,5 +1340,138 @@ pub(super) mod gtk_tests {
         configure_child(&conn, 0, 0, 0, 800, 600);
         hand_focus_to_child(&conn, host, 0);
         window.close();
+    }
+
+    /// Present `area` in a window and wait for the map; returns the window
+    /// and the host XID.
+    fn present(area: &gtk4::DrawingArea) -> (gtk4::Window, u32) {
+        let window = gtk4::Window::new();
+        window.set_child(Some(area));
+        window.present();
+        for _ in 0..200 {
+            pump();
+            if let XidState::Ready(xid) = surface_xid(area) {
+                return (window, xid);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("DrawingArea maps to a real X window under xvfb");
+    }
+
+    fn pump() {
+        while glib::MainContext::default().iteration(false) {}
+    }
+
+    pub(in crate::ui) fn rdp_child_follows_the_area_and_dies_with_the_page() {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{
+            ConnectionExt, CreateWindowAux, InputFocus, MapState, WindowClass,
+        };
+
+        let area = build_area();
+        area.set_size_request(320, 200);
+        let (window, host) = present(&area);
+
+        // A stand-in for xfreerdp's window: a plain child of the toplevel.
+        let (conn, _) = x11rb::connect(None).expect("x11rb connect under xvfb");
+        let child = conn.generate_id().unwrap();
+        conn.create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            child,
+            host,
+            0,
+            0,
+            10,
+            10,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            x11rb::COPY_FROM_PARENT,
+            &CreateWindowAux::new(),
+        )
+        .unwrap();
+        conn.map_window(child).unwrap();
+        conn.flush().unwrap();
+        let maintainer = Maintainer {
+            conn,
+            host,
+            child: Cell::new(0),
+            shown: Cell::new(false),
+        };
+        maintainer.track(child);
+        let state = |m: &Maintainer| {
+            m.conn
+                .get_window_attributes(child)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .map_state
+        };
+        let focus = |m: &Maintainer| m.conn.get_input_focus().unwrap().reply().unwrap().focus;
+
+        // Shown: fitted to the area.
+        maintainer.sync(&area, area.is_mapped());
+        let geometry = maintainer
+            .conn
+            .get_geometry(child)
+            .unwrap()
+            .reply()
+            .unwrap();
+        assert_eq!(
+            (i32::from(geometry.width), i32::from(geometry.height)),
+            (area.width(), area.height())
+        );
+        assert_eq!(state(&maintainer), MapState::VIEWABLE);
+
+        // Hidden (another tab selected): the keyboard stays where it is —
+        // checked while the child is still viewable, since X itself
+        // refuses focus to an unmapped window — and the child unmaps.
+        area.set_visible(false);
+        pump();
+        assert!(!area.is_mapped());
+        maintainer
+            .conn
+            .set_input_focus(InputFocus::PARENT, host, x11rb::CURRENT_TIME)
+            .unwrap();
+        assert_eq!(state(&maintainer), MapState::VIEWABLE);
+        maintainer.hand_focus(&area);
+        assert_eq!(focus(&maintainer), host, "a hidden tab takes no keys");
+        maintainer.sync(&area, area.is_mapped());
+        assert_eq!(state(&maintainer), MapState::UNMAPPED);
+
+        // Shown again: mapped, and the keyboard follows the desktop.
+        area.set_visible(true);
+        pump();
+        maintainer.sync(&area, area.is_mapped());
+        assert_eq!(state(&maintainer), MapState::VIEWABLE);
+        maintainer.hand_focus(&area);
+        assert_eq!(focus(&maintainer), child);
+        window.close();
+
+        // An attempt holds its page weakly: once the tab is closed, every
+        // timer and task of the attempt stops (and the page's EngineSlot,
+        // finalized with it, terminates xfreerdp).
+        let notebook = gtk4::Notebook::new();
+        let page: gtk4::Widget = gtk4::Paned::new(gtk4::Orientation::Horizontal).upcast();
+        notebook.append_page(&page, None::<&gtk4::Widget>);
+        let attempt = Attempt {
+            notebook: notebook.clone(),
+            page: page.downgrade(),
+            session: Rc::new(SessionConfig::default()),
+            host: "rdp.example.lan".into(),
+            port: DEFAULT_PORT,
+            tab_gen: current_gen(&page),
+            our_gen: bump_rdp_gen(&page),
+        };
+        assert!(attempt.live());
+        bump_rdp_gen(&page);
+        assert!(!attempt.live(), "a retry supersedes the attempt");
+        let attempt = Attempt {
+            our_gen: rdp_gen_value(&page),
+            ..attempt
+        };
+        assert!(attempt.live());
+        notebook.remove_page(Some(0));
+        drop(page);
+        assert!(!attempt.live(), "a closed tab ends the attempt");
     }
 }

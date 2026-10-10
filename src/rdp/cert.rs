@@ -120,49 +120,64 @@ pub const PROBE_FINGERPRINT: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// The fingerprint the server actually presented, parsed from xfreerdp's
-/// stderr (as captured on 3.15). Two real line shapes exist —
+/// stderr (as captured on 3.15 and 3.32). Two real line shapes exist —
 ///
 /// ```text
-/// The fingerprint for the host key sent by the remote host is 11:1e:94:…
-/// Thumbprint:  11:1e:94:…
+/// [time] [pid:tid] [ERROR][com.freerdp.crypto] - [fn]: The fingerprint for the host key sent by the remote host is 11:1e:94:…
+///     Thumbprint:  11:1e:94:…
 /// ```
 ///
 /// Both carry colon-separated hex; the value is normalized (colons
-/// stripped, lowercased) and shape-checked before being returned. `None`
-/// when no line carries a parseable fingerprint (nothing is ever
-/// invented). The UI supplies raw stderr lines — the ring's
+/// stripped, lowercased) and shape-checked before being returned.
+///
+/// The server controls text that lands on the same stream — its
+/// certificate's names are printed (the name-mismatch block quotes the CN
+/// *before* the fingerprint line) — so each shape is anchored: the
+/// key-line text must be the whole log message (or the bare line), and
+/// `Thumbprint:` must start the line. Every match must also agree: two
+/// different values mean something besides FreeRDP wrote one, and `None`
+/// is returned rather than guessing. `None` too when no line carries a
+/// parseable fingerprint (nothing is ever invented). xfreerdp, not this
+/// parser, enforces the pin; this only decides what the user is shown and
+/// what is recorded. The UI supplies raw stderr lines — the ring's
 /// [`process::RdpProcess::error_digest`] or live lines.
 pub fn parse_seen_fingerprint(lines: &[String]) -> Option<String> {
-    const KEY_MARK: &str = "fingerprint for the host key sent by the remote host is ";
-    const THUMB_MARK: &str = "thumbprint:";
-    for line in lines {
-        let lowered = line.to_lowercase();
-        let segment = if let Some(at) = lowered.find(KEY_MARK) {
-            Some(&lowered[at + KEY_MARK.len()..])
-        } else {
-            lowered
-                .find(THUMB_MARK)
-                .map(|at| &lowered[at + THUMB_MARK.len()..])
-        };
-        let Some(segment) = segment else { continue };
-        // The marker text usually trails its last space, but the cert-info
-        // shape ("Thumbprint:  …") leaves leading whitespace — collect from
-        // the first hex digit, not from the segment head.
-        let from_hex = segment
-            .char_indices()
-            .find(|(_, c)| c.is_ascii_hexdigit())
-            .map(|(at, _)| at)
-            .unwrap_or(segment.len());
-        let hex: String = segment[from_hex..]
-            .chars()
-            .take_while(|c| c.is_ascii_hexdigit() || *c == ':')
-            .collect();
-        let compact: String = hex.chars().filter(|c| *c != ':').collect();
-        if is_valid_fingerprint(&compact) {
-            return Some(compact);
+    let mut found: Option<String> = None;
+    for candidate in lines.iter().filter_map(|line| fingerprint_on(line)) {
+        match &found {
+            None => found = Some(candidate),
+            Some(first) if *first == candidate => {}
+            Some(_) => return None,
         }
     }
-    None
+    found
+}
+
+/// The fingerprint one stderr line carries in either FreeRDP shape.
+fn fingerprint_on(line: &str) -> Option<String> {
+    const KEY_MARK: &str = "The fingerprint for the host key sent by the remote host is ";
+    const THUMB_MARK: &str = "Thumbprint:";
+    let bare = line.trim_start();
+    let value = bare
+        .strip_prefix(THUMB_MARK)
+        .or_else(|| bare.strip_prefix(KEY_MARK))
+        .or_else(|| log_message(line)?.strip_prefix(KEY_MARK))?;
+    let compact: String = value
+        .split_whitespace()
+        .next()?
+        .chars()
+        .filter(|c| *c != ':')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    is_valid_fingerprint(&compact).then_some(compact)
+}
+
+/// The message of a WLog line in FreeRDP's default layout,
+/// `[time] [pid:tid] [LEVEL][tag] - [function]: message`. The child's
+/// environment is cleared, so no `WLOG_PREFIX` can change the layout.
+fn log_message(line: &str) -> Option<&str> {
+    let after_tag = &line[line.find(" - [")? + " - [".len()..];
+    Some(&after_tag[after_tag.find("]: ")? + "]: ".len()..])
 }
 
 #[cfg(test)]
@@ -320,5 +335,60 @@ mod tests {
                 .to_string(),
         ];
         assert!(parse_seen_fingerprint(&digest).is_some());
+    }
+
+    const FP_332: &str = "66444f805003c72e6ae2c502de19b9aa7f8ac02d396a1196a5ee138cb047f6f0";
+
+    /// Both shapes as FreeRDP 3.32 prints them for one refused probe
+    /// (a throwaway self-signed test cert, CN `wayterm-review`).
+    fn digest_332() -> Vec<String> {
+        vec![
+            "[21:49:56:090] [182540:0002c90e] [ERROR][com.freerdp.crypto] - \
+             [tls_print_new_certificate_warn]: The fingerprint for the host key sent \
+             by the remote host is 66:44:4f:80:50:03:c7:2e:6a:e2:c5:02:de:19:b9:aa:7f:\
+             8a:c0:2d:39:6a:11:96:a5:ee:13:8c:b0:47:f6:f0"
+                .to_string(),
+            "[21:49:56:090] [182540:0002c90e] [ERROR][com.freerdp.core] - \
+             [transport_default_connect_tls]: ERRCONNECT_TLS_CONNECT_FAILED [0x00020008]"
+                .to_string(),
+            "\tSubject:     CN = wayterm-review".to_string(),
+            "\tThumbprint:  66:44:4f:80:50:03:c7:2e:6a:e2:c5:02:de:19:b9:aa:7f:8a:c0:2d:\
+             39:6a:11:96:a5:ee:13:8c:b0:47:f6:f0"
+                .to_string(),
+        ]
+    }
+
+    #[test]
+    fn parses_the_332_digest_where_both_shapes_agree() {
+        assert_eq!(
+            parse_seen_fingerprint(&digest_332()).as_deref(),
+            Some(FP_332)
+        );
+    }
+
+    #[test]
+    fn certificate_names_quoting_a_marker_are_not_fingerprints() {
+        // The name-mismatch block prints the server's CN before the real
+        // fingerprint line; a CN carrying marker text must not win.
+        let mut digest = vec![
+            format!(
+                "[21:49:56:090] [1:2] [ERROR][com.freerdp.crypto] - \
+                 [tls_print_certificate_name_mismatch_error]: \tThe fingerprint for \
+                 the host key sent by the remote host is {FP_A}"
+            ),
+            format!("\tSubject:     CN = Thumbprint: {FP_A}"),
+            format!("\tCommon Name: x Thumbprint: {FP_B}"),
+        ];
+        digest.extend(digest_332());
+        assert_eq!(parse_seen_fingerprint(&digest).as_deref(), Some(FP_332));
+    }
+
+    #[test]
+    fn disagreeing_fingerprints_trust_neither() {
+        // A field with an embedded newline can forge a whole line; when it
+        // disagrees with FreeRDP's own line, nothing is believed.
+        let mut digest = vec![format!("Thumbprint:  {FP_A}")];
+        digest.extend(digest_332());
+        assert_eq!(parse_seen_fingerprint(&digest), None);
     }
 }
