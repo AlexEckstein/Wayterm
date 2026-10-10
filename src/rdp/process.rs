@@ -92,10 +92,14 @@ pub const SEC_RDP_OFF: &str = "/sec:rdp:off";
 /// Binary names probed in order: newDistro name first, legacy second.
 pub const BINARY_NAMES: [&str; 2] = ["xfreerdp3", "xfreerdp"];
 
-/// Env allowlist for the child: the X display it needs, plus `PATH` (it
-/// execs helpers) and `HOME` (config/cache lookup). Nothing else is
-/// propagated — notably no secrets, which never travel in env anyway.
-const ALLOWED_ENV: [&str; 3] = ["DISPLAY", "PATH", "HOME"];
+/// Env allowlist for the child: the X display it needs and the cookie
+/// file that authorizes it (`XAUTHORITY` — GDM, SDDM and XWayland keep it
+/// outside `~/.Xauthority`, so without it the display refuses xfreerdp),
+/// `PATH` (it execs helpers), `HOME` (config/cache lookup), and
+/// `XDG_RUNTIME_DIR` (the PulseAudio/PipeWire socket `/audio` plays
+/// through). Nothing else is propagated — notably no secrets, which never
+/// travel in env anyway; these are all paths.
+const ALLOWED_ENV: [&str; 5] = ["DISPLAY", "XAUTHORITY", "PATH", "HOME", "XDG_RUNTIME_DIR"];
 
 /// Everything xfreerdp needs except the password (which only ever goes to
 /// stdin — see the module docs). `cert_arg` is the [`crate::rdp::cert`]
@@ -843,8 +847,10 @@ mod tests {
     #[test]
     fn minimal_env_is_allowlisted() {
         for (key, _) in minimal_env() {
-            assert!(["DISPLAY", "PATH", "HOME"].contains(&key.as_str()));
+            assert!(ALLOWED_ENV.contains(&key.as_str()));
         }
+        // The display needs its authorization cookie to admit the child.
+        assert!(ALLOWED_ENV.contains(&"XAUTHORITY"));
     }
 
     #[test]
@@ -1041,9 +1047,7 @@ mod tests {
         const INTERPRETER_ADDED: [&str; 3] = ["PWD", "SHLVL", "_"];
         assert!(!dumped.contains(secret), "password leaked into env");
         for (key, _) in std::env::vars() {
-            if ["DISPLAY", "PATH", "HOME"].contains(&key.as_str())
-                || INTERPRETER_ADDED.contains(&key.as_str())
-            {
+            if ALLOWED_ENV.contains(&key.as_str()) || INTERPRETER_ADDED.contains(&key.as_str()) {
                 continue;
             }
             assert!(
@@ -1056,7 +1060,7 @@ mod tests {
         for line in dumped.lines() {
             let key = line.split('=').next().unwrap_or("");
             assert!(
-                ["DISPLAY", "PATH", "HOME"].contains(&key) || INTERPRETER_ADDED.contains(&key),
+                ALLOWED_ENV.contains(&key) || INTERPRETER_ADDED.contains(&key),
                 "unexpected env key in child: {key}"
             );
         }
