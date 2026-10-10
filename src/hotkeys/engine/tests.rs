@@ -489,3 +489,225 @@ fn export_import_round_trip() {
         "import then export is a fixed point"
     );
 }
+
+// ---------------------------------------------------------------------------
+// install(): the registry → GTK mapping, and one rebuild per mutation. The
+// GTK binder itself is exercised under xvfb in `tests/hotkeys.rs`; here a
+// recorder stands in for it so the "which bindings were pushed" contract
+// runs display-free.
+// ---------------------------------------------------------------------------
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
+use crate::hotkeys::defaults::DEFAULT_ACTIONS;
+
+/// Records every action pushed to it as (id, live accel).
+#[derive(Debug, Default)]
+struct Recorder {
+    pushed: RefCell<Vec<(String, Option<String>)>>,
+    uninstalled: Cell<bool>,
+}
+
+impl Binder for Recorder {
+    fn bind(&self, action: &Action) {
+        self.pushed
+            .borrow_mut()
+            .push((action.id.clone(), live_accel(action)));
+    }
+
+    fn uninstall(&self) {
+        self.uninstalled.set(true);
+    }
+}
+
+impl Recorder {
+    /// What was pushed since the last call.
+    fn take(&self) -> Vec<(String, Option<String>)> {
+        std::mem::take(&mut self.pushed.borrow_mut())
+    }
+}
+
+fn installed() -> (HotkeyEngine, Rc<Recorder>) {
+    let mut engine = engine();
+    let recorder = Rc::new(Recorder::default());
+    engine.install_binder(recorder.clone());
+    recorder.take();
+    (engine, recorder)
+}
+
+fn pushed(id: &str, accel: Option<&str>) -> (String, Option<String>) {
+    (id.to_string(), accel.map(str::to_string))
+}
+
+#[test]
+fn every_default_action_has_a_tier() {
+    for default in DEFAULT_ACTIONS {
+        let expected = if default.context == ActionContext::Global {
+            Tier::Accel
+        } else {
+            Tier::Controller
+        };
+        assert_eq!(tier(default.context), expected, "{}", default.id);
+    }
+    assert_eq!(tier(ActionContext::RdpTab), Tier::Passthrough);
+    assert_eq!(tier(ActionContext::VncTab), Tier::Passthrough);
+}
+
+#[test]
+fn every_action_targets_its_window_action() {
+    assert_eq!(action_name("copy"), "win.copy");
+    assert_eq!(action_name("toggle_sftp"), "win.toggle_sftp");
+}
+
+/// `toggle_sftp` used to be installed by hand with this exact accel; the
+/// engine must produce the same one so the dedupe changes nothing.
+#[test]
+fn toggle_sftp_keeps_its_former_manual_accel() {
+    let engine = engine();
+    assert_eq!(
+        live_accel(engine.action("toggle_sftp").unwrap()).as_deref(),
+        Some("<Control><Shift>b")
+    );
+}
+
+#[test]
+fn every_default_binding_converts_to_an_accel() {
+    let engine = engine();
+    for action in engine.registry().actions() {
+        assert!(live_accel(action).is_some(), "{} has no accel", action.id);
+    }
+}
+
+#[test]
+fn disabled_and_unbound_actions_hold_no_accel() {
+    let mut engine = engine();
+    engine.set_enabled("copy", false).unwrap();
+    assert_eq!(live_accel(engine.action("copy").unwrap()), None);
+    engine
+        .rebind_with("new_tab", "Ctrl+Shift+V", ConflictPolicy::Override)
+        .unwrap();
+    assert_eq!(live_accel(engine.action("paste").unwrap()), None);
+}
+
+#[test]
+fn install_pushes_every_action_once() {
+    let mut engine = engine();
+    let recorder = Rc::new(Recorder::default());
+    engine.install_binder(recorder.clone());
+    let mut ids: Vec<String> = recorder.take().into_iter().map(|(id, _)| id).collect();
+    ids.sort();
+    let mut expected: Vec<String> = DEFAULT_ACTIONS.iter().map(|d| d.id.to_string()).collect();
+    expected.sort();
+    assert_eq!(ids, expected);
+}
+
+#[test]
+fn reinstall_uninstalls_the_previous_binder() {
+    let (mut engine, first) = installed();
+    let second = Rc::new(Recorder::default());
+    engine.install_binder(second.clone());
+    assert!(first.uninstalled.get());
+    assert!(!second.uninstalled.get());
+    assert_eq!(second.take().len(), DEFAULT_ACTIONS.len());
+    engine.rebind("copy", "Ctrl+Alt+C").unwrap();
+    assert!(
+        first.take().is_empty(),
+        "the old binder sees no more changes"
+    );
+    assert_eq!(second.take().len(), 1);
+}
+
+#[test]
+fn rebind_rebuilds_only_that_binding() {
+    let (mut engine, recorder) = installed();
+    engine.rebind("copy", "Ctrl+Alt+C").unwrap();
+    assert_eq!(
+        recorder.take(),
+        vec![pushed("copy", Some("<Control><Alt>c"))]
+    );
+    engine.rebind("new_tab", "Ctrl+Alt+T").unwrap();
+    assert_eq!(
+        recorder.take(),
+        vec![pushed("new_tab", Some("<Control><Alt>t"))]
+    );
+}
+
+#[test]
+fn an_override_rebuilds_the_winner_and_the_losers() {
+    let (mut engine, recorder) = installed();
+    engine
+        .rebind_with("new_tab", "Ctrl+Shift+C", ConflictPolicy::Override)
+        .unwrap();
+    assert_eq!(
+        recorder.take(),
+        vec![
+            pushed("new_tab", Some("<Control><Shift>c")),
+            pushed("copy", None),
+        ]
+    );
+}
+
+#[test]
+fn a_refused_rebind_rebuilds_nothing() {
+    let (mut engine, recorder) = installed();
+    assert!(engine.rebind("new_tab", "Ctrl+Shift+C").is_err());
+    assert!(engine.rebind("copy", "Ctrl+Nonsense").is_err());
+    assert!(engine.rebind("nope", "Ctrl+Alt+Z").is_err());
+    assert!(engine.reset_to_default("nope").is_err());
+    assert!(engine.set_enabled("nope", false).is_err());
+    assert!(recorder.take().is_empty());
+}
+
+#[test]
+fn reset_and_enable_rebuild_only_that_binding() {
+    let (mut engine, recorder) = installed();
+    engine.rebind("copy", "Ctrl+Alt+C").unwrap();
+    recorder.take();
+
+    engine.set_enabled("copy", false).unwrap();
+    assert_eq!(recorder.take(), vec![pushed("copy", None)]);
+    engine.set_enabled("copy", true).unwrap();
+    assert_eq!(
+        recorder.take(),
+        vec![pushed("copy", Some("<Control><Alt>c"))]
+    );
+    engine.reset_to_default("copy").unwrap();
+    assert_eq!(
+        recorder.take(),
+        vec![pushed("copy", Some("<Control><Shift>c"))]
+    );
+}
+
+#[test]
+fn load_from_db_rebuilds_the_applied_rows() {
+    let store = store();
+    store
+        .save_custom_hotkey("copy", "Ctrl+Y", "terminal", true)
+        .unwrap();
+    store
+        .save_custom_hotkey("no_such_action", "Ctrl+Alt+Z", "global", true)
+        .unwrap();
+    let (mut engine, recorder) = installed();
+    engine.load_from_db(&store).expect("load");
+    assert_eq!(recorder.take(), vec![pushed("copy", Some("<Control>y"))]);
+}
+
+#[test]
+fn import_json_rebuilds_what_it_displaced() {
+    let (mut engine, recorder) = installed();
+    let json = r#"{"version":1,"bindings":[
+        {"action":"new_tab","display_name":"New Tab","key":"Ctrl+Shift+C","context":"global","enabled":true,"is_default":false}
+    ]}"#;
+    engine.import_json(json).expect("import");
+    let pushed = recorder.take();
+    assert!(pushed.contains(&("new_tab".to_string(), Some("<Control><Shift>c".to_string()))));
+    assert!(pushed.contains(&("copy".to_string(), None)));
+}
+
+#[test]
+fn an_uninstalled_engine_still_mutates() {
+    let mut engine = engine();
+    engine.rebind("copy", "Ctrl+Alt+C").unwrap();
+    assert_eq!(binding(&engine, "copy"), "Ctrl+Alt+C");
+}
