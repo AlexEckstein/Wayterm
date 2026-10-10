@@ -134,6 +134,38 @@ async fn reader_pushes_data_received_events() {
 }
 
 #[tokio::test]
+async fn exit_ends_the_session_without_losing_the_connection() {
+    let Some(f) = fixture() else { return };
+
+    let connection = connect_password(&f).await;
+    let (mut transport, mut rx) = ssh_transport(connection.clone());
+
+    transport.connect().await.expect("connect failed");
+    transport.write(b"exit\n").await.expect("write failed");
+
+    // EOF arrives before the exit status: the reader must wait for the close.
+    let ended = timeout(Duration::from_secs(10), async {
+        loop {
+            match rx.recv().await {
+                Some(TransportEvent::SessionEnded) => return true,
+                Some(TransportEvent::ConnectionLost) | None => return false,
+                Some(_) => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        ended,
+        "a shell exiting must report SessionEnded, not ConnectionLost"
+    );
+    // Only the channel closed; the shared connection still opens channels.
+    assert!(connection.open_session_channel().await.is_ok());
+    transport.disconnect().await.expect("disconnect failed");
+}
+
+#[tokio::test]
 async fn keyboard_interactive_auth_exec_echo() {
     let Some(f) = fixture() else { return };
 

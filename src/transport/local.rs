@@ -33,7 +33,7 @@ const REAP_POLL: Duration = Duration::from_millis(20);
 
 /// The user's shell on a local PTY. The reader task pushes output from the
 /// master side; `EIO` there means the child exited, so it is reaped and
-/// reported as `ConnectionLost`.
+/// reported as `SessionEnded`.
 pub struct LocalTransport {
     /// The shell as configured; resolved against `$PATH` at connect.
     shell: PathBuf,
@@ -300,7 +300,8 @@ async fn reap(pid: libc::pid_t) {
 }
 
 /// The only read path: push every chunk from the master as `DataReceived`
-/// until the child's side closes (`EIO`), then reap the child and report.
+/// until the child's side closes (`EIO`), then reap the child and report:
+/// `SessionEnded` when the shell exited, `ConnectionLost` after a read error.
 async fn read_loop(
     master: Arc<AsyncFd<OwnedFd>>,
     child_pid: Arc<AtomicI32>,
@@ -309,7 +310,7 @@ async fn read_loop(
     cancel: CancellationToken,
 ) {
     let mut buf = vec![0u8; 8192];
-    loop {
+    let exited = loop {
         let guard = tokio::select! {
             biased;
             _ = cancel.cancelled() => return,
@@ -319,7 +320,7 @@ async fn read_loop(
             Ok(guard) => guard,
             Err(e) => {
                 let _ = event_tx.try_send(TransportEvent::Error(e.to_string()));
-                break;
+                break false;
             }
         };
         let read = guard.try_io(|fd| {
@@ -333,7 +334,7 @@ async fn read_loop(
         });
         match read {
             Err(_would_block) => continue,
-            Ok(Ok(0)) => break,
+            Ok(Ok(0)) => break true,
             Ok(Ok(n)) => {
                 let event = TransportEvent::DataReceived(buf[..n].to_vec());
                 if event_tx.send(event).await.is_err() {
@@ -342,19 +343,24 @@ async fn read_loop(
             }
             Ok(Err(e)) if e.kind() == io::ErrorKind::Interrupted => continue,
             // EIO: every slave fd is closed — the shell exited.
-            Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => break,
+            Ok(Err(e)) if e.raw_os_error() == Some(libc::EIO) => break true,
             Ok(Err(e)) => {
                 let _ = event_tx.try_send(TransportEvent::Error(e.to_string()));
-                break;
+                break false;
             }
         }
-    }
+    };
     // Reap in a task of its own: `disconnect` aborting this reader must
     // not leave a zombie behind.
     if let Some(pid) = take_pid(&child_pid) {
         let _ = tokio::spawn(reap(pid)).await;
     }
-    let _ = event_tx.send(TransportEvent::ConnectionLost).await;
+    let event = if exited {
+        TransportEvent::SessionEnded
+    } else {
+        TransportEvent::ConnectionLost
+    };
+    let _ = event_tx.send(event).await;
     set_shared_state(&state, &event_tx, TransportState::Disconnected);
 }
 

@@ -55,6 +55,8 @@ fn only_connection_lost_produces_an_alert() {
         TransportEvent::StateChanged(TransportState::Connected),
         TransportEvent::StateChanged(TransportState::Error("x".into())),
         TransportEvent::Error("boom".into()),
+        // The user typed `exit`: nothing was lost.
+        TransportEvent::SessionEnded,
     ] {
         assert_eq!(tray::triage_transport_event("s", &ignorable), None);
     }

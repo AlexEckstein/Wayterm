@@ -17,7 +17,8 @@
 //! [`LiveTab`](tab_resilience::LiveTab) whose connect closure redials
 //! through the same machinery. One state drain per page feeds the registry,
 //! the status bar and the disconnect alert; on `ConnectionLost` it starts
-//! the reconnect driver per policy.
+//! the reconnect driver per policy. `SessionEnded` (the shell exited) never
+//! reconnects by itself: the terminal shows the `session_ended` prompt.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -45,6 +46,7 @@ use crate::ui::auth_dialog::{self, ChallengePrompt};
 use crate::ui::hostkey_dialog;
 use crate::ui::main_window::{route_status, SUPERVISOR_KEY};
 use crate::ui::rdp_tab;
+use crate::ui::session_ended::{self, EndedChoice};
 use crate::ui::sftp_sidebar::{supports_sftp, SftpSidebar};
 use crate::ui::tab_label;
 use crate::ui::tab_resilience;
@@ -387,7 +389,8 @@ fn spawn_state_forward(
 
 /// Replay the page's transport events into the registry, its status and
 /// views, and the disconnect alert; on `ConnectionLost`, start the reconnect
-/// driver per policy (doc 04 §Lifecycle).
+/// driver per policy (doc 04 §Lifecycle). `SessionEnded` neither alerts nor
+/// reconnects.
 fn spawn_state_drain(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
@@ -430,6 +433,11 @@ fn spawn_state_drain(
                         // Free the dead session during the first backoff.
                         release_connection(&page);
                     }
+                }
+                TransportEvent::SessionEnded => {
+                    tab_resilience::set_tab_state(session.id, TransportState::Disconnected);
+                    publish_status(&page, TransportState::Disconnected, &host, port);
+                    show_session_ended(&notebook, &page);
                 }
                 TransportEvent::DataReceived(_) => {}
             }
@@ -675,13 +683,7 @@ pub(crate) fn show_error_view(
     retry.connect_clicked(move |_| start_connect(&n, &p, &s));
     let close = gtk4::Button::with_label("Close Tab");
     let (notebook, page_to_close) = (notebook.clone(), page.clone());
-    close.connect_clicked(move |_| {
-        bump_gen(&page_to_close);
-        if let Some(page_num) = notebook.page_num(&page_to_close) {
-            // Dropping the page cancels its terminal tasks.
-            notebook.remove_page(Some(page_num));
-        }
-    });
+    close.connect_clicked(move |_| close_tab(&notebook, &page_to_close));
 
     let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
     buttons.set_halign(gtk4::Align::Center);
@@ -691,6 +693,40 @@ pub(crate) fn show_error_view(
     view.append(&detail);
     view.append(&buttons);
     set_terminal_area(page, &view);
+}
+
+/// The shell exited on its own: keep the terminal and its scrollback, add
+/// the notice, and let `r` reconnect (as Retry does) or `q` close the tab.
+fn show_session_ended(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
+    close_terminal(page);
+    let Some(backend) = data::<Arc<dyn TerminalBackend>>(page, TERMINAL_BACKEND_KEY) else {
+        return;
+    };
+    backend.write(session_ended::NOTICE.as_bytes());
+    // Weak: the controller lives on the terminal, inside the page.
+    let (notebook, page) = (notebook.downgrade(), page.downgrade());
+    session_ended::install(&backend.widget(), move |choice| {
+        let (Some(notebook), Some(page)) = (notebook.upgrade(), page.upgrade()) else {
+            return;
+        };
+        match choice {
+            EndedChoice::Reconnect => {
+                if let Some(session) = data::<Rc<SessionConfig>>(&page, SESSION_KEY) {
+                    start_connect(&notebook, &page, &session);
+                }
+            }
+            EndedChoice::CloseTab => close_tab(&notebook, &page),
+        }
+    });
+}
+
+/// Remove the page without asking: its session failed or is over.
+fn close_tab(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
+    bump_gen(page);
+    if let Some(page_num) = notebook.page_num(page) {
+        // Dropping the page cancels its terminal tasks.
+        notebook.remove_page(Some(page_num));
+    }
 }
 
 /// Record `state` on the page and show it if the page is current.

@@ -88,7 +88,7 @@ async fn resize_reaches_the_child() {
 }
 
 #[tokio::test]
-async fn exit_reports_connection_lost_and_reaps_the_child() {
+async fn exit_reports_session_ended_and_reaps_the_child() {
     let (mut t, mut rx) = bash();
     t.connect().await.expect("connect");
 
@@ -99,17 +99,19 @@ async fn exit_reports_connection_lost_and_reaps_the_child() {
         .unwrap_or_else(|| panic!("no pid in {seen:?}"));
 
     t.write(b"exit\n").await.expect("write exit");
-    let lost = timeout(WAIT, async {
+    let ended = timeout(WAIT, async {
         loop {
             match rx.recv().await {
-                Some(TransportEvent::ConnectionLost) => break,
+                Some(TransportEvent::SessionEnded) => break,
+                // A shell that exits is not a dropped connection.
+                Some(TransportEvent::ConnectionLost) => panic!("exit reported as ConnectionLost"),
                 Some(_) => {}
-                None => panic!("event channel closed before ConnectionLost"),
+                None => panic!("event channel closed before SessionEnded"),
             }
         }
     })
     .await;
-    assert!(lost.is_ok(), "no ConnectionLost after exit");
+    assert!(ended.is_ok(), "no SessionEnded after exit");
 
     // The reader reaps before reporting: the pid is no longer our child.
     let mut status = 0;

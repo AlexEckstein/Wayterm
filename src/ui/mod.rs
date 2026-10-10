@@ -5,6 +5,7 @@ pub mod hostkey_dialog;
 pub mod main_window;
 pub mod rdp_tab;
 pub mod session_dialog;
+pub mod session_ended;
 pub mod session_tree;
 pub mod settings;
 pub mod sftp_sidebar;

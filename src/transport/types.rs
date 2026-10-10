@@ -31,7 +31,11 @@ pub enum TransportEvent {
     DataReceived(Vec<u8>),
     StateChanged(TransportState),
     Error(String),
+    /// The link dropped under a live session (reconnect per policy).
     ConnectionLost,
+    /// The shell exited on its own (`exit`, logout): there is nothing to
+    /// reconnect to automatically.
+    SessionEnded,
 }
 
 #[derive(Clone, Debug)]

@@ -78,22 +78,25 @@ async fn a_local_tab_describes_its_shell_and_echoes_through_the_pump() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_shell_exiting_reaches_the_state_channel_as_connection_lost() {
+async fn the_shell_exiting_reaches_the_state_channel_as_session_ended() {
     let mut flow = local_flow();
     flow.term_tx
         .send(TerminalEvent::DataOut(b"exit\n".to_vec()))
         .await
         .unwrap();
-    let lost = tokio::time::timeout(Duration::from_secs(10), async {
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(event) = flow.state_rx.recv().await {
-            if matches!(event, TransportEvent::ConnectionLost) {
-                return true;
+            match event {
+                TransportEvent::SessionEnded => return true,
+                // ConnectionLost would start the reconnect driver.
+                TransportEvent::ConnectionLost => return false,
+                _ => {}
             }
         }
         false
     })
     .await
     .expect("state event before timeout");
-    assert!(lost, "state channel closed without ConnectionLost");
+    assert!(ended, "exit must reach the state channel as SessionEnded");
     flow.tab.close().await;
 }

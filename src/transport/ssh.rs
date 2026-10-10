@@ -103,6 +103,9 @@ impl Transport for SSHTransport {
         let event_tx = self.event_tx.clone();
         let cancel = self.cancel_token.clone();
         self.reader_task = Some(tokio::spawn(async move {
+            // An exit status (or signal) means the remote process ended, so
+            // the close that follows is the session ending, not a drop.
+            let mut exited = false;
             loop {
                 let msg = tokio::select! {
                     biased;
@@ -118,8 +121,18 @@ impl Transport for SSHTransport {
                             break; // tab closed
                         }
                     }
-                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
-                        let _ = event_tx.send(TransportEvent::ConnectionLost).await;
+                    Some(ChannelMsg::ExitStatus { .. }) | Some(ChannelMsg::ExitSignal { .. }) => {
+                        exited = true;
+                    }
+                    // OpenSSH sends EOF *before* the exit status, so EOF
+                    // alone ends nothing: wait for the close.
+                    Some(ChannelMsg::Close) | None => {
+                        let event = if exited {
+                            TransportEvent::SessionEnded
+                        } else {
+                            TransportEvent::ConnectionLost
+                        };
+                        let _ = event_tx.send(event).await;
                         break;
                     }
                     Some(_) => {}

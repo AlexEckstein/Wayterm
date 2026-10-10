@@ -421,6 +421,7 @@ mod tests {
             TransportEvent::StateChanged(TransportState::Connected),
             TransportEvent::Error("boom".into()),
             TransportEvent::ConnectionLost,
+            TransportEvent::SessionEnded,
         ] {
             h.transport_tx.try_send(event).unwrap();
         }
@@ -434,6 +435,10 @@ mod tests {
         assert!(matches!(
             next_state(&mut h.state_rx).await,
             TransportEvent::ConnectionLost
+        ));
+        assert!(matches!(
+            next_state(&mut h.state_rx).await,
+            TransportEvent::SessionEnded
         ));
         h.tab.close().await;
     }
