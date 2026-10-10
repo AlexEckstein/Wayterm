@@ -85,6 +85,7 @@ impl MainWindow {
         let notebook = gtk4::Notebook::new();
         let home = gtk4::Label::new(Some("Welcome to Wayterm"));
         notebook.append_page(&home, Some(&gtk4::Label::new(Some("Home"))));
+        auto_hide_home(&notebook, &home);
 
         tab_resilience::install_settings(
             store.flag(tab_resilience::CONFIRM_CLOSE_SETTING),
@@ -189,6 +190,31 @@ impl MainWindow {
     pub fn window(&self) -> &gtk4::ApplicationWindow {
         &self.window
     }
+}
+
+/// Show the Home tab only while it is the notebook's sole page, so it
+/// takes no tab-bar space next to open sessions. The page stays in the
+/// notebook (hidden, not removed), keeping page indices stable for tab
+/// restore.
+fn auto_hide_home(notebook: &gtk4::Notebook, home: &gtk4::Label) {
+    let sync = {
+        let home = home.clone();
+        move |notebook: &gtk4::Notebook| {
+            let alone = notebook.n_pages() <= 1;
+            home.set_visible(alone);
+            if alone {
+                notebook.set_current_page(Some(0));
+            }
+        }
+    };
+    let for_added = sync.clone();
+    notebook.connect_page_added(move |notebook, _, _| {
+        // Only hides here: the new tab is about to be focused by its opener.
+        if notebook.n_pages() > 1 {
+            for_added(notebook);
+        }
+    });
+    notebook.connect_page_removed(move |notebook, _, _| sync(notebook));
 }
 
 /// `toggle_sftp` (doc 09) acts on the active tab's sidebar and is disabled
