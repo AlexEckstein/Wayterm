@@ -3,8 +3,8 @@
 //!
 //! The policy lives in [`crate::transport::reconnect`]; this is its GTK
 //! side. The actions act on a registry of [`LiveTab`]s keyed by session id,
-//! which a connected tab must register; with nothing registered they are
-//! no-ops. Disconnect cancels the tab's token: the pump's last act is
+//! which the connect flow (`ui::tab`) fills for every streaming tab; with
+//! nothing registered they are no-ops. Disconnect cancels the tab's token: the pump's last act is
 //! `transport.disconnect()`, and any reconnect loop sharing the token stops.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,6 +91,24 @@ pub fn register_live_tab(session_id: i64, tab: LiveTab) {
     lock(&LIVE_TABS).insert(session_id, tab);
 }
 
+/// Register a tab whose transport was just wired (its first connect or a
+/// redial), as `Connecting`. An uncancelled token is kept, so a running
+/// reconnect loop and the tab keep sharing one; a cancelled one (after
+/// Disconnect) is replaced. Returns the tab's token.
+pub fn register_connected_tab(session_id: i64, connect: ConnectFn) -> CancellationToken {
+    let mut tabs = lock(&LIVE_TABS);
+    let cancel = tabs
+        .get(&session_id)
+        .map(|tab| tab.cancel.clone())
+        .filter(|cancel| !cancel.is_cancelled())
+        .unwrap_or_default();
+    tabs.insert(
+        session_id,
+        LiveTab::new(connect, cancel.clone(), TransportState::Connecting),
+    );
+    cancel
+}
+
 pub fn unregister_live_tab(session_id: i64) {
     lock(&LIVE_TABS).remove(&session_id);
 }
@@ -162,6 +180,14 @@ pub fn activate_reconnect(
     if !lock(&RUNNING).insert(id) {
         return ReconnectAction::AlreadyRunning { session_id: id };
     }
+    // After Disconnect the token is spent; reconnecting gets a fresh one.
+    let cancel = match lock(&LIVE_TABS).get_mut(&id) {
+        Some(live) if live.cancel.is_cancelled() => {
+            live.cancel = CancellationToken::new();
+            live.cancel.clone()
+        }
+        _ => tab.cancel,
+    };
     let (events, mut event_rx) = mpsc::unbounded_channel::<ReconnectEvent>();
     // The driver's own events are not shown (the state channel carries what
     // the UI needs); draining them also tells us when the run ended.
@@ -169,13 +195,24 @@ pub fn activate_reconnect(
         while event_rx.recv().await.is_some() {}
         lock(&RUNNING).remove(&id);
     });
-    ReconnectDriver::with_cancel_token(policy(), tab.cancel).spawn(
+    ReconnectDriver::with_cancel_token(policy(), cancel).spawn(
         tab.connect,
         events,
         confirm,
         state_tx,
     );
     ReconnectAction::Started { session_id: id }
+}
+
+/// A tab's state channel reported `ConnectionLost` (doc 04 §Lifecycle):
+/// the tab reads as disconnected and, with `reconnect_on_drop` on, a driver
+/// starts on `state_tx`. Prompt mode leaves it to the `reconnect` action.
+pub fn on_connection_lost(
+    session_id: i64,
+    state_tx: mpsc::UnboundedSender<TransportEvent>,
+) -> Option<ReconnectAction> {
+    set_tab_state(session_id, TransportState::Disconnected);
+    reconnect_on_drop_setting().then(|| activate_reconnect(Some(session_id), Some(state_tx), None))
 }
 
 /// `disconnect`: cancel the tab's token; the tab stays open.

@@ -114,6 +114,24 @@ pub async fn forward_disconnect_alerts(
     }
 }
 
+/// A tab's alert channel: every `ConnectionLost` sent on it posts the
+/// disconnect notification, until the last sender is dropped. The
+/// forwarder runs on the main context, so posting needs no hop. Call on
+/// the main thread.
+pub fn attach_disconnect_alerts(
+    app: &gtk4::Application,
+    session_name: String,
+) -> mpsc::UnboundedSender<TransportEvent> {
+    let (alert_tx, alert_rx) = mpsc::unbounded_channel();
+    let app = app.clone();
+    glib::MainContext::default().spawn_local(forward_disconnect_alerts(
+        session_name,
+        alert_rx,
+        move |alert| post_disconnect_alert(&app, &alert),
+    ));
+    alert_tx
+}
+
 /// Never fatal: the caller falls back to quit-on-close.
 #[derive(Debug, thiserror::Error)]
 pub enum TrayInitError {
@@ -243,7 +261,10 @@ pub fn install_close_handler(
 
 /// Post the disconnect notification. Main thread only.
 pub fn send_disconnect_notification(app: &gtk4::Application, session_name: &str) {
-    let alert = disconnect_alert(session_name);
+    post_disconnect_alert(app, &disconnect_alert(session_name));
+}
+
+fn post_disconnect_alert(app: &gtk4::Application, alert: &DisconnectAlert) {
     let notification = gio::Notification::new(&alert.title);
     notification.set_body(Some(&alert.body));
     app.send_notification(Some(&alert.notification_id), &notification);

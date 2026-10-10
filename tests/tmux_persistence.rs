@@ -19,23 +19,32 @@
 //!    variable.
 //! 3. With tmux disabled, the shell is not inside tmux and the
 //!    `wayterm-<name>` session does not exist — the off-path.
+//! 4. Doc 10's "run vim, kill the network, reconnect, vim is still there",
+//!    through the tab's reconnect path minus GTK: the whole connection is
+//!    killed under a live transport, its `ConnectionLost` starts the
+//!    auto-reconnect driver from the resilience registry, the driver redials
+//!    through a real `ConnectionSupervisor`, and a program running in the
+//!    tmux pane is the same process afterwards.
 //!
 //! Tests share one sshd and one tmux server, so the harness runs them with
 //! `--test-threads=1`.
 
 mod common;
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 
 use common::*;
 use wayterm::store::model::{SessionConfig, SessionType, TMUX_NAME_PREFIX};
-use wayterm::transport::connection::SshConnection;
+use wayterm::transport::connection::{AuthMethod, SshConnection};
+use wayterm::transport::reconnect::{ConnectFn, ConnectFuture};
+use wayterm::transport::supervisor::{ConnectParams, ConnectionSupervisor};
 use wayterm::transport::tab::create_transport;
 use wayterm::transport::types::{Transport, TransportEvent, TransportState, TransportType};
+use wayterm::ui::tab_resilience::{self, ReconnectAction};
 
 fn skip(reason: &str) {
     println!("Skipping tmux persistence test: {reason}");
@@ -422,4 +431,216 @@ async fn tmux_flag_on_a_serial_session_is_inert() {
         .expect("serial sessions get a SerialTransport (doc 10 Phase 5)");
     assert!(matches!(transport.transport_type(), TransportType::Serial));
     assert_eq!(transport.description(), "/dev/ttyUSB0@115200");
+}
+
+/// The tab's current transport and its event receiver; every connect
+/// installs a fresh pair, as `finish_connect` does on the page.
+type TabSlot = Arc<Mutex<Option<(Box<dyn Transport>, mpsc::Receiver<TransportEvent>)>>>;
+
+/// The UI's redial minus GTK: a fresh connect through the supervisor (which
+/// reuses a live pooled connection and dials when there is none) and a fresh
+/// tmux transport over it.
+fn supervisor_connect(
+    f: &Fixture,
+    supervisor: Arc<ConnectionSupervisor>,
+    config: SessionConfig,
+    slot: TabSlot,
+) -> ConnectFn {
+    let params = ConnectParams {
+        host: f.host.clone(),
+        port: f.port,
+        username: f.user.clone(),
+    };
+    let password = f.password.clone();
+    Arc::new(move || {
+        let (supervisor, params, password) = (supervisor.clone(), params.clone(), password.clone());
+        let (config, slot) = (config.clone(), slot.clone());
+        Box::pin(async move {
+            let connection = supervisor
+                .get_or_connect(
+                    &params,
+                    &AuthMethod::Password(String::new()),
+                    &password_creds(&password),
+                    accept_all_verifier(),
+                    Some(password_responder(&password)),
+                )
+                .await?;
+            let (mut transport, rx) = ssh_transport(&config, connection);
+            transport.connect().await?;
+            *slot.lock().await = Some((transport, rx));
+            Ok(())
+        }) as ConnectFuture
+    })
+}
+
+/// The first value printed after `WAYTERM_<key>=[` by `cmd` on a plain
+/// probe shell (`cmd` must print the key in two quoted halves).
+async fn probe_value(f: &Fixture, cmd: &str, key: &str) -> String {
+    let (mut probe, mut rx) = probe_transport(f).await;
+    let needle = format!("WAYTERM_{key}=[");
+    let output = run(&mut probe, &mut rx, cmd, &needle).await;
+    let _ = probe.disconnect().await;
+    output
+        .rsplit_once(&needle)
+        .expect("marker present")
+        .1
+        .split(']')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+/// The pid of the process whose command line carries `marker`, or "".
+async fn marker_pid(f: &Fixture, marker: &str) -> String {
+    // Split so that no shell on the probe side carries the marker itself.
+    let (head, tail) = marker.split_at(marker.len() / 2);
+    let cmd = format!("echo \"WAYTERM_\"\"PID=[$(pgrep -f '{head}''{tail}' | head -n1)]\"");
+    probe_value(f, &cmd, "PID").await
+}
+
+/// `#{session_id}` of the named tmux session, read out of band.
+async fn remote_session_id(f: &Fixture, remote_name: &str) -> String {
+    let cmd = format!(
+        "echo \"WAYTERM_\"\"SID=[$(tmux display-message -p -t {remote_name} '#{{session_id}}')]\""
+    );
+    probe_value(f, &cmd, "SID").await
+}
+
+/// The next state the reconnect driver published, skipping nothing.
+async fn next_state(rx: &mut mpsc::UnboundedReceiver<TransportEvent>) -> TransportState {
+    match timeout(Duration::from_secs(60), rx.recv()).await {
+        Ok(Some(TransportEvent::StateChanged(state))) => state,
+        other => panic!("expected a driver state, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn auto_reconnect_after_a_dropped_connection_keeps_the_program_running() {
+    let Some(f) = fixture() else { return };
+    if !remote_has_tmux(&f).await {
+        skip("tmux is not installed on the remote host");
+        return;
+    }
+    const TAB: i64 = 8_001;
+
+    let suffix = unique_suffix("auto");
+    let remote_name = format!("{}{}", TMUX_NAME_PREFIX, suffix);
+    let marker = format!("wayterm-marker-{suffix}");
+    let config = tmux_session_config("tmux auto", &suffix);
+    let supervisor = Arc::new(ConnectionSupervisor::<SshConnection>::new());
+    let slot = TabSlot::default();
+    let connect = supervisor_connect(&f, supervisor.clone(), config, slot.clone());
+
+    // --- Connect and register, as finish_connect does --------------------
+    tab_resilience::reset_registry();
+    tab_resilience::install_settings(true, true); // reconnect_on_drop on
+    connect().await.expect("first connect failed");
+    tab_resilience::register_connected_tab(TAB, connect.clone());
+    tab_resilience::set_tab_state(TAB, TransportState::Connected);
+    let (mut transport, mut rx) = slot.lock().await.take().expect("transport installed");
+    let first_session_id = session_id(&mut transport, &mut rx).await;
+
+    // --- Run a long-lived program in the pane (the stand-in for vim) -----
+    transport
+        .write(format!("sh -c 'sleep 3600; : {marker}'\n").as_bytes())
+        .await
+        .expect("write failed");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let pid = marker_pid(&f, &marker).await;
+    assert!(
+        !pid.is_empty(),
+        "the program must be running before the drop"
+    );
+
+    // --- Kill the whole connection under the live transport --------------
+    let params = ConnectParams {
+        host: f.host.clone(),
+        port: f.port,
+        username: f.user.clone(),
+    };
+    let dropped = supervisor
+        .get_or_connect(
+            &params,
+            &AuthMethod::Password(String::new()),
+            &password_creds(&f.password),
+            accept_all_verifier(),
+            Some(password_responder(&f.password)),
+        )
+        .await
+        .expect("the pooled connection");
+    let dropped_weak: Weak<SshConnection> = Arc::downgrade(&dropped);
+    dropped.disconnect().await.expect("disconnect failed");
+    drop(dropped);
+
+    // The reader notices: this is the event the tab's state drain acts on.
+    let lost = timeout(Duration::from_secs(20), async {
+        loop {
+            match rx.recv().await {
+                Some(TransportEvent::ConnectionLost) | None => return,
+                Some(_) => {}
+            }
+        }
+    })
+    .await;
+    assert!(
+        lost.is_ok(),
+        "a killed connection must report ConnectionLost"
+    );
+    // The drain releases the dead transport (release_connection) …
+    let _ = transport.disconnect().await;
+    drop((transport, rx));
+    // … and starts the driver per policy.
+    let (state_tx, mut state_rx) = mpsc::unbounded_channel();
+    assert_eq!(
+        tab_resilience::on_connection_lost(TAB, state_tx),
+        Some(ReconnectAction::Started { session_id: TAB })
+    );
+    assert_eq!(tab_resilience::tab_state(TAB), TransportState::Disconnected);
+
+    // --- The driver reattaches on its own ---------------------------------
+    let mut attempts = 0;
+    loop {
+        match next_state(&mut state_rx).await {
+            TransportState::Reconnecting { attempt } => attempts = attempt,
+            TransportState::Connected => break,
+            other => panic!("unexpected driver state {other:?}"),
+        }
+    }
+    assert!(attempts >= 1, "the driver must have made an attempt");
+    assert!(
+        dropped_weak.upgrade().is_none(),
+        "the dead connection must be gone: the redial dialed fresh"
+    );
+    let (mut transport, mut rx) = slot
+        .lock()
+        .await
+        .take()
+        .expect("redial installed a transport");
+
+    // tmux redraws the reattached pane, command line included.
+    collect_echo(&mut rx, &marker).await;
+    assert_eq!(
+        remote_session_id(&f, &remote_name).await,
+        first_session_id,
+        "the driver must reattach to the same tmux session"
+    );
+    assert_eq!(
+        marker_pid(&f, &marker).await,
+        pid,
+        "the program started before the drop must still be running"
+    );
+
+    // --- Cleanup ----------------------------------------------------------
+    tab_resilience::teardown_tab(TAB);
+    let _ = transport.disconnect().await;
+    let (mut probe, mut probe_rx) = probe_transport(&f).await;
+    run(
+        &mut probe,
+        &mut probe_rx,
+        &format!("tmux kill-session -t {remote_name} 2>/dev/null; echo WAYTERM_CLEANED"),
+        "WAYTERM_CLEANED",
+    )
+    .await;
+    let _ = probe.disconnect().await;
 }
