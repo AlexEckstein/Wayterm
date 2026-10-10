@@ -2,8 +2,7 @@
 
 Every app action has a rebindable shortcut, and shortcuts can differ by
 context (terminal vs session tree vs SFTP sidebar). `src/hotkeys/` holds
-the data model and persistence; the GTK binding layer is still to be
-built (§HotkeyEngine).
+the data model, persistence, and the GTK binding layer (§HotkeyEngine).
 
 ## The Two-Tier Mechanism
 
@@ -12,8 +11,9 @@ GTK 4's own scoping does the work; nothing toggles controllers on focus.
 - **Tier 1 — global:** application actions with accelerators
   (`set_accels_for_action`). They fire whatever has focus.
 - **Tier 2 — widget contexts:** one `ShortcutController` per region
-  (terminal, session tree, SFTP sidebar) with `ShortcutScope::Managed`, so
-  its shortcuts fire only while that widget or a descendant has focus.
+  (terminal, session tree, SFTP sidebar), local scope on the widget and
+  capture phase, so its shortcuts fire only while that widget or a
+  descendant has focus.
 - **Passthrough:** RDP and VNC tabs get no controller, so only Tier-1
   accels can intercept keys there; everything else reaches the remote
   session.
@@ -104,11 +104,26 @@ Bindings are stored in UI format and converted for GTK:
 `HotkeyEngine` wraps the registry with the checked rebind (`Reject` or
 `Override`), reset, enable/disable, persistence, and JSON export.
 
-**Not built yet:** `install()` — binding Tier-1 accels and the Tier-2
-controllers from the registry, and rebuilding one binding after a rebind.
-Until then the only accel installed is `toggle_sftp`'s default, and the
-window actions (`copy`, `paste`, `search`, `reconnect`, …) exist but have
-no keys.
+`install(app, hosts)` binds the registry. Every action targets the
+window action `win.<id>`. Globals become `app` accels (an action with no
+gio action yet simply never fires). Each `ContextHost` gets one
+`ShortcutController` with one shortcut per action of its context; the
+controller is local-scoped and runs in the capture phase, so it sees only
+keys aimed inside its widget, and sees them before VTE swallows them. A
+host may add a focus check: the main window hosts `terminal` on the
+notebook and fires only while the current tab's terminal has focus, so
+the chord passes through on RDP/VNC tabs and in the SFTP sidebar. The
+session tree is hosted on its own widget; `sftp` has no host yet, so its
+actions stay unbound. Disabled and unbound actions hold no accel and a
+never-trigger.
+
+Once installed, `rebind`/`rebind_with`, `reset_to_default`, and
+`set_enabled` rebuild only the bindings they changed (an override also
+rebuilds its losers): one accel reset, or one shortcut's trigger swapped
+in place. `load_from_db` rebuilds the rows it applied and `import_json`
+re-syncs every binding. The settings UI goes through these methods, so a
+change takes effect live. `toggle_sftp` has no hand-installed accel any
+more; the engine binds it like every other global.
 
 ## Settings UI
 

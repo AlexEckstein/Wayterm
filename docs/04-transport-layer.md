@@ -122,8 +122,8 @@ Disconnected → Connecting → VerifyingHostKey → Authenticating → Connecte
 
 `transport::reconnect` holds the display-free policy and driver;
 `ui::tab_resilience` holds the dialogs and the `reconnect`/`disconnect`
-window actions, which act on tabs registered as live. (Registration from
-the connect flow is still to be wired; doc 10.)
+window actions, which act on tabs registered as live by the connect flow
+(`ui::tab`, every streaming tab on `finish_connect`).
 
 ## Tmux Session Persistence
 

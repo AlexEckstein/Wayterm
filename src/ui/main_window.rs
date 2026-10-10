@@ -9,7 +9,8 @@ use std::sync::Arc;
 use gtk4::gio;
 use gtk4::prelude::*;
 
-use crate::hotkeys::HotkeyEngine;
+use crate::hotkeys::engine::{focus_within, ContextHost};
+use crate::hotkeys::{ActionContext, HotkeyEngine};
 use crate::store::SessionStore;
 use crate::transport::connection::SshConnection;
 use crate::transport::supervisor::ConnectionSupervisor;
@@ -26,8 +27,6 @@ pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
 const STATUS_ROUTER_KEY: &str = "wayterm-status-router";
 
 const TOGGLE_SFTP_ACTION: &str = "toggle_sftp";
-/// Doc 07's default for `toggle_sftp`.
-const TOGGLE_SFTP_ACCEL: &str = "<Control><Shift>b";
 
 /// Lets only the notebook's current page drive the status bar, and never
 /// pushes the same (page, state) twice, so the elapsed timer is not reset
@@ -154,12 +153,26 @@ impl MainWindow {
             Arc::new(ConnectionSupervisor::<SshConnection>::new()),
         );
 
-        install_toggle_sftp(app, &window, &notebook);
+        install_toggle_sftp(&window, &notebook);
         terminal_actions::install(&window, &notebook);
         let for_actions = notebook.clone();
         tab_resilience::install_connection_actions(&window, move || {
             crate::ui::tab::current_session_id(&for_actions)
         });
+        // Every chord, `toggle_sftp`'s included, comes from the engine
+        // (doc 07). Terminal shortcuts sit on the notebook but fire only
+        // while the current tab's terminal has focus.
+        let for_focus = notebook.clone();
+        hotkeys.borrow_mut().install(
+            app,
+            vec![
+                ContextHost::new(ActionContext::Terminal, &notebook).with_focus_check(move || {
+                    SessionTab::active_terminal(&for_focus)
+                        .is_some_and(|t| focus_within(&t.widget()))
+                }),
+                ContextHost::new(ActionContext::SessionTree, &session_tree.widget()),
+            ],
+        );
 
         let open_settings = gio::SimpleAction::new("hotkey-settings", None);
         let (for_settings, parent) = (store.clone(), window.clone());
@@ -218,12 +231,9 @@ fn auto_hide_home(notebook: &gtk4::Notebook, home: &gtk4::Label) {
 }
 
 /// `toggle_sftp` (doc 09) acts on the active tab's sidebar and is disabled
-/// on pages without one — which is how non-SSH tabs hide the toggle.
-fn install_toggle_sftp(
-    app: &gtk4::Application,
-    window: &gtk4::ApplicationWindow,
-    notebook: &gtk4::Notebook,
-) {
+/// on pages without one — which is how non-SSH tabs hide the toggle. Its
+/// chord is the hotkey engine's.
+fn install_toggle_sftp(window: &gtk4::ApplicationWindow, notebook: &gtk4::Notebook) {
     let action = gio::SimpleAction::new(TOGGLE_SFTP_ACTION, None);
     let for_activate = notebook.clone();
     action.connect_activate(move |_, _| {
@@ -237,5 +247,4 @@ fn install_toggle_sftp(
     });
     action.set_enabled(false);
     window.add_action(&action);
-    app.set_accels_for_action(&format!("win.{TOGGLE_SFTP_ACTION}"), &[TOGGLE_SFTP_ACCEL]);
 }

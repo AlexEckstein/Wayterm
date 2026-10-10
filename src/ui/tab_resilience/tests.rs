@@ -533,3 +533,148 @@ fn teardown_leaves_other_tabs_alone() {
         "closing one tab is not a disconnect-all"
     );
 }
+
+// ── Connect-flow registration (every streaming tab, first connect and
+// every redial) ──────────────────────────────────────────────────────────────
+
+#[test]
+fn a_wired_tab_registers_as_connecting() {
+    let _guard = fresh();
+    register_connected_tab(SESSION, always_ok_connect());
+    assert_eq!(tab_state(SESSION), TransportState::Connecting);
+    assert!(should_confirm_close_for_tab(SESSION));
+}
+
+#[test]
+fn a_redial_keeps_the_token_its_driver_runs_on() {
+    let _guard = fresh();
+    let first = register_connected_tab(SESSION, always_ok_connect());
+    let rewired = register_connected_tab(SESSION, always_ok_connect());
+
+    teardown_tab(SESSION);
+
+    assert!(rewired.is_cancelled());
+    assert!(
+        first.is_cancelled(),
+        "a driver started before the redial must stop when the tab closes"
+    );
+}
+
+#[test]
+fn a_connect_after_disconnect_gets_a_fresh_token() {
+    let _guard = fresh();
+    let first = register_connected_tab(SESSION, always_ok_connect());
+    activate_disconnect(Some(SESSION));
+    assert!(first.is_cancelled());
+
+    let second = register_connected_tab(SESSION, always_ok_connect());
+    assert!(!second.is_cancelled());
+    assert_eq!(tab_state(SESSION), TransportState::Connecting);
+}
+
+#[tokio::test(start_paused = true)]
+async fn reconnect_after_disconnect_runs_on_a_fresh_token() {
+    let _guard = fresh_async().await;
+    let calls = Arc::new(AtomicU32::new(0));
+    let old = register_connected_tab(SESSION, counting_connect(calls.clone()));
+    activate_disconnect(Some(SESSION));
+
+    assert!(activate_reconnect(Some(SESSION), None, None).started());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    assert!(old.is_cancelled());
+    let live = live_tab(SESSION).expect("still registered");
+    assert!(!live.cancel.is_cancelled());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the driver must really redial"
+    );
+}
+
+// ── ConnectionLost (the state drain's half of doc 04 §Lifecycle) ────────────
+
+#[tokio::test(start_paused = true)]
+async fn connection_lost_auto_reconnects_on_the_tabs_state_channel() {
+    let _guard = fresh_async().await;
+    install_settings(true, true);
+    let calls = Arc::new(AtomicU32::new(0));
+    register_connected_tab(SESSION, counting_connect(calls.clone()));
+    set_tab_state(SESSION, TransportState::Connected);
+    let (state_tx, mut state_rx) = mpsc::unbounded_channel();
+
+    let action = on_connection_lost(SESSION, state_tx);
+    assert_eq!(
+        action,
+        Some(ReconnectAction::Started {
+            session_id: SESSION
+        })
+    );
+    assert_eq!(tab_state(SESSION), TransportState::Disconnected);
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let states: Vec<_> = std::iter::from_fn(|| state_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            TransportEvent::StateChanged(state) => Some(state),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        states,
+        vec![
+            TransportState::Reconnecting { attempt: 1 },
+            TransportState::Connected
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn connection_lost_in_prompt_mode_waits_for_the_reconnect_action() {
+    let _guard = fresh_async().await;
+    install_settings(true, false);
+    let calls = Arc::new(AtomicU32::new(0));
+    register_connected_tab(SESSION, counting_connect(calls.clone()));
+    set_tab_state(SESSION, TransportState::Connected);
+    let (state_tx, _state_rx) = mpsc::unbounded_channel();
+
+    assert_eq!(on_connection_lost(SESSION, state_tx), None);
+    assert_eq!(tab_state(SESSION), TransportState::Disconnected);
+
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "prompt mode never redials alone"
+    );
+    assert!(
+        activate_reconnect(Some(SESSION), None, None).started(),
+        "the manual action still finds the tab"
+    );
+}
+
+#[tokio::test]
+async fn connection_lost_after_close_starts_nothing() {
+    let _guard = fresh_async().await;
+    let (state_tx, _state_rx) = mpsc::unbounded_channel();
+    assert_eq!(
+        on_connection_lost(SESSION, state_tx),
+        Some(ReconnectAction::NoLiveTab {
+            session_id: Some(SESSION)
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_second_connection_lost_does_not_stack_drivers() {
+    let _guard = fresh_async().await;
+    register_connected_tab(SESSION, always_ok_connect());
+    let (state_tx, _state_rx) = mpsc::unbounded_channel();
+    assert!(on_connection_lost(SESSION, state_tx.clone()).is_some_and(ReconnectAction::started));
+    assert_eq!(
+        on_connection_lost(SESSION, state_tx),
+        Some(ReconnectAction::AlreadyRunning {
+            session_id: SESSION
+        })
+    );
+}

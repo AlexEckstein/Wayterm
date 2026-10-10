@@ -12,6 +12,12 @@
 //! terminal grid, wire the [`TerminalTab`], and attach the sidebar to the
 //! same connection. Every attempt bumps a per-page generation, so a
 //! cancelled or superseded attempt discards its result.
+//!
+//! Reconnecting (doc 04 §Lifecycle): every streaming tab registers as a
+//! [`LiveTab`](tab_resilience::LiveTab) whose connect closure redials
+//! through the same machinery. One state drain per page feeds the registry,
+//! the status bar and the disconnect alert; on `ConnectionLost` it starts
+//! the reconnect driver per policy.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -20,7 +26,9 @@ use std::time::Duration;
 
 use gtk4::glib;
 use gtk4::prelude::*;
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender, WeakUnboundedSender};
+use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use vte4::prelude::*;
 use zeroize::Zeroizing;
 
@@ -29,6 +37,7 @@ use crate::terminal::{create_terminal, TerminalBackend};
 use crate::transport::connection::{self, SshConnection};
 use crate::transport::credentials::{CredentialManager, KeyringSource, PromptSource};
 use crate::transport::hostkey::HostKeyVerifier;
+use crate::transport::reconnect::{ConnectFn, ConnectFuture};
 use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor};
 use crate::transport::tab::TerminalTab;
 use crate::transport::types::{TransportError, TransportEvent, TransportState};
@@ -38,6 +47,8 @@ use crate::ui::main_window::{route_status, SUPERVISOR_KEY};
 use crate::ui::rdp_tab;
 use crate::ui::sftp_sidebar::{supports_sftp, SftpSidebar};
 use crate::ui::tab_label;
+use crate::ui::tab_resilience;
+use crate::ui::tray;
 use crate::ui::vnc_tab;
 use crate::ui::widgets::{centered_label, data, set_data, set_margins, window_of};
 
@@ -50,6 +61,12 @@ const PAGE_STATUS_KEY: &str = "wayterm-page-status";
 const TERM_TAB_KEY: &str = "wayterm-terminal-tab";
 const CONNECT_GEN_KEY: &str = "wayterm-connect-gen";
 const TERMINAL_BACKEND_KEY: &str = "wayterm-terminal-backend";
+const SESSION_KEY: &str = "wayterm-session-config";
+const PAGE_EVENTS_KEY: &str = "wayterm-page-events";
+const REDIAL_KEY: &str = "wayterm-redial-reply";
+const SIDEBAR_ATTACHED_KEY: &str = "wayterm-sftp-sidebar-attached";
+// Notebook data key.
+const TEARDOWN_HOOK_KEY: &str = "wayterm-teardown-hook";
 
 const SIDEBAR_WIDTH: i32 = 320;
 /// An unallocated VTE reports 24×80, so measuring waits (≈2 s at most)
@@ -66,6 +83,10 @@ pub(crate) struct PageStatus {
 
 pub(crate) type PageStatusCell = Rc<RefCell<PageStatus>>;
 type TerminalSlot = Rc<RefCell<Option<TerminalTab>>>;
+/// A driver-driven redial waiting for its attempt's verdict, tagged with
+/// that attempt's generation.
+type RedialReply = oneshot::Sender<Result<(), TransportError>>;
+type RedialSlot = Rc<RefCell<Option<(u64, RedialReply)>>>;
 
 /// Opening and querying session tabs.
 pub struct SessionTab;
@@ -84,6 +105,8 @@ impl SessionTab {
         let page_num = notebook.append_page(&page, Some(&tab_label));
         notebook.set_current_page(Some(page_num));
         set_data(&page, TAB_LABEL_KEY, tab_label);
+        set_data(&page, SESSION_KEY, session.clone());
+        install_teardown_on_remove(notebook);
         start_connect(notebook, &page, &session);
         page
     }
@@ -227,7 +250,8 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         let error = match result {
             Ok(Ok(conn)) => return finish_connect(&notebook, &session, &page, Some(conn)).await,
             // A cancelled prompt is a clean disconnect, not an error.
-            Ok(Err(TransportError::Cancelled | TransportError::Disconnected)) => {
+            Ok(Err(err @ (TransportError::Cancelled | TransportError::Disconnected))) => {
+                settle_redial(&page, Err(err));
                 set_terminal_area(&page, &centered_label("Disconnected"));
                 return publish_status(&page, TransportState::Disconnected, &host, port);
             }
@@ -248,6 +272,7 @@ async fn finish_connect(
     page: &gtk4::Widget,
     conn: Option<Arc<SshConnection>>,
 ) {
+    let gen = current_gen(page);
     let handle = create_terminal();
     let backend = handle.backend.clone();
     let widget = backend.widget();
@@ -265,6 +290,10 @@ async fn finish_connect(
         ),
         None => (24, 80),
     };
+    // The wait yields: a cancel, a retry or a close may have overtaken us.
+    if current_gen(page) != gen || notebook.page_num(page).is_none() {
+        return;
+    }
 
     let main_ctx = glib::MainContext::default();
     let wired = TerminalTab::new(session, conn.clone(), handle, &main_ctx, rows, cols);
@@ -275,17 +304,14 @@ async fn finish_connect(
     let (host, port) = status_endpoint(session, terminal_tab.description());
     terminal_slot(page).replace(Some(terminal_tab));
     set_data(page, TERMINAL_BACKEND_KEY, backend);
-    spawn_state_drain(
-        notebook.clone(),
-        page.clone(),
-        session.clone(),
-        host,
-        port,
-        state_rx,
-    );
+    let cancel =
+        tab_resilience::register_connected_tab(session.id, redial_fn(notebook, page, session.id));
+    let events = page_events(notebook, page, session, host, port);
+    spawn_state_forward(page.clone(), gen, cancel, state_rx, events);
 
     if let (Some(conn), Some(sidebar)) = (conn, SessionTab::sidebar_for_page(page)) {
         sidebar.attach(conn);
+        sidebar_attached(page).set(true);
     }
     follow_terminal_title(page, &widget, &session.name);
 }
@@ -302,28 +328,213 @@ fn status_endpoint(session: &SessionConfig, description: &str) -> (String, u16) 
     }
 }
 
-/// Replay the tab's transport events into its page status and views.
-fn spawn_state_drain(
-    notebook: gtk4::Notebook,
-    page: gtk4::Widget,
-    session: Rc<SessionConfig>,
+/// The page's state channel, created with its drain on first use: every
+/// attempt's forwarder feeds it, and so does the reconnect driver
+/// (`Reconnecting { attempt }`), so it outlives any one attempt.
+fn page_events(
+    notebook: &gtk4::Notebook,
+    page: &gtk4::Widget,
+    session: &Rc<SessionConfig>,
     host: String,
     port: u16,
+) -> UnboundedSender<TransportEvent> {
+    if let Some(events) = data(page, PAGE_EVENTS_KEY) {
+        return events;
+    }
+    let (events, rx) = mpsc::unbounded_channel();
+    // The page holds the only lasting sender: the drain ends with the page.
+    set_data(page, PAGE_EVENTS_KEY, events.clone());
+    let downgraded = events.downgrade();
+    spawn_state_drain(notebook, page, session, host, port, downgraded, rx);
+    events
+}
+
+/// Forward one attempt's state channel to the page's until its terminal
+/// closes or a newer attempt takes over. The tab's token firing
+/// (Disconnect) ends the attempt.
+fn spawn_state_forward(
+    page: gtk4::Widget,
+    gen: u64,
+    cancel: CancellationToken,
     mut rx: UnboundedReceiver<TransportEvent>,
+    events: UnboundedSender<TransportEvent>,
 ) {
     glib::MainContext::default().spawn_local(async move {
-        while let Some(event) = rx.recv().await {
+        loop {
+            let event = tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    if current_gen(&page) == gen {
+                        bump_gen(&page);
+                        close_terminal(&page);
+                        publish_page_state(&page, TransportState::Disconnected);
+                    }
+                    return;
+                }
+                event = rx.recv() => event,
+            };
             match event {
-                TransportEvent::StateChanged(state) => publish_status(&page, state, &host, port),
+                Some(event) if current_gen(&page) == gen => {
+                    if events.send(event).is_err() {
+                        return;
+                    }
+                }
+                _ => return,
+            }
+        }
+    });
+}
+
+/// Replay the page's transport events into the registry, its status and
+/// views, and the disconnect alert; on `ConnectionLost`, start the reconnect
+/// driver per policy (doc 04 §Lifecycle).
+fn spawn_state_drain(
+    notebook: &gtk4::Notebook,
+    page: &gtk4::Widget,
+    session: &Rc<SessionConfig>,
+    host: String,
+    port: u16,
+    events: WeakUnboundedSender<TransportEvent>,
+    mut rx: UnboundedReceiver<TransportEvent>,
+) {
+    let alerts = window_of(page)
+        .and_then(|window| window.application())
+        .map(|app| tray::attach_disconnect_alerts(&app, session.name.clone()));
+    let (notebook, session, page) = (notebook.clone(), session.clone(), page.downgrade());
+    glib::MainContext::default().spawn_local(async move {
+        while let Some(event) = rx.recv().await {
+            let Some(page) = page.upgrade() else { break };
+            match event {
+                TransportEvent::StateChanged(state) => {
+                    if state == TransportState::Connected {
+                        settle_redial(&page, Ok(()));
+                    }
+                    tab_resilience::set_tab_state(session.id, state.clone());
+                    publish_status(&page, state, &host, port);
+                }
                 TransportEvent::Error(message) => {
+                    let state = TransportState::Error(message.clone());
+                    tab_resilience::set_tab_state(session.id, state.clone());
                     show_error_view(&notebook, &page, &session, &message);
-                    publish_status(&page, TransportState::Error(message), &host, port);
+                    publish_status(&page, state, &host, port);
                 }
                 TransportEvent::ConnectionLost => {
-                    publish_status(&page, TransportState::Disconnected, &host, port)
+                    publish_status(&page, TransportState::Disconnected, &host, port);
+                    if let Some(alerts) = &alerts {
+                        let _ = alerts.send(TransportEvent::ConnectionLost);
+                    }
+                    let Some(events) = events.upgrade() else {
+                        break;
+                    };
+                    if tab_resilience::on_connection_lost(session.id, events).is_some() {
+                        // Free the dead session during the first backoff.
+                        release_connection(&page);
+                    }
                 }
                 TransportEvent::DataReceived(_) => {}
             }
+        }
+    });
+}
+
+/// The registered tab's connect closure (doc 04: every attempt is a fresh
+/// connect through the supervisor, so tmux reattaches). It runs on the
+/// driver's tokio task, so it only hops to the main context, where the page
+/// is rewired through [`start_connect`] with a new generation, and awaits
+/// that attempt's verdict. Weak refs only: the registry must not keep a
+/// closed page alive.
+fn redial_fn(notebook: &gtk4::Notebook, page: &gtk4::Widget, session_id: i64) -> ConnectFn {
+    // Shared, never cloned off the main thread: cloning a weak ref upgrades it.
+    let notebook = Arc::new(glib::SendWeakRef::from(notebook.downgrade()));
+    let page = Arc::new(glib::SendWeakRef::from(page.downgrade()));
+    Arc::new(move || {
+        let (reply, verdict) = oneshot::channel();
+        let (for_redial, for_page) = (notebook.clone(), page.clone());
+        glib::MainContext::default().invoke(move || {
+            if let (Some(notebook), Some(page)) = (for_redial.upgrade(), for_page.upgrade()) {
+                redial(&notebook, &page, reply);
+            }
+        });
+        let cancel = tab_resilience::live_tab(session_id).map(|tab| tab.cancel);
+        let page = page.clone();
+        Box::pin(async move {
+            let Some(cancel) = cancel else {
+                return Err(TransportError::Cancelled);
+            };
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    glib::MainContext::default().invoke(move || {
+                        if let Some(page) = page.upgrade() {
+                            abandon_attempt(&page);
+                        }
+                    });
+                    Err(TransportError::Cancelled)
+                }
+                // A dropped reply means the page went away.
+                verdict = verdict => verdict.unwrap_or(Err(TransportError::Cancelled)),
+            }
+        }) as ConnectFuture
+    })
+}
+
+/// Main thread: rewire `page` for a driver attempt; `reply` gets the verdict.
+fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
+    let Some(session) = data::<Rc<SessionConfig>>(page, SESSION_KEY) else {
+        return;
+    };
+    if notebook.page_num(page).is_none() {
+        return;
+    }
+    release_connection(page);
+    // `start_connect` takes the next generation first thing.
+    redial_slot(page).replace(Some((current_gen(page).wrapping_add(1), reply)));
+    start_connect(notebook, page, &session);
+}
+
+/// Let go of the page's hold on its connection — the transport and the
+/// sidebar's SFTP task — so the supervisor can evict a dead session and the
+/// next attempt dials fresh; a live shared one is simply handed out again.
+fn release_connection(page: &gtk4::Widget) {
+    close_terminal(page);
+    if !sidebar_attached(page).replace(false) {
+        return;
+    }
+    let (Some(paned), Some(old)) = (
+        page.downcast_ref::<gtk4::Paned>(),
+        SessionTab::sidebar_for_page(page),
+    ) else {
+        return;
+    };
+    let sidebar = SftpSidebar::new();
+    if !old.widget().is_visible() {
+        sidebar.toggle_visible();
+    }
+    let position = paned.position();
+    paned.set_start_child(Some(sidebar.widget()));
+    paned.set_position(position);
+    set_data(page, SIDEBAR_KEY, sidebar);
+}
+
+/// Disconnect landed while a redial was in flight: drop the attempt.
+fn abandon_attempt(page: &gtk4::Widget) {
+    bump_gen(page);
+    close_terminal(page);
+    set_terminal_area(page, &centered_label("Disconnected"));
+    publish_page_state(page, TransportState::Disconnected);
+}
+
+/// Closing a page by any path tears its registry entry down, so no
+/// reconnect loop outlives its tab (doc 04 §Lifecycle). Once per notebook.
+fn install_teardown_on_remove(notebook: &gtk4::Notebook) {
+    if data::<bool>(notebook, TEARDOWN_HOOK_KEY).is_some() {
+        return;
+    }
+    set_data(notebook, TEARDOWN_HOOK_KEY, true);
+    notebook.connect_page_removed(|_, page, _| {
+        if let Some(session_id) = data::<i64>(page, SESSION_ID_KEY) {
+            bump_gen(page);
+            tab_resilience::teardown_tab(session_id);
         }
     });
 }
@@ -441,6 +652,10 @@ pub(crate) fn show_error_view(
     session: &Rc<SessionConfig>,
     message: &str,
 ) {
+    settle_redial(
+        page,
+        Err(TransportError::ConnectionFailed(message.to_string())),
+    );
     // An error can arrive after the terminal was built.
     close_terminal(page);
 
@@ -500,6 +715,17 @@ pub(crate) fn publish_status(page: &gtk4::Widget, state: TransportState, host: &
     }
 }
 
+/// [`publish_status`] with the endpoint the page last published.
+fn publish_page_state(page: &gtk4::Widget, state: TransportState) {
+    let (host, port) = SessionTab::page_status(page)
+        .map(|status| {
+            let status = status.borrow();
+            (status.host.clone(), status.port)
+        })
+        .unwrap_or_default();
+    publish_status(page, state, &host, port);
+}
+
 fn terminal_slot(page: &gtk4::Widget) -> TerminalSlot {
     data(page, TERM_TAB_KEY).unwrap_or_else(|| {
         let slot = TerminalSlot::default();
@@ -515,11 +741,43 @@ fn close_terminal(page: &gtk4::Widget) {
     }
 }
 
-/// Invalidate any attempt in flight; returns the new generation.
+/// Invalidate any attempt in flight; returns the new generation. A redial
+/// waiting on an older attempt was superseded (Cancel, Retry, close) and
+/// ends the driver's run.
 fn bump_gen(page: &gtk4::Widget) -> u64 {
     let slot = gen_slot(page);
     slot.set(slot.get().wrapping_add(1));
-    slot.get()
+    let gen = slot.get();
+    let stale = redial_slot(page).borrow_mut().take_if(|(g, _)| *g != gen);
+    if let Some((_, reply)) = stale {
+        let _ = reply.send(Err(TransportError::Cancelled));
+    }
+    gen
+}
+
+/// Answer a redial waiting on the current attempt, if any.
+fn settle_redial(page: &gtk4::Widget, result: Result<(), TransportError>) {
+    let gen = current_gen(page);
+    let pending = redial_slot(page).borrow_mut().take_if(|(g, _)| *g == gen);
+    if let Some((_, reply)) = pending {
+        let _ = reply.send(result);
+    }
+}
+
+fn redial_slot(page: &gtk4::Widget) -> RedialSlot {
+    data(page, REDIAL_KEY).unwrap_or_else(|| {
+        let slot = RedialSlot::default();
+        set_data(page, REDIAL_KEY, slot.clone());
+        slot
+    })
+}
+
+fn sidebar_attached(page: &gtk4::Widget) -> Rc<Cell<bool>> {
+    data(page, SIDEBAR_ATTACHED_KEY).unwrap_or_else(|| {
+        let flag = Rc::new(Cell::new(false));
+        set_data(page, SIDEBAR_ATTACHED_KEY, flag.clone());
+        flag
+    })
 }
 
 // used by ui::vnc_tab and ui::rdp_tab
