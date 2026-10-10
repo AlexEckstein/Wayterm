@@ -124,7 +124,7 @@ pub const PROBE_FINGERPRINT: &str =
 ///
 /// ```text
 /// [time] [pid:tid] [ERROR][com.freerdp.crypto] - [fn]: The fingerprint for the host key sent by the remote host is 11:1e:94:…
-/// 	Thumbprint:  11:1e:94:…
+///     Thumbprint:  11:1e:94:…
 /// ```
 ///
 /// Both carry colon-separated hex; the value is normalized (colons
@@ -360,7 +360,10 @@ mod tests {
 
     #[test]
     fn parses_the_332_digest_where_both_shapes_agree() {
-        assert_eq!(parse_seen_fingerprint(&digest_332()).as_deref(), Some(FP_332));
+        assert_eq!(
+            parse_seen_fingerprint(&digest_332()).as_deref(),
+            Some(FP_332)
+        );
     }
 
     #[test]
