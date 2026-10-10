@@ -11,8 +11,9 @@ GTK 4's own scoping does the work; nothing toggles controllers on focus.
 - **Tier 1 — global:** application actions with accelerators
   (`set_accels_for_action`). They fire whatever has focus.
 - **Tier 2 — widget contexts:** one `ShortcutController` per region
-  (terminal, session tree, SFTP sidebar) with `ShortcutScope::Managed`, so
-  its shortcuts fire only while that widget or a descendant has focus.
+  (terminal, session tree, SFTP sidebar), local scope on the widget and
+  capture phase, so its shortcuts fire only while that widget or a
+  descendant has focus.
 - **Passthrough:** RDP and VNC tabs get no controller, so only Tier-1
   accels can intercept keys there; everything else reaches the remote
   session.

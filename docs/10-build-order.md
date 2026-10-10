@@ -52,12 +52,16 @@ tray icon with minimize-to-tray.
 
 Gaps, each a wiring task rather than new design:
 
-- `HotkeyEngine::install()` does not exist yet, so only `toggle_sftp` has
-  a key; the other actions have none.
-- Connected tabs are not registered as live (`register_live_tab`), so the
-  `reconnect`/`disconnect` actions and confirm-before-close have nothing to
-  act on.
-- The disconnect-notification forwarder is not attached to tabs.
+- ~~`HotkeyEngine::install()` does not exist yet~~ — done in Phase 8: the
+  engine binds both tiers from the registry and rebuilds one binding on
+  rebind (doc 07). Actions without a backing action (`new_tab`,
+  `goto_tab_N`, splits, session-tree actions) still have keys but do
+  nothing; their actions are open Phase 4+ work.
+- ~~Connected tabs are not registered as live~~ — done in Phase 8: the
+  connect flow registers every streaming tab, and `ConnectionLost` drives
+  reconnect (auto, or prompt via the `reconnect` action).
+- ~~The disconnect-notification forwarder is not attached to tabs~~ —
+  done in Phase 8 (`tray::attach_disconnect_alerts`, per tab).
 - The keyring credential source is a stub; secrets are prompted for.
 
 ## Phase 5: Local shell and serial — done
@@ -112,14 +116,19 @@ If reparenting is fragile, ship un-embedded and plan libfreerdp.
 **Verify:** connect to Windows or xrdp; desktop visible and interactive;
 resize works.
 
-## Phase 8: tmux persistence
+## Phase 8: tmux persistence — done
 
-Done: `tmux new -A -s wayterm-<name>`, the dialog toggle and name, and an
-sshd test proving the same session survives a dropped connection
-(doc 04 §Tmux Session Persistence). Pending: drive reconnect from
-`ConnectionLost` (see the Phase 4 gaps). Optional: kill the tmux session
-on a graceful disconnect. **Verify:** run vim, kill the network,
-reconnect, vim is still there.
+Done: `tmux new -A -s wayterm-<name>`, the dialog toggle and name, and
+sshd tests proving the same session survives a dropped connection *and*
+that a program started in it keeps running across the auto-reconnect
+(the assertable form of "run vim, kill the network, reconnect")
+(doc 04 §Tmux Session Persistence). Reconnect is driven from
+`ConnectionLost`: automatic when `reconnect_on_drop` is on, prompt
+otherwise; tray alert on every disconnect. Optional: kill the tmux
+session on a graceful disconnect — deliberately not built; persistence
+is the feature's point. **Verify:** run vim (or any long-running
+command), kill the network, reconnect, vim is still there — covered by
+the sshd suite.
 
 ## Phase 9: Import/export and packaging
 

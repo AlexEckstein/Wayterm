@@ -13,7 +13,7 @@ multi-protocol connection manager and terminal for Linux. Rust + GTK4 +
 VTE, russh SSH, rusqlite, libsecret keyring.
 Repo: github.com/AlexEckstein/Wayterm.
 
-**Current state:** Phases 1–4 are implemented (doc 10 has the status
+**Current state:** Phases 1–8 are implemented (doc 10 has the status
 and the remaining gaps). The design docs `docs/01-…` through
 `docs/11-…` are the source of truth for architecture.
 
@@ -100,6 +100,8 @@ src/terminal/    ← TerminalBackend, VteBackend, FakeBackend (doc 02)
 src/transport/   ← Transport, SSHTransport, SshConnection, supervisor,
                    auth, host keys, credentials, reconnect, TerminalTab (docs 04/11)
 src/sftp/        ← SFTP task + commands (doc 09)
+src/vnc/          ← VNC client + framebuffer, engine task (doc 08)
+src/rdp/          ← RDP process wrapper + cert policy (doc 08)
 src/store/       ← SQLite session store and model (doc 06)
 src/hotkeys/     ← ActionRegistry, HotkeyEngine (doc 07)
 src/ui/          ← GTK window, tabs, dialogs, session tree, sidebar, tray (docs 01/07/09)
