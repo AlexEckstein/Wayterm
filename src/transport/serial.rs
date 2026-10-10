@@ -41,13 +41,13 @@ impl PortSettings {
     fn from_config(config: &SessionConfig) -> Result<Self, TransportError> {
         let device = config
             .serial_device
-            .clone()
+            .as_deref()
             .filter(|d| !d.is_empty())
             .ok_or_else(|| {
                 TransportError::ConnectionFailed("no serial device configured".into())
             })?;
         Ok(Self {
-            device,
+            device: device.to_string(),
             baud_rate: config.serial_baud_rate.unwrap_or(DEFAULT_SERIAL_BAUD),
             data_bits: map_data_bits(config.serial_data_bits.unwrap_or(SERIAL_DATA_BITS_DEFAULT))?,
             parity: map_parity(
@@ -116,7 +116,11 @@ fn map_stop_bits(value: u8) -> Result<StopBits, TransportError> {
 /// serial transports). Reads block, so the reader runs on tokio's blocking
 /// pool; `resize` is a no-op because a serial line has no window size.
 pub struct SerialTransport {
-    config: SessionConfig,
+    /// The row's port settings, or why it has none: mapped once, reported
+    /// by every `connect`.
+    settings: Result<PortSettings, String>,
+    /// `device@baud`, as the row stores them.
+    description: String,
     /// The write side; the reader task owns a cloned handle.
     port: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
     reader_task: Option<JoinHandle<()>>,
@@ -129,8 +133,18 @@ pub struct SerialTransport {
 
 impl SerialTransport {
     pub fn new(config: &SessionConfig, event_tx: mpsc::Sender<TransportEvent>) -> Self {
+        let settings = PortSettings::from_config(config).map_err(|err| match err {
+            TransportError::ConnectionFailed(reason) => reason,
+            other => other.to_string(),
+        });
+        let description = format!(
+            "{}@{}",
+            config.serial_device.as_deref().unwrap_or(""),
+            config.serial_baud_rate.unwrap_or(DEFAULT_SERIAL_BAUD)
+        );
         Self {
-            config: config.clone(),
+            settings,
+            description,
             port: None,
             reader_task: None,
             event_tx,
@@ -240,9 +254,12 @@ impl Transport for SerialTransport {
         }
         self.set_state(TransportState::Connecting);
 
-        let settings = match PortSettings::from_config(&self.config) {
-            Ok(settings) => settings,
-            Err(e) => return Err(self.fail(e)),
+        let settings = match &self.settings {
+            Ok(settings) => settings.clone(),
+            Err(reason) => {
+                let err = TransportError::ConnectionFailed(reason.clone());
+                return Err(self.fail(err));
+            }
         };
         // Opening configures termios and takes a flock: blocking syscalls.
         let opened = tokio::task::spawn_blocking(move || {
@@ -318,11 +335,7 @@ impl Transport for SerialTransport {
     }
 
     fn description(&self) -> String {
-        format!(
-            "{}@{}",
-            self.config.serial_device.as_deref().unwrap_or(""),
-            self.config.serial_baud_rate.unwrap_or(DEFAULT_SERIAL_BAUD)
-        )
+        self.description.clone()
     }
 }
 
