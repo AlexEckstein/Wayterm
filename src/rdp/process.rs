@@ -355,9 +355,14 @@ impl ErrorRing {
 }
 
 /// Owns one xfreerdp child: its pid (so the UI can only ever kill its own
-/// session), its still-open stdin, and its stderr ring. Tokio-side only;
-/// wrap in `Arc<tokio::sync::Mutex<_>>` to share between the runner task
-/// and the UI (P7-2).
+/// session), its still-open stdin, and its stderr ring. Tokio-side only.
+///
+/// [`run`](Self::run) borrows `&mut self` for the whole session, so when
+/// the wrapper is shared behind an `Arc<tokio::sync::Mutex<_>>` the runner
+/// task holds the lock until the child exits. To stop a live session,
+/// abort the runner task first — dropping the `run` future leaves the child
+/// in `self` — then [`terminate`](Self::terminate) signals and reaps it.
+/// Dropping the wrapper SIGKILLs the child (`kill_on_drop`) as a backstop.
 pub struct RdpProcess {
     binary: String,
     argv: Vec<String>,
@@ -556,7 +561,9 @@ impl RdpProcess {
     }
 
     /// SIGTERM the child's process group, then SIGKILL after the grace
-    /// period. Only ever signals our own child's group (see spawn).
+    /// period. Only ever signals our own child's group (see spawn). Needs
+    /// the wrapper's lock, which a live [`run`](Self::run) holds: abort the
+    /// runner task first (see the type docs).
     pub async fn terminate(&mut self) {
         let Some(child) = self.child.as_mut() else {
             return;
@@ -566,36 +573,43 @@ impl RdpProcess {
             Ok(None) => {}
             _ => return,
         }
-        #[cfg(unix)]
+        signal_group(child, Signal::Term);
+        if tokio::time::timeout(self.terminate_grace, child.wait())
+            .await
+            .is_err()
         {
-            if let Some(pid) = child.id() {
-                // Negative pid = the whole group we created at spawn.
-                unsafe {
-                    libc::kill(-(pid as libc::pid_t), libc::SIGTERM);
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = child.kill().await;
-        }
-        let grace = self.terminate_grace;
-        #[cfg(unix)]
-        {
-            if tokio::time::timeout(grace, child.wait()).await.is_err() {
-                if let Some(pid) = child.id() {
-                    unsafe {
-                        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-                    }
-                }
-                let _ = child.wait().await;
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = tokio::time::timeout(grace, child.wait()).await;
+            signal_group(child, Signal::Kill);
+            let _ = child.wait().await;
         }
         self.stdin.take();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Signal {
+    Term,
+    Kill,
+}
+
+/// Signal the child's whole process group (created at spawn, so this can
+/// never reach anything outside our own session). A reaped child has no
+/// pid and is left alone.
+fn signal_group(child: &mut Child, signal: Signal) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let signal = match signal {
+            Signal::Term => libc::SIGTERM,
+            Signal::Kill => libc::SIGKILL,
+        };
+        // SAFETY: plain kill(2); the negative pid names the group we made.
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), signal);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = signal;
+        let _ = child.start_kill();
     }
 }
 
@@ -906,8 +920,27 @@ mod tests {
         }
     }
 
+    /// Stop a shared, live session the way the tab does: abort the runner
+    /// (which holds the lock for the whole session), then terminate. Fails
+    /// if the child outlived the call or it took anywhere near the fake's
+    /// natural lifetime.
+    async fn abort_and_terminate(
+        proc: &std::sync::Arc<tokio::sync::Mutex<RdpProcess>>,
+        runner: tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let started = std::time::Instant::now();
+        runner.abort();
+        let mut proc = tokio::time::timeout(Duration::from_secs(5), proc.lock())
+            .await
+            .expect("the aborted runner releases the lock");
+        proc.terminate().await;
+        let reaped = proc.child.as_mut().expect("spawned").try_wait().unwrap();
+        assert!(reaped.is_some(), "terminate reaps the child");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     #[tokio::test]
-    async fn run_emits_connected_then_ended_and_terminate_kills() {
+    async fn run_emits_connected_and_terminate_kills_the_live_child() {
         let dir = tempfile::tempdir().unwrap();
         // Reads ONE stdin line (the password), notes stderr, then idles.
         let bin = fake_binary(&dir, "read -r line\necho fake-ready >&2\nsleep 30");
@@ -924,17 +957,8 @@ mod tests {
             tokio::spawn(async move { proc.lock().await.run(&password, tx).await })
         };
         assert_eq!(rx.recv().await, Some(RdpProcessEvent::Connected));
-        proc.lock().await.terminate().await;
-        let run_result = tokio::time::timeout(Duration::from_secs(10), runner)
-            .await
-            .expect("runner must finish after terminate")
-            .expect("runner task panicked");
-        run_result.expect("run itself must not fail");
-        assert!(matches!(
-            rx.recv().await,
-            Some(RdpProcessEvent::Ended { .. })
-        ));
-        assert_eq!(rx.recv().await, None, "Ended is always last");
+        abort_and_terminate(&proc, runner).await;
+        assert_eq!(rx.recv().await, None, "the aborted runner sends nothing");
     }
 
     #[tokio::test]
@@ -1009,8 +1033,7 @@ mod tests {
             tokio::spawn(async move { proc.lock().await.run(&password, tx).await })
         };
         assert_eq!(rx.recv().await, Some(RdpProcessEvent::Connected));
-        proc.lock().await.terminate().await;
-        let _ = tokio::time::timeout(Duration::from_secs(10), runner).await;
+        abort_and_terminate(&proc, runner).await;
         let dumped = std::fs::read_to_string(&dump).unwrap();
         // The fake binary is a shebang script, so its interpreter adds
         // PWD/SHLVL/_ itself — those are not leaks. Everything else the

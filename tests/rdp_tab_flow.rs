@@ -203,19 +203,17 @@ async fn rdp_view_live_against_rig() {
         tokio::spawn(async move { proc.lock().await.run(&secret, tx).await })
     };
     // The 15 s heuristic fires Connected while the session is up; then we
-    // tear it down and expect a terminal Ended.
+    // tear it down the way the tab does. `run` holds the process lock for
+    // the whole session, so the runner is aborted before `terminate`.
     match tokio::time::timeout(Duration::from_secs(60), rx.recv()).await {
         Ok(Some(RdpProcessEvent::Connected)) => {}
         other => panic!("expected Connected from the rig, got {other:?}"),
     }
-    proc.lock().await.terminate().await;
-    let run_result = tokio::time::timeout(Duration::from_secs(15), runner)
-        .await
-        .expect("runner finishes after terminate")
-        .expect("runner panicked");
-    run_result.expect("run itself must not fail");
-    assert!(
-        matches!(rx.recv().await, Some(RdpProcessEvent::Ended { .. })),
-        "Ended is always last"
-    );
+    runner.abort();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        proc.lock().await.terminate().await;
+    })
+    .await
+    .expect("terminate finishes once the runner is aborted");
+    assert_eq!(rx.recv().await, None, "the aborted runner sends nothing");
 }
