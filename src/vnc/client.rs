@@ -290,15 +290,9 @@ enum Applied {
 /// event-to-framebuffer mapping is testable without a socket.
 fn apply_event(pixels: &mut VncPixels, event: VncEvent) -> Applied {
     match event {
-        VncEvent::SetResolution(screen) => {
-            pixels.resize(screen.width, screen.height);
-            Applied::Ui(VncUiEvent::Resolved(screen.width, screen.height))
-        }
+        VncEvent::SetResolution(screen) => resolve(pixels, screen.width, screen.height),
         VncEvent::DesktopUpdate(update) => match update.layout {
-            Some(layout) => {
-                pixels.resize(layout.width, layout.height);
-                Applied::Ui(VncUiEvent::Resolved(layout.width, layout.height))
-            }
+            Some(layout) => resolve(pixels, layout.width, layout.height),
             None => Applied::Ignored,
         },
         VncEvent::RawImage(rect, bytes) => {
@@ -319,6 +313,19 @@ fn apply_event(pixels: &mut VncPixels, event: VncEvent) -> Applied {
         // (`VncEvent` is non_exhaustive): see the module notes.
         _ => Applied::Ignored,
     }
+}
+
+/// Adopt the server's desktop size, unless it is beyond what the engine
+/// holds: the size is the server's to pick, and allocating it unchecked
+/// lets a hostile server exhaust memory with one message.
+fn resolve(pixels: &mut VncPixels, width: u16, height: u16) -> Applied {
+    if !VncPixels::fits(width, height) {
+        return Applied::Fatal(format!(
+            "server desktop {width}x{height} exceeds the supported maximum"
+        ));
+    }
+    pixels.resize(width, height);
+    Applied::Ui(VncUiEvent::Resolved(width, height))
 }
 
 async fn run(
@@ -483,6 +490,31 @@ mod tests {
             Applied::Ignored
         );
         assert_eq!(px.dims(), (5, 4));
+    }
+
+    #[test]
+    fn an_oversized_desktop_is_fatal_and_allocates_nothing() {
+        let mut px = VncPixels::new(2, 2);
+        let huge = Screen::from((u16::MAX, u16::MAX));
+        assert!(matches!(
+            apply_event(&mut px, VncEvent::SetResolution(huge)),
+            Applied::Fatal(_)
+        ));
+        let layout = DesktopLayout {
+            width: 16_385,
+            height: 2,
+            screens: vec![],
+        };
+        let update = DesktopUpdate {
+            reason: DesktopReason::Server,
+            status: DesktopStatus::Success,
+            layout: Some(layout),
+        };
+        assert!(matches!(
+            apply_event(&mut px, VncEvent::DesktopUpdate(update)),
+            Applied::Fatal(_)
+        ));
+        assert_eq!(px, VncPixels::new(2, 2));
     }
 
     #[test]
