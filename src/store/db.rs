@@ -2,6 +2,7 @@
 //! (doc 06). No credential material ever passes through this layer.
 
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::Value;
 use rusqlite::{
@@ -219,6 +220,40 @@ impl SessionStore {
             Some(json) => tab_state::tabs_from_json(&json).map_err(from_sql_error),
         }
     }
+
+    /// The stored RDP server-certificate fingerprint for `(host, port)`
+    /// (`rdp_trust` table); `Ok(None)` when never seen. Backs the TOFU
+    /// resolver in `rdp::cert`.
+    pub fn rdp_trust(&self, host: &str, port: u16) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT fingerprint FROM rdp_trust WHERE host = ?1 AND port = ?2",
+                params![host, i64::from(port)],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// Record (insert or replace) the fingerprint for `(host, port)`.
+    /// `first_seen` is stamped on first insert and kept on later updates.
+    pub fn rdp_trust_record(
+        &self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> rusqlite::Result<()> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.conn.execute(
+            "INSERT INTO rdp_trust (host, port, fingerprint, first_seen) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(host, port) DO UPDATE SET fingerprint = excluded.fingerprint",
+            params![host, i64::from(port), fingerprint, now],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -253,6 +288,7 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     // `foreign_keys` is per connection; WAL persists in the file.
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     conn.execute_batch(MIGRATION_001)?;
+    conn.execute_batch(MIGRATION_002)?;
     // `hotkeys` has no UNIQUE constraint, so re-running the seed would
     // duplicate rows: seed exactly once, atomically, keyed on an empty
     // `settings` table.
@@ -462,6 +498,19 @@ CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
 CREATE INDEX IF NOT EXISTS idx_hotkeys_action ON hotkeys(action);
 CREATE INDEX IF NOT EXISTS idx_history_session ON connection_history(session_id);
 CREATE INDEX IF NOT EXISTS idx_history_recent ON connection_history(connected_at DESC);
+"#;
+
+/// Schema v2 — RDP server-certificate trust (TOFU fingerprints, one row per
+/// endpoint). Idempotent like v1 (`IF NOT EXISTS`), so existing databases
+/// migrate on open.
+const MIGRATION_002: &str = r#"
+CREATE TABLE IF NOT EXISTS rdp_trust (
+    host        TEXT NOT NULL,
+    port        INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    first_seen  INTEGER NOT NULL,
+    PRIMARY KEY (host, port)
+);
 "#;
 
 /// First-run seed (doc 06 §Default Data). The hotkey rows are

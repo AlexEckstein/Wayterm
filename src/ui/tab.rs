@@ -34,6 +34,7 @@ use crate::transport::types::{TransportError, TransportEvent, TransportState};
 use crate::ui::auth_dialog::{self, ChallengePrompt};
 use crate::ui::hostkey_dialog;
 use crate::ui::main_window::{route_status, SUPERVISOR_KEY};
+use crate::ui::rdp_tab;
 use crate::ui::sftp_sidebar::{supports_sftp, SftpSidebar};
 use crate::ui::tab_label;
 use crate::ui::vnc_tab;
@@ -84,7 +85,11 @@ impl SessionTab {
         set_data(&page, TAB_LABEL_KEY, tab_label);
         if matches!(
             session.session_type,
-            SessionType::SSH | SessionType::LocalShell | SessionType::Serial | SessionType::VNC
+            SessionType::SSH
+                | SessionType::LocalShell
+                | SessionType::Serial
+                | SessionType::VNC
+                | SessionType::RDP
         ) {
             start_connect(notebook, &page, &session);
         }
@@ -140,6 +145,10 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
     // engine, no supervisor or terminal (doc 08 §VNC).
     if session.session_type == SessionType::VNC {
         return vnc_tab::start(notebook, page, session, gen);
+    }
+    // RDP likewise owns its subprocess dial (doc 08 §RDP).
+    if session.session_type == SessionType::RDP {
+        return rdp_tab::start(notebook, page, session, gen);
     }
 
     // Nothing to dial or authenticate: no supervisor, host key or credential
@@ -550,7 +559,7 @@ fn page_content(session: &SessionConfig) -> gtk4::Widget {
         paned.upcast()
     } else if matches!(
         session.session_type,
-        SessionType::LocalShell | SessionType::Serial | SessionType::VNC
+        SessionType::LocalShell | SessionType::Serial | SessionType::VNC | SessionType::RDP
     ) {
         let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
         paned.set_end_child(Some(&placeholder));
