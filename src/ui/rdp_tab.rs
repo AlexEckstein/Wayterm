@@ -37,6 +37,8 @@
 //! The credential chain (`credential_manager`) carries secrets only. The
 //! trust table is reached the other allowed way: [`default_db_path`] +
 //! [`SessionStore::open`] on the blocking thread at cert-resolution time.
+//! A store that cannot be read fails the connect: it is never mistaken for
+//! first contact, which would re-prompt for a host already pinned.
 //! That is a second read-only-mostly handle to the same SQLite file, which
 //! is safe: schema init is idempotent, reads are concurrent under WAL, and
 //! trust writes are rare single-row upserts serialized by SQLite itself.
@@ -288,7 +290,7 @@ pub fn changed_cert_decision(host: &str, port: u16, stored: &str, seen: &str) ->
 
 /// The stored fingerprint for `(host, port)`, via a throwaway store handle
 /// (see the module docs). Errors surface so the caller can decide; the dial
-/// treats an unreadable store as first contact.
+/// fails closed on them.
 pub fn rdp_trust_lookup(host: &str, port: u16) -> rusqlite::Result<Option<String>> {
     SessionStore::open(&default_db_path())?.rdp_trust(host, port)
 }
@@ -553,8 +555,13 @@ fn dial(session: SessionConfig, parent_xid: Option<u32>, creds: CredentialManage
     let Some((binary, _)) = cached_probe() else {
         return Dial::Failed("xfreerdp not found on PATH (looked for xfreerdp3, xfreerdp)".into());
     };
-    // An unreadable store is first contact: the probe resolves trust.
-    let stored = rdp_trust_lookup(&host, port).unwrap_or(None);
+    // Fail closed: an unreadable store is not first contact. Treating it as
+    // one would re-prompt for — and let the user re-pin — a host whose
+    // stored pin we merely failed to read.
+    let stored = match rdp_trust_lookup(&host, port) {
+        Ok(stored) => stored,
+        Err(err) => return Dial::Failed(format!("RDP trust store unreadable: {err}")),
+    };
     if let Some(fingerprint) = stored.clone() {
         // Known host: pass-through spawn, xfreerdp enforces the pin.
         let decision = CertDecision::PassStored { fingerprint };
@@ -569,15 +576,18 @@ fn dial(session: SessionConfig, parent_xid: Option<u32>, creds: CredentialManage
     }
     // First contact: probe spawn with the guaranteed-mismatch fingerprint.
     // xfreerdp refuses at TLS and prints the seen fingerprint; it writes
-    // nothing to any store and exits within ~1 s.
+    // nothing to any store and exits within ~1 s. The probe gets an empty
+    // password: nothing secret goes to a server the user has not accepted,
+    // whatever the peer negotiates.
     let probe_spec = spec_from_session(
         &session,
         Some(format!("{CERT_ARG_PREFIX}{PROBE_FINGERPRINT}")),
     );
     let mut probe = RdpProcess::new(&binary, &probe_spec, parent_xid);
     let (tx, _) = mpsc::channel(8);
-    let outcome = tokio::runtime::Handle::current()
-        .block_on(async { tokio::time::timeout(PROBE_TIMEOUT, probe.run(&password, tx)).await });
+    let outcome = tokio::runtime::Handle::current().block_on(async {
+        tokio::time::timeout(PROBE_TIMEOUT, probe.run(&Zeroizing::default(), tx)).await
+    });
     match outcome {
         Err(_) => {
             tokio::runtime::Handle::current().block_on(probe.terminate());
