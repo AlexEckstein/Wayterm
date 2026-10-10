@@ -175,7 +175,7 @@ impl MainWindow {
         // Restore before watching, so the restored tabs are not re-saved as
         // a burst of user actions. The close handler keeps the watcher alive
         // and writes the final state.
-        let tabs = TabPersistence::new(notebook.clone(), home.clone().upcast(), store);
+        let tabs = TabPersistence::new(notebook.clone(), home.upcast(), store);
         tabs.restore();
         tabs.install();
         window.connect_close_request(move |_| {
