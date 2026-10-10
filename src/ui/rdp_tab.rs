@@ -287,9 +287,9 @@ pub fn rdp_trust_record(host: &str, port: u16, fingerprint: &str) -> rusqlite::R
 
 /// The probed `(binary, version)`, once per process. Blocking (one
 /// `--version` spawn): only called from `start` and the dial pool.
-fn cached_probe() -> Option<(String, String)> {
+fn cached_probe() -> Option<&'static (String, String)> {
     static PROBE: OnceLock<Option<(String, String)>> = OnceLock::new();
-    PROBE.get_or_init(probe_binary).clone()
+    PROBE.get_or_init(probe_binary).as_ref()
 }
 
 // ---------------------------------------------------------------------------
@@ -577,7 +577,7 @@ fn dial(
     let pinned = match stored {
         // Known host: pass-through spawn, xfreerdp enforces the pin.
         Some(fingerprint) => fingerprint,
-        None => match first_contact(&binary, &base, parent_xid) {
+        None => match first_contact(binary, &base, parent_xid) {
             Ok(fingerprint) => fingerprint,
             Err(dial) => return dial,
         },
@@ -588,7 +588,7 @@ fn dial(
         }),
         ..base
     };
-    spawn_real(&binary, &spec, parent_xid, &password, pinned)
+    spawn_real(binary, &spec, parent_xid, &password, pinned)
 }
 
 /// First contact: learn the server's fingerprint without trusting it, then
@@ -731,7 +731,7 @@ pub(crate) fn start(
     };
     // The FreeRDP version notice lives in the connecting overlay and
     // disappears at Connected with it.
-    let warning = warn_below(&version).then(|| {
+    let warning = warn_below(version).then(|| {
         format!(
             "FreeRDP {version} — credential pipe buggy band (fixed 3.20); \
              if the password is rejected, check stdin auth"
