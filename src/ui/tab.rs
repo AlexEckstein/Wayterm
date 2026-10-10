@@ -2,8 +2,9 @@
 //!
 //! An SSH tab's page is a paned: the SFTP sidebar (doc 09) on the left —
 //! per tab, since each browses its own connection — and the terminal area
-//! on the right. Local and serial tabs get the terminal area alone; other
-//! session types get a placeholder page.
+//! on the right. Every other type gets the area alone: a terminal for
+//! local and serial, the remote desktop for VNC and RDP (`vnc_tab`,
+//! `rdp_tab`).
 //!
 //! Connecting: validate the row, show "Connecting…", get a shared
 //! connection from the window's supervisor (prompts run on the GTK thread
@@ -70,8 +71,8 @@ type TerminalSlot = Rc<RefCell<Option<TerminalTab>>>;
 pub struct SessionTab;
 
 impl SessionTab {
-    /// Open a tab for `session`, or focus the one already open. SSH, local
-    /// and serial tabs start connecting. Returns the page widget.
+    /// Open a tab for `session`, or focus the one already open; a new tab
+    /// starts connecting. Returns the page widget.
     pub fn open(notebook: &gtk4::Notebook, session: &SessionConfig) -> gtk4::Widget {
         if let Some((page_num, page)) = find_tab(notebook, session.id) {
             notebook.set_current_page(Some(page_num));
@@ -83,16 +84,7 @@ impl SessionTab {
         let page_num = notebook.append_page(&page, Some(&tab_label));
         notebook.set_current_page(Some(page_num));
         set_data(&page, TAB_LABEL_KEY, tab_label);
-        if matches!(
-            session.session_type,
-            SessionType::SSH
-                | SessionType::LocalShell
-                | SessionType::Serial
-                | SessionType::VNC
-                | SessionType::RDP
-        ) {
-            start_connect(notebook, &page, &session);
-        }
+        start_connect(notebook, &page, &session);
         page
     }
 
@@ -381,7 +373,7 @@ fn transport_auth_method(session: &SessionConfig) -> connection::AuthMethod {
 }
 
 /// Keyring first, then a one-field challenge dialog (doc 11).
-// used by ui::vnc_tab
+// used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn credential_manager(session_name: &str) -> CredentialManager {
     let name = session_name.to_string();
     let prompt = PromptSource::new(Arc::new(move |_session_id, secret_type| {
@@ -408,7 +400,7 @@ pub(crate) fn credential_manager(session_name: &str) -> CredentialManager {
 // Page views and bookkeeping
 // ---------------------------------------------------------------------------
 
-// used by ui::vnc_tab
+// used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn set_terminal_area(page: &gtk4::Widget, child: &impl IsA<gtk4::Widget>) {
     if let Some(paned) = page.downcast_ref::<gtk4::Paned>() {
         paned.set_end_child(Some(child));
@@ -442,7 +434,7 @@ pub(crate) fn show_connecting_view(page: &gtk4::Widget, host: &str, port: u16) {
 }
 
 /// The error message with Retry and Close Tab.
-// used by ui::vnc_tab
+// used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn show_error_view(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
@@ -487,7 +479,7 @@ pub(crate) fn show_error_view(
 }
 
 /// Record `state` on the page and show it if the page is current.
-// used by ui::vnc_tab
+// used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn publish_status(page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
     let status = SessionTab::page_status(page).unwrap_or_else(|| {
         let cell = Rc::new(RefCell::new(PageStatus {
@@ -530,7 +522,7 @@ fn bump_gen(page: &gtk4::Widget) -> u64 {
     slot.get()
 }
 
-// used by ui::vnc_tab
+// used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn current_gen(page: &gtk4::Widget) -> u64 {
     gen_slot(page).get()
 }
@@ -543,34 +535,25 @@ fn gen_slot(page: &gtk4::Widget) -> Rc<Cell<u64>> {
     })
 }
 
-/// The page: the sidebar and terminal area for SSH, the terminal area alone
-/// for local and serial, a placeholder otherwise. Tagged with the session id for dedup and persistence.
+/// The page: a paned whose end child is the session's area, with the SFTP
+/// sidebar at the start for SSH. Tagged with the session id for dedup and
+/// persistence.
 fn page_content(session: &SessionConfig) -> gtk4::Widget {
-    let placeholder = centered_label(&format!("{}\nnot connected", session.name));
-    let page: gtk4::Widget = if supports_sftp(&session.session_type) {
+    let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
+    paned.set_end_child(Some(&centered_label(&format!(
+        "{}\nnot connected",
+        session.name
+    ))));
+    paned.set_vexpand(true);
+    paned.set_hexpand(true);
+    if supports_sftp(&session.session_type) {
         let sidebar = SftpSidebar::new();
-        let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
         paned.set_position(SIDEBAR_WIDTH);
         paned.set_start_child(Some(sidebar.widget()));
-        paned.set_end_child(Some(&placeholder));
-        paned.set_vexpand(true);
-        paned.set_hexpand(true);
         set_data(&paned, SIDEBAR_KEY, sidebar);
-        paned.upcast()
-    } else if matches!(
-        session.session_type,
-        SessionType::LocalShell | SessionType::Serial | SessionType::VNC | SessionType::RDP
-    ) {
-        let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
-        paned.set_end_child(Some(&placeholder));
-        paned.set_vexpand(true);
-        paned.set_hexpand(true);
-        paned.upcast()
-    } else {
-        placeholder.upcast()
-    };
-    set_data(&page, SESSION_ID_KEY, session.id);
-    page
+    }
+    set_data(&paned, SESSION_ID_KEY, session.id);
+    paned.upcast()
 }
 
 /// The tab label; closing asks first when the transport is live (doc 04
