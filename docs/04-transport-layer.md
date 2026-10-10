@@ -15,8 +15,10 @@ output      reader task ─► bridge task ─► drain (main context) ─► ba
 ```
 
 - The **reader task** (per transport) pushes `DataReceived` for every
-  channel message and `ConnectionLost` on EOF or close. It is the only read
-  path: the trait has no `read()`.
+  channel message and, on close, `SessionEnded` if the shell exited (an
+  exit status or signal arrived first) or `ConnectionLost` if not. EOF
+  alone ends nothing: OpenSSH sends it before the exit status. It is the
+  only read path: the trait has no `read()`.
 - The GTK side never blocks: overflow is parked and flushed from an idle
   callback (doc 02 §Backpressure).
 - Output channels are bounded, so a stalled UI backs up into the reader and
@@ -41,7 +43,7 @@ pub trait Transport: Send {
 pub enum TransportState { Disconnected, Connecting, VerifyingHostKey, Authenticating,
                           Connected, Reconnecting { attempt: u32 }, Error(String) }
 pub enum TransportEvent { DataReceived(Vec<u8>), StateChanged(TransportState),
-                          Error(String), ConnectionLost }
+                          Error(String), ConnectionLost, SessionEnded }
 pub enum TransportError { ConnectionFailed(String), HostKeyRejected(String),
                           AuthFailed(String), ChannelError(String), IoError(io::Error),
                           Disconnected, Cancelled }
@@ -107,6 +109,7 @@ the tasks keep each other alive.
 Disconnected → Connecting → VerifyingHostKey → Authenticating → Connected
       ▲                 any state: cancel / close                    │
       └──────────────── ConnectionLost ─► Reconnecting { attempt } ◄─┘
+                                SessionEnded ─► Disconnected (r / q prompt)
 ```
 
 - **Tab close** cancels the tab's token; the pump disconnects. If the
@@ -115,6 +118,11 @@ Disconnected → Connecting → VerifyingHostKey → Authenticating → Connecte
   `reconnect_on_drop` on, the reconnect driver retries on its own;
   otherwise it asks before each attempt. Every attempt is a fresh connect
   through the supervisor, so tmux reattaches.
+- **Session end** (`exit`, logout, a detached tmux): the reader emits
+  `SessionEnded`. Nothing reconnects and no disconnect alert is posted;
+  the tab reads as disconnected (closing it does not ask), and the
+  terminal keeps its scrollback and adds a notice: `r` reconnects (a fresh
+  connect, as Retry), `q` closes the tab (`ui::session_ended`).
 - **Backoff:** 1 s, 2 s, 5 s, 10 s, then 60 s, applied before every attempt
   (the first included); unlimited attempts while the tab is open; each
   attempt publishes `Reconnecting { attempt }`. A connect that fails with
@@ -147,9 +155,10 @@ scrollback persists on the remote host; that data at rest is out of scope.
   `$SHELL`, else `/bin/sh`; a set-but-missing shell is a connect error, not
   a fallback); an `AsyncFd` reader with the same push model; `TIOCSWINSZ`
   for resize (the kernel delivers SIGWINCH to the child's foreground
-  pgroup); `EIO` on the master means the child exited (reap it — the
-  transport reaps on disconnect and on drop, SIGKILL after 5 s if a hung-up
-  shell lingers); `TERM=xterm-256color`, `COLORTERM=truecolor`.
+  pgroup); `EIO` on the master means the child exited, reported as
+  `SessionEnded` (reap it — the transport reaps on disconnect and on drop,
+  SIGKILL after 5 s if a hung-up shell lingers); `TERM=xterm-256color`,
+  `COLORTERM=truecolor`.
   `local_working_dir` becomes the child's cwd when set. tmux is not
   applicable locally; the setting is accepted and ignored.
 - **SerialTransport:** `serialport` (4.x, opened by device path — the
