@@ -133,7 +133,9 @@ rest reach the remote desktop (doc 07).
 
 ## v1 limitations
 
-- RDP: X11/XWayland only; single monitor; credentials via stdin needs
+- RDP: X11/XWayland only; single monitor; FreeRDP 3 or later — the argv
+  uses 3.x syntax (`/sec:rdp:off`), so a 2.x binary is refused at probe
+  time with an error naming its version; credentials via stdin needs
   FreeRDP ≥ 3.20.
 - VNC: plain VNC (tunnel it over SSH); VeNCrypt/TLS later. As built
   (Phase 6): `vnc_options.quality` is stored but not applied (the crate

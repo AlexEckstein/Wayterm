@@ -51,12 +51,14 @@
 //! `build_args`). Never a silent second window. This path is untestable on
 //! an X-only host; it is code-review-only quality.
 //!
-//! ## Version notice
+//! ## FreeRDP version
 //!
-//! `/from-stdin` was buggy around 3.5–3.17 (fixed in 3.20). The binary is
-//! probed once per process ([`cached_probe`]) and, when below 3.20, the
-//! connecting overlay carries a warning ([`warn_below`], pure and tested).
-//! It disappears at Connected with the overlay.
+//! The binary is probed once per process ([`cached_probe`]). FreeRDP 2.x is
+//! refused with an error view ([`usable_freerdp`]): the argv speaks
+//! FreeRDP 3 (`rdp::process`). `/from-stdin` was buggy around 3.5–3.17
+//! (fixed in 3.20), so below 3.20 the connecting overlay carries a warning
+//! ([`warn_below`], pure and tested); it disappears at Connected with the
+//! overlay.
 
 use std::cell::{Cell, RefCell};
 use std::io;
@@ -73,8 +75,8 @@ use zeroize::Zeroizing;
 use crate::app::default_db_path;
 use crate::rdp::cert::{parse_seen_fingerprint, PROBE_FINGERPRINT};
 use crate::rdp::{
-    cert_arg, decide, probe_binary, CertDecision, RdpProcess, RdpProcessEvent, RdpSpec,
-    CERT_ARG_PREFIX,
+    cert_arg, decide, is_supported_version, probe_binary, CertDecision, RdpProcess,
+    RdpProcessEvent, RdpSpec, CERT_ARG_PREFIX, MIN_FREERDP_MAJOR,
 };
 use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
@@ -162,6 +164,16 @@ pub fn warn_below(version: &str) -> bool {
         (Some(major), Some(minor)) => (major, minor) < (3, 20),
         _ => false,
     }
+}
+
+/// The error for a FreeRDP older than the argv speaks: which binary, which
+/// version, and what to install instead.
+pub fn freerdp_too_old_text(binary: &str, version: &str) -> String {
+    format!(
+        "{binary} is FreeRDP {version}, but RDP tabs need FreeRDP \
+         {MIN_FREERDP_MAJOR} or later. Install FreeRDP 3 — Wayterm looks for \
+         xfreerdp3 first, then xfreerdp."
+    )
 }
 
 /// The unknown-certificate prompt body: host:port, the seen SHA-256
@@ -290,6 +302,19 @@ pub fn rdp_trust_record(host: &str, port: u16, fingerprint: &str) -> rusqlite::R
 fn cached_probe() -> Option<&'static (String, String)> {
     static PROBE: OnceLock<Option<(String, String)>> = OnceLock::new();
     PROBE.get_or_init(probe_binary).as_ref()
+}
+
+/// The probed `(binary, version)` if RDP can run on it: on `PATH`, and
+/// FreeRDP 3 or later. `Err` carries the error view's message.
+fn usable_freerdp() -> Result<&'static (String, String), String> {
+    let probe = cached_probe()
+        .ok_or_else(|| "xfreerdp not found on PATH (looked for xfreerdp3, xfreerdp)".to_string())?;
+    let (binary, version) = probe;
+    if is_supported_version(version) {
+        Ok(probe)
+    } else {
+        Err(freerdp_too_old_text(binary, version))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -564,8 +589,9 @@ fn dial(
     let Some(password) = creds.lookup(session_id, PASSWORD_SECRET) else {
         return Dial::Cancelled;
     };
-    let Some((binary, _)) = cached_probe() else {
-        return Dial::Failed("xfreerdp not found on PATH (looked for xfreerdp3, xfreerdp)".into());
+    let (binary, _) = match usable_freerdp() {
+        Ok(probe) => probe,
+        Err(message) => return Dial::Failed(message),
     };
     // Fail closed: an unreadable store is not first contact. Treating it as
     // one would re-prompt for — and let the user re-pin — a host whose
@@ -712,13 +738,9 @@ pub(crate) fn start(
             "This session has no username configured.",
         );
     };
-    let Some((_, version)) = cached_probe() else {
-        return show_error_view(
-            notebook,
-            page,
-            session,
-            "xfreerdp not found on PATH (looked for xfreerdp3, xfreerdp)",
-        );
+    let (_, version) = match usable_freerdp() {
+        Ok(probe) => probe,
+        Err(message) => return show_error_view(notebook, page, session, &message),
     };
     let attempt = Attempt {
         notebook: notebook.clone(),

@@ -44,6 +44,11 @@
 //! unaffected. The `:off` toggle syntax is FreeRDP 3; 2.x spelled it
 //! `-sec-rdp`, which 3.x rejects.
 //!
+//! So the contract speaks FreeRDP 3 only: a 2.x binary (still the packaged
+//! `xfreerdp` on Ubuntu 22.04, Debian 12, RHEL 8) is refused at probe time
+//! ([`is_supported_version`]) rather than handed an argv it would
+//! misparse — and nothing here was ever verified on 2.x.
+//!
 //! Toggle forms follow FreeRDP's own `cmdline.h`/man pages (bool options
 //! accept `+`/`-`): clipboard, fonts and compression default ON upstream,
 //! so they are always spelled out (`+clipboard`/`-clipboard`,
@@ -176,6 +181,21 @@ pub fn build_args(spec: &RdpSpec, parent_xid: Option<u32>) -> Vec<String> {
         }
     }
     args
+}
+
+/// The oldest FreeRDP major version the argv contract speaks (module docs).
+pub const MIN_FREERDP_MAJOR: u32 = 3;
+
+/// True when `version` (dotted digits, as [`parse_version`] returns them)
+/// is FreeRDP [`MIN_FREERDP_MAJOR`] or later. An unreadable version is
+/// unsupported: without evidence that the argv will be understood, it is
+/// not run.
+pub fn is_supported_version(version: &str) -> bool {
+    version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= MIN_FREERDP_MAJOR)
 }
 
 /// Parse `<bin> --version` output. Accepts the parenthesized dotted triple
@@ -787,6 +807,16 @@ mod tests {
         assert_eq!(parse_version("(2681e62) only a hash"), None);
         // A bare triple with no keyword is not a version report.
         assert_eq!(parse_version("just 3.15.1 floating"), None);
+    }
+
+    #[test]
+    fn only_freerdp_3_and_later_is_supported() {
+        for supported in ["3.0.0", "3.15.0", "3.32.1", "4.0"] {
+            assert!(is_supported_version(supported), "{supported}");
+        }
+        for unsupported in ["2.0.0", "2.11.7", "", "x.1", "-3.0"] {
+            assert!(!is_supported_version(unsupported), "{unsupported}");
+        }
     }
 
     #[test]

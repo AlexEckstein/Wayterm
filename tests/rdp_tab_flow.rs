@@ -8,7 +8,8 @@ use std::time::Duration;
 use wayterm::rdp::{build_args, CERT_ARG_PREFIX};
 use wayterm::store::model::{RdpOptions, SessionConfig, SessionType};
 use wayterm::ui::rdp_tab::{
-    changed_cert_text, spec_from_session, unknown_cert_text, warn_below, DEFAULT_PORT,
+    changed_cert_text, freerdp_too_old_text, spec_from_session, unknown_cert_text, warn_below,
+    DEFAULT_PORT,
 };
 
 fn session() -> SessionConfig {
@@ -90,6 +91,17 @@ fn version_warning_fires_below_3_20_only() {
     for new in ["3.20.0", "3.20", "4.0.0", "", "three.fifteen", "3"] {
         assert!(!warn_below(new), "{new}");
     }
+}
+
+#[test]
+fn freerdp_2_is_refused_with_what_to_install() {
+    for old in ["2.0.0", "2.11.7"] {
+        assert!(!wayterm::rdp::is_supported_version(old), "{old}");
+    }
+    let text = freerdp_too_old_text("xfreerdp", "2.11.7");
+    assert!(text.contains("xfreerdp is FreeRDP 2.11.7"), "{text}");
+    assert!(text.contains("FreeRDP 3 or later"), "{text}");
+    assert!(text.contains("xfreerdp3"), "{text}");
 }
 
 #[test]

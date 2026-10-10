@@ -16,7 +16,7 @@ pub use cert::{
     cert_arg, decide, fingerprint_sha256_hex, is_valid_fingerprint, CertDecision, CERT_ARG_PREFIX,
 };
 pub use process::{
-    build_args, exit_event, find_binary_in, minimal_env, parse_version, probe_binary, ErrorRing,
-    RdpProcess, RdpProcessEvent, RdpSpec, BINARY_NAMES, CONNECTED_DELAY, CONNECT_ERROR_MARKER,
-    RING_CAPACITY, TERMINATE_GRACE,
+    build_args, exit_event, find_binary_in, is_supported_version, minimal_env, parse_version,
+    probe_binary, ErrorRing, RdpProcess, RdpProcessEvent, RdpSpec, BINARY_NAMES, CONNECTED_DELAY,
+    CONNECT_ERROR_MARKER, MIN_FREERDP_MAJOR, RING_CAPACITY, TERMINATE_GRACE,
 };
