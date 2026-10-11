@@ -11,8 +11,8 @@ the last. Phase numbers are referenced from code and other docs.
 | 4 | Hotkeys and polish | done, with gaps below |
 | 5 | Local shell and serial | done |
 | 6 | VNC tabs | done, with gaps below |
-| 7 | RDP tabs | not started |
-| 8 | tmux persistence | persistence done; reconnect wiring pending |
+| 7 | RDP tabs | done |
+| 8 | tmux persistence | done |
 | 9 | Import/export, packaging | done, with gaps below |
 | 10 | libghostty-vt backend | when its C API stabilizes |
 | 11 | Jump hosts and port forwarding | not started |
