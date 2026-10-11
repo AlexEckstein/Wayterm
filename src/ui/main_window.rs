@@ -86,10 +86,7 @@ impl MainWindow {
         notebook.append_page(&home, Some(&gtk4::Label::new(Some("Home"))));
         auto_hide_home(&notebook, &home);
 
-        tab_resilience::install_settings(
-            store.flag(tab_resilience::CONFIRM_CLOSE_SETTING),
-            store.flag(tab_resilience::RECONNECT_ON_DROP_SETTING),
-        );
+        settings::general::apply(&store);
 
         let session_tree = {
             let (store, notebook) = (store.clone(), notebook.clone());
@@ -128,7 +125,7 @@ impl MainWindow {
         });
 
         let settings_button = gtk4::Button::with_label("Settings");
-        settings_button.set_action_name(Some("win.hotkey-settings"));
+        settings_button.set_action_name(Some("win.settings"));
         settings_button.set_halign(gtk4::Align::End);
         settings_button.set_margin_top(4);
         settings_button.set_margin_bottom(4);
@@ -174,10 +171,10 @@ impl MainWindow {
             ],
         );
 
-        let open_settings = gio::SimpleAction::new("hotkey-settings", None);
+        let open_settings = gio::SimpleAction::new("settings", None);
         let (for_settings, parent) = (store.clone(), window.clone());
         open_settings.connect_activate(move |_, _| {
-            settings::show_hotkey_settings(
+            settings::show_settings(
                 hotkeys.clone(),
                 for_settings.clone(),
                 Some(parent.upcast_ref()),

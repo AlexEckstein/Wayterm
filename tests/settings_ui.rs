@@ -1,18 +1,22 @@
-//! Hotkey settings UI tests (doc 07 §"Settings UI", §"Conflict
-//! Detection", §"Persistence").
+//! Settings UI tests: the Keyboard Shortcuts page (doc 07 §"Settings UI",
+//! §"Conflict Detection", §"Persistence") and the General page (doc 06
+//! settings rows).
 //!
 //! Everything here is display-free by design: the tests drive
-//! `ui::settings::SettingsView` — row mapping, capture formatting,
+//! `ui::settings::hotkeys::SettingsView` — row mapping, capture formatting,
 //! conflict wiring, reset, and the rebind-then-save flows — plus the
-//! engine's load path, exactly the way the GTK layer calls them. No
-//! test opens a window or initializes GTK.
+//! engine's load path, and `ui::settings::general`'s load, save and apply,
+//! exactly the way the GTK layer calls them. No test opens a window or
+//! initializes GTK.
 
 use wayterm::hotkeys::{
     ActionContext, ActionRegistry, ConflictPolicy, HotkeyEngine, KeyChord, RebindError,
     DEFAULT_ACTIONS,
 };
 use wayterm::store::db::SessionStore;
-use wayterm::ui::settings::{context_label, SettingsError, SettingsRow, SettingsView};
+use wayterm::ui::settings::general;
+use wayterm::ui::settings::hotkeys::{context_label, SettingsError, SettingsRow, SettingsView};
+use wayterm::ui::{sftp_sidebar, tab_resilience, tray};
 
 fn engine() -> HotkeyEngine {
     HotkeyEngine::new()
@@ -493,4 +497,89 @@ fn reset_of_an_unknown_action_errors() {
 fn conflicts_for_an_unknown_action_is_empty() {
     let engine = engine();
     assert!(SettingsView::conflicts(&engine, "no_such_action", "Ctrl+Shift+V").is_empty());
+}
+
+// --- General page ----------------------------------------------------------
+
+#[test]
+fn general_toggles_cover_the_behavior_rows_in_page_order() {
+    let keys: Vec<&str> = general::TOGGLES.iter().map(|toggle| toggle.key).collect();
+    assert_eq!(
+        keys,
+        vec![
+            tab_resilience::CONFIRM_CLOSE_SETTING,
+            tab_resilience::RECONNECT_ON_DROP_SETTING,
+            sftp_sidebar::SFTP_ON_CONNECT_SETTING,
+            tray::MINIMIZE_TO_TRAY_KEY,
+        ]
+    );
+    assert_eq!(
+        keys,
+        vec![
+            "confirm_close",
+            "reconnect_on_drop",
+            "sftp_on_connect",
+            "minimize_to_tray"
+        ]
+    );
+}
+
+#[test]
+fn general_values_are_all_on_for_a_fresh_store() {
+    // Two rows are seeded `1`, two are never seeded: missing means on.
+    let store = memory_store();
+    let values = general::values(&store);
+    assert_eq!(values.len(), general::TOGGLES.len());
+    assert!(values.iter().all(|(_, on)| *on), "{values:?}");
+}
+
+#[test]
+fn general_save_writes_zero_and_one_and_values_follow() {
+    let store = memory_store();
+    for toggle in general::TOGGLES {
+        general::save(&store, toggle.key, false).expect("save off");
+        assert_eq!(
+            store.get_setting(toggle.key).expect("read").as_deref(),
+            Some("0")
+        );
+    }
+    assert!(general::values(&store).iter().all(|(_, on)| !*on));
+
+    general::save(&store, sftp_sidebar::SFTP_ON_CONNECT_SETTING, true).expect("save on");
+    assert_eq!(
+        store
+            .get_setting(sftp_sidebar::SFTP_ON_CONNECT_SETTING)
+            .expect("read")
+            .as_deref(),
+        Some("1")
+    );
+    let on: Vec<&str> = general::values(&store)
+        .into_iter()
+        .filter(|(_, on)| *on)
+        .map(|(toggle, _)| toggle.key)
+        .collect();
+    assert_eq!(on, vec![sftp_sidebar::SFTP_ON_CONNECT_SETTING]);
+}
+
+/// The only test here that touches the process-wide settings.
+#[test]
+fn general_apply_pushes_the_stored_values_live() {
+    let store = memory_store();
+    for toggle in general::TOGGLES {
+        general::save(&store, toggle.key, false).expect("save off");
+    }
+    general::apply(&store);
+    assert!(!tab_resilience::confirm_close_setting());
+    assert!(!tab_resilience::reconnect_on_drop_setting());
+    assert!(!sftp_sidebar::open_on_connect());
+    assert!(!tray::minimize_to_tray_enabled(&store));
+
+    for toggle in general::TOGGLES {
+        general::save(&store, toggle.key, true).expect("save on");
+    }
+    general::apply(&store);
+    assert!(tab_resilience::confirm_close_setting());
+    assert!(tab_resilience::reconnect_on_drop_setting());
+    assert!(sftp_sidebar::open_on_connect());
+    assert!(tray::minimize_to_tray_enabled(&store));
 }

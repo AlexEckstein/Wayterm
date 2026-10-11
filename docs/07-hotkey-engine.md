@@ -127,7 +127,8 @@ more; the engine binds it like every other global.
 
 ## Settings UI
 
-A window listing every action (name | key | context) with Capture and
+The Keyboard Shortcuts page of the Settings window (beside General, doc 06
+§Default Data) lists every action (name | key | context) with Capture and
 Reset buttons. Capture opens a small modal that records the next chord
 (Escape cancels; bare modifiers are ignored). Conflicts raise the
 Override? prompt; every change is saved immediately. A `ListBox` stands in

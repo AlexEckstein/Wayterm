@@ -1,201 +1,35 @@
-//! The hotkey settings window (doc 07 §Settings UI): every action with its
-//! binding, a Capture button that records the next chord, and Reset.
-//!
-//! [`SettingsView`] is the display-free logic (rows, capture formatting,
-//! conflicts, rebind-then-save); the GTK functions only render it. A
-//! captured chord that is taken raises "… is already bound to 'X'.
-//! Override?"; overriding unbinds the loser. Every change is saved at once.
-//! A `ListBox` stands in for doc 07's `ColumnView`: same columns, far less
-//! machinery for a fixed 37-row table.
+//! The Settings window: a sidebar of pages beside the selected one —
+//! [`general`] and Keyboard Shortcuts ([`hotkeys`], doc 07). Every page
+//! saves each change at once and applies it live; there is no Apply button.
+
+pub mod general;
+pub mod hotkeys;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gtk4::glib;
 use gtk4::prelude::*;
-use thiserror::Error;
 
-use crate::hotkeys::{Action, ActionContext, ConflictPolicy, HotkeyEngine, KeyChord, RebindError};
+use crate::hotkeys::HotkeyEngine;
 use crate::store::SessionStore;
-use crate::ui::widgets::{confirm, set_margins};
 
-// ---------------------------------------------------------------------------
-// Display-free data layer
-// ---------------------------------------------------------------------------
+/// Stack names of the pages, in sidebar order.
+pub const GENERAL_PAGE: &str = "general";
+pub const SHORTCUTS_PAGE: &str = "keyboard-shortcuts";
 
-/// Why a rebind or reset through the UI failed.
-#[derive(Debug, Error)]
-pub enum SettingsError {
-    #[error(transparent)]
-    Rebind(#[from] RebindError),
-    #[error(transparent)]
-    Db(#[from] rusqlite::Error),
-}
-
-/// One list row: name | key | context, plus reset state.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SettingsRow {
-    pub id: String,
-    pub display_name: String,
-    pub current_key: String,
-    pub default_key: String,
-    pub context: ActionContext,
-    pub context_label: String,
-    pub is_default: bool,
-    pub enabled: bool,
-}
-
-impl SettingsRow {
-    pub fn from_action(action: &Action) -> Self {
-        Self {
-            id: action.id.clone(),
-            display_name: action.display_name.clone(),
-            current_key: action.current_key.clone(),
-            default_key: action.default_key.clone(),
-            context: action.context,
-            context_label: context_label(action.context).to_string(),
-            is_default: action.is_default,
-            enabled: action.enabled,
-        }
-    }
-}
-
-/// The context column's text.
-pub fn context_label(context: ActionContext) -> &'static str {
-    match context {
-        ActionContext::Global => "Global",
-        ActionContext::Terminal => "Terminal",
-        ActionContext::SessionTree => "Session Tree",
-        ActionContext::Sftp => "SFTP",
-        ActionContext::RdpTab => "RDP Tab",
-        ActionContext::VncTab => "VNC Tab",
-    }
-}
-
-/// The settings logic; every function takes what it works on.
-pub struct SettingsView;
-
-impl SettingsView {
-    /// Every action as a row, in table order.
-    pub fn rows(engine: &HotkeyEngine) -> Vec<SettingsRow> {
-        Self::rows_from_registry(engine.registry())
-    }
-
-    pub fn rows_from_registry(registry: &crate::hotkeys::ActionRegistry) -> Vec<SettingsRow> {
-        registry
-            .ordered_actions()
-            .into_iter()
-            .map(SettingsRow::from_action)
-            .collect()
-    }
-
-    /// A captured chord in UI format; `None` if GDK cannot name the key.
-    pub fn capture_label(chord: KeyChord) -> Option<String> {
-        chord.to_ui_key()
-    }
-
-    /// Escape cancels capture.
-    pub fn is_cancel_key(key: gdk4::Key) -> bool {
-        key == gdk4::Key::Escape
-    }
-
-    /// A bare modifier or lock key: capture keeps waiting for the chord.
-    pub fn is_modifier_only(key: gdk4::Key) -> bool {
-        matches!(
-            key,
-            gdk4::Key::Shift_L
-                | gdk4::Key::Shift_R
-                | gdk4::Key::Control_L
-                | gdk4::Key::Control_R
-                | gdk4::Key::Alt_L
-                | gdk4::Key::Alt_R
-                | gdk4::Key::Super_L
-                | gdk4::Key::Super_R
-                | gdk4::Key::Meta_L
-                | gdk4::Key::Meta_R
-                | gdk4::Key::Hyper_L
-                | gdk4::Key::Hyper_R
-                | gdk4::Key::Caps_Lock
-                | gdk4::Key::Num_Lock
-        )
-    }
-
-    /// The actions an override of `new_key` would unbind.
-    pub fn conflicts(engine: &HotkeyEngine, action_id: &str, new_key: &str) -> Vec<SettingsRow> {
-        engine
-            .conflicts_for(action_id, new_key)
-            .into_iter()
-            .map(SettingsRow::from_action)
-            .collect()
-    }
-
-    /// "Ctrl+Shift+T is already bound to 'New Tab'. Override?"
-    pub fn override_prompt(new_key: &str, losers: &[SettingsRow]) -> String {
-        if losers.is_empty() {
-            return format!("{new_key} is not bound to any other action.");
-        }
-        let names: Vec<String> = losers
-            .iter()
-            .map(|loser| format!("'{}'", loser.display_name))
-            .collect();
-        format!(
-            "{new_key} is already bound to {}. Override?",
-            names.join(", ")
-        )
-    }
-
-    /// Rebind under `policy` and save; returns the displaced ids. Nothing
-    /// is saved if the rebind fails.
-    pub fn apply_rebind(
-        engine: &mut HotkeyEngine,
-        store: &SessionStore,
-        action_id: &str,
-        new_key: &str,
-        policy: ConflictPolicy,
-    ) -> Result<Vec<String>, SettingsError> {
-        let displaced = engine.rebind_with(action_id, new_key, policy)?;
-        engine.save_to_db(store)?;
-        Ok(displaced)
-    }
-
-    /// Reset to the compiled-in binding and save.
-    pub fn reset_action(
-        engine: &mut HotkeyEngine,
-        store: &SessionStore,
-        action_id: &str,
-    ) -> Result<(), SettingsError> {
-        engine.reset_to_default(action_id)?;
-        engine.save_to_db(store)?;
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// GTK layer
-// ---------------------------------------------------------------------------
-
-/// What every settings callback needs.
-struct SettingsState {
-    engine: Rc<RefCell<HotkeyEngine>>,
-    store: Rc<SessionStore>,
-}
-
-/// The settings window (unpresented).
-pub fn create_hotkey_settings_window(
+/// The settings window (unpresented), opened on General.
+pub fn create_settings_window(
     engine: Rc<RefCell<HotkeyEngine>>,
     store: Rc<SessionStore>,
 ) -> gtk4::Window {
-    let state = Rc::new(SettingsState { engine, store });
-
     let window = gtk4::Window::builder()
-        .title("Hotkey Settings")
-        .default_width(640)
+        .title("Settings")
+        .default_width(820)
         .default_height(560)
         .modal(false)
         .build();
 
     let header = gtk4::HeaderBar::new();
-    header.set_title_widget(Some(&gtk4::Label::new(Some("Hotkey Settings"))));
     let close_button = gtk4::Button::with_label("Close");
     {
         let window = window.clone();
@@ -204,222 +38,110 @@ pub fn create_hotkey_settings_window(
     header.pack_end(&close_button);
     window.set_titlebar(Some(&header));
 
-    let list_box = gtk4::ListBox::builder()
-        .selection_mode(gtk4::SelectionMode::None)
-        .build();
-    refresh_list(&list_box, &state);
+    let stack = pages(engine, store);
+    let sidebar = gtk4::StackSidebar::new();
+    sidebar.set_stack(&stack);
 
-    let scrolled = gtk4::ScrolledWindow::builder()
-        .child(&list_box)
-        .vexpand(true)
-        .hexpand(true)
-        .build();
-    scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-
-    let hint = gtk4::Label::new(Some(
-        "Choose \"Capture\" and press the new shortcut. Esc cancels. \
-         Rebinding a shortcut already in use asks before overriding it.",
-    ));
-    hint.set_wrap(true);
-    set_margins(&hint, 6);
-
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    root.append(&hint);
-    root.append(&scrolled);
+    let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    root.append(&sidebar);
+    root.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
+    root.append(&stack);
     window.set_child(Some(&root));
 
     window
 }
 
 /// Build and present the settings window.
-pub fn show_hotkey_settings(
+pub fn show_settings(
     engine: Rc<RefCell<HotkeyEngine>>,
     store: Rc<SessionStore>,
     parent: Option<&gtk4::Window>,
 ) {
-    let window = create_hotkey_settings_window(engine, store);
+    let window = create_settings_window(engine, store);
     if let Some(parent) = parent {
         window.set_transient_for(Some(parent));
     }
     window.present();
 }
 
-/// Rebuild the rows from the engine.
-fn refresh_list(list_box: &gtk4::ListBox, state: &Rc<SettingsState>) {
-    while let Some(child) = list_box.first_child() {
-        list_box.remove(&child);
-    }
-    for row in SettingsView::rows(&state.engine.borrow()) {
-        list_box.append(&build_row(row, list_box, state));
-    }
-}
-
-/// name | key | context | Capture | Reset.
-fn build_row(
-    row: SettingsRow,
-    list_box: &gtk4::ListBox,
-    state: &Rc<SettingsState>,
-) -> gtk4::ListBoxRow {
-    let name = gtk4::Label::new(Some(&row.display_name));
-    name.set_xalign(0.0);
-    name.set_hexpand(true);
-
-    let key_text = if row.current_key.is_empty() {
-        "(unbound)".to_string()
-    } else {
-        row.current_key.clone()
-    };
-    let key = gtk4::Label::new(Some(&key_text));
-    key.set_xalign(0.0);
-    key.set_width_chars(18);
-
-    let context = gtk4::Label::new(Some(&row.context_label));
-    context.set_xalign(0.0);
-    context.set_width_chars(12);
-
-    let capture_button = gtk4::Button::with_label("Capture");
-    {
-        let action_id = row.id.clone();
-        let display_name = row.display_name.clone();
-        let list_box = list_box.clone();
-        let state = Rc::clone(state);
-        capture_button.connect_clicked(move |_| {
-            open_capture_dialog(&action_id, &display_name, &list_box, &state);
-        });
-    }
-
-    let reset_button = gtk4::Button::with_label("Reset");
-    reset_button.set_sensitive(!row.is_default);
-    reset_button.set_tooltip_text(Some("Reset to default"));
-    {
-        let action_id = row.id.clone();
-        let list_box = list_box.clone();
-        let state = Rc::clone(state);
-        reset_button.connect_clicked(move |_| {
-            if let Err(err) =
-                SettingsView::reset_action(&mut state.engine.borrow_mut(), &state.store, &action_id)
-            {
-                eprintln!("Wayterm: failed to reset hotkey {action_id}: {err}");
-                return;
-            }
-            refresh_list(&list_box, &state);
-        });
-    }
-
-    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    hbox.set_margin_top(4);
-    hbox.set_margin_bottom(4);
-    hbox.set_margin_start(12);
-    hbox.set_margin_end(12);
-    hbox.append(&name);
-    hbox.append(&key);
-    hbox.append(&context);
-    hbox.append(&capture_button);
-    hbox.append(&reset_button);
-
-    gtk4::ListBoxRow::builder().child(&hbox).build()
-}
-
-/// The modal "press the new shortcut" window.
-fn open_capture_dialog(
-    action_id: &str,
-    display_name: &str,
-    list_box: &gtk4::ListBox,
-    state: &Rc<SettingsState>,
-) {
-    let dialog = gtk4::Window::builder()
-        .title("Capture Key")
-        .default_width(360)
-        .default_height(120)
-        .modal(true)
-        .build();
-    if let Some(parent) = list_box
-        .root()
-        .and_then(|root| root.downcast::<gtk4::Window>().ok())
-    {
-        dialog.set_transient_for(Some(&parent));
-    }
-
-    let prompt = gtk4::Label::new(Some(&format!(
-        "Press the new shortcut for '{display_name}'.\nEsc cancels."
-    )));
-    set_margins(&prompt, 18);
-    dialog.set_child(Some(&prompt));
-
-    let key_controller = gtk4::EventControllerKey::new();
-    key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
-    {
-        let dialog = dialog.clone();
-        let action_id = action_id.to_string();
-        let list_box = list_box.clone();
-        let state = Rc::clone(state);
-        key_controller.connect_key_pressed(move |_controller, key, _keycode, modifier_state| {
-            if SettingsView::is_cancel_key(key) {
-                dialog.close();
-                return glib::Propagation::Stop;
-            }
-            if SettingsView::is_modifier_only(key) {
-                // Still waiting for the non-modifier half of the chord.
-                return glib::Propagation::Stop;
-            }
-            let chord = KeyChord::new(key, modifier_state);
-            let Some(new_key) = SettingsView::capture_label(chord) else {
-                eprintln!("Wayterm: captured a key GDK cannot name; ignoring");
-                return glib::Propagation::Stop;
-            };
-            dialog.close();
-            handle_captured_key(&action_id, &new_key, &list_box, &state);
-            glib::Propagation::Stop
-        });
-    }
-    dialog.add_controller(key_controller);
-    dialog.present();
-}
-
-/// Rebind to a captured chord, asking first if it is taken.
-fn handle_captured_key(
-    action_id: &str,
-    new_key: &str,
-    list_box: &gtk4::ListBox,
-    state: &Rc<SettingsState>,
-) {
-    let losers = SettingsView::conflicts(&state.engine.borrow(), action_id, new_key);
-    if losers.is_empty() {
-        if let Err(err) = SettingsView::apply_rebind(
-            &mut state.engine.borrow_mut(),
-            &state.store,
-            action_id,
-            new_key,
-            ConflictPolicy::Reject,
-        ) {
-            eprintln!("Wayterm: failed to rebind hotkey {action_id} to {new_key}: {err}");
-            return;
-        }
-        refresh_list(list_box, state);
-        return;
-    }
-
-    let (action_id, new_key) = (action_id.to_string(), new_key.to_string());
-    let (list_box, state) = (list_box.clone(), Rc::clone(state));
-    let parent = list_box
-        .root()
-        .and_then(|root| root.downcast::<gtk4::Window>().ok());
-    confirm(
-        parent.as_ref(),
-        &SettingsView::override_prompt(&new_key, &losers),
-        "The other action will be left without a shortcut.",
-        "Override",
-        move || match SettingsView::apply_rebind(
-            &mut state.engine.borrow_mut(),
-            &state.store,
-            &action_id,
-            &new_key,
-            ConflictPolicy::Override,
-        ) {
-            Ok(_) => refresh_list(&list_box, &state),
-            Err(err) => {
-                eprintln!("Wayterm: failed to override hotkey {action_id} to {new_key}: {err}")
-            }
-        },
+/// One stack page per sidebar entry; the first added is shown.
+fn pages(engine: Rc<RefCell<HotkeyEngine>>, store: Rc<SessionStore>) -> gtk4::Stack {
+    let stack = gtk4::Stack::new();
+    stack.set_hexpand(true);
+    stack.add_titled(&general::page(store.clone()), Some(GENERAL_PAGE), "General");
+    stack.add_titled(
+        &hotkeys::page(engine, store),
+        Some(SHORTCUTS_PAGE),
+        "Keyboard Shortcuts",
     );
+    stack
+}
+
+/// Widget checks; they need a display and run from `ui::gtk_tests`.
+#[cfg(test)]
+pub(super) mod gtk_tests {
+    use super::*;
+
+    fn switches(widget: &gtk4::Widget, found: &mut Vec<gtk4::Switch>) {
+        if let Some(switch) = widget.downcast_ref::<gtk4::Switch>() {
+            found.push(switch.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            switches(&widget, found);
+            child = widget.next_sibling();
+        }
+    }
+
+    /// The sidebar lists General, then Keyboard Shortcuts, and opens on
+    /// General; each General switch shows and saves its own row.
+    pub(in crate::ui) fn pages_and_general_switches() {
+        let store = Rc::new(SessionStore::in_memory().unwrap());
+        store
+            .set_setting(crate::ui::tray::MINIMIZE_TO_TRAY_KEY, "0")
+            .unwrap();
+        let engine = Rc::new(RefCell::new(HotkeyEngine::new()));
+        let stack = pages(engine, store.clone());
+
+        let model = stack.pages();
+        let listed: Vec<(String, String)> = (0..model.n_items())
+            .filter_map(|index| model.item(index))
+            .filter_map(|item| item.downcast::<gtk4::StackPage>().ok())
+            .map(|page| {
+                let name = page.name().unwrap_or_default().to_string();
+                let title = page.title().unwrap_or_default().to_string();
+                (name, title)
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                (GENERAL_PAGE.to_string(), "General".to_string()),
+                (SHORTCUTS_PAGE.to_string(), "Keyboard Shortcuts".to_string()),
+            ]
+        );
+        assert_eq!(stack.visible_child_name().as_deref(), Some(GENERAL_PAGE));
+
+        let general = stack.child_by_name(GENERAL_PAGE).unwrap();
+        let mut found = Vec::new();
+        switches(&general, &mut found);
+        assert_eq!(found.len(), general::TOGGLES.len());
+        let shown: Vec<bool> = found.iter().map(|switch| switch.is_active()).collect();
+        assert_eq!(shown, vec![true, true, true, false]);
+
+        // Flipping a switch saves its row; the tray row needs no tray.
+        let tray_index = general::TOGGLES
+            .iter()
+            .position(|toggle| toggle.key == crate::ui::tray::MINIMIZE_TO_TRAY_KEY)
+            .unwrap();
+        found[tray_index].set_active(true);
+        assert!(crate::ui::tray::minimize_to_tray_enabled(&store));
+        assert_eq!(
+            store
+                .get_setting(crate::ui::tray::MINIMIZE_TO_TRAY_KEY)
+                .unwrap()
+                .as_deref(),
+            Some("1")
+        );
+    }
 }
