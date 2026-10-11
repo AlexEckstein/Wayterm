@@ -9,10 +9,6 @@
 //! path bar shows the requested path (the protocol has no `getcwd`), and
 //! browsing starts at `.`, the SFTP home directory.
 
-// GtkTreeView/TreeStore and FileChooserNative are deprecated since GTK
-// 4.10; migrating is UI polish, not a contract change.
-#![allow(deprecated)]
-
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,19 +31,6 @@ use gio;
 // ---------------------------------------------------------------------------
 // Model layer (display-free)
 // ---------------------------------------------------------------------------
-
-/// Column index of the row icon in the listing's `GtkTreeStore`.
-pub const COL_ICON: u32 = 0;
-/// Column index of the entry name in the listing's `GtkTreeStore`.
-pub const COL_NAME: u32 = 1;
-/// Column index of the human-readable size in the listing's `GtkTreeStore`.
-pub const COL_SIZE: u32 = 2;
-/// Column index of the modification timestamp in the listing's `GtkTreeStore`.
-pub const COL_MODIFIED: u32 = 3;
-/// Column index of the permission bits in the listing's `GtkTreeStore`.
-pub const COL_PERMS: u32 = 4;
-/// Hidden column: the row's index into [`SftpView::rows`].
-pub const COL_ROW: u32 = 5;
 
 /// The synthetic "go up" row.
 pub const PARENT_ROW: &str = "..";
@@ -560,8 +543,10 @@ struct Buttons {
 struct SidebarInner {
     container: gtk4::Box,
     path_entry: gtk4::Entry,
-    tree_view: gtk4::TreeView,
-    model: gtk4::TreeStore,
+    column_view: gtk4::ColumnView,
+    /// The listing's rows, each a boxed [`RowView`].
+    model: gio::ListStore,
+    selection: gtk4::SingleSelection,
     error_label: gtk4::Label,
     progress_bar: gtk4::ProgressBar,
     status_label: gtk4::Label,
@@ -575,8 +560,6 @@ struct SidebarInner {
     pending: RefCell<PendingQueue<SftpCommand>>,
     /// The idle flush of `pending`, while scheduled.
     flush_source: RefCell<Option<glib::SourceId>>,
-    /// Keeps an open file chooser alive until its response arrives.
-    chooser: RefCell<Option<gtk4::FileChooserNative>>,
 }
 
 /// The SFTP sidebar (doc 09). Clones share everything; dropping the last
@@ -661,22 +644,47 @@ fn icon_button(icon_name: &str, tooltip: &str) -> gtk4::Button {
     button
 }
 
-/// Append one `GtkTreeViewColumn` bound to a store column.
-fn add_column(tree_view: &gtk4::TreeView, title: &str, column: u32, expand: bool) {
-    let view_column = gtk4::TreeViewColumn::builder()
-        .title(title)
-        .expand(expand)
-        .build();
-    let cell = gtk4::CellRendererText::new();
-    view_column.pack_start(&cell, true);
-    // The store columns are 0..=5, so the narrowing is lossless.
-    view_column.add_attribute(&cell, "text", column as i32);
-    tree_view.append_column(&view_column);
+/// The [`RowView`] behind a listing item.
+fn row_of(item: &glib::Object) -> Option<RowView> {
+    let boxed = item.downcast_ref::<glib::BoxedAnyObject>()?;
+    let row = boxed.borrow::<RowView>().clone();
+    Some(row)
 }
 
-/// Local paths of a chooser's selection (entries without one are skipped).
-fn chooser_paths(chooser: &gtk4::FileChooserNative) -> Vec<String> {
-    let model = chooser.files();
+/// Append a column of labels showing `text` of each row.
+fn add_column(
+    column_view: &gtk4::ColumnView,
+    title: &str,
+    expand: bool,
+    text: fn(&RowView) -> &str,
+) {
+    let factory = gtk4::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        if let Some(item) = item.downcast_ref::<gtk4::ListItem>() {
+            item.set_child(Some(&gtk4::Label::builder().xalign(0.0).build()));
+        }
+    });
+    factory.connect_bind(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        let label = item.child().and_downcast::<gtk4::Label>();
+        let row = item.item().and_then(|object| row_of(&object));
+        if let (Some(label), Some(row)) = (label, row) {
+            label.set_text(text(&row));
+        }
+    });
+    let column = gtk4::ColumnViewColumn::builder()
+        .title(title)
+        .expand(expand)
+        .factory(&factory)
+        .build();
+    column_view.append_column(&column);
+}
+
+/// Local paths of a file dialog's selection (entries without one are
+/// skipped).
+fn chooser_paths(model: &gio::ListModel) -> Vec<String> {
     (0..model.n_items())
         .filter_map(|index| model.item(index))
         .filter_map(|object| object.downcast::<gio::File>().ok())
@@ -725,27 +733,22 @@ fn build_sidebar() -> Rc<SidebarInner> {
         toolbar.append(button);
     }
 
-    // 3. Listing: GtkTreeView + GtkTreeStore, one column per doc 09.
-    let model = gtk4::TreeStore::new(&[
-        glib::Type::STRING,
-        glib::Type::STRING,
-        glib::Type::STRING,
-        glib::Type::STRING,
-        glib::Type::STRING,
-        glib::Type::I64,
-    ]);
-    let tree_view = gtk4::TreeView::builder()
+    // 3. Listing: a ColumnView over boxed rows, one column per doc 09.
+    let model = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let selection = gtk4::SingleSelection::builder()
         .model(&model)
-        .headers_visible(true)
+        .autoselect(false)
+        .can_unselect(true)
         .build();
-    add_column(&tree_view, "Name", COL_NAME, true);
-    add_column(&tree_view, "Size", COL_SIZE, false);
-    add_column(&tree_view, "Modified", COL_MODIFIED, false);
-    add_column(&tree_view, "Perms", COL_PERMS, false);
-    add_column(&tree_view, "", COL_ICON, false);
+    let column_view = gtk4::ColumnView::builder().model(&selection).build();
+    add_column(&column_view, "Name", true, |row| &row.name);
+    add_column(&column_view, "Size", false, |row| &row.size);
+    add_column(&column_view, "Modified", false, |row| &row.modified);
+    add_column(&column_view, "Perms", false, |row| &row.permissions);
+    add_column(&column_view, "", false, |row| row.icon);
 
     let scrolled = gtk4::ScrolledWindow::builder()
-        .child(&tree_view)
+        .child(&column_view)
         .vexpand(true)
         .hexpand(true)
         .build();
@@ -781,8 +784,9 @@ fn build_sidebar() -> Rc<SidebarInner> {
     let inner = Rc::new(SidebarInner {
         container,
         path_entry,
-        tree_view,
+        column_view,
         model,
+        selection,
         error_label,
         progress_bar,
         status_label,
@@ -792,7 +796,6 @@ fn build_sidebar() -> Rc<SidebarInner> {
         deferred: RefCell::new(None),
         pending: RefCell::default(),
         flush_source: RefCell::new(None),
-        chooser: RefCell::new(None),
     });
     inner.connect_signals();
     inner.connect_drag_drop();
@@ -810,38 +813,29 @@ impl SidebarInner {
 
         // Double-click a directory navigates into it; `..` goes up.
         let for_row = Rc::clone(self);
-        self.tree_view
-            .connect_row_activated(move |_tree_view, path, _column| {
-                let index =
-                    usize::try_from(path.indices().first().copied().unwrap_or(0)).unwrap_or(0);
-                let target = {
-                    let state = for_row.state.borrow();
-                    match state.rows.get(index) {
-                        Some(row) if row.is_parent => parent_path(state.current_path()),
-                        Some(row) if row.is_dir => Some(join_path(state.current_path(), &row.name)),
-                        _ => None,
-                    }
-                };
-                if let Some(target) = target {
-                    for_row.cd(target);
+        self.column_view.connect_activate(move |_, position| {
+            let row = for_row.model.item(position).and_then(|item| row_of(&item));
+            let target = {
+                let state = for_row.state.borrow();
+                match row {
+                    Some(row) if row.is_parent => parent_path(state.current_path()),
+                    Some(row) if row.is_dir => Some(join_path(state.current_path(), &row.name)),
+                    _ => None,
                 }
-            });
+            };
+            if let Some(target) = target {
+                for_row.cd(target);
+            }
+        });
 
         // Selection drives the toolbar rules (model layer, unit-tested).
         let for_selection = Rc::clone(self);
-        let selection = self.tree_view.selection();
-        selection.set_mode(gtk4::SelectionMode::Single);
-        selection.connect_changed(move |selection| {
-            let index = selection.selected().and_then(|(model, iter)| {
-                usize::try_from(model.get::<i64>(&iter, COL_ROW as i32)).ok()
+        self.selection
+            .connect_selected_item_notify(move |selection| {
+                let picked = selection.selected_item().and_then(|item| row_of(&item));
+                for_selection.state.borrow_mut().select(picked.as_ref());
+                for_selection.render_toolbar();
             });
-            let picked = {
-                let state = for_selection.state.borrow();
-                index.and_then(|index| state.rows.get(index)).cloned()
-            };
-            for_selection.state.borrow_mut().select(picked.as_ref());
-            for_selection.render_toolbar();
-        });
 
         let for_upload = Rc::clone(self);
         self.buttons
@@ -900,7 +894,7 @@ impl SidebarInner {
             for_files.queue_uploads(paths);
             true
         });
-        self.tree_view.add_controller(files_target);
+        self.column_view.add_controller(files_target);
 
         let uri_target = gtk4::DropTarget::new(glib::types::Type::STRING, gdk::DragAction::COPY);
         let for_uris = Rc::clone(self);
@@ -915,7 +909,7 @@ impl SidebarInner {
             for_uris.queue_uploads(paths);
             true
         });
-        self.tree_view.add_controller(uri_target);
+        self.column_view.add_controller(uri_target);
     }
 
     /// Flip the sidebar's visibility and render it.
@@ -927,24 +921,17 @@ impl SidebarInner {
 
     /// Render the view into the widgets.
     fn render(&self) {
-        // Copy the rows out: `model.clear()` fires the selection callback,
-        // which borrows the state mutably.
-        let rows = self.state.borrow().rows.clone();
-        self.model.clear();
-        for (index, row) in rows.iter().enumerate() {
-            let iter = self.model.append(None);
-            self.model.set(
-                &iter,
-                &[
-                    (COL_ICON, &row.icon),
-                    (COL_NAME, &row.name),
-                    (COL_SIZE, &row.size),
-                    (COL_MODIFIED, &row.modified),
-                    (COL_PERMS, &row.permissions),
-                    (COL_ROW, &(index as i64)),
-                ],
-            );
-        }
+        // Copy the rows out: replacing the model fires the selection
+        // callback, which borrows the state mutably.
+        let rows: Vec<glib::BoxedAnyObject> = self
+            .state
+            .borrow()
+            .rows
+            .iter()
+            .cloned()
+            .map(glib::BoxedAnyObject::new)
+            .collect();
+        self.model.splice(0, self.model.n_items(), &rows);
 
         let state = self.state.borrow();
         match &state.error {
@@ -968,7 +955,7 @@ impl SidebarInner {
     }
 
     /// Separate from `render`, which must not re-enter from the selection
-    /// callback that `TreeStore::clear` emits.
+    /// callback that replacing the model emits.
     fn render_toolbar(&self) {
         let toolbar = self.state.borrow().toolbar;
         self.buttons.upload.set_sensitive(toolbar.upload);
@@ -1273,24 +1260,18 @@ impl SidebarInner {
             self.set_error("no window for the file chooser");
             return;
         };
-        let dialog = gtk4::FileChooserNative::builder()
+        let dialog = gtk4::FileDialog::builder()
             .title("Upload files")
-            .transient_for(&parent)
-            .action(gtk4::FileChooserAction::Open)
-            .select_multiple(true)
             .accept_label("Upload")
-            .cancel_label("Cancel")
             .modal(true)
-            .visible(true)
             .build();
-        *self.chooser.borrow_mut() = Some(dialog.clone());
-
         let sidebar = Rc::clone(self);
-        dialog.connect_response(move |dialog, response| {
-            if response == gtk4::ResponseType::Accept {
-                sidebar.queue_uploads(chooser_paths(dialog));
+        // Dismissing the dialog is an error too; like any cancel, it uploads
+        // nothing.
+        dialog.open_multiple(Some(&parent), None::<&gio::Cancellable>, move |result| {
+            if let Ok(files) = result {
+                sidebar.queue_uploads(chooser_paths(&files));
             }
-            *sidebar.chooser.borrow_mut() = None;
         });
     }
 
@@ -1303,38 +1284,83 @@ impl SidebarInner {
             self.set_error("no window for the file chooser");
             return;
         };
-        let dialog = gtk4::FileChooserNative::builder()
+        let dialog = gtk4::FileDialog::builder()
             .title("Download")
-            .transient_for(&parent)
-            .action(gtk4::FileChooserAction::Save)
             .accept_label("Download")
-            .cancel_label("Cancel")
+            .initial_name(name.as_str())
             .modal(true)
-            .visible(true)
             .build();
-        dialog.set_current_name(&name);
-        *self.chooser.borrow_mut() = Some(dialog.clone());
-
         let sidebar = Rc::clone(self);
-        dialog.connect_response(move |dialog, response| {
-            if response == gtk4::ResponseType::Accept {
-                let local = dialog
-                    .file()
-                    .and_then(|file| file.path())
-                    .map(|path| path.to_string_lossy().into_owned());
-                if let Some(local) = local {
-                    sidebar.download(remote.clone(), local);
-                }
+        dialog.save(Some(&parent), None::<&gio::Cancellable>, move |result| {
+            let local = result
+                .ok()
+                .and_then(|file| file.path())
+                .map(|path| path.to_string_lossy().into_owned());
+            if let Some(local) = local {
+                sidebar.download(remote, local);
             }
-            *sidebar.chooser.borrow_mut() = None;
         });
     }
 
     /// The parent for dialogs and file choosers.
     fn parent_window(&self) -> Option<gtk4::Window> {
-        window_of(&self.tree_view)
+        window_of(&self.column_view)
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+/// Widget checks; they need a display and run from `ui::gtk_tests`.
+#[cfg(test)]
+pub(super) mod gtk_tests {
+    use super::*;
+
+    fn entry(name: &str, is_dir: bool) -> DirEntry {
+        DirEntry {
+            name: name.to_string(),
+            size: 2048,
+            modified: "2026-10-11 12:00".to_string(),
+            permissions: "rw-r--r--".to_string(),
+            is_dir,
+        }
+    }
+
+    /// The listing shows every row under doc 09's columns; selection feeds
+    /// the toolbar rules, and a re-render (which clears the selection)
+    /// does not re-enter the state borrow.
+    pub(in crate::ui) fn listing_renders_and_selection_drives_toolbar() {
+        let sidebar = SftpSidebar::new();
+        let inner = &sidebar.inner;
+        let titles: Vec<String> = (0..inner.column_view.columns().n_items())
+            .filter_map(|index| inner.column_view.columns().item(index))
+            .filter_map(|column| column.downcast::<gtk4::ColumnViewColumn>().ok())
+            .filter_map(|column| column.title().map(|title| title.to_string()))
+            .collect();
+        assert_eq!(titles, ["Name", "Size", "Modified", "Perms", ""]);
+
+        inner.state.borrow_mut().attach();
+        inner
+            .state
+            .borrow_mut()
+            .set_listing("/home/u", &[entry("docs", true), entry("a.txt", false)]);
+        inner.render();
+        assert_eq!(inner.model.n_items(), 3, "`..`, docs, a.txt");
+
+        inner.selection.set_selected(2);
+        assert_eq!(
+            inner.state.borrow().selected_path().as_deref(),
+            Some("/home/u/a.txt")
+        );
+        assert!(inner.buttons.download.is_sensitive());
+
+        inner.selection.set_selected(0);
+        assert_eq!(inner.state.borrow().selected_path(), None);
+        assert!(!inner.buttons.download.is_sensitive());
+
+        inner.selection.set_selected(2);
+        inner.render();
+        assert_eq!(inner.state.borrow().selected_path(), None);
+        assert!(!inner.buttons.download.is_sensitive());
+    }
+}
