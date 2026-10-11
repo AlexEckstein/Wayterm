@@ -2,14 +2,18 @@
 //! per-type helpers.
 
 use crate::store::model::{
-    AuthMethod, Folder, SessionType, RDP_COLOR_DEPTHS, SERIAL_DATA_BITS, SERIAL_FLOW_CONTROLS,
-    SERIAL_PARITIES, SERIAL_STOP_BITS,
+    AuthMethod, Folder, SessionConfig, SessionType, RDP_COLOR_DEPTHS, SERIAL_DATA_BITS,
+    SERIAL_FLOW_CONTROLS, SERIAL_PARITIES, SERIAL_STOP_BITS,
 };
+use crate::store::SessionStore;
+use crate::ui::tunnels_dialog::model::ForwardRuleDraft;
 
 use super::{
-    config_from_fields, default_port_for, default_tmux_session_name, format_resolution,
-    parse_resolution, session_type_from_index, type_index_for, DialogFields, DEFAULT_SERIAL_BAUD,
-    TYPE_INDEX_LOCAL, TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_SSH, TYPE_INDEX_VNC,
+    collect_peer_sessions, config_from_fields, default_port_for, default_tmux_session_name,
+    format_resolution, jump_candidates, jump_error, jump_missing_label, jump_picker_model,
+    parse_resolution, resolve_jump, session_type_from_index, type_index_for, DialogFields,
+    DEFAULT_SERIAL_BAUD, JUMP_NONE_LABEL, TYPE_INDEX_LOCAL, TYPE_INDEX_RDP, TYPE_INDEX_SERIAL,
+    TYPE_INDEX_SSH, TYPE_INDEX_VNC,
 };
 
 fn sample_folders() -> Vec<Folder> {
@@ -84,7 +88,7 @@ fn type_index_maps_to_session_type() {
             type_index: index,
             ..Default::default()
         };
-        let config = config_from_fields(&fields, &folders);
+        let config = config_from_fields(&fields, &folders, &[]);
         assert_eq!(
             config.session_type, expected,
             "type_index {index} should map to {expected:?}"
@@ -106,7 +110,7 @@ fn auth_index_maps_to_auth_method() {
             auth_index: index,
             ..Default::default()
         };
-        let config = config_from_fields(&fields, &folders);
+        let config = config_from_fields(&fields, &folders, &[]);
         assert_eq!(
             config.auth_method,
             Some(expected.clone()),
@@ -133,7 +137,7 @@ fn edit_mode_preserves_identity_fields() {
         ..Default::default()
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.id, 42);
     assert_eq!(
@@ -151,7 +155,7 @@ fn port_zero_falls_back_to_twenty_two() {
         port: 0,
         ..Default::default()
     };
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
     assert_eq!(config.port, Some(22));
 }
 
@@ -162,7 +166,7 @@ fn port_too_large_falls_back_to_twenty_two() {
         port: 70_000,
         ..Default::default()
     };
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
     assert_eq!(config.port, Some(22));
 }
 
@@ -174,7 +178,7 @@ fn notes_round_trip() {
         notes: notes.clone(),
         ..Default::default()
     };
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
     assert_eq!(config.notes, Some(notes.trim().to_string()));
 }
 
@@ -205,7 +209,7 @@ fn empty_optional_strings_become_none() {
         notes: "   ".to_string(),
         ..Default::default()
     };
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
     assert_eq!(config.name, "");
     assert_eq!(config.host, None);
     assert_eq!(config.username, None);
@@ -219,7 +223,7 @@ fn folder_index_zero_is_root() {
         folder_index: 0,
         ..Default::default()
     };
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
     assert_eq!(config.folder_id, None);
 }
 
@@ -230,7 +234,7 @@ fn folder_index_resolves_to_folder_id() {
         folder_index: 2,
         ..Default::default()
     };
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
     assert_eq!(config.folder_id, Some(2));
 }
 
@@ -296,7 +300,7 @@ fn invalid_port_falls_back_to_the_types_default() {
                 port,
                 ..Default::default()
             };
-            let config = config_from_fields(&fields, &folders);
+            let config = config_from_fields(&fields, &folders, &[]);
             assert_eq!(
                 config.port, expected,
                 "type_index {type_index} with port {port}"
@@ -318,7 +322,7 @@ fn valid_port_is_kept_for_network_types() {
             port,
             ..all_per_type_fields_filled()
         };
-        let config = config_from_fields(&fields, &folders);
+        let config = config_from_fields(&fields, &folders, &[]);
         assert_eq!(config.port, expected, "type_index {type_index}");
     }
 }
@@ -333,7 +337,7 @@ fn typed_port_is_dropped_for_serial_and_local() {
             port: 2222,
             ..Default::default()
         };
-        assert_eq!(config_from_fields(&fields, &folders).port, None);
+        assert_eq!(config_from_fields(&fields, &folders, &[]).port, None);
     }
 }
 
@@ -356,7 +360,7 @@ fn serial_fields_map_to_serial_columns() {
         ..Default::default()
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.session_type, SessionType::Serial);
     assert_eq!(config.serial_device.as_deref(), Some("/dev/ttyUSB0"));
@@ -377,7 +381,7 @@ fn serial_defaults_match_doc_06_column_defaults() {
         ..Default::default()
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.serial_device, None);
     assert_eq!(config.serial_baud_rate, Some(DEFAULT_SERIAL_BAUD));
@@ -396,7 +400,7 @@ fn zero_baud_falls_back_to_the_dialog_default() {
         ..Default::default()
     };
     assert_eq!(
-        config_from_fields(&fields, &folders).serial_baud_rate,
+        config_from_fields(&fields, &folders, &[]).serial_baud_rate,
         Some(DEFAULT_SERIAL_BAUD)
     );
 }
@@ -411,7 +415,7 @@ fn every_serial_dropdown_index_maps_to_a_documented_value() {
             ..Default::default()
         };
         assert_eq!(
-            config_from_fields(&fields, &folders).serial_data_bits,
+            config_from_fields(&fields, &folders, &[]).serial_data_bits,
             Some(*expected)
         );
     }
@@ -422,7 +426,7 @@ fn every_serial_dropdown_index_maps_to_a_documented_value() {
             ..Default::default()
         };
         assert_eq!(
-            config_from_fields(&fields, &folders)
+            config_from_fields(&fields, &folders, &[])
                 .serial_parity
                 .as_deref(),
             Some(*expected)
@@ -435,7 +439,7 @@ fn every_serial_dropdown_index_maps_to_a_documented_value() {
             ..Default::default()
         };
         assert_eq!(
-            config_from_fields(&fields, &folders).serial_stop_bits,
+            config_from_fields(&fields, &folders, &[]).serial_stop_bits,
             Some(*expected)
         );
     }
@@ -446,7 +450,7 @@ fn every_serial_dropdown_index_maps_to_a_documented_value() {
             ..Default::default()
         };
         assert_eq!(
-            config_from_fields(&fields, &folders)
+            config_from_fields(&fields, &folders, &[])
                 .serial_flow_control
                 .as_deref(),
             Some(*expected)
@@ -471,7 +475,7 @@ fn rdp_fields_map_to_rdp_columns() {
         ..Default::default()
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.session_type, SessionType::RDP);
     assert_eq!(config.rdp_domain.as_deref(), Some("CORP"));
@@ -491,7 +495,7 @@ fn empty_rdp_resolution_leaves_doc_08_to_supply_the_fallback() {
         ..Default::default()
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.rdp_width, None);
     assert_eq!(config.rdp_height, None);
@@ -510,7 +514,7 @@ fn every_rdp_color_depth_index_maps() {
             ..Default::default()
         };
         assert_eq!(
-            config_from_fields(&fields, &folders).rdp_color_depth,
+            config_from_fields(&fields, &folders, &[]).rdp_color_depth,
             Some(*expected)
         );
     }
@@ -556,7 +560,7 @@ fn local_fields_map_to_local_columns() {
         ..Default::default()
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.session_type, SessionType::LocalShell);
     assert_eq!(config.local_shell.as_deref(), Some("/bin/zsh"));
@@ -582,7 +586,7 @@ fn vnc_session_stores_no_secret_and_no_dialog_payload() {
         ..all_per_type_fields_filled()
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.session_type, SessionType::VNC);
     assert_eq!(config.host.as_deref(), Some("10.0.0.9"));
@@ -605,7 +609,7 @@ fn hidden_groups_do_not_leak_into_other_types() {
     ] {
         let mut fields = all_per_type_fields_filled();
         fields.type_index = type_index;
-        let config = config_from_fields(&fields, &folders);
+        let config = config_from_fields(&fields, &folders, &[]);
         assert_eq!(config.session_type, session_type);
 
         // Each payload is written only for the type that owns it.
@@ -638,7 +642,7 @@ fn ssh_session_with_filled_groups_stores_only_common_fields() {
         ..all_per_type_fields_filled()
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.session_type, SessionType::SSH);
     assert_eq!(config.port, Some(22));
@@ -668,7 +672,7 @@ fn tmux_fields(name: &str, session_name: &str) -> DialogFields {
 #[test]
 fn tmux_fields_round_trip_through_config_from_fields() {
     let folders = sample_folders();
-    let config = config_from_fields(&tmux_fields("prod", "wayterm-prod"), &folders);
+    let config = config_from_fields(&tmux_fields("prod", "wayterm-prod"), &folders, &[]);
 
     assert!(config.tmux_enabled);
     // The stored column is the bare suffix: `SSHTransport` prepends
@@ -683,7 +687,7 @@ fn tmux_name_entered_without_the_prefix_is_normalised() {
     let folders = sample_folders();
     // A user who ignores the `wayterm-` convention and types the bare name
     // must not end up with `wayterm-wayterm-prod` on the remote host.
-    let config = config_from_fields(&tmux_fields("prod", " prod "), &folders);
+    let config = config_from_fields(&tmux_fields("prod", " prod "), &folders, &[]);
 
     assert_eq!(config.tmux_session_name.as_deref(), Some("prod"));
     assert_eq!(config.tmux_remote_name().as_deref(), Some("wayterm-prod"));
@@ -695,7 +699,7 @@ fn tmux_names_with_shell_metacharacters_survive_verbatim() {
     // Doc 04's quoting caveat: `;` is legal in a tmux session name and
     // `SSHTransport::shell_quote` handles the command side. The dialog must
     // not "sanitise" the name away.
-    let config = config_from_fields(&tmux_fields("odd", "wayterm-a;b"), &folders);
+    let config = config_from_fields(&tmux_fields("odd", "wayterm-a;b"), &folders, &[]);
 
     assert_eq!(config.tmux_session_name.as_deref(), Some("a;b"));
     assert_eq!(config.tmux_remote_name().as_deref(), Some("wayterm-a;b"));
@@ -706,7 +710,7 @@ fn empty_tmux_name_is_stored_as_null_and_derived_at_connect() {
     let folders = sample_folders();
     // An Entry cleared by hand means "use the session name", not a session
     // literally called `wayterm-`.
-    let config = config_from_fields(&tmux_fields("prod", ""), &folders);
+    let config = config_from_fields(&tmux_fields("prod", ""), &folders, &[]);
 
     assert!(config.tmux_enabled);
     assert_eq!(config.tmux_session_name, None);
@@ -720,7 +724,7 @@ fn empty_tmux_name_is_stored_as_null_and_derived_at_connect() {
 #[test]
 fn whitespace_only_tmux_name_counts_as_unset() {
     let folders = sample_folders();
-    let config = config_from_fields(&tmux_fields("prod", "   "), &folders);
+    let config = config_from_fields(&tmux_fields("prod", "   "), &folders, &[]);
 
     assert_eq!(config.tmux_session_name, None);
     assert_eq!(config.tmux_remote_name().as_deref(), Some("wayterm-prod"));
@@ -740,7 +744,7 @@ fn derived_tmux_name_follows_name_field_edits() {
     // row follows only because the Entry text is what gets stored.
     for name in ["prod", "prod2", "edge-1"] {
         let entry = default_tmux_session_name(name);
-        let config = config_from_fields(&tmux_fields(name, &entry), &folders);
+        let config = config_from_fields(&tmux_fields(name, &entry), &folders, &[]);
         assert_eq!(config.tmux_remote_name().as_deref(), Some(entry.as_str()));
     }
 }
@@ -749,7 +753,7 @@ fn derived_tmux_name_follows_name_field_edits() {
 fn explicit_tmux_name_overrides_the_name_derived_default() {
     let folders = sample_folders();
     // Once the user types their own name the Name field stops driving it.
-    let config = config_from_fields(&tmux_fields("prod", "wayterm-shared-1"), &folders);
+    let config = config_from_fields(&tmux_fields("prod", "wayterm-shared-1"), &folders, &[]);
 
     assert_eq!(config.tmux_session_name.as_deref(), Some("shared-1"));
     assert_eq!(
@@ -768,7 +772,7 @@ fn tmux_unticked_stores_no_name_but_keeps_the_flag_off() {
         ..tmux_fields("prod", "wayterm-prod")
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert!(!config.tmux_enabled);
     // The name the dialog displays is still stored, so re-opening the dialog
@@ -794,7 +798,7 @@ fn tmux_flag_on_a_serial_session_is_stored_but_ignored() {
         ..Default::default()
     };
 
-    let config = config_from_fields(&fields, &folders);
+    let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.session_type, SessionType::Serial);
     assert!(config.tmux_enabled, "the flag is stored as typed");
@@ -829,4 +833,195 @@ fn tmux_name_for_dialog_prefers_the_stored_name_over_the_session_name() {
     };
     assert_eq!(legacy.tmux_name_for_dialog(), "wayterm-legacy");
     assert_eq!(legacy.tmux_remote_name().as_deref(), Some("wayterm-legacy"));
+}
+
+// ---------------------------------------------------------------------------
+// Jump hosts (doc 11, depth ≤ 1) + forward rules (doc 06 `forward_rules`)
+// ---------------------------------------------------------------------------
+
+fn ssh_peer(id: i64, name: &str, jump: Option<i64>) -> SessionConfig {
+    SessionConfig {
+        id,
+        name: name.to_string(),
+        session_type: SessionType::SSH,
+        jump_session_id: jump,
+        ..Default::default()
+    }
+}
+
+fn sample_peers() -> Vec<SessionConfig> {
+    vec![
+        ssh_peer(1, "bastion", None),
+        ssh_peer(2, "via-bastion", Some(1)),
+        SessionConfig {
+            id: 3,
+            name: "win".to_string(),
+            session_type: SessionType::RDP,
+            ..Default::default()
+        },
+    ]
+}
+
+fn forward_draft(bind_port: &str, remote_port: &str) -> ForwardRuleDraft {
+    ForwardRuleDraft {
+        bind_addr: "127.0.0.1".to_string(),
+        bind_port: bind_port.to_string(),
+        remote_host: "web1.lan".to_string(),
+        remote_port: remote_port.to_string(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn jump_candidates_are_ssh_only_and_exclude_self() {
+    let peers = sample_peers();
+    let ids: Vec<i64> = jump_candidates(&peers, 9).iter().map(|s| s.id).collect();
+    assert_eq!(ids, vec![1, 2], "RDP sessions are never jump hosts");
+    let ids: Vec<i64> = jump_candidates(&peers, 1).iter().map(|s| s.id).collect();
+    assert_eq!(ids, vec![2], "a session cannot jump through itself");
+}
+
+#[test]
+fn jump_depth_beyond_one_is_rejected() {
+    let peers = sample_peers();
+    let err = jump_error(&peers, 9, Some(2)).expect("depth>1 must be refused");
+    assert!(
+        err.contains("depth > 1"),
+        "the message names the rule: {err}"
+    );
+    assert_eq!(jump_error(&peers, 9, Some(1)), None);
+    assert_eq!(jump_error(&peers, 9, None), None, "direct is always fine");
+}
+
+#[test]
+fn jump_self_and_non_ssh_are_rejected() {
+    let peers = sample_peers();
+    assert!(jump_error(&peers, 1, Some(1)).is_some(), "no self-jump");
+    assert!(
+        jump_error(&peers, 9, Some(3)).is_some(),
+        "RDP sessions cannot be jump hosts"
+    );
+}
+
+#[test]
+fn jump_stale_ids_report_missing_and_resolve_to_none() {
+    let peers = sample_peers();
+    let err = jump_error(&peers, 9, Some(77)).expect("stale ids explain themselves");
+    assert!(err.contains(&jump_missing_label(77)), "message: {err}");
+    assert_eq!(
+        resolve_jump(&peers, 9, Some(77)),
+        None,
+        "stale self-heals on save"
+    );
+    assert_eq!(
+        resolve_jump(&peers, 9, Some(2)),
+        None,
+        "depth>1 never stores"
+    );
+    assert_eq!(resolve_jump(&peers, 9, Some(1)), Some(1));
+}
+
+#[test]
+fn jump_picker_model_lists_candidates_and_flags_stale() {
+    let peers = sample_peers();
+    let (labels, ids, selected) = jump_picker_model(&peers, 9, None);
+    assert_eq!(labels[0], JUMP_NONE_LABEL);
+    assert_eq!(ids, vec![None, Some(1), Some(2)]);
+    assert_eq!(selected, 0);
+
+    let (_, _, selected) = jump_picker_model(&peers, 9, Some(1));
+    assert_eq!(selected, 1);
+
+    // Stale: the missing entry is appended and selected, never a failure.
+    let (labels, ids, selected) = jump_picker_model(&peers, 9, Some(77));
+    assert_eq!(
+        labels.last().expect("missing entry"),
+        &jump_missing_label(77)
+    );
+    assert_eq!(*ids.last().expect("missing id"), Some(77));
+    assert_eq!(selected, (labels.len() - 1) as u32);
+}
+
+#[test]
+fn jump_and_forwards_store_for_ssh_only() {
+    let folders = sample_folders();
+    let peers = sample_peers();
+    let ssh_fields = DialogFields {
+        type_index: TYPE_INDEX_SSH,
+        name: "web".to_string(),
+        jump_session_id: Some(1),
+        forward_drafts: vec![forward_draft("8080", "80")],
+        ..Default::default()
+    };
+    let config = config_from_fields(&ssh_fields, &folders, &peers);
+    assert_eq!(config.jump_session_id, Some(1));
+    let rules = config.forward_rules.expect("SSH stores its rules");
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].bind_port, 8080);
+    assert_eq!(rules[0].remote_port, 80);
+
+    // A hidden SSH group never leaks into other types.
+    for type_index in [
+        TYPE_INDEX_RDP,
+        TYPE_INDEX_VNC,
+        TYPE_INDEX_SERIAL,
+        TYPE_INDEX_LOCAL,
+    ] {
+        let mut fields = ssh_fields.clone();
+        fields.type_index = type_index;
+        let config = config_from_fields(&fields, &folders, &peers);
+        assert_eq!(config.jump_session_id, None, "type_index {type_index}");
+        assert_eq!(config.forward_rules, None, "type_index {type_index}");
+    }
+}
+
+#[test]
+fn invalid_forward_drafts_store_as_no_rules() {
+    let folders = sample_folders();
+    let peers = sample_peers();
+    let fields = DialogFields {
+        type_index: TYPE_INDEX_SSH,
+        forward_drafts: vec![forward_draft("nan", "80")],
+        ..Default::default()
+    };
+    assert_eq!(
+        config_from_fields(&fields, &folders, &peers).forward_rules,
+        None,
+        "the dialog's OK validation never lets these through; the mapping drops them"
+    );
+}
+
+#[test]
+fn empty_forward_editor_stores_no_rules() {
+    let folders = sample_folders();
+    let peers = sample_peers();
+    let fields = DialogFields {
+        type_index: TYPE_INDEX_SSH,
+        ..Default::default()
+    };
+    assert_eq!(
+        config_from_fields(&fields, &folders, &peers).forward_rules,
+        None
+    );
+}
+
+#[test]
+fn collect_peer_sessions_walks_every_folder() {
+    let store = SessionStore::in_memory().expect("in-memory store");
+    let folder = store.insert_folder("ops", None).expect("folder");
+    let root = SessionConfig {
+        name: "root-box".to_string(),
+        ..Default::default()
+    };
+    store.insert_session(&root).expect("root session");
+    let nested = SessionConfig {
+        name: "nested-box".to_string(),
+        folder_id: Some(folder),
+        ..Default::default()
+    };
+    store.insert_session(&nested).expect("nested session");
+    let peers = collect_peer_sessions(&store);
+    let names: Vec<&str> = peers.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"root-box"), "root sessions: {names:?}");
+    assert!(names.contains(&"nested-box"), "nested sessions: {names:?}");
 }

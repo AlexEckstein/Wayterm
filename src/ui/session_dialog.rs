@@ -21,8 +21,12 @@ use crate::store::model::{
     SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES,
     SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT, TMUX_NAME_PREFIX,
 };
+use crate::store::SessionStore;
 use crate::ui::icons::{session_type_icon, IconPicker};
-use crate::ui::widgets::{ok_cancel_row, set_margins, Modal};
+use crate::ui::tunnels_dialog::model::{
+    drafts_from_rules, rules_from_drafts, ForwardRuleDraft, FORWARD_KIND_LABELS, V2_NOTE,
+};
+use crate::ui::widgets::{set_margins, Modal};
 
 // Type DropDown indices, in doc 06 order.
 pub const TYPE_INDEX_SSH: u32 = 0;
@@ -68,6 +72,12 @@ pub struct DialogFields {
     pub rdp_color_depth_index: u32,
     pub local_shell: String,
     pub local_working_dir: String,
+    /// The chosen jump host's session id (`None` = direct). Validated by
+    /// [`resolve_jump`]; only stored for SSH.
+    pub jump_session_id: Option<i64>,
+    /// Editable forward rules (ports as text); only stored for SSH, and
+    /// only when every draft validates.
+    pub forward_drafts: Vec<ForwardRuleDraft>,
     // Carried through from the edited row.
     pub id: i64,
     pub last_connected: Option<String>,
@@ -102,6 +112,8 @@ impl Default for DialogFields {
             rdp_color_depth_index: default_index(&RDP_COLOR_DEPTHS, RDP_COLOR_DEPTH_DEFAULT),
             local_shell: String::new(),
             local_working_dir: String::new(),
+            jump_session_id: None,
+            forward_drafts: Vec::new(),
             id: 0,
             last_connected: None,
             connect_count: 0,
@@ -189,11 +201,122 @@ fn trimmed_opt(value: &str) -> Option<String> {
     Some(value.trim().to_string()).filter(|v| !v.is_empty())
 }
 
+/// Label of the "no jump host" picker entry.
+pub const JUMP_NONE_LABEL: &str = "None (direct)";
+
+/// The picker entry for a `jump_session_id` whose session is gone (deleted
+/// since, or an import that could not map it): the dialog shows this
+/// instead of failing, and saving resolves it to `None` (see
+/// [`resolve_jump`]).
+pub fn jump_missing_label(id: i64) -> String {
+    format!("jump host missing (id {id})")
+}
+
+/// Jump candidates: SSH sessions other than the edited one. Depth>1 peers
+/// (which themselves jump) stay listed so the picker can refuse them with
+/// [`jump_error`]'s message instead of hiding them.
+pub fn jump_candidates(peers: &[SessionConfig], self_id: i64) -> Vec<&SessionConfig> {
+    peers
+        .iter()
+        .filter(|s| s.session_type == SessionType::SSH && s.id != self_id)
+        .collect()
+}
+
+/// Why `desired` cannot be the jump host, if it cannot. `None` (direct) is
+/// always fine; a stale id reports the peer as missing.
+pub fn jump_error(peers: &[SessionConfig], self_id: i64, desired: Option<i64>) -> Option<String> {
+    let id = desired?;
+    if id == self_id {
+        return Some("A session cannot jump through itself.".to_string());
+    }
+    let Some(peer) = peers.iter().find(|s| s.id == id) else {
+        return Some(format!(
+            "{} — it may have been deleted; saving clears it.",
+            jump_missing_label(id)
+        ));
+    };
+    if peer.session_type != SessionType::SSH {
+        return Some(format!(
+            "“{}” is not an SSH session — only SSH sessions can be jump hosts.",
+            peer.name
+        ));
+    }
+    if peer.jump_session_id.is_some() {
+        return Some(format!(
+            "“{}” itself jumps through another session — depth > 1 is not supported (doc 11).",
+            peer.name
+        ));
+    }
+    None
+}
+
+/// The stored `jump_session_id` for `desired`: `None` unless the choice is
+/// valid. Stale ids self-heal to `None` on save instead of violating the
+/// foreign key.
+pub fn resolve_jump(peers: &[SessionConfig], self_id: i64, desired: Option<i64>) -> Option<i64> {
+    desired.filter(|_| jump_error(peers, self_id, desired).is_none())
+}
+
+/// The picker model: entry labels, the id each entry stores (`None` for
+/// direct), and the selected position for the edited row's `current` id. A
+/// stale `current` appends the missing entry so the dialog shows it rather
+/// than failing.
+pub fn jump_picker_model(
+    peers: &[SessionConfig],
+    self_id: i64,
+    current: Option<i64>,
+) -> (Vec<String>, Vec<Option<i64>>, u32) {
+    let mut labels = vec![JUMP_NONE_LABEL.to_string()];
+    let mut ids: Vec<Option<i64>> = vec![None];
+    for peer in jump_candidates(peers, self_id) {
+        labels.push(peer.name.clone());
+        ids.push(Some(peer.id));
+    }
+    let selected = match current {
+        None => 0,
+        Some(id) => ids.iter().position(|entry| *entry == Some(id)).map_or_else(
+            || {
+                labels.push(jump_missing_label(id));
+                ids.push(Some(id));
+                (labels.len() - 1) as u32
+            },
+            |pos| pos as u32,
+        ),
+    };
+    (labels, ids, selected)
+}
+
+/// Every session in the store, across folders, in tree order: the jump
+/// picker's source. (The store only lists one folder at a time, so this
+/// walks the way the session tree does.)
+pub fn collect_peer_sessions(store: &SessionStore) -> Vec<SessionConfig> {
+    fn walk(store: &SessionStore, parent: Option<i64>, out: &mut Vec<SessionConfig>) {
+        if let Ok(folders) = store.list_folders(parent) {
+            for folder in folders {
+                walk(store, Some(folder.id), out);
+            }
+        }
+        if let Ok(sessions) = store.list_sessions(parent) {
+            out.extend(sessions);
+        }
+    }
+    let mut out = Vec::new();
+    walk(store, None, &mut out);
+    out
+}
+
 /// The session the dialog's values describe. An out-of-range port falls
 /// back to the type's default. Per-type columns are written only for the
 /// selected type, so values left in a hidden group never leak; the tmux
-/// columns are common and stored as typed (only SSH reads them).
-pub fn config_from_fields(fields: &DialogFields, folders: &[Folder]) -> SessionConfig {
+/// columns are common and stored as typed (only SSH reads them). Jump and
+/// forward rules are SSH-owned the same way: they store only for SSH, and
+/// invalid drafts (which the dialog's OK validation never lets through)
+/// defensively store as no rules rather than partial ones.
+pub fn config_from_fields(
+    fields: &DialogFields,
+    folders: &[Folder],
+    peers: &[SessionConfig],
+) -> SessionConfig {
     let session_type = session_type_from_index(fields.type_index);
     let folder_id = (fields.folder_index as usize)
         .checked_sub(1)
@@ -282,6 +405,13 @@ pub fn config_from_fields(fields: &DialogFields, folders: &[Folder]) -> SessionC
         }
         // VNC's only secret is keyring-only (doc 06).
         SessionType::SSH | SessionType::VNC => {}
+    }
+    if session_type == SessionType::SSH {
+        config.jump_session_id = resolve_jump(peers, fields.id, fields.jump_session_id);
+        config.forward_rules = match rules_from_drafts(&fields.forward_drafts) {
+            Ok(rules) if !rules.is_empty() => Some(rules),
+            _ => None,
+        };
     }
     config
 }
@@ -414,6 +544,10 @@ struct Widgets {
     notes: gtk4::TextView,
     tmux: gtk4::CheckButton,
     tmux_name: gtk4::Entry,
+    jump: gtk4::DropDown,
+    jump_ids: Vec<Option<i64>>,
+    forward_rows: Rc<RefCell<Vec<ForwardRow>>>,
+    forward_error: gtk4::Label,
     serial_device: gtk4::Entry,
     serial_baud: gtk4::SpinButton,
     serial_data_bits: gtk4::DropDown,
@@ -445,6 +579,17 @@ impl Widgets {
                 .into(),
             tmux_enabled: self.tmux.is_active(),
             tmux_session_name: self.tmux_name.text().into(),
+            jump_session_id: self
+                .jump_ids
+                .get(self.jump.selected() as usize)
+                .copied()
+                .flatten(),
+            forward_drafts: self
+                .forward_rows
+                .borrow()
+                .iter()
+                .filter_map(ForwardRow::draft)
+                .collect(),
             serial_device: self.serial_device.text().into(),
             serial_baud: self.serial_baud.value() as u32,
             serial_data_bits_index: self.serial_data_bits.selected(),
@@ -524,6 +669,117 @@ impl Widgets {
     }
 }
 
+/// One forward-rule row in the session dialog's SSH editor. Positions
+/// never shift (see the Tunnels dialog): removing hides the row and marks
+/// it.
+struct ForwardRow {
+    kind: gtk4::DropDown,
+    bind: gtk4::Entry,
+    bind_port: gtk4::Entry,
+    remote: gtk4::Entry,
+    remote_port: gtk4::Entry,
+    enabled: gtk4::CheckButton,
+    removed: Rc<Cell<bool>>,
+}
+
+impl ForwardRow {
+    fn draft(&self) -> Option<ForwardRuleDraft> {
+        if self.removed.get() {
+            return None;
+        }
+        Some(ForwardRuleDraft {
+            kind_index: self.kind.selected(),
+            bind_addr: self.bind.text().into(),
+            bind_port: self.bind_port.text().into(),
+            remote_host: self.remote.text().into(),
+            remote_port: self.remote_port.text().into(),
+            enabled: self.enabled.is_active(),
+        })
+    }
+}
+
+/// Append one editable row for `draft`. Only Local converts on save;
+/// Remote/Dynamic stay selectable so the v2 refusal is visible, and are
+/// refused with [`V2_NOTE`] by the shared validator.
+fn add_forward_row(
+    list: &gtk4::ListBox,
+    rows: &Rc<RefCell<Vec<ForwardRow>>>,
+    draft: &ForwardRuleDraft,
+) {
+    let kind = gtk4::DropDown::builder()
+        .model(&gtk4::StringList::new(&FORWARD_KIND_LABELS))
+        .tooltip_text(V2_NOTE)
+        .width_request(130)
+        .build();
+    kind.set_selected(draft.kind_index);
+    let bind = forward_entry(&draft.bind_addr, "bind addr", 120);
+    let bind_port = forward_entry(&draft.bind_port, "bind port", 70);
+    let remote = forward_entry(&draft.remote_host, "remote host", 130);
+    let remote_port = forward_entry(&draft.remote_port, "remote port", 70);
+    let enabled = gtk4::CheckButton::with_label("On");
+    enabled.set_active(draft.enabled);
+    enabled.set_tooltip_text(Some("Enabled rules start at connect (Local only)"));
+
+    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    set_margins(&hbox, 4);
+    hbox.append(&kind);
+    hbox.append(&bind);
+    hbox.append(&bind_port);
+    hbox.append(&remote);
+    hbox.append(&remote_port);
+    hbox.append(&enabled);
+    let remove = gtk4::Button::with_label("Remove");
+    hbox.append(&remove);
+    let list_row = gtk4::ListBoxRow::builder().child(&hbox).build();
+    list.append(&list_row);
+
+    let removed = Rc::new(Cell::new(false));
+    {
+        let (list_row, removed) = (list_row.clone(), removed.clone());
+        remove.connect_clicked(move |_| {
+            removed.set(true);
+            list_row.set_visible(false);
+        });
+    }
+
+    rows.borrow_mut().push(ForwardRow {
+        kind,
+        bind,
+        bind_port,
+        remote,
+        remote_port,
+        enabled,
+        removed,
+    });
+}
+
+fn forward_entry(text: &str, placeholder: &str, width: i32) -> gtk4::Entry {
+    gtk4::Entry::builder()
+        .text(text)
+        .placeholder_text(placeholder)
+        .width_request(width)
+        .build()
+}
+
+fn note_label(text: &str) -> gtk4::Label {
+    let label = gtk4::Label::builder()
+        .label(text)
+        .halign(gtk4::Align::Start)
+        .wrap(true)
+        .build();
+    label.add_css_class("dim-label");
+    label
+}
+
+fn error_label() -> gtk4::Label {
+    let label = gtk4::Label::builder()
+        .halign(gtk4::Align::Start)
+        .wrap(true)
+        .build();
+    label.add_css_class("error");
+    label
+}
+
 /// The dialog. Build with [`Self::new_session`] or [`Self::edit`], then
 /// [`Self::run`] it.
 pub struct SessionDialog {
@@ -532,15 +788,30 @@ pub struct SessionDialog {
     groups: TypeGroups,
     tmux_follow: TmuxNameFollow,
     base: Rc<RefCell<DialogFields>>,
+    folders: Vec<Folder>,
+    peers: Vec<SessionConfig>,
+    vbox: gtk4::Box,
 }
 
 impl SessionDialog {
-    pub fn new_session(parent: &gtk4::Window, folders: &[Folder]) -> Self {
-        Self::build(parent, folders)
+    pub fn new_session(parent: &gtk4::Window, folders: &[Folder], peers: &[SessionConfig]) -> Self {
+        Self::build(parent, folders, peers, 0, None, &[])
     }
 
-    pub fn edit(parent: &gtk4::Window, config: &SessionConfig, folders: &[Folder]) -> Self {
-        let dialog = Self::build(parent, folders);
+    pub fn edit(
+        parent: &gtk4::Window,
+        config: &SessionConfig,
+        folders: &[Folder],
+        peers: &[SessionConfig],
+    ) -> Self {
+        let dialog = Self::build(
+            parent,
+            folders,
+            peers,
+            config.id,
+            config.jump_session_id,
+            &drafts_from_rules(config.forward_rules.as_ref()),
+        );
         // Fills the type before the port: a type change resets the port.
         dialog.widgets.fill(config, folders);
         // A pre-fill is not a user edit, but a stored name is the user's
@@ -562,14 +833,56 @@ impl SessionDialog {
         dialog
     }
 
-    /// Run modally; `None` on cancel.
+    /// Run modally; `None` on cancel. OK only closes on success: an
+    /// invalid forward draft keeps the dialog open with the error inline,
+    /// and the jump choice resolves through [`resolve_jump`] on save.
     pub fn run(self) -> Option<SessionConfig> {
+        let ok = gtk4::Button::with_label("OK");
+        let cancel = self.modal.button("Cancel", || None);
+        {
+            let (window, result, widgets, base, folders, peers, forward_error) = (
+                self.modal.window.clone(),
+                self.modal.result.clone(),
+                self.widgets.clone(),
+                self.base.clone(),
+                self.folders.clone(),
+                self.peers.clone(),
+                self.widgets.forward_error.clone(),
+            );
+            ok.connect_clicked(move |_| {
+                let fields = widgets.fields(&base.borrow());
+                match rules_from_drafts(&fields.forward_drafts) {
+                    Ok(_) => {
+                        *result.borrow_mut() = Some(config_from_fields(&fields, &folders, &peers));
+                        window.close();
+                    }
+                    Err(errors) => {
+                        forward_error.set_text(&forward_batch_error(&errors));
+                    }
+                }
+            });
+            self.modal.window.set_default_widget(Some(&ok));
+        }
+        let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+        buttons.set_halign(gtk4::Align::End);
+        buttons.append(&cancel);
+        buttons.append(&ok);
+        buttons.set_margin_top(12);
+        set_margins(&buttons, 12);
+        self.vbox.append(&buttons);
         self.modal.run()
     }
 
-    fn build(parent: &gtk4::Window, folders: &[Folder]) -> Self {
+    fn build(
+        parent: &gtk4::Window,
+        folders: &[Folder],
+        peers: &[SessionConfig],
+        self_id: i64,
+        current_jump: Option<i64>,
+        initial_drafts: &[ForwardRuleDraft],
+    ) -> Self {
         let modal = Modal::new("Session", Some(parent));
-        modal.window.set_default_size(420, 560);
+        modal.window.set_default_size(560, 680);
 
         let mut form = FormGrid::new(12);
         let name = form.entry("Name:", "");
@@ -604,6 +917,79 @@ impl SessionDialog {
         let tmux = gtk4::CheckButton::with_label(TMUX_LABEL);
         ssh.span(&tmux);
         let tmux_name = ssh.entry("tmux session:", "wayterm-<session name>");
+
+        // Jump host (doc 11): one ProxyJump hop through another SSH
+        // session. Depth>1 choices stay listed but are refused with an
+        // inline message; a stale stored id shows the missing entry.
+        let (jump_labels, jump_ids, jump_selected) =
+            jump_picker_model(peers, self_id, current_jump);
+        let jump = ssh.dropdown("Jump host:", &jump_labels);
+        jump.set_selected(jump_selected);
+        jump.set_tooltip_text(Some(
+            "The SSH session to connect through (one ProxyJump hop, doc 11). Depth > 1 is refused.",
+        ));
+        let jump_message = error_label();
+        if let Some(message) = jump_error(peers, self_id, current_jump) {
+            jump_message.set_text(&message);
+        } else {
+            jump_message.set_visible(false);
+        }
+        ssh.span(&jump_message);
+        let last_good = Rc::new(Cell::new(jump_selected));
+        let choosing = Rc::new(Cell::new(false));
+        {
+            let (ids, message, last_good, choosing) = (
+                jump_ids.clone(),
+                jump_message.clone(),
+                last_good.clone(),
+                choosing.clone(),
+            );
+            let peers = peers.to_vec();
+            jump.connect_notify_local(Some("selected"), move |dropdown, _| {
+                if choosing.get() {
+                    return;
+                }
+                let desired = ids.get(dropdown.selected() as usize).copied().flatten();
+                match jump_error(&peers, self_id, desired) {
+                    None => {
+                        message.set_visible(false);
+                        message.set_text("");
+                        last_good.set(dropdown.selected());
+                    }
+                    Some(reason) => {
+                        message.set_text(&reason);
+                        message.set_visible(true);
+                        choosing.set(true);
+                        dropdown.set_selected(last_good.get());
+                        choosing.set(false);
+                    }
+                }
+            });
+        }
+
+        // Forward rules (doc 11 §Port forwarding): the same drafts the
+        // Tunnels dialog edits for a connected session.
+        ssh.span(&note_label(
+            "Port forwards (Local starts at connect; Remote/Dynamic are v2):",
+        ));
+        ssh.span(&note_label(V2_NOTE));
+        let forward_list = gtk4::ListBox::new();
+        forward_list.set_selection_mode(gtk4::SelectionMode::None);
+        ssh.span(&forward_list);
+        let forward_rows: Rc<RefCell<Vec<ForwardRow>>> = Rc::default();
+        for draft in initial_drafts {
+            add_forward_row(&forward_list, &forward_rows, draft);
+        }
+        let forward_add = gtk4::Button::with_label("Add forward");
+        {
+            let (list, rows) = (forward_list.clone(), forward_rows.clone());
+            forward_add.connect_clicked(move |_| {
+                add_forward_row(&list, &rows, &ForwardRuleDraft::default());
+            });
+        }
+        ssh.span(&forward_add);
+        let forward_error = error_label();
+        ssh.span(&forward_error);
 
         let mut serial = FormGrid::new(6);
         let serial_device = serial.entry("Device:", "/dev/ttyUSB0");
@@ -652,6 +1038,10 @@ impl SessionDialog {
             notes,
             tmux,
             tmux_name,
+            jump,
+            jump_ids,
+            forward_rows,
+            forward_error,
             serial_device,
             serial_baud,
             serial_data_bits,
@@ -710,20 +1100,12 @@ impl SessionDialog {
         tmux_follow.fill(&widgets.tmux_name, &default_tmux_session_name(""));
 
         let base = Rc::new(RefCell::new(DialogFields::default()));
-        let (for_ok, base_for_ok, folders) = (widgets.clone(), base.clone(), folders.to_vec());
-        let buttons = ok_cancel_row(&modal, move || {
-            let fields = for_ok.fields(&base_for_ok.borrow());
-            Some(config_from_fields(&fields, &folders))
-        });
-        buttons.set_margin_top(12);
 
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         vbox.append(&form.grid);
         for group in &groups.0 {
             vbox.append(group);
         }
-        vbox.append(&buttons);
-        set_margins(&buttons, 12);
         modal.window.set_child(Some(&vbox));
 
         Self {
@@ -732,8 +1114,22 @@ impl SessionDialog {
             groups,
             tmux_follow,
             base,
+            folders: folders.to_vec(),
+            peers: peers.to_vec(),
+            vbox,
         }
     }
+}
+
+/// The OK-time error line for invalid forward drafts: each failing row's
+/// message with its 1-based row number.
+fn forward_batch_error(errors: &[Option<String>]) -> String {
+    errors
+        .iter()
+        .enumerate()
+        .filter_map(|(index, error)| error.as_ref().map(|e| format!("Row {}: {e}", index + 1)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -748,7 +1144,7 @@ pub(super) mod gtk_tests {
         let revealed = |g: &gtk4::Revealer| g.reveals_child();
 
         let parent = gtk4::Window::new();
-        let dialog = SessionDialog::new_session(&parent, &[]);
+        let dialog = SessionDialog::new_session(&parent, &[], &[]);
         let w = &dialog.widgets;
         assert_eq!(w.tmux_name.text(), "wayterm-");
         assert!(!w.tmux.is_active());
@@ -771,7 +1167,7 @@ pub(super) mod gtk_tests {
             tmux_session_name: Some("shared".into()),
             ..Default::default()
         };
-        let dialog = SessionDialog::edit(&parent, &stored, &[]);
+        let dialog = SessionDialog::edit(&parent, &stored, &[], &[]);
         assert_eq!(dialog.widgets.icon.icon(), None);
         assert!(dialog.widgets.tmux.is_active());
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-shared");
@@ -793,7 +1189,7 @@ pub(super) mod gtk_tests {
             icon: Some("wayterm-homelab".into()),
             ..Default::default()
         };
-        let dialog = SessionDialog::edit(&parent, &derived, &[]);
+        let dialog = SessionDialog::edit(&parent, &derived, &[], &[]);
         assert_eq!(
             dialog.widgets.icon.icon().as_deref(),
             Some("wayterm-homelab")
@@ -801,5 +1197,90 @@ pub(super) mod gtk_tests {
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-prod");
         dialog.widgets.name.set_text("renamed");
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-renamed");
+    }
+
+    /// The jump picker lists SSH peers only, refuses depth>1 with a message
+    /// and a revert, shows the missing entry for a stale id, and the
+    /// forward editor adds rows that round-trip into drafts.
+    pub(in crate::ui) fn jump_picker_and_forward_editor() {
+        use crate::store::model::{ForwardKind, ForwardRule};
+
+        let ssh = |id: i64, name: &str, jump: Option<i64>| SessionConfig {
+            id,
+            name: name.to_string(),
+            session_type: crate::store::model::SessionType::SSH,
+            jump_session_id: jump,
+            ..Default::default()
+        };
+        let peers = vec![
+            ssh(1, "bastion", None),
+            ssh(2, "via-bastion", Some(1)),
+            SessionConfig {
+                id: 3,
+                name: "win".to_string(),
+                session_type: crate::store::model::SessionType::RDP,
+                ..Default::default()
+            },
+        ];
+        let parent = gtk4::Window::new();
+
+        // New session: direct + SSH peers only (no self yet, no RDP).
+        let dialog = SessionDialog::new_session(&parent, &[], &peers);
+        assert_eq!(dialog.widgets.jump_ids, vec![None, Some(1), Some(2)]);
+        assert_eq!(dialog.widgets.jump.selected(), 0);
+
+        // Picking the depth>1 peer is refused: the selection reverts to
+        // direct (the message text itself is covered display-free).
+        dialog.widgets.jump.set_selected(2);
+        assert_eq!(dialog.widgets.jump.selected(), 0, "depth>1 reverts");
+        let fields = dialog.widgets.fields(&dialog.base.borrow());
+        assert_eq!(fields.jump_session_id, None);
+
+        // Picking the clean bastion sticks.
+        dialog.widgets.jump.set_selected(1);
+        assert_eq!(dialog.widgets.jump.selected(), 1);
+        let fields = dialog.widgets.fields(&dialog.base.borrow());
+        assert_eq!(fields.jump_session_id, Some(1));
+        dialog.modal.window.close();
+
+        // Edit with a stale id: the missing entry renders and is selected.
+        let stale = SessionConfig {
+            id: 9,
+            name: "web".to_string(),
+            session_type: crate::store::model::SessionType::SSH,
+            jump_session_id: Some(77),
+            forward_rules: Some(vec![ForwardRule {
+                kind: ForwardKind::Local,
+                bind_addr: "127.0.0.1".to_string(),
+                bind_port: 8080,
+                remote_host: "web1.lan".to_string(),
+                remote_port: 80,
+                enabled: true,
+            }]),
+            ..Default::default()
+        };
+        let dialog = SessionDialog::edit(&parent, &stale, &[], &peers);
+        let selected = dialog.widgets.jump.selected() as usize;
+        assert_eq!(dialog.widgets.jump_ids[selected], Some(77));
+        let fields = dialog.widgets.fields(&dialog.base.borrow());
+        assert_eq!(
+            fields.jump_session_id,
+            Some(77),
+            "the raw picker value survives"
+        );
+        assert_eq!(
+            config_from_fields(&fields, &[], &peers).jump_session_id,
+            None,
+            "saving a stale id clears it instead of violating the FK"
+        );
+        assert_eq!(dialog.widgets.forward_rows.borrow().len(), 1);
+        let fields = dialog.widgets.fields(&dialog.base.borrow());
+        assert_eq!(
+            fields.forward_drafts.len(),
+            1,
+            "stored rules load into the editor"
+        );
+        assert_eq!(fields.forward_drafts[0].bind_port, "8080");
+        dialog.modal.window.close();
     }
 }
