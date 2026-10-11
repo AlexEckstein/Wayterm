@@ -99,6 +99,7 @@ impl SessionTab {
     pub fn open(notebook: &gtk4::Notebook, session: &SessionConfig) -> gtk4::Widget {
         if let Some((page_num, page)) = find_tab(notebook, session.id) {
             notebook.set_current_page(Some(page_num));
+            focus_terminal(notebook, &page);
             return page;
         }
         let session = Rc::new(session.clone());
@@ -316,6 +317,20 @@ async fn finish_connect(
         sidebar_attached(page).set(true);
     }
     follow_terminal_title(page, &widget, &session.name);
+    focus_terminal(notebook, page);
+}
+
+/// Give the page's terminal keyboard focus, so typing reaches the shell
+/// instead of whatever opened the tab (the session tree, whose type-ahead
+/// search would take the keys). Only on the current page: a background
+/// tab's connect or redial must not take focus from the tab in use.
+fn focus_terminal(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
+    if current_page(notebook).as_ref() != Some(page) {
+        return;
+    }
+    if let Some(backend) = data::<Arc<dyn TerminalBackend>>(page, TERMINAL_BACKEND_KEY) {
+        backend.widget().grab_focus();
+    }
 }
 
 /// What the status bar shows for a tab: `host:port` for SSH, the
@@ -922,5 +937,61 @@ mod tests {
             config.auth_method = stored;
             assert_eq!(format!("{:?}", transport_auth_method(&config)), expected);
         }
+    }
+}
+
+/// Widget checks; they need a display and run from `ui::gtk_tests`.
+#[cfg(test)]
+pub(super) mod gtk_tests {
+    use super::*;
+    use crate::hotkeys::engine::focus_within;
+
+    /// Opening a session's tab hands keyboard focus from the session tree
+    /// to that tab's terminal; a tab in the background never takes it.
+    pub(in crate::ui) fn opening_a_tab_focuses_its_terminal() {
+        let notebook = gtk4::Notebook::new();
+        // Stands in for the session tree, which holds focus after a
+        // double-click.
+        let tree = gtk4::Entry::new();
+        let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        root.append(&tree);
+        root.append(&notebook);
+        let window = gtk4::Window::new();
+        window.set_child(Some(&root));
+
+        let tabs: Vec<_> = (1..=2)
+            .map(|id| {
+                let session = SessionConfig {
+                    id,
+                    name: format!("local-{id}"),
+                    session_type: SessionType::LocalShell,
+                    ..Default::default()
+                };
+                let page = page_content(&session);
+                let backend = create_terminal().backend;
+                set_terminal_area(&page, &backend.widget());
+                set_data(&page, TERMINAL_BACKEND_KEY, backend.clone());
+                notebook.append_page(&page, None::<&gtk4::Widget>);
+                (session, page, backend.widget())
+            })
+            .collect();
+        window.present();
+        for _ in 0..10 {
+            glib::MainContext::default().iteration(false);
+        }
+
+        let [(first, first_page, first_terminal), (_, _, second_terminal)] = &tabs[..] else {
+            unreachable!();
+        };
+        notebook.set_current_page(Some(1));
+        tree.grab_focus();
+        focus_terminal(&notebook, first_page);
+        assert!(focus_within(&tree), "a background tab took focus");
+
+        SessionTab::open(&notebook, first);
+        assert_eq!(notebook.current_page(), Some(0));
+        assert!(focus_within(first_terminal), "the opened tab's terminal");
+        assert!(!focus_within(second_terminal));
+        window.destroy();
     }
 }
