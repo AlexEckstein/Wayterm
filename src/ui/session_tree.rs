@@ -11,9 +11,8 @@ use gtk4::{gdk, gio, glib};
 use crate::store::SessionStore;
 use crate::ui::folder_dialog::FolderDialog;
 use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
-use crate::ui::session_dialog::SessionDialog;
+use crate::ui::session_dialog::{collect_peer_sessions, SessionDialog};
 use crate::ui::widgets::{confirm, data, prompt_text, set_data, window_of};
-
 
 /// One row of the tree, in display order.
 #[derive(Clone, Debug, Eq, PartialEq)]
