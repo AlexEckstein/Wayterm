@@ -168,6 +168,7 @@ impl Scanner {
                                 compression: false,
                                 keepalive_interval: Some(interval),
                                 keepalive_count: None,
+                                ssh_w_fallback: false,
                             })
                         }
                         Err(_) => self.report.warnings.push(format!(
