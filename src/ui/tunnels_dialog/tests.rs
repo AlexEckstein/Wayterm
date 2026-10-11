@@ -359,10 +359,7 @@ fn bridge_maps_engine_states_and_rule_ids() {
     });
     let snapshot = bridge.snapshot();
     assert_eq!(snapshot.len(), 4);
-    assert_eq!(
-        lookup_status(&snapshot, 2),
-        Some(&ForwardState::Stopped)
-    );
+    assert_eq!(lookup_status(&snapshot, 2), Some(&ForwardState::Stopped));
 }
 
 #[test]

@@ -455,7 +455,13 @@ mod tests {
         let argv = ssh_w_argv(&default_port, "inner.test", 22);
         assert_eq!(
             argv,
-            vec!["-W", "inner.test:22", "-o", "BatchMode=yes", "jumpuser@bastion.test"]
+            vec![
+                "-W",
+                "inner.test:22",
+                "-o",
+                "BatchMode=yes",
+                "jumpuser@bastion.test"
+            ]
         );
         for secret in ["s3cr3t-password", "passphrase"] {
             assert!(
@@ -470,8 +476,7 @@ mod tests {
             ssh_w_argv(&default_port, "inner.test", 22),
         ] {
             assert!(
-                argv.windows(2)
-                    .any(|pair| pair == ["-o", "BatchMode=yes"]),
+                argv.windows(2).any(|pair| pair == ["-o", "BatchMode=yes"]),
                 "ssh -W must never prompt on a tty Wayterm does not own: {argv:?}"
             );
         }

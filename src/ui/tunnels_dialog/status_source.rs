@@ -20,9 +20,7 @@ use std::sync::Mutex;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::transport::forward::{
-    ForwardEngine, ForwardEvent, ForwardState as EngineState,
-};
+use crate::transport::forward::{ForwardEngine, ForwardEvent, ForwardState as EngineState};
 
 /// One rule's live state, by position in the session's `forward_rules`.
 #[derive(Clone, Debug, Eq, PartialEq)]
