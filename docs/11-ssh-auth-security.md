@@ -92,11 +92,15 @@ host, open a direct-tcpip channel to the target, and run the target's SSH
 session over that stream (as `russh-config` does for ProxyCommand). Each
 hop authenticates on its own with its own method/credentials; depth > 1
 and self-jump are connect errors (`transport::jump::check_jump_chain`).
-The inner connection is never pooled. Fallback for exotic setups:
+The inner connection is never pooled (doc 04 §Connection Supervisor).
+SFTP is not available over a jumped session in v1 — the sidebar says
+so instead of attaching. Fallback for exotic setups:
 `sessions.ssh_options.ssh_w_fallback` runs `ssh -W target:port
 [user@]jump` as the stream — the child carries no secrets and is killed
-when the connection drops; the inner hop still authenticates through the
-stream.
+when the connection drops; the inner hop still authenticates through
+the stream. Trust note: on the `ssh -W` hop OpenSSH — not Wayterm —
+verifies the host key and authenticates (its `known_hosts`, agent and
+config); the target hop is still verified and authenticated by Wayterm.
 
 ### Port forwarding
 

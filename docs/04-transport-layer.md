@@ -68,6 +68,13 @@ connection and adopts the winner's. Dialing runs host-key verification and
 the auth chain (doc 11); because prompts block until answered, the UI runs
 the dial on tokio's blocking pool.
 
+A jumped connection is the exception (doc 11 §Jump hosts): it is never
+pooled — the pool key describes a TCP endpoint, not a connection backed
+by a jump channel — so the connect flow dials it through
+`transport::jump` and the target holds its bastion's `Arc` for its
+whole life, keeping the supervisor's monitor from evicting the bastion
+out from under a live target.
+
 ## SSHTransport
 
 `connect` opens a session channel, requests an `xterm-256color` PTY with
