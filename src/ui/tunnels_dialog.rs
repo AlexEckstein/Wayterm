@@ -23,7 +23,9 @@ pub mod status_source;
 #[cfg(test)]
 mod tests;
 
-pub use status_source::{FakeStatusSource, ForwardState, ForwardStatus, ForwardStatusSource};
+pub use status_source::{
+    EngineStatusBridge, FakeStatusSource, ForwardState, ForwardStatus, ForwardStatusSource,
+};
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

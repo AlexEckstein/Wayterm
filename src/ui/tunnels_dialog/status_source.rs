@@ -15,9 +15,14 @@
 //! and no lock held across `.await` (the dialog keeps no async fns at all).
 //! `set_rule_enabled` queues the request and returns.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use tokio::sync::mpsc::UnboundedSender;
+
+use crate::transport::forward::{
+    ForwardEngine, ForwardEvent, ForwardState as EngineState,
+};
 
 /// One rule's live state, by position in the session's `forward_rules`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,6 +144,109 @@ impl ForwardStatusSource for FakeStatusSource {
             .lock()
             .expect("fake source lock")
             .senders
+            .push(sender);
+    }
+}
+
+/// The wave integrator's bridge from the transport engine
+/// (`crate::transport::forward`) into [`ForwardStatusSource`].
+///
+/// The connect flow builds one per connected tab: it holds the tab's
+/// [`ForwardEngine`] handle plus a snapshot cache fed by a tokio task
+/// draining the engine's event channel through [`Self::handle_event`].
+/// The dialog only ever sees this trait — it never imports transport
+/// types. `Send + Sync` via the same lock discipline as
+/// [`FakeStatusSource`]: no lock is held across `.await` (nothing here
+/// awaits at all — fan-out uses `try_send`, control uses
+/// `tokio::spawn`).
+pub struct EngineStatusBridge {
+    engine: ForwardEngine,
+    states: Mutex<HashMap<usize, ForwardState>>,
+    senders: Mutex<Vec<UnboundedSender<ForwardStatus>>>,
+}
+
+/// The transport's per-rule state in the dialog's shape:
+/// `LastFailed` is the engine's name for what the dialog renders as
+/// `Failed`; every other variant (and the transport `rule_id` → dialog
+/// `rule_index` position) lines up one-to-one.
+fn map_engine_state(state: &EngineState) -> ForwardState {
+    match state {
+        EngineState::Listening => ForwardState::Listening,
+        EngineState::Active { conns } => ForwardState::Active { conns: *conns },
+        EngineState::LastFailed { error } => ForwardState::Failed {
+            error: error.clone(),
+        },
+        EngineState::Stopped => ForwardState::Stopped,
+    }
+}
+
+impl EngineStatusBridge {
+    /// Wrap a live engine handle. The caller spawns the drain task that
+    /// feeds [`Self::handle_event`]; see `ui::tab::finish_connect`.
+    pub fn new(engine: ForwardEngine) -> Self {
+        Self {
+            engine,
+            states: Mutex::new(HashMap::new()),
+            senders: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The wrapped engine, for lifecycle calls (`stop` on tab teardown).
+    /// Cheap to clone: every clone drives the same listeners.
+    pub fn engine(&self) -> ForwardEngine {
+        self.engine.clone()
+    }
+
+    /// Fold one engine event into the snapshot and fan it out to every
+    /// subscriber. Senders whose receiver is gone are pruned, like
+    /// [`FakeStatusSource::emit`]. Never blocks.
+    pub fn handle_event(&self, event: ForwardEvent) {
+        let status = ForwardStatus {
+            rule_index: event.rule_id,
+            state: map_engine_state(&event.state),
+        };
+        self.states
+            .lock()
+            .expect("bridge states lock")
+            .insert(status.rule_index, status.state.clone());
+        self.senders
+            .lock()
+            .expect("bridge senders lock")
+            .retain(|sender| sender.send(status.clone()).is_ok());
+    }
+}
+
+impl ForwardStatusSource for EngineStatusBridge {
+    fn snapshot(&self) -> Vec<ForwardStatus> {
+        // Rules the engine never reported have no entry: per the trait
+        // docs they render as `Stopped` at the dialog layer.
+        let mut snapshot: Vec<ForwardStatus> = self
+            .states
+            .lock()
+            .expect("bridge states lock")
+            .iter()
+            .map(|(&rule_index, state)| ForwardStatus {
+                rule_index,
+                state: state.clone(),
+            })
+            .collect();
+        snapshot.sort_by_key(|status| status.rule_index);
+        snapshot
+    }
+
+    fn set_rule_enabled(&self, rule_index: usize, enabled: bool) {
+        // Queued on the runtime, never awaited on the GTK thread; the
+        // resulting state arrives back through the event drain.
+        let engine = self.engine.clone();
+        tokio::spawn(async move {
+            engine.set_enabled(rule_index, enabled).await;
+        });
+    }
+
+    fn subscribe(&self, sender: UnboundedSender<ForwardStatus>) {
+        self.senders
+            .lock()
+            .expect("bridge senders lock")
             .push(sender);
     }
 }
