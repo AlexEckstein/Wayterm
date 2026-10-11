@@ -9,7 +9,10 @@ database (`$XDG_DATA_HOME/wayterm/wayterm.sqlite3`) through `rusqlite`
 
 `SessionStore::open` turns on `journal_mode=WAL` and `foreign_keys`, then
 applies this schema (with `IF NOT EXISTS`) and, on a fresh database, the
-seed below. There is no migration framework yet; the schema is v1.
+seed below. There is no migration framework yet: later additions are
+idempotent steps run on every open — the `rdp_trust` table (doc 08) and
+`sessions.icon`, which `ALTER TABLE` adds to databases created before
+it existed.
 
 ```sql
 -- Session folders for tree organization
@@ -81,6 +84,7 @@ CREATE TABLE sessions (
     font_family      TEXT,
     font_size        REAL,
     opacity          REAL,
+    icon             TEXT,                    -- icon name; NULL = the type's default (§Icons)
 
     -- Metadata
     last_connected   TEXT,
@@ -147,7 +151,35 @@ Enum columns hold serde spellings, locked by `src/store/model.rs` tests:
 `ssh_options`, `rdp_options`, `vnc_options`, and `forward_rules` are JSON
 objects (`SshOptions`, `RdpOptions`, `VncOptions`, `[ForwardRule]`).
 `SessionConfig` mirrors one row and never holds a secret; it deserializes
-with defaults, so JSON written before a field existed still loads.
+with defaults, so JSON written before a field existed still loads. Its
+`icon` is serialized only when set, so a session without one keeps the
+exact earlier wire format.
+
+### Icons
+
+`folders.icon` and `sessions.icon` hold an icon name drawn through the
+GTK icon theme (`src/ui/icons.rs`); NULL means the default —
+`folder-symbolic` for folders, and per session type `network-server`
+(SSH), `computer` (RDP), `video-display` (VNC), `network-wired`
+(serial), `utilities-terminal` (local), all `-symbolic`. A name the
+theme cannot find (a deleted custom icon, another machine) draws the
+default, never a broken image.
+
+Custom icons are SVG only. "Import SVG…" copies the file into
+`$XDG_DATA_HOME/wayterm/icons/`, which is on the icon theme's search
+path, and stores the name `wayterm-<file stem>` (lowercased, other
+characters folded to `-`; no file paths in the database). A
+`-symbolic` SVG is recolored to the theme like the built-in icons.
+Files over 1 MiB, without an `<svg` element, or that GTK cannot load
+are refused; re-importing the same file reuses its name, and a
+different file with a taken name gets a counter, so an existing icon
+never changes underneath its users.
+
+The icon is edited in the session dialog and, for folders, in the
+session tree's **Edit Folder** dialog (name + icon). Both offer a grid
+of curated theme icons plus every imported SVG, a free-text icon name
+(any icon of the installed theme), Import SVG…, and a reset to the
+default.
 
 ## Default Data
 
@@ -224,8 +256,9 @@ Code: `src/transfer/` (engines), `src/ui/import_dialog.rs` (windows).
   are skipped with a warning; unmappable entries (unsupported protocols,
   missing hosts) are warnings and count as skipped; the import report
   lists them all.
-- **Gap:** folder icons from a source are dropped with a warning —
-  `insert_folder` takes no icon yet (store API).
+- **Icons** (§Icons) travel as names in Wayterm's JSON export, folders
+  and sessions alike; the SVG files do not. On a machine without the
+  same custom SVG, the item draws its default icon.
 - **UI:** when the store is empty on first start, Wayterm offers the
   import once (recorded in the `import_offered` setting). Import and
   Export are on the session-tree menu and are window actions
