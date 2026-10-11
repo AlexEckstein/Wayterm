@@ -189,14 +189,14 @@ fn icon_is_trimmed_and_blank_means_default() {
         ..DialogFields::default()
     };
     assert_eq!(
-        config_from_fields(&chosen, &[]).icon.as_deref(),
+        config_from_fields(&chosen, &[], &[]).icon.as_deref(),
         Some("wayterm-homelab")
     );
     let blank = DialogFields {
         icon: "  ".to_string(),
         ..DialogFields::default()
     };
-    assert_eq!(config_from_fields(&blank, &[]).icon, None);
+    assert_eq!(config_from_fields(&blank, &[], &[]).icon, None);
 }
 
 #[test]
