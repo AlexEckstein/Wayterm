@@ -293,6 +293,13 @@ impl SessionTree {
             );
         }
 
+        // Window actions (main_window), shown whatever is selected — an
+        // empty tree included.
+        let transfer = gio::Menu::new();
+        transfer.append(Some("Import Sessions…"), Some("win.import-sessions"));
+        transfer.append(Some("Export Sessions…"), Some("win.export-sessions"));
+        menu.append_section(None, &transfer);
+
         self.popover.set_menu_model(Some(&menu));
         self.popover.insert_action_group("tree", Some(&group));
         // Anchor at the click (tree coordinates, moved into the popover
