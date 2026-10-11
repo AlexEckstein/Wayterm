@@ -15,7 +15,7 @@ the last. Phase numbers are referenced from code and other docs.
 | 8 | tmux persistence | done |
 | 9 | Import/export, packaging | done, with gaps below |
 | 10 | libghostty-vt backend | when its C API stabilizes |
-| 11 | Jump hosts and port forwarding | not started |
+| 11 | Jump hosts and port forwarding | done, with v1 limits below |
 | 12 | Testing hardening | continuous |
 
 ## Phase 1: Skeleton — done
@@ -165,21 +165,36 @@ Gaps, each small:
 FFI bindings, a custom render widget, the `backend-ghostty` feature,
 benchmarks against VTE (docs 03, 05).
 
-## Phase 11: Jump hosts and port forwarding
+## Phase 11: Jump hosts and port forwarding — done, with v1 limits
 
-`open_direct_tcpip`; local forwards (a listener per rule,
-`copy_bidirectional` per connection); single-level ProxyJump with
-independent auth per hop; a Tunnels dialog with live status; listeners
-re-established on reconnect. Dynamic and remote forwards are v2 (doc 11).
-**Verify:** curl a forwarded port; reach a host only visible from a
-bastion.
+`open_direct_tcpip` (doc 04); one level of ProxyJump with independent
+auth per hop (`transport::jump`, depth > 1 and self-jump are connect
+errors); local forwards through a caller-owned `transport::forward::ForwardEngine`
+(one listener per enabled Local rule, one direct-tcpip channel +
+`copy_bidirectional` per accepted connection); the Tunnels dialog (live
+view: per-rule status, a runtime on/off switch labelled "until
+reconnect", "Edit rules…" into the session dialog); listeners close with
+their tab and are re-established on reconnect (every redial goes back
+through `finish_connect`). The `ssh -W` fallback mode is an explicit
+per-session opt-in (`ssh_options.ssh_w_fallback`) with the trust note
+in doc 11. **Verify:** sshd suites `forward_sshd` (curl through the
+tunnel) and `jump_sshd` (target reached over the bastion's channel).
+
+v1 limits (deliberate, doc 11 §Limitations): dynamic (SOCKS) and remote
+forwards are v2; jump depth > 1 is v2; agent and X11 forwarding are v2;
+SFTP over a jumped session is v2; tunnels close with their tab (no
+tunnel-only sessions yet); jumped connections are not deduped (two tabs
+to the same target via the same bastion open two jumped connections).
+The single-sshd rig cannot express bastion isolation (jump target ==
+jump host in the suite) — stated in the test headers.
 
 ## Phase 12: Testing hardening
 
 Done: unit and display-free integration tests; a real-sshd suite in CI;
 host-key decision tests; FakeBackend pump/bridge tests; an auth-method
 matrix against single-method sshds (run locally, doc 11 §Testing
-Strategy). To do: run `connect_flow`, `tmux_persistence` and
+Strategy); `forward_sshd` and `jump_sshd` suites for Phase 11 (local
+rig + doc 11 §Testing Strategy). To do: run `connect_flow`, `tmux_persistence` and
 `reconnect_sshd` in CI too (they need only the CI sshd); `cargo-fuzz`
 targets for known_hosts handling and SFTP path joining.
 

@@ -45,14 +45,16 @@ CREATE TABLE sessions (
     key_path        TEXT,
     tmux_enabled    INTEGER DEFAULT 0,
     tmux_session_name TEXT,                   -- bare suffix; SSHTransport prepends 'wayterm-' (doc 04)
-    ssh_options     TEXT,                     -- JSON: compression, keepalive, etc.
+    ssh_options     TEXT,                     -- JSON: compression, keepalive_interval,
+                                               -- keepalive_count, ssh_w_fallback (doc 11).
     jump_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
                                               -- ProxyJump-style hop: this session connects
                                               -- THROUGH the referenced session (doc 11).
                                               -- v1: max depth 1, enforced in UI + connect logic.
     forward_rules   TEXT,                     -- JSON array, doc 11 §Port forwarding:
-                                              -- [{type:"local", bind:"127.0.0.1:8080",
-                                              --   remote_host:"web1.lan", remote_port:80, enabled:true}]
+                                              -- [{kind:"local", bind_addr:"127.0.0.1",
+                                              --   bind_port:8080, remote_host:"web1.lan",
+                                              --   remote_port:80, enabled:true}]
 
     -- RDP-specific
     rdp_domain      TEXT,
@@ -150,6 +152,9 @@ Enum columns hold serde spellings, locked by `src/store/model.rs` tests:
 
 `ssh_options`, `rdp_options`, `vnc_options`, and `forward_rules` are JSON
 objects (`SshOptions`, `RdpOptions`, `VncOptions`, `[ForwardRule]`).
+`SshOptions` holds `compression`, `keepalive_interval`, `keepalive_count`,
+and `ssh_w_fallback` (jump `ssh -W` fallback, doc 11 §Jump hosts; older
+rows load it as `false`).
 `SessionConfig` mirrors one row and never holds a secret; it deserializes
 with defaults, so JSON written before a field existed still loads. Its
 `icon` is serialized only when set, so a session without one keeps the

@@ -440,6 +440,7 @@ fn sample_ssh_config(folder_id: Option<i64>) -> SessionConfig {
             compression: true,
             keepalive_interval: Some(30),
             keepalive_count: Some(3),
+            ssh_w_fallback: false,
         }),
         rdp_domain: Some("CORP".to_string()),
         rdp_width: Some(1920),

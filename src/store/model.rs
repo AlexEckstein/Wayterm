@@ -74,6 +74,11 @@ pub struct SshOptions {
     pub compression: bool,
     pub keepalive_interval: Option<u32>,
     pub keepalive_count: Option<u32>,
+    /// Run `ssh -W` as the jump stream when the jump hop rejects
+    /// direct-tcpip (doc 11 §Jump hosts). Off by default; rows written
+    /// before this field existed load as `false`.
+    #[serde(default)]
+    pub ssh_w_fallback: bool,
 }
 
 /// The `sessions.rdp_options` JSON column.

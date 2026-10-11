@@ -56,8 +56,9 @@ dismissed a prompt or closed the tab, and is never retried.
 
 A transport owns one channel, never the SSH session. The session is an
 `SshConnection` — one authenticated russh handle that opens session
-channels (`SSHTransport`), SFTP subsystem channels (doc 09), and, from
-Phase 11, direct-tcpip channels (doc 11).
+channels (`SSHTransport`), SFTP subsystem channels (doc 09), and
+direct-tcpip channels for jump hosts and local forwards (doc 11 §Jump
+hosts and port forwarding).
 
 `ConnectionSupervisor` (one per window) shares one connection per
 (host, port, username). Consumers hold `Arc`s; a monitor task disconnects
@@ -66,6 +67,13 @@ Concurrent dials for one key may race; the loser disconnects its own
 connection and adopts the winner's. Dialing runs host-key verification and
 the auth chain (doc 11); because prompts block until answered, the UI runs
 the dial on tokio's blocking pool.
+
+A jumped connection is the exception (doc 11 §Jump hosts): it is never
+pooled — the pool key describes a TCP endpoint, not a connection backed
+by a jump channel — so the connect flow dials it through
+`transport::jump` and the target holds its bastion's `Arc` for its
+whole life, keeping the supervisor's monitor from evicting the bastion
+out from under a live target.
 
 ## SSHTransport
 

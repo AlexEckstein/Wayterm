@@ -82,22 +82,39 @@ and the certificate question are in doc 08.
 
 ## Jump hosts and port forwarding (Phase 11)
 
-Both build on `SshConnection::open_direct_tcpip` (doc 04).
+Both build on `SshConnection::open_direct_tcpip` (doc 04)
+(originator `127.0.0.1:0`, OpenSSH `-W` convention).
 
 ### Jump hosts
 
 One level of ProxyJump (`sessions.jump_session_id`): connect to the jump
 host, open a direct-tcpip channel to the target, and run the target's SSH
 session over that stream (as `russh-config` does for ProxyCommand). Each
-hop authenticates on its own; depth > 1 is an error. Fallback for exotic
-setups: run `ssh -W` as the stream.
+hop authenticates on its own with its own method/credentials; depth > 1
+and self-jump are connect errors (`transport::jump::check_jump_chain`).
+The inner connection is never pooled (doc 04 §Connection Supervisor).
+SFTP is not available over a jumped session in v1 — the sidebar says
+so instead of attaching. Fallback for exotic setups:
+`sessions.ssh_options.ssh_w_fallback` runs `ssh -W target:port
+[user@]jump` as the stream — the child carries no secrets and is killed
+when the connection drops; the inner hop still authenticates through
+the stream. Trust note: on the `ssh -W` hop OpenSSH — not Wayterm —
+verifies the host key and authenticates (its `known_hosts`, agent and
+config); the target hop is still verified and authenticated by Wayterm.
 
 ### Port forwarding
 
-Rules live in `sessions.forward_rules` (doc 06). For local forwards, a
-listener task per rule opens one direct-tcpip channel per accepted
-connection and pipes it with `copy_bidirectional`. Listeners close with
-the connection and return on reconnect. Dynamic (SOCKS) and remote
+Rules live in `sessions.forward_rules` (doc 06). The caller owns a
+`transport::forward::ForwardEngine` per live connection: `start(rules)`
+serves every enabled local rule (one `TcpListener` each, one
+direct-tcpip channel per accepted connection piped with
+`copy_bidirectional`), `set_enabled` toggles one rule live, and `stop`
+closes listeners and aborts per-connection tasks. Status flows as
+`ForwardEvent`s (`Listening` / `Active { conns }` / `LastFailed` /
+`Stopped`) for the Tunnels dialog. An empty `bind_addr` means loopback,
+never `0.0.0.0`. Listeners close with the connection and return on
+reconnect: the reconnect driver stops the old engine and starts a fresh
+one on the new connection `Arc`. Dynamic (SOCKS) and remote
 forwards (which need `tcpip-forward` handler callbacks) are v2; so are
 agent and X11 forwarding.
 
@@ -109,8 +126,8 @@ The transport is testable without a GUI because of the trait split.
    `wayterm-test` user, `SSH_TEST_*` in `GITHUB_ENV`) and runs
    `tests/transport_sshd.rs`. Locally, `scripts/run-sshd-tests.sh` starts a
    separate instance on port 2422 from `scripts/sshd-test-config.inc`,
-   never touching the system sshd, and also runs `connect_flow`,
-   `tmux_persistence` and `reconnect_sshd`.
+    never touching the system sshd, and also runs `connect_flow`,
+    `tmux_persistence`, `reconnect_sshd`, `forward_sshd`, and `jump_sshd`.
 2. **Host-key decisions:** unit tests over temp known_hosts files —
    unknown, matching, mismatched, `accept-new`, `off`, hashed entries.
 3. **Auth-method matrix:** `tests/auth_matrix.rs` against one sshd per

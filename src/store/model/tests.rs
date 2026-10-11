@@ -98,6 +98,7 @@ fn session_config_json_roundtrip() {
             compression: true,
             keepalive_interval: Some(30),
             keepalive_count: Some(3),
+            ssh_w_fallback: false,
         }),
         rdp_domain: Some("CORP".to_string()),
         rdp_width: Some(1920),
@@ -207,6 +208,22 @@ fn forward_rule_roundtrip() {
     // shifts under stored rows (doc 11 §Port forwarding).
     assert_eq!(wire(&ForwardKind::Remote), "\"remote\"");
     assert_eq!(wire(&ForwardKind::Dynamic), "\"dynamic\"");
+}
+
+#[test]
+fn ssh_w_fallback_defaults_off_for_old_rows() {
+    // Rows written before `ssh_w_fallback` existed (doc 11 §Jump hosts)
+    // must load as `false`, never fail to parse.
+    let options: SshOptions =
+        serde_json::from_str(r#"{"compression":true,"keepalive_interval":30,"keepalive_count":3}"#)
+            .unwrap();
+    assert!(!options.ssh_w_fallback);
+
+    let on: SshOptions = serde_json::from_str(
+        r#"{"compression":false,"keepalive_interval":null,"keepalive_count":null,"ssh_w_fallback":true}"#,
+    )
+    .unwrap();
+    assert!(on.ssh_w_fallback);
 }
 
 #[test]

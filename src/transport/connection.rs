@@ -80,16 +80,21 @@ impl SshConnection {
             .map_err(TransportError::from_russh)
     }
 
-    /// direct-tcpip channels for local forwards and jump hosts (doc 11,
-    /// Phase 11). Not implemented yet.
+    /// direct-tcpip channels for local forwards and jump hosts (doc 11
+    /// §Jump hosts and port forwarding). Originator address/port are
+    /// client-side metadata, so the loopback/0 convention (like OpenSSH
+    /// `-W`) is used; callers only name the destination.
     pub async fn open_direct_tcpip(
         &self,
-        _host: &str,
-        _port: u16,
+        host: &str,
+        port: u16,
     ) -> Result<Channel<Msg>, TransportError> {
-        Err(TransportError::ChannelError(
-            "direct-tcpip channels are not implemented yet (Phase 11)".into(),
-        ))
+        self.handle
+            .lock()
+            .await
+            .channel_open_direct_tcpip(host, u32::from(port), "127.0.0.1", 0)
+            .await
+            .map_err(TransportError::from_russh)
     }
 
     /// A session channel with the `sftp` subsystem requested; the SFTP task

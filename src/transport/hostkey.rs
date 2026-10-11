@@ -42,6 +42,7 @@ impl fmt::Display for HostKeyFacts {
 pub type HostKeyPrompt = Arc<dyn Fn(&HostKeyFacts) -> HostKeyDecision + Send + Sync>;
 
 /// Maps a known_hosts check to a decision under a [`HostKeyPolicy`].
+#[derive(Clone)]
 pub struct HostKeyVerifier {
     policy: HostKeyPolicy,
     prompt: HostKeyPrompt,

@@ -61,6 +61,9 @@ const PARENT_ICON: &str = "⬆";
 
 /// Inline error shown while no SSH connection backs the sidebar.
 pub const NOT_CONNECTED: &str = "SFTP needs a live SSH connection";
+/// Doc 11 v1: no SFTP task runs over a jumped connection, so the sidebar
+/// shows this instead of attaching.
+pub const JUMPED_UNAVAILABLE: &str = "SFTP is not available for jumped sessions yet";
 /// Doc 09: a dead SFTP task is observable as an errored reply.
 pub const SESSION_ENDED: &str = "SFTP session ended — reconnect?";
 /// The command could not be queued at all (task gone, channel closed).
@@ -414,6 +417,15 @@ impl SftpView {
         self.recompute_toolbar();
     }
 
+    /// A jumped connection (doc 11 v1): no SFTP task is ever started over
+    /// it — the view keeps the limitation as its inline error and the
+    /// toolbar stays disabled.
+    pub fn mark_jump_unsupported(&mut self) {
+        self.connected = false;
+        self.error = Some(JUMPED_UNAVAILABLE.to_string());
+        self.recompute_toolbar();
+    }
+
     /// Directory the sidebar browses — [`START_PATH`] until the first listing.
     pub fn current_path(&self) -> &str {
         if self.path.is_empty() {
@@ -608,6 +620,17 @@ impl SftpSidebar {
         } else {
             *self.inner.deferred.borrow_mut() = Some(connection);
         }
+    }
+
+    /// Show the jumped-session state instead of attaching: no SFTP task
+    /// runs over a jumped connection (doc 11 v1), so any deferred
+    /// connection is dropped and the previous client, if any, is replaced
+    /// by the limitation notice.
+    pub fn show_jump_placeholder(&self) {
+        self.inner.deferred.borrow_mut().take();
+        *self.inner.client.borrow_mut() = None;
+        self.inner.state.borrow_mut().mark_jump_unsupported();
+        self.inner.render();
     }
 
     /// Show or hide the sidebar (`toggle_sftp`); returns the new state.
