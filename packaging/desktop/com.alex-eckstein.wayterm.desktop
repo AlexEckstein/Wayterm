@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wayterm
+Comment=Multi-protocol connection manager and terminal
+Exec=wayterm
+Icon=com.alex-eckstein.wayterm
+Terminal=false
+Categories=Network;Utility;
+StartupWMClass=wayterm
