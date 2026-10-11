@@ -289,6 +289,49 @@ fn update_folder_sets_name_and_icon() {
     assert_eq!(store.list_folders(None).unwrap()[0].icon, None);
 }
 
+#[test]
+fn move_folder_carries_its_contents() {
+    let store = SessionStore::in_memory().unwrap();
+
+    // A -> B (holding session s), and C at the root. Move B under C.
+    let a = store.insert_folder("A", None).unwrap();
+    let b = store.insert_folder("B", Some(a)).unwrap();
+    let c = store.insert_folder("C", None).unwrap();
+    let s = store.insert_session_row("s", Some(b));
+
+    assert!(store.move_folder(b, Some(c)).unwrap());
+    assert!(store.list_folders(Some(a)).unwrap().is_empty());
+    assert_eq!(store.get_folder(b).unwrap().parent_id, Some(c));
+    assert_eq!(store.session_folder_id(s), Some(b));
+
+    // And to the root.
+    assert!(store.move_folder(b, None).unwrap());
+    assert_eq!(store.get_folder(b).unwrap().parent_id, None);
+}
+
+#[test]
+fn move_folder_refuses_cycles() {
+    let store = SessionStore::in_memory().unwrap();
+
+    // A -> B -> C. A cannot go into itself, its child, or its grandchild.
+    let a = store.insert_folder("A", None).unwrap();
+    let b = store.insert_folder("B", Some(a)).unwrap();
+    let c = store.insert_folder("C", Some(b)).unwrap();
+
+    for target in [a, b, c] {
+        assert!(!store.move_folder(a, Some(target)).unwrap());
+    }
+    assert_eq!(store.get_folder(a).unwrap().parent_id, None);
+    assert_eq!(store.get_folder(b).unwrap().parent_id, Some(a));
+
+    // Moving down a level elsewhere is fine: C under A.
+    assert!(store.move_folder(c, Some(a)).unwrap());
+    assert_eq!(store.get_folder(c).unwrap().parent_id, Some(a));
+
+    // A missing folder moves nowhere.
+    assert!(!store.move_folder(9999, None).unwrap());
+}
+
 /// A database created before `sessions.icon` existed gains the column on
 /// open, keeps its rows, and stores icons afterwards.
 #[test]

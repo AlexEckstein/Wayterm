@@ -38,6 +38,9 @@ mod gtk_tests {
         super::session_dialog::gtk_tests::jump_picker_and_forward_editor();
         super::tunnels_dialog::gtk_tests::rows_status_and_toggle();
         super::session_tree::gtk_tests::context_menu_is_reused_and_parented_cleanly();
+        super::session_tree::gtk_tests::rows_nest_expand_and_select();
+        super::session_tree::gtk_tests::moving_a_session_keeps_folders_open();
+        super::session_tree::gtk_tests::moving_a_folder_refuses_cycles();
         super::icons::gtk_tests::custom_svg_resolves_and_picker_round_trips();
         super::folder_dialog::gtk_tests::edit_folder_prefills_name_and_icon();
         super::settings::gtk_tests::pages_and_general_switches();

@@ -72,6 +72,25 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Move a folder under `parent` (`None` = root), sub-folders and
+    /// sessions along with it. Returns false, changing nothing, if `parent`
+    /// is the folder itself or one of its sub-folders (or `id` does not
+    /// exist).
+    pub fn move_folder(&self, id: i64, parent: Option<i64>) -> rusqlite::Result<bool> {
+        // `ancestors` is `parent` and every folder above it; UNION (not
+        // UNION ALL) also ends the walk on an already-cyclic chain.
+        let changed = self.conn.execute(
+            "WITH RECURSIVE ancestors(id) AS ( \
+                 SELECT ?2 \
+                 UNION SELECT f.parent_id FROM folders f JOIN ancestors a ON f.id = a.id \
+             ) \
+             UPDATE folders SET parent_id = ?2, updated_at = datetime('now') \
+             WHERE id = ?1 AND ?1 NOT IN (SELECT id FROM ancestors WHERE id IS NOT NULL)",
+            params![id, parent],
+        )?;
+        Ok(changed > 0)
+    }
+
     /// Delete a folder. The schema cascades to sub-folders and moves the
     /// sessions inside to the root (`ON DELETE SET NULL`).
     pub fn delete_folder(&self, id: i64) -> rusqlite::Result<()> {
