@@ -67,6 +67,7 @@ const SESSION_KEY: &str = "wayterm-session-config";
 const PAGE_EVENTS_KEY: &str = "wayterm-page-events";
 const REDIAL_KEY: &str = "wayterm-redial-reply";
 const SIDEBAR_ATTACHED_KEY: &str = "wayterm-sftp-sidebar-attached";
+const FOCUS_ON_CONNECT_KEY: &str = "wayterm-focus-on-connect";
 // Notebook data key.
 const TEARDOWN_HOOK_KEY: &str = "wayterm-teardown-hook";
 
@@ -158,6 +159,9 @@ fn find_tab(notebook: &gtk4::Notebook, session_id: i64) -> Option<(u32, gtk4::Wi
 fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<SessionConfig>) {
     let gen = bump_gen(page);
     close_terminal(page);
+    // Every caller but the reconnect driver is the user asking for this
+    // tab; `redial` clears it again.
+    focus_on_connect(page).set(true);
 
     // VNC has no byte stream: its own dial (with the password prompt) and
     // engine, no supervisor or terminal (doc 08 §VNC).
@@ -317,7 +321,27 @@ async fn finish_connect(
         sidebar_attached(page).set(true);
     }
     follow_terminal_title(page, &widget, &session.name);
-    focus_terminal(notebook, page);
+    focus_after_connect(notebook, page);
+}
+
+/// A user-started connect takes focus (from the session tree, say); a
+/// reconnect only takes it back if nothing holds it — the old terminal was
+/// torn down with the connection — so it never pulls focus out of the SFTP
+/// sidebar or the session tree while the user is typing there.
+fn focus_after_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
+    let requested = focus_on_connect(page).replace(false);
+    if requested || focus_unclaimed(page) {
+        focus_terminal(notebook, page);
+    }
+}
+
+/// No widget has focus, or only a container of `page` (GTK may hand focus
+/// to an ancestor when the focused terminal is removed).
+fn focus_unclaimed(page: &gtk4::Widget) -> bool {
+    match page.root().and_then(|root| root.focus()) {
+        None => true,
+        Some(focus) => focus == *page || page.is_ancestor(&focus),
+    }
 }
 
 /// Give the page's terminal keyboard focus, so typing reaches the shell
@@ -513,6 +537,7 @@ fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
     // `start_connect` takes the next generation first thing.
     redial_slot(page).replace(Some((current_gen(page).wrapping_add(1), reply)));
     start_connect(notebook, page, &session);
+    focus_on_connect(page).set(false);
 }
 
 /// Let go of the page's hold on its connection — the transport and the
@@ -832,6 +857,14 @@ fn sidebar_attached(page: &gtk4::Widget) -> Rc<Cell<bool>> {
     })
 }
 
+fn focus_on_connect(page: &gtk4::Widget) -> Rc<Cell<bool>> {
+    data(page, FOCUS_ON_CONNECT_KEY).unwrap_or_else(|| {
+        let flag = Rc::new(Cell::new(false));
+        set_data(page, FOCUS_ON_CONNECT_KEY, flag.clone());
+        flag
+    })
+}
+
 // used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn current_gen(page: &gtk4::Widget) -> u64 {
     gen_slot(page).get()
@@ -992,6 +1025,65 @@ pub(super) mod gtk_tests {
         assert_eq!(notebook.current_page(), Some(0));
         assert!(focus_within(first_terminal), "the opened tab's terminal");
         assert!(!focus_within(second_terminal));
+        window.destroy();
+    }
+
+    /// A reconnect finishing on the current tab leaves focus where the user
+    /// put it; it takes focus only when nothing holds it, while a
+    /// user-started connect always does.
+    pub(in crate::ui) fn reconnect_does_not_steal_focus() {
+        let notebook = gtk4::Notebook::new();
+        let tree = gtk4::Entry::new();
+        let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        root.append(&tree);
+        root.append(&notebook);
+        let window = gtk4::Window::new();
+        window.set_child(Some(&root));
+
+        let session = SessionConfig {
+            id: 1,
+            name: "local-1".into(),
+            session_type: SessionType::LocalShell,
+            ..Default::default()
+        };
+        let page = page_content(&session);
+        // Stands in for the SFTP sidebar's path entry, inside the page.
+        let sidebar_entry = gtk4::Entry::new();
+        page.downcast_ref::<gtk4::Paned>()
+            .expect("page is a paned")
+            .set_start_child(Some(&sidebar_entry));
+        let backend = create_terminal().backend;
+        let terminal = backend.widget();
+        set_terminal_area(&page, &terminal);
+        set_data(&page, TERMINAL_BACKEND_KEY, backend);
+        notebook.append_page(&page, None::<&gtk4::Widget>);
+        window.present();
+        for _ in 0..10 {
+            glib::MainContext::default().iteration(false);
+        }
+
+        // Reconnect while typing in the sidebar, then in the tree.
+        for holder in [
+            sidebar_entry.upcast_ref::<gtk4::Widget>(),
+            tree.upcast_ref(),
+        ] {
+            holder.grab_focus();
+            focus_on_connect(&page).set(false);
+            focus_after_connect(&notebook, &page);
+            assert!(focus_within(holder), "a reconnect stole focus");
+        }
+
+        // Reconnect after the focused terminal went away with the connection.
+        gtk4::prelude::GtkWindowExt::set_focus(&window, None::<&gtk4::Widget>);
+        focus_after_connect(&notebook, &page);
+        assert!(focus_within(&terminal), "an unclaimed focus is taken back");
+
+        // A user-started connect takes focus from the tree.
+        tree.grab_focus();
+        focus_on_connect(&page).set(true);
+        focus_after_connect(&notebook, &page);
+        assert!(focus_within(&terminal), "a user-started connect");
+        assert!(!focus_on_connect(&page).get(), "the request is one-shot");
         window.destroy();
     }
 }
