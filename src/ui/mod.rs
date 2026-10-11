@@ -18,9 +18,9 @@ pub mod tab_restore;
 pub mod tab_state;
 pub mod terminal_actions;
 pub mod tray;
+pub mod tunnels_dialog;
 pub mod vnc_tab;
 pub mod widgets;
-
 pub use main_window::MainWindow;
 
 /// Widget tests: they need a display (`xvfb-run -a cargo test -- --ignored
@@ -33,6 +33,8 @@ mod gtk_tests {
     fn widgets() {
         gtk4::init().expect("gtk init");
         super::session_dialog::gtk_tests::tmux_group_entry_follows_name_until_user_edits();
+        super::session_dialog::gtk_tests::jump_picker_and_forward_editor();
+        super::tunnels_dialog::gtk_tests::rows_status_and_toggle();
         super::session_tree::gtk_tests::context_menu_is_reused_and_parented_cleanly();
         super::settings::gtk_tests::pages_and_general_switches();
         super::tab::gtk_tests::opening_a_tab_focuses_its_terminal();
