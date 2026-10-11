@@ -1,5 +1,5 @@
 //! The session tree sidebar: folders and saved sessions with a right-click
-//! CRUD menu; sessions drag onto folders to move (docs 01, 06). Rows draw their icon by name from the icon
+//! CRUD menu; sessions and folders drag onto folders to move (docs 01, 06). Rows draw their icon by name from the icon
 //! theme (`ui::icons`). [`collect_rows`] is the display-free part.
 
 use std::collections::{HashMap, HashSet};
@@ -84,6 +84,15 @@ fn node_of(item: &glib::Object) -> Option<glib::BoxedAnyObject> {
     }
 }
 
+/// What a tree drag carries. Its own GType, so only drags out of this
+/// tree reach its drop targets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, glib::Boxed)]
+#[boxed_type(name = "WaytermTreeDrag")]
+enum Dragged {
+    Session(i64),
+    Folder(i64),
+}
+
 /// The selected row: `(id, is_folder, name)`.
 type Selected = (i64, bool, String);
 
@@ -151,15 +160,9 @@ impl SessionTree {
 
         tree.list_view.set_factory(Some(&row_factory(&tree)));
 
-        // A session dropped below the rows moves to the root.
-        let drop = gtk4::DropTarget::new(glib::Type::I64, gdk::DragAction::MOVE);
-        let for_drop = tree.clone();
-        drop.connect_drop(move |_, value, _, _| {
-            value
-                .get::<i64>()
-                .is_ok_and(|id| for_drop.move_session(id, None))
-        });
-        tree.list_view.add_controller(drop);
+        // A row dropped below the rows moves to the root.
+        tree.list_view
+            .add_controller(drop_target(&tree, || Some(None)));
 
         // Activating a session opens it; activating a folder toggles it.
         let for_activate = tree.clone();
@@ -265,24 +268,62 @@ impl SessionTree {
         }
     }
 
-    /// Move session `id` into `folder` (`None` = root), keep that folder
+    /// Whether moving `dragged` into `folder` (`None` = root) would change
+    /// anything: it is elsewhere, and a folder is not going into itself or
+    /// one of its sub-folders.
+    fn can_move(&self, dragged: Dragged, folder: Option<i64>) -> bool {
+        match dragged {
+            Dragged::Session(id) => self
+                .store
+                .get_session(id)
+                .is_ok_and(|config| config.folder_id != folder),
+            Dragged::Folder(id) => {
+                if !self
+                    .store
+                    .get_folder(id)
+                    .is_ok_and(|moved| moved.parent_id != folder)
+                {
+                    return false;
+                }
+                // Walk up from the target; meeting `id` means a cycle.
+                let mut seen = HashSet::new();
+                let mut current = folder;
+                while let Some(ancestor) = current {
+                    if ancestor == id || !seen.insert(ancestor) {
+                        return false;
+                    }
+                    current = self
+                        .store
+                        .get_folder(ancestor)
+                        .ok()
+                        .and_then(|f| f.parent_id);
+                }
+                true
+            }
+        }
+    }
+
+    /// Move `dragged` into `folder` (`None` = root), keep that folder
     /// open, and refresh once idle — callers are drop handlers on the very
     /// rows the refresh replaces. False if nothing moved.
-    fn move_session(&self, id: i64, folder: Option<i64>) -> bool {
-        let mut config = match self.store.get_session(id) {
-            Ok(config) => config,
-            Err(err) => {
-                eprintln!("Wayterm: failed to load session {id}: {err}");
-                return false;
-            }
-        };
-        if config.folder_id == folder {
+    fn move_to(&self, dragged: Dragged, folder: Option<i64>) -> bool {
+        if !self.can_move(dragged, folder) {
             return false;
         }
-        config.folder_id = folder;
-        if let Err(err) = self.store.update_session(&config) {
-            eprintln!("Wayterm: failed to move the session: {err}");
-            return false;
+        let result = match dragged {
+            Dragged::Session(id) => self.store.get_session(id).and_then(|mut config| {
+                config.folder_id = folder;
+                self.store.update_session(&config).map(|()| true)
+            }),
+            Dragged::Folder(id) => self.store.move_folder(id, folder),
+        };
+        match result {
+            Ok(true) => {}
+            Ok(false) => return false,
+            Err(err) => {
+                eprintln!("Wayterm: failed to move {dragged:?}: {err}");
+                return false;
+            }
         }
         let mut expanded = self.expanded_folders();
         expanded.extend(folder);
@@ -477,10 +518,44 @@ fn node_at(item: &glib::WeakRef<gtk4::ListItem>) -> Option<glib::BoxedAnyObject>
     node_of(&item.upgrade()?.item()?)
 }
 
+/// A drop target that moves the dragged row into `folder_of()` (`None`
+/// inside = root; `None` outside = no target). It only highlights where
+/// the move would do something.
+fn drop_target(
+    tree: &SessionTree,
+    folder_of: impl Fn() -> Option<Option<i64>> + 'static,
+) -> gtk4::DropTarget {
+    let drop = gtk4::DropTarget::new(Dragged::static_type(), gdk::DragAction::MOVE);
+    drop.set_preload(true);
+    let folder_of = Rc::new(folder_of);
+    let hover = {
+        let (tree, folder_of) = (tree.clone(), folder_of.clone());
+        move |target: &gtk4::DropTarget, _: f64, _: f64| {
+            let dragged = target.value().and_then(|value| value.get::<Dragged>().ok());
+            match (dragged, folder_of()) {
+                (Some(dragged), Some(folder)) if tree.can_move(dragged, folder) => {
+                    gdk::DragAction::MOVE
+                }
+                _ => gdk::DragAction::empty(),
+            }
+        }
+    };
+    drop.connect_enter(hover.clone());
+    drop.connect_motion(hover);
+    let tree = tree.clone();
+    drop.connect_drop(
+        move |_, value, _, _| match (value.get::<Dragged>(), folder_of()) {
+            (Ok(dragged), Some(folder)) => tree.move_to(dragged, folder),
+            _ => false,
+        },
+    );
+    drop
+}
+
 /// Row widgets: an expander (indent and disclosure arrow) around the
-/// icon and name. Session rows drag their id; every row is a drop target
-/// that moves the session into the row's folder (a folder row's own, a
-/// session row's parent).
+/// icon and name. Every row drags itself and is a drop target that moves
+/// the dragged row into the row's folder (a folder row's own, a session
+/// row's parent).
 fn row_factory(tree: &SessionTree) -> gtk4::SignalListItemFactory {
     let factory = gtk4::SignalListItemFactory::new();
     let tree = tree.clone();
@@ -500,7 +575,12 @@ fn row_factory(tree: &SessionTree) -> gtk4::SignalListItemFactory {
         drag.connect_prepare(move |_, _, _| {
             let node = node_at(&weak)?;
             let node = node.borrow::<Node>();
-            (!node.is_folder).then(|| gdk::ContentProvider::for_value(&node.id.to_value()))
+            let dragged = if node.is_folder {
+                Dragged::Folder(node.id)
+            } else {
+                Dragged::Session(node.id)
+            };
+            Some(gdk::ContentProvider::for_value(&dragged.to_value()))
         });
         drag.connect_drag_begin(glib::clone!(
             #[weak]
@@ -512,24 +592,16 @@ fn row_factory(tree: &SessionTree) -> gtk4::SignalListItemFactory {
         ));
         expander.add_controller(drag);
 
-        let drop = gtk4::DropTarget::new(glib::Type::I64, gdk::DragAction::MOVE);
         let weak = item.downgrade();
-        let tree = tree.clone();
-        drop.connect_drop(move |_, value, _, _| {
-            let (Ok(id), Some(node)) = (value.get::<i64>(), node_at(&weak)) else {
-                return false;
-            };
-            let folder = {
-                let node = node.borrow::<Node>();
-                if node.is_folder {
-                    Some(node.id)
-                } else {
-                    node.parent_id
-                }
-            };
-            tree.move_session(id, folder)
-        });
-        expander.add_controller(drop);
+        expander.add_controller(drop_target(&tree, move || {
+            let node = node_at(&weak)?;
+            let node = node.borrow::<Node>();
+            Some(if node.is_folder {
+                Some(node.id)
+            } else {
+                node.parent_id
+            })
+        }));
 
         item.set_child(Some(&expander));
     });
@@ -684,16 +756,16 @@ pub(super) mod gtk_tests {
         assert_eq!(names(), ["A", "in-a", "B", "moved"]);
 
         // Into the empty folder B: B opens, A stays open.
-        assert!(tree.move_session(moved, Some(b)));
+        assert!(tree.move_to(Dragged::Session(moved), Some(b)));
         settle();
         assert_eq!(store.get_session(moved).unwrap().folder_id, Some(b));
         assert_eq!(names(), ["A", "in-a", "B", "moved"]);
         assert!(tree.tree_model.row(2).unwrap().is_expanded());
 
-        assert!(!tree.move_session(moved, Some(b)));
+        assert!(!tree.move_to(Dragged::Session(moved), Some(b)));
 
         // Back to the root; B is empty again and loses its expander.
-        assert!(tree.move_session(moved, None));
+        assert!(tree.move_to(Dragged::Session(moved), None));
         settle();
         assert_eq!(store.get_session(moved).unwrap().folder_id, None);
         assert_eq!(names(), ["A", "in-a", "B", "moved"]);
@@ -702,5 +774,41 @@ pub(super) mod gtk_tests {
         // A plain refresh keeps A open too.
         tree.refresh();
         assert!(tree.tree_model.row(0).unwrap().is_expanded());
+    }
+
+    /// Folders move with their contents, never into themselves or their
+    /// sub-folders, and only in-tree drags carry the drag type.
+    pub(in crate::ui) fn moving_a_folder_refuses_cycles() {
+        let store = Rc::new(SessionStore::in_memory().unwrap());
+        let a = store.insert_folder("A", None).unwrap();
+        let b = store.insert_folder("B", Some(a)).unwrap();
+        let c = store.insert_folder("C", None).unwrap();
+        let tree = SessionTree::new(store.clone(), |_| {});
+        tree.refresh();
+        let settle = || while glib::MainContext::default().iteration(false) {};
+
+        let value = Dragged::Folder(a).to_value();
+        assert_eq!(value.get::<Dragged>().ok(), Some(Dragged::Folder(a)));
+        assert!(1_i64.to_value().get::<Dragged>().is_err());
+
+        // A into itself or its child B: refused; B already in A: no-op.
+        assert!(!tree.can_move(Dragged::Folder(a), Some(a)));
+        assert!(!tree.can_move(Dragged::Folder(a), Some(b)));
+        assert!(!tree.can_move(Dragged::Folder(b), Some(a)));
+        assert!(!tree.move_to(Dragged::Folder(a), Some(b)));
+        assert_eq!(store.get_folder(a).unwrap().parent_id, None);
+
+        // A (with B inside) into C: C opens and shows A.
+        assert!(tree.move_to(Dragged::Folder(a), Some(c)));
+        settle();
+        assert_eq!(store.get_folder(a).unwrap().parent_id, Some(c));
+        assert_eq!(store.get_folder(b).unwrap().parent_id, Some(a));
+        assert_eq!(tree.tree_model.n_items(), 2, "C, A");
+        assert!(tree.tree_model.row(0).unwrap().is_expanded());
+
+        // B out to the root.
+        assert!(tree.move_to(Dragged::Folder(b), None));
+        settle();
+        assert_eq!(store.get_folder(b).unwrap().parent_id, None);
     }
 }
