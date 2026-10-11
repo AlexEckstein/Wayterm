@@ -133,6 +133,9 @@ CREATE INDEX idx_history_recent ON connection_history(connected_at DESC);
 
 Deleting a folder deletes its sub-folders (`ON DELETE CASCADE`) and moves
 its sessions to the root (`ON DELETE SET NULL`).
+Dragging a session onto a folder in the session tree moves it there
+(sets `folder_id`); dropping it on a session joins that session's
+folder, and dropping it below the rows moves it to the root.
 
 ### Wire formats
 
