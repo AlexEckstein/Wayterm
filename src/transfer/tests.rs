@@ -55,6 +55,7 @@ Host bare
                 compression: false,
                 keepalive_interval: Some(30),
                 keepalive_count: None,
+                ssh_w_fallback: false,
             })
         );
     }

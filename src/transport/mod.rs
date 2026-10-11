@@ -6,7 +6,9 @@
 pub mod auth;
 pub mod connection;
 pub mod credentials;
+pub mod forward;
 pub mod hostkey;
+pub mod jump;
 pub mod local;
 pub mod reconnect;
 pub mod serial;
