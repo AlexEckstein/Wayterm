@@ -2,6 +2,7 @@
 
 pub mod auth_dialog;
 pub mod hostkey_dialog;
+pub mod import_dialog;
 pub mod main_window;
 pub mod rdp_tab;
 pub mod session_dialog;
