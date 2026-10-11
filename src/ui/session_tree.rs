@@ -14,6 +14,7 @@ use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
 use crate::ui::session_dialog::SessionDialog;
 use crate::ui::widgets::{confirm, data, prompt_text, set_data, window_of};
 
+
 /// One row of the tree, in display order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionRow {
@@ -493,10 +494,11 @@ impl SessionTree {
             Ok(folders) => folders,
             Err(err) => return eprintln!("Wayterm: failed to list folders: {err}"),
         };
+        let peers = collect_peer_sessions(&self.store);
         let dialog = match id {
-            None => SessionDialog::new_session(&parent, &folders),
+            None => SessionDialog::new_session(&parent, &folders, &peers),
             Some(id) => match self.store.get_session(id) {
-                Ok(config) => SessionDialog::edit(&parent, &config, &folders),
+                Ok(config) => SessionDialog::edit(&parent, &config, &folders, &peers),
                 Err(err) => return eprintln!("Wayterm: failed to load session {id}: {err}"),
             },
         };

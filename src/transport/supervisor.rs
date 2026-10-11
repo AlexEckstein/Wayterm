@@ -8,7 +8,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use async_trait::async_trait;
-use russh::client::{self, Config};
+use russh::client::{self, Config, Handle};
 
 use crate::transport::auth::ChallengeResponder;
 use crate::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
@@ -153,6 +153,20 @@ async fn dial_ssh(
     let handle = client::connect(config, (params.host.as_str(), params.port), handler)
         .await
         .map_err(|err| connect_error(&params.host, err))?;
+    wrap_and_authenticate(handle, params, method, creds, responder).await
+}
+
+/// Wrap a fresh russh handle in an [`SshConnection`] and run the auth chain
+/// on it (doc 11 §Flow), disconnecting on failure. Shared by the direct
+/// dial above and the jump dial (`transport::jump`), which arrives with a
+/// handle built over a direct-tcpip channel instead of a TCP socket.
+pub(crate) async fn wrap_and_authenticate(
+    handle: Handle<AppClientHandler>,
+    params: &ConnectParams,
+    method: &AuthMethod,
+    creds: &CredentialManager,
+    responder: Option<ChallengeResponder>,
+) -> Result<SshConnection, TransportError> {
     let conn = SshConnection::new(
         handle,
         params.host.clone(),
@@ -167,7 +181,7 @@ async fn dial_ssh(
 }
 
 /// A rejected host key is its own outcome (doc 11), not a connect failure.
-fn connect_error(host: &str, err: russh::Error) -> TransportError {
+pub(crate) fn connect_error(host: &str, err: russh::Error) -> TransportError {
     if matches!(err, russh::Error::UnknownKey) || err.to_string().contains("host key rejected for")
     {
         TransportError::HostKeyRejected(host.to_string())

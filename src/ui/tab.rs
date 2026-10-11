@@ -33,11 +33,14 @@ use tokio_util::sync::CancellationToken;
 use vte4::prelude::*;
 use zeroize::Zeroizing;
 
-use crate::store::model::{AuthMethod, HostKeyPolicy, SessionConfig, SessionType};
+use crate::store::model::{AuthMethod, ForwardRule, HostKeyPolicy, SessionConfig, SessionType};
+use crate::store::SessionStore;
 use crate::terminal::{create_terminal, TerminalBackend};
 use crate::transport::connection::{self, SshConnection};
 use crate::transport::credentials::{CredentialManager, KeyringSource, PromptSource};
+use crate::transport::forward::{ForwardEngine, ForwardEvent};
 use crate::transport::hostkey::HostKeyVerifier;
+use crate::transport::jump::{self, HopInputs};
 use crate::transport::reconnect::{ConnectFn, ConnectFuture};
 use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor};
 use crate::transport::tab::TerminalTab;
@@ -51,6 +54,7 @@ use crate::ui::sftp_sidebar::{self, supports_sftp, SftpSidebar};
 use crate::ui::tab_label;
 use crate::ui::tab_resilience;
 use crate::ui::tray;
+use crate::ui::tunnels_dialog::{EngineStatusBridge, ForwardStatusSource};
 use crate::ui::vnc_tab;
 use crate::ui::widgets::{centered_label, data, set_data, set_margins, window_of};
 
@@ -68,6 +72,12 @@ const PAGE_EVENTS_KEY: &str = "wayterm-page-events";
 const REDIAL_KEY: &str = "wayterm-redial-reply";
 const SIDEBAR_ATTACHED_KEY: &str = "wayterm-sftp-sidebar-attached";
 const FOCUS_ON_CONNECT_KEY: &str = "wayterm-focus-on-connect";
+/// The store the page resolves its jump host through (set by `open`).
+const STORE_KEY: &str = "wayterm-session-store";
+/// The page's live forward status source, when its engine is armed.
+const FORWARD_KEY: &str = "wayterm-forward-bridge";
+/// Engine event channel capacity: status snapshots, never blocking.
+const FWD_EVENT_BUF: usize = 64;
 // Notebook data key.
 const TEARDOWN_HOOK_KEY: &str = "wayterm-teardown-hook";
 
@@ -96,8 +106,14 @@ pub struct SessionTab;
 
 impl SessionTab {
     /// Open a tab for `session`, or focus the one already open; a new tab
-    /// starts connecting. Returns the page widget.
-    pub fn open(notebook: &gtk4::Notebook, session: &SessionConfig) -> gtk4::Widget {
+    /// starts connecting. Returns the page widget. `store` is kept on the
+    /// page so the connect flow can resolve the session's jump host at dial
+    /// time (doc 11 §Jump hosts).
+    pub fn open(
+        notebook: &gtk4::Notebook,
+        session: &SessionConfig,
+        store: &Rc<SessionStore>,
+    ) -> gtk4::Widget {
         if let Some((page_num, page)) = find_tab(notebook, session.id) {
             notebook.set_current_page(Some(page_num));
             focus_terminal(notebook, &page);
@@ -110,6 +126,7 @@ impl SessionTab {
         notebook.set_current_page(Some(page_num));
         set_data(&page, TAB_LABEL_KEY, tab_label);
         set_data(&page, SESSION_KEY, session.clone());
+        set_data(&page, STORE_KEY, store.clone());
         install_teardown_on_remove(notebook);
         start_connect(notebook, &page, &session);
         page
@@ -126,6 +143,17 @@ impl SessionTab {
 
     pub(crate) fn page_status(page: &gtk4::Widget) -> Option<PageStatusCell> {
         data(page, PAGE_STATUS_KEY)
+    }
+
+    /// The current tab's live forward status source, while its engine is
+    /// armed. Tabs without one (offline, non-SSH, never connected) get the
+    /// Tunnels dialog's offline fallback instead.
+    pub(crate) fn current_forward_source(
+        notebook: &gtk4::Notebook,
+    ) -> Option<Arc<dyn ForwardStatusSource>> {
+        let page = current_page(notebook)?;
+        data::<Option<Arc<EngineStatusBridge>>>(&page, FORWARD_KEY)?
+            .map(|bridge| bridge as Arc<dyn ForwardStatusSource>)
     }
 
     /// The current tab's terminal, once connected (the terminal actions'
@@ -158,6 +186,7 @@ fn find_tab(notebook: &gtk4::Notebook, session_id: i64) -> Option<(u32, gtk4::Wi
 /// Start (or retry) connecting `page`, invalidating any attempt in flight.
 fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<SessionConfig>) {
     let gen = bump_gen(page);
+    stop_forward_engine(page);
     close_terminal(page);
     // Every caller but the reconnect driver is the user asking for this
     // tab; `redial` clears it again.
@@ -234,17 +263,59 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         port,
         username,
     };
+    // Jump sessions dial through their bastion (doc 11 §Jump hosts): the
+    // dial closure below is the only branch that differs, and everything
+    // downstream receives the same `Arc<SshConnection>`.
     // The prompt closures block until the user answers, so the dial must
     // not occupy a reactor worker.
-    let dial = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(supervisor.get_or_connect(
-            &params,
-            &method,
-            &creds,
-            verifier,
-            Some(responder),
-        ))
-    });
+    let dial = if uses_jump_dial(session) {
+        let jump_id = session.jump_session_id.expect("uses_jump_dial checked");
+        let Some(jump_cfg) = resolve_jump_config(notebook, page, session, jump_id, &host, port)
+        else {
+            return;
+        };
+        // Each hop authenticates with its own session's method and
+        // credentials (doc 11): fresh managers, verifiers and responders.
+        let jump_policy = jump_cfg
+            .host_key_policy
+            .clone()
+            .unwrap_or(HostKeyPolicy::Strict);
+        let jump_verifier =
+            HostKeyVerifier::new(jump_policy, hostkey_dialog::host_key_prompt(), None);
+        let jump_responder = auth_dialog::challenge_responder(jump_cfg.name.clone());
+        let jump_creds = credential_manager(&jump_cfg.name);
+        // Plain data: the blocking pool owns this copy (`Rc` is not `Send`).
+        let target: SessionConfig = (**session).clone();
+        tokio::task::spawn_blocking(move || {
+            let jump_hop = HopInputs {
+                creds: &jump_creds,
+                verifier: jump_verifier,
+                responder: Some(jump_responder),
+            };
+            let target_hop = HopInputs {
+                creds: &creds,
+                verifier,
+                responder: Some(responder),
+            };
+            tokio::runtime::Handle::current().block_on(jump::dial_with_jump(
+                &supervisor,
+                &jump_cfg,
+                jump_hop,
+                &target,
+                target_hop,
+            ))
+        })
+    } else {
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(supervisor.get_or_connect(
+                &params,
+                &method,
+                &creds,
+                verifier,
+                Some(responder),
+            ))
+        })
+    };
 
     let (notebook, page, session) = (notebook.clone(), page.clone(), session.clone());
     glib::MainContext::default().spawn_local(async move {
@@ -268,6 +339,97 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         show_error_view(&notebook, &page, &session, &error);
         publish_status(&page, TransportState::Error(error), &host, port);
     });
+}
+
+/// Whether `session` dials through a bastion (doc 11 §Jump hosts): SSH
+/// with a jump host set. VNC, RDP, local and serial return before the dial
+/// exists, so this only ever fires for SSH.
+fn uses_jump_dial(session: &SessionConfig) -> bool {
+    session.session_type == SessionType::SSH && session.jump_session_id.is_some()
+}
+
+/// The page's store, kept by [`SessionTab::open`] for jump resolution.
+fn page_store(page: &gtk4::Widget) -> Option<Rc<SessionStore>> {
+    data(page, STORE_KEY)
+}
+
+/// The jump host's config at dial time, through the page's store. A
+/// deleted jump host (or a page with no store) is a connect error shown on
+/// the page — the same `gen` guard and redial verdicts apply, since the
+/// caller returns before spawning the dial.
+fn resolve_jump_config(
+    notebook: &gtk4::Notebook,
+    page: &gtk4::Widget,
+    session: &Rc<SessionConfig>,
+    jump_id: i64,
+    host: &str,
+    port: u16,
+) -> Option<SessionConfig> {
+    let message = match page_store(page) {
+        Some(store) => match resolve_jump_session(&store, jump_id) {
+            Ok(jump_cfg) => return Some(jump_cfg),
+            Err(message) => message,
+        },
+        None => "Jump session lookup unavailable.".to_string(),
+    };
+    show_error_view(notebook, page, session, &message);
+    publish_status(page, TransportState::Error(message), host, port);
+    None
+}
+
+/// Look one jump host up by id. `Err` names a deleted host; the store's
+/// own `QueryReturnedNoRows` never reaches the UI.
+fn resolve_jump_session(store: &SessionStore, jump_id: i64) -> Result<SessionConfig, String> {
+    store
+        .get_session(jump_id)
+        .map_err(|_| format!("Jump session no longer exists (id {jump_id})."))
+}
+
+/// The rules the forward engine arms on `finish_connect`: the session's
+/// current set, so every redial re-enters with the same rules and a
+/// reconnect re-establishes them with no separate hook (doc 11).
+fn forward_rules_for(session: &SessionConfig) -> Vec<ForwardRule> {
+    session.forward_rules.clone().unwrap_or_default()
+}
+
+/// Arm the caller-owned forward engine for a fresh connection (doc 11
+/// §Port forwarding): start the session's rules on the runtime — never
+/// awaited on the GTK thread — and bridge the event stream into the
+/// page's live status source for the Tunnels dialog. Replaces any engine
+/// still on the page, so a redial never stacks listeners.
+fn arm_forward_engine(page: &gtk4::Widget, session: &Rc<SessionConfig>, conn: &Arc<SshConnection>) {
+    stop_forward_engine(page);
+    let (tx, rx) = mpsc::channel::<ForwardEvent>(FWD_EVENT_BUF);
+    let engine = ForwardEngine::new(conn.clone(), tx);
+    let bridge = Arc::new(EngineStatusBridge::new(engine.clone()));
+    set_data(page, FORWARD_KEY, Some(bridge.clone()));
+    let rules = forward_rules_for(session);
+    tokio::spawn(async move {
+        engine.start(rules).await;
+    });
+    tokio::spawn(async move {
+        let mut rx = rx;
+        while let Some(event) = rx.recv().await {
+            bridge.handle_event(event);
+        }
+    });
+}
+
+/// Stop the page's forward engine, if any: listeners close and terminal
+/// `Stopped` snapshots emit deterministically (a dropped engine would
+/// abort its tasks anyway). Stopping clears the page key, so a
+/// disconnected tab falls back to the dialog's offline state until the
+/// next `finish_connect` arms a fresh engine.
+fn stop_forward_engine(page: &gtk4::Widget) {
+    let current: Option<Option<Arc<EngineStatusBridge>>> = data(page, FORWARD_KEY);
+    let Some(Some(bridge)) = current else {
+        return;
+    };
+    let engine = bridge.engine();
+    tokio::spawn(async move {
+        engine.stop().await;
+    });
+    set_data(page, FORWARD_KEY, None::<Arc<EngineStatusBridge>>);
 }
 
 /// Embed the terminal, measure its real grid, wire the transport, and
@@ -316,9 +478,24 @@ async fn finish_connect(
     let events = page_events(notebook, page, session, host, port);
     spawn_state_forward(page.clone(), gen, cancel, state_rx, events);
 
+    // SSH tabs arm the caller-owned forward engine on every connect, so a
+    // redial re-establishes the same rules on the fresh connection
+    // (doc 11 §Port forwarding). Local and serial pass no connection.
+    if session.session_type == SessionType::SSH {
+        if let Some(conn) = &conn {
+            arm_forward_engine(page, session, conn);
+        }
+    }
+
     if let (Some(conn), Some(sidebar)) = (conn, SessionTab::sidebar_for_page(page)) {
-        sidebar.attach_on_connect(conn);
-        sidebar_attached(page).set(true);
+        if session.jump_session_id.is_some() {
+            // Doc 11 v1: no SFTP task runs over a jumped connection; the
+            // sidebar shows the limitation instead of attaching.
+            sidebar.show_jump_placeholder();
+        } else {
+            sidebar.attach_on_connect(conn);
+            sidebar_attached(page).set(true);
+        }
     }
     follow_terminal_title(page, &widget, &session.name);
     focus_after_connect(notebook, page);
@@ -545,6 +722,7 @@ fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
 /// the supervisor can evict a dead session and the next attempt dials fresh;
 /// a live shared one is simply handed out again.
 fn release_connection(page: &gtk4::Widget) {
+    stop_forward_engine(page);
     close_terminal(page);
     if !sidebar_attached(page).replace(false) {
         return;
@@ -583,6 +761,9 @@ fn install_teardown_on_remove(notebook: &gtk4::Notebook) {
     notebook.connect_page_removed(|_, page, _| {
         if let Some(session_id) = data::<i64>(page, SESSION_ID_KEY) {
             bump_gen(page);
+            // Closing by any path stops the engine deterministically
+            // (`close_tab` removes the page, so it lands here too).
+            stop_forward_engine(page);
             tab_resilience::teardown_tab(session_id);
         }
     });
@@ -922,6 +1103,7 @@ fn build_tab_label(notebook: &gtk4::Notebook, session: &SessionConfig) -> gtk4::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::model::ForwardKind;
 
     #[test]
     fn the_tab_title_prefers_the_terminal_and_never_goes_blank() {
@@ -970,6 +1152,87 @@ mod tests {
             config.auth_method = stored;
             assert_eq!(format!("{:?}", transport_auth_method(&config)), expected);
         }
+    }
+
+    #[test]
+    fn jump_dial_needs_ssh_with_a_jump_host() {
+        let ssh_jumped = SessionConfig {
+            session_type: SessionType::SSH,
+            jump_session_id: Some(7),
+            ..Default::default()
+        };
+        assert!(
+            uses_jump_dial(&ssh_jumped),
+            "an SSH session with a jump host dials through the bastion"
+        );
+        assert!(
+            !uses_jump_dial(&SessionConfig {
+                jump_session_id: None,
+                ..ssh_jumped.clone()
+            }),
+            "a direct SSH session keeps the supervisor dial"
+        );
+        for session_type in [
+            SessionType::RDP,
+            SessionType::VNC,
+            SessionType::Serial,
+            SessionType::LocalShell,
+        ] {
+            assert!(
+                !uses_jump_dial(&SessionConfig {
+                    session_type,
+                    jump_session_id: Some(7),
+                    ..Default::default()
+                }),
+                "only SSH reaches the jump branch (other types return earlier)"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_engine_arms_the_sessions_current_rules() {
+        assert!(
+            forward_rules_for(&SessionConfig::default()).is_empty(),
+            "no stored rules is an empty engine set, not a missing one"
+        );
+        let rules = vec![ForwardRule {
+            kind: ForwardKind::Local,
+            bind_addr: "127.0.0.1".to_string(),
+            bind_port: 8080,
+            remote_host: "web1.lan".to_string(),
+            remote_port: 80,
+            enabled: true,
+        }];
+        let session = SessionConfig {
+            forward_rules: Some(rules.clone()),
+            ..Default::default()
+        };
+        assert_eq!(forward_rules_for(&session), rules);
+    }
+
+    #[test]
+    fn jump_resolution_reports_a_deleted_jump_host() {
+        let store = SessionStore::in_memory().expect("in-memory store");
+        let jump_id = store
+            .insert_session(&SessionConfig {
+                name: "bastion".to_string(),
+                host: Some("bastion.test".to_string()),
+                username: Some("jump".to_string()),
+                ..Default::default()
+            })
+            .expect("insert jump host");
+        let resolved = resolve_jump_session(&store, jump_id).expect("jump host exists");
+        assert_eq!(resolved.name, "bastion");
+
+        // A deleted jump host is a connect error naming the loss, never a
+        // dial to the wrong place.
+        store.delete_session(jump_id).expect("delete jump host");
+        let err = resolve_jump_session(&store, jump_id).unwrap_err();
+        assert!(
+            err.contains("no longer exists"),
+            "must name the loss, got: {err}"
+        );
+        assert!(err.contains(&jump_id.to_string()), "must name the id");
     }
 }
 
@@ -1021,7 +1284,11 @@ pub(super) mod gtk_tests {
         focus_terminal(&notebook, first_page);
         assert!(focus_within(&tree), "a background tab took focus");
 
-        SessionTab::open(&notebook, first);
+        SessionTab::open(
+            &notebook,
+            first,
+            &Rc::new(SessionStore::in_memory().expect("in-memory store")),
+        );
         assert_eq!(notebook.current_page(), Some(0));
         assert!(focus_within(first_terminal), "the opened tab's terminal");
         assert!(!focus_within(second_terminal));

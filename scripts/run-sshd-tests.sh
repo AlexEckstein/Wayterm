@@ -153,7 +153,7 @@ export SSH_TEST_KEY_PATH="$KEY_PATH"
 # on the untouched-methods list, and a stray agent would change that.
 unset SSH_AUTH_SOCK
 
-TEST_CMD=(cargo test --test transport_sshd --test tmux_persistence --test connect_flow --test reconnect_sshd -- --test-threads=1 --nocapture)
+TEST_CMD=(cargo test --test transport_sshd --test tmux_persistence --test connect_flow --test reconnect_sshd --test forward_sshd --test jump_sshd -- --test-threads=1 --nocapture)
 if [ -n "$TEST_FILTER" ]; then
     TEST_CMD+=("$TEST_FILTER")
 fi

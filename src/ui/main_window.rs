@@ -20,7 +20,7 @@ use crate::ui::status_bar::StatusBar;
 use crate::ui::tab::SessionTab;
 use crate::ui::tab_restore::TabPersistence;
 use crate::ui::widgets::{data, set_data};
-use crate::ui::{import_dialog, settings, tab_resilience, terminal_actions};
+use crate::ui::{import_dialog, settings, tab_resilience, terminal_actions, tunnels_dialog};
 
 /// Window data keys.
 pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
@@ -92,7 +92,7 @@ impl MainWindow {
             let (store, notebook) = (store.clone(), notebook.clone());
             SessionTree::new(store.clone(), move |id| match store.get_session(id) {
                 Ok(config) => {
-                    SessionTab::open(&notebook, &config);
+                    SessionTab::open(&notebook, &config, &store);
                 }
                 Err(err) => eprintln!("Wayterm: failed to load session {id}: {err}"),
             })
@@ -124,15 +124,23 @@ impl MainWindow {
             for_switch.borrow_mut().push(page, state, &host, port);
         });
 
+        let tunnels_button = gtk4::Button::with_label("Tunnels…");
+        tunnels_button.set_action_name(Some("win.tunnels"));
+        tunnels_button.set_tooltip_text(Some(
+            "View and edit this session's port forwards (live status when connected)",
+        ));
         let settings_button = gtk4::Button::with_label("Settings");
         settings_button.set_action_name(Some("win.settings"));
-        settings_button.set_halign(gtk4::Align::End);
-        settings_button.set_margin_top(4);
-        settings_button.set_margin_bottom(4);
-        settings_button.set_margin_end(8);
+        let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        header.set_halign(gtk4::Align::End);
+        header.set_margin_top(4);
+        header.set_margin_bottom(4);
+        header.set_margin_end(8);
+        header.append(&tunnels_button);
+        header.append(&settings_button);
 
         let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        root.append(&settings_button);
+        root.append(&header);
         root.append(&paned);
         root.append(status_bar.widget());
 
@@ -151,6 +159,7 @@ impl MainWindow {
         );
 
         install_toggle_sftp(&window, &notebook);
+        install_tunnels_action(&window, &notebook, &store);
         terminal_actions::install(&window, &notebook);
         let for_actions = notebook.clone();
         tab_resilience::install_connection_actions(&window, move || {
@@ -250,6 +259,37 @@ fn install_transfer_actions(
         action.connect_activate(move |_, _| show(store.clone(), &tree, parent.upcast_ref()));
         window.add_action(&action);
     }
+}
+
+/// `win.tunnels` (Phase 11): the current tab's Tunnels dialog. It always
+/// opens — with no engine (not connected, non-SSH, or no tab at all it is
+/// a no-op) the dialog is the offline fallback: rules editable, live cells
+/// reading "no active connection". A connected SSH tab passes its page's
+/// live status source instead of `None`; the dialog already speaks it.
+fn install_tunnels_action(
+    window: &gtk4::ApplicationWindow,
+    notebook: &gtk4::Notebook,
+    store: &Rc<SessionStore>,
+) {
+    let action = gio::SimpleAction::new(tunnels_dialog::TUNNELS_ACTION, None);
+    let (notebook, store, parent) = (notebook.clone(), store.clone(), window.clone());
+    action.connect_activate(move |_, _| {
+        let Some(id) = crate::ui::tab::current_session_id(&notebook) else {
+            return;
+        };
+        let Ok(mut config) = store.get_session(id) else {
+            return;
+        };
+        let source = SessionTab::current_forward_source(&notebook);
+        let dialog = tunnels_dialog::TunnelsDialog::new(parent.upcast_ref(), &config, source);
+        if let Some(rules) = dialog.run() {
+            config.forward_rules = if rules.is_empty() { None } else { Some(rules) };
+            if let Err(err) = store.update_session(&config) {
+                eprintln!("Wayterm: failed to save tunnel rules: {err}");
+            }
+        }
+    });
+    window.add_action(&action);
 }
 
 /// `toggle_sftp` (doc 09) acts on the active tab's sidebar and is disabled
