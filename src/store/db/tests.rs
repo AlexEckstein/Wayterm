@@ -270,19 +270,66 @@ fn list_folders_direct_children_only() {
 }
 
 #[test]
-fn rename_folder_is_visible() {
+fn update_folder_sets_name_and_icon() {
     let store = SessionStore::in_memory().unwrap();
 
     let id = store.insert_folder("Old", None).unwrap();
-    store.rename_folder(id, "New").unwrap();
+    assert_eq!(store.list_folders(None).unwrap()[0].icon, None);
+    store
+        .update_folder(id, "New", Some("network-server-symbolic"))
+        .unwrap();
 
     let roots = store.list_folders(None).unwrap();
     assert_eq!(roots.len(), 1);
     assert_eq!(roots[0].name, "New");
+    assert_eq!(roots[0].icon.as_deref(), Some("network-server-symbolic"));
 
-    // Renaming again to the same name is fine (idempotent update).
-    store.rename_folder(id, "New").unwrap();
-    assert_eq!(store.list_folders(None).unwrap()[0].name, "New");
+    // Clearing the icon goes back to the default.
+    store.update_folder(id, "New", None).unwrap();
+    assert_eq!(store.list_folders(None).unwrap()[0].icon, None);
+}
+
+/// A database created before `sessions.icon` existed gains the column on
+/// open, keeps its rows, and stores icons afterwards.
+#[test]
+fn open_adds_session_icon_to_an_older_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("old.sqlite3");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&MIGRATION_001.replace(
+            "    icon             TEXT,                    -- icon name; NULL = the type's default\n",
+            "",
+        ))
+        .unwrap();
+        let has_icon: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'icon')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!has_icon, "the fixture must predate the column");
+        conn.execute(
+            "INSERT INTO sessions (name, type) VALUES ('old', '\"ssh\"')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let store = SessionStore::open(&path).unwrap();
+    let mut old = store.list_sessions(None).unwrap().remove(0);
+    assert_eq!(old.name, "old");
+    assert_eq!(old.icon, None);
+    old.icon = Some("wayterm-homelab".into());
+    store.update_session(&old).unwrap();
+    assert_eq!(
+        store.get_session(old.id).unwrap().icon.as_deref(),
+        Some("wayterm-homelab")
+    );
+    // Opening again is a no-op.
+    drop(store);
+    SessionStore::open(&path).unwrap();
 }
 
 #[test]
@@ -424,6 +471,7 @@ fn sample_ssh_config(folder_id: Option<i64>) -> SessionConfig {
         font_family: Some("Monospace".to_string()),
         font_size: Some(12.5),
         opacity: Some(0.9),
+        icon: Some("network-server-symbolic".to_string()),
         notes: Some("primary db".to_string()),
         last_connected: Some("2026-10-02T12:00:00Z".to_string()),
         connect_count: 17,
@@ -468,6 +516,7 @@ fn assert_session_eq(left: &SessionConfig, right: &SessionConfig) {
     assert_eq!(left.font_family, right.font_family);
     assert_eq!(left.font_size, right.font_size);
     assert_eq!(left.opacity, right.opacity);
+    assert_eq!(left.icon, right.icon);
     assert_eq!(left.notes, right.notes);
 }
 

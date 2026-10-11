@@ -153,8 +153,6 @@ per foreign format.
 
 Gaps, each small:
 
-- Folder icons from a source are dropped with a warning:
-  `insert_folder` takes no icon (store API, doc 06).
 - MobaXterm and Remmina field semantics are checked against
   hand-written fixtures only; a check against real exports is pending.
 - The Flatpak build runs with `--share=network` so cargo can fetch

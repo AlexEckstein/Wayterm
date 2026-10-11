@@ -1,7 +1,9 @@
 //! GTK4 user interface (docs 01, 07, 09).
 
 pub mod auth_dialog;
+pub mod folder_dialog;
 pub mod hostkey_dialog;
+pub mod icons;
 pub mod import_dialog;
 pub mod main_window;
 pub mod rdp_tab;
@@ -34,6 +36,8 @@ mod gtk_tests {
         gtk4::init().expect("gtk init");
         super::session_dialog::gtk_tests::tmux_group_entry_follows_name_until_user_edits();
         super::session_tree::gtk_tests::context_menu_is_reused_and_parented_cleanly();
+        super::icons::gtk_tests::custom_svg_resolves_and_picker_round_trips();
+        super::folder_dialog::gtk_tests::edit_folder_prefills_name_and_icon();
         super::settings::gtk_tests::pages_and_general_switches();
         super::tab::gtk_tests::opening_a_tab_focuses_its_terminal();
         super::tab::gtk_tests::reconnect_does_not_steal_focus();

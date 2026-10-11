@@ -316,6 +316,7 @@ fn apply_import_remaps_folders_and_drops_second_hops() {
     assert_eq!(report.imported, 4);
     let root = store.list_folders(None).unwrap();
     let outer = root.iter().find(|f| f.name == "a").unwrap();
+    assert_eq!(outer.icon.as_deref(), Some("star"), "folder icons import");
     assert!(root.iter().any(|f| f.name == "orphan"));
     let inner_folder = &store.list_folders(Some(outer.id)).unwrap()[0];
     assert_eq!(inner_folder.name, "a");
@@ -329,7 +330,6 @@ fn apply_import_remaps_folders_and_drops_second_hops() {
     assert_eq!((lost.folder_id, lost.jump_session_id), (None, None));
     for needle in [
         "parent \"nope\" not found",
-        "1 folder icon(s) not imported",
         "inner\": jump host dropped",
         "lost\": folder not found",
         "lost\": jump host dropped — target not found",
@@ -442,6 +442,33 @@ fn json_roundtrip_keeps_nesting_and_jumps() {
     let web = &target.list_folders(Some(prod.id)).unwrap()[0];
     let web1 = &target.list_sessions(Some(web.id)).unwrap()[0];
     assert_eq!(web1.jump_session_id, Some(bastion.id));
+}
+
+#[test]
+fn json_roundtrip_keeps_icons() {
+    let source = SessionStore::in_memory().unwrap();
+    let folder = source.insert_folder("lab", None).unwrap();
+    source
+        .update_folder(folder, "lab", Some("wayterm-homelab"))
+        .unwrap();
+    source
+        .insert_session(&SessionConfig {
+            name: "nas".into(),
+            folder_id: Some(folder),
+            icon: Some("drive-multidisk-symbolic".into()),
+            ..SessionConfig::default()
+        })
+        .unwrap();
+
+    let text = export_json(&source).unwrap();
+    let (folders, sessions, report) = parse_source(ImportSource::Wayterm, &text, None).unwrap();
+    let target = SessionStore::in_memory().unwrap();
+    let report = apply_import(&target, folders, sessions, report).unwrap();
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let lab = &target.list_folders(None).unwrap()[0];
+    assert_eq!(lab.icon.as_deref(), Some("wayterm-homelab"));
+    let nas = &target.list_sessions(Some(lab.id)).unwrap()[0];
+    assert_eq!(nas.icon.as_deref(), Some("drive-multidisk-symbolic"));
 }
 
 #[test]

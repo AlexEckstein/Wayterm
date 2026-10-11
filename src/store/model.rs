@@ -160,6 +160,11 @@ pub struct SessionConfig {
     pub font_family: Option<String>,
     pub font_size: Option<f64>,
     pub opacity: Option<f64>,
+    /// Icon name (themed or a custom SVG's); `None` = the type's default.
+    /// Left out of the JSON when unset, so the wire format of a session
+    /// without one is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 
     // Metadata.
     pub notes: Option<String>,
@@ -213,6 +218,7 @@ pub struct Folder {
     pub name: String,
     pub parent_id: Option<i64>,
     pub sort_order: i64,
+    /// Icon name (themed or a custom SVG's); `None` = the default.
     pub icon: Option<String>,
 }
 

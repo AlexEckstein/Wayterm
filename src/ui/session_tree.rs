@@ -1,5 +1,6 @@
 //! The session tree sidebar: folders and saved sessions with a right-click
-//! CRUD menu (docs 01, 06). [`collect_rows`] is the display-free part.
+//! CRUD menu (docs 01, 06). Rows draw their icon by name from the icon
+//! theme (`ui::icons`). [`collect_rows`] is the display-free part.
 
 // GtkTreeView/TreeStore are deprecated since GTK 4.10; migrating to
 // GtkListView is UI polish, not a contract change.
@@ -11,8 +12,9 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
 
-use crate::store::model::SessionType;
 use crate::store::SessionStore;
+use crate::ui::folder_dialog::FolderDialog;
+use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
 use crate::ui::session_dialog::SessionDialog;
 use crate::ui::widgets::{confirm, prompt_text, window_of};
 
@@ -22,18 +24,10 @@ pub struct SessionRow {
     pub id: i64,
     pub is_folder: bool,
     pub name: String,
-    pub icon: &'static str,
+    /// The stored icon name; `None` = `default_icon`.
+    pub icon: Option<String>,
+    pub default_icon: &'static str,
     pub parent_id: Option<i64>,
-}
-
-pub fn icon_for_session_type(session_type: &SessionType) -> &'static str {
-    match session_type {
-        SessionType::SSH => "🖥",
-        SessionType::RDP => "🖼",
-        SessionType::VNC => "📺",
-        SessionType::Serial => "🔌",
-        SessionType::LocalShell => "🏠",
-    }
 }
 
 /// The whole tree depth-first: at each level folders first, then sessions,
@@ -50,7 +44,8 @@ pub fn collect_rows(store: &SessionStore) -> rusqlite::Result<Vec<SessionRow>> {
                 id,
                 is_folder: true,
                 name: folder.name,
-                icon: "📁",
+                icon: folder.icon,
+                default_icon: FOLDER_ICON,
                 parent_id: parent,
             });
             walk(store, Some(id), rows)?;
@@ -59,8 +54,9 @@ pub fn collect_rows(store: &SessionStore) -> rusqlite::Result<Vec<SessionRow>> {
             rows.push(SessionRow {
                 id: session.id,
                 is_folder: false,
+                default_icon: session_type_icon(&session.session_type),
                 name: session.name,
-                icon: icon_for_session_type(&session.session_type),
+                icon: session.icon,
                 parent_id: parent,
             });
         }
@@ -108,13 +104,14 @@ impl SessionTree {
             .vexpand(true)
             .hexpand(true)
             .build();
-        for (column, expand) in [(COL_ICON, false), (COL_NAME, true)] {
-            let view_column = gtk4::TreeViewColumn::new();
-            let renderer = gtk4::CellRendererText::new();
-            view_column.pack_start(&renderer, expand);
-            view_column.add_attribute(&renderer, "text", column as i32);
-            tree_view.append_column(&view_column);
-        }
+        let view_column = gtk4::TreeViewColumn::new();
+        let icon = gtk4::CellRendererPixbuf::new();
+        view_column.pack_start(&icon, false);
+        view_column.add_attribute(&icon, "icon-name", COL_ICON as i32);
+        let name = gtk4::CellRendererText::new();
+        view_column.pack_start(&name, true);
+        view_column.add_attribute(&name, "text", COL_NAME as i32);
+        tree_view.append_column(&view_column);
         tree_view.selection().set_mode(gtk4::SelectionMode::Single);
         let scroll = gtk4::ScrolledWindow::builder()
             .child(&tree_view)
@@ -170,14 +167,18 @@ impl SessionTree {
                 return;
             }
         };
+        let theme = gtk4::IconTheme::for_display(&self.tree_view.display());
         let mut folder_iters = HashMap::new();
         for row in rows {
             let parent = row.parent_id.and_then(|id| folder_iters.get(&id));
             let iter = self.model.insert(parent, -1);
+            let icon = resolve_icon(row.icon.as_deref(), row.default_icon, |name| {
+                theme.has_icon(name)
+            });
             self.model.set(
                 &iter,
                 &[
-                    (COL_ICON, &row.icon),
+                    (COL_ICON, &icon),
                     (COL_NAME, &row.name),
                     (COL_ID, &row.id),
                     (COL_IS_FOLDER, &row.is_folder),
@@ -239,17 +240,10 @@ impl SessionTree {
             }),
         );
         if let Some((id, _, name)) = folder {
-            let current = name.clone();
             item(
-                "Rename Folder",
-                "rename-folder",
-                Box::new(move |tree| {
-                    if let Some(new_name) =
-                        prompt_text(tree.parent().as_ref(), "Rename Folder", &current)
-                    {
-                        tree.finish("rename the folder", tree.store.rename_folder(id, &new_name));
-                    }
-                }),
+                "Edit Folder",
+                "edit-folder",
+                Box::new(move |tree| tree.edit_folder(id)),
             );
             item(
                 "Delete Folder",
@@ -316,6 +310,21 @@ impl SessionTree {
             0,
         )));
         self.popover.popup();
+    }
+
+    /// Edit a folder's name and icon.
+    fn edit_folder(&self, id: i64) {
+        let folder = match self.store.get_folder(id) {
+            Ok(folder) => folder,
+            Err(err) => return eprintln!("Wayterm: failed to load folder {id}: {err}"),
+        };
+        if let Some(edit) = FolderDialog::new(self.parent().as_ref(), &folder).run() {
+            self.finish(
+                "save the folder",
+                self.store
+                    .update_folder(id, &edit.name, edit.icon.as_deref()),
+            );
+        }
     }
 
     /// Create (`None`) or edit a session through the session dialog.
