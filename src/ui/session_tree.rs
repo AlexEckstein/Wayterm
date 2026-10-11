@@ -2,11 +2,7 @@
 //! CRUD menu (docs 01, 06). Rows draw their icon by name from the icon
 //! theme (`ui::icons`). [`collect_rows`] is the display-free part.
 
-// GtkTreeView/TreeStore are deprecated since GTK 4.10; migrating to
-// GtkListView is UI polish, not a contract change.
-#![allow(deprecated)]
-
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gtk4::prelude::*;
@@ -16,7 +12,7 @@ use crate::store::SessionStore;
 use crate::ui::folder_dialog::FolderDialog;
 use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
 use crate::ui::session_dialog::SessionDialog;
-use crate::ui::widgets::{confirm, prompt_text, window_of};
+use crate::ui::widgets::{confirm, data, prompt_text, set_data, window_of};
 
 /// One row of the tree, in display order.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,24 +63,44 @@ pub fn collect_rows(store: &SessionStore) -> rusqlite::Result<Vec<SessionRow>> {
     Ok(rows)
 }
 
-// Tree store columns.
-const COL_ICON: u32 = 0;
-const COL_NAME: u32 = 1;
-const COL_ID: u32 = 2;
-const COL_IS_FOLDER: u32 = 3;
+/// One item of the list model, boxed in a `glib::BoxedAnyObject`.
+struct Node {
+    id: i64,
+    is_folder: bool,
+    name: String,
+    /// The resolved icon name.
+    icon: String,
+    /// The folder's contents; `None` for sessions and empty folders, which
+    /// then draw no expander.
+    children: Option<gio::ListStore>,
+}
+
+/// The node behind a model item (a `TreeListRow` or the boxed node itself).
+fn node_of(item: &glib::Object) -> Option<glib::BoxedAnyObject> {
+    match item.downcast_ref::<gtk4::TreeListRow>() {
+        Some(row) => row.item()?.downcast().ok(),
+        None => item.clone().downcast().ok(),
+    }
+}
 
 /// The selected row: `(id, is_folder, name)`.
 type Selected = (i64, bool, String);
 
+/// Key under which each row widget keeps a weak ref to its `ListItem`, so
+/// a click can be traced back to a model position.
+const LIST_ITEM_KEY: &str = "wayterm-list-item";
+
 #[derive(Clone)]
 pub struct SessionTree {
     store: Rc<SessionStore>,
-    tree_view: gtk4::TreeView,
-    model: gtk4::TreeStore,
+    list_view: gtk4::ListView,
+    /// Top-level folders and sessions; the tree model wraps it.
+    root: gio::ListStore,
+    tree_model: gtk4::TreeListModel,
+    selection: gtk4::SingleSelection,
     scroll: gtk4::ScrolledWindow,
     /// The context menu, reused for every right-click. It hangs off
-    /// `scroll`: a TreeView keeps its column buttons under an internal CSS
-    /// node, so a popover parented to it trips a GTK assertion.
+    /// `scroll`, outside the list view's own widget tree.
     popover: gtk4::PopoverMenu,
 }
 
@@ -92,29 +108,25 @@ impl SessionTree {
     /// `on_open_session` runs with the session id when a session row is
     /// activated (double-click / Enter).
     pub fn new(store: Rc<SessionStore>, on_open_session: impl Fn(i64) + 'static) -> Self {
-        let model = gtk4::TreeStore::new(&[
-            glib::Type::STRING,
-            glib::Type::STRING,
-            glib::Type::I64,
-            glib::Type::BOOL,
-        ]);
-        let tree_view = gtk4::TreeView::builder()
-            .model(&model)
-            .headers_visible(false)
+        let root = gio::ListStore::new::<glib::BoxedAnyObject>();
+        let tree_model = gtk4::TreeListModel::new(root.clone(), false, false, |item| {
+            let node = node_of(item)?;
+            let children = node.borrow::<Node>().children.clone();
+            children.map(|store| store.upcast())
+        });
+        let selection = gtk4::SingleSelection::builder()
+            .model(&tree_model)
+            .autoselect(false)
+            .can_unselect(true)
+            .build();
+        let list_view = gtk4::ListView::builder()
+            .model(&selection)
+            .factory(&row_factory())
             .vexpand(true)
             .hexpand(true)
             .build();
-        let view_column = gtk4::TreeViewColumn::new();
-        let icon = gtk4::CellRendererPixbuf::new();
-        view_column.pack_start(&icon, false);
-        view_column.add_attribute(&icon, "icon-name", COL_ICON as i32);
-        let name = gtk4::CellRendererText::new();
-        view_column.pack_start(&name, true);
-        view_column.add_attribute(&name, "text", COL_NAME as i32);
-        tree_view.append_column(&view_column);
-        tree_view.selection().set_mode(gtk4::SelectionMode::Single);
         let scroll = gtk4::ScrolledWindow::builder()
-            .child(&tree_view)
+            .child(&list_view)
             .vexpand(true)
             .hexpand(true)
             .build();
@@ -129,15 +141,30 @@ impl SessionTree {
 
         let tree = Self {
             store,
-            tree_view,
-            model,
+            list_view,
+            root,
+            tree_model,
+            selection,
             scroll,
             popover,
         };
 
+        // Activating a session opens it; activating a folder toggles it.
         let for_activate = tree.clone();
-        tree.tree_view.connect_row_activated(move |_, _, _| {
-            if let Some((id, false, _)) = for_activate.selected() {
+        tree.list_view.connect_activate(move |_, position| {
+            let Some(row) = for_activate.tree_model.row(position) else {
+                return;
+            };
+            let Some(node) = node_of(row.upcast_ref()) else {
+                return;
+            };
+            let (id, is_folder) = {
+                let node = node.borrow::<Node>();
+                (node.id, node.is_folder)
+            };
+            if is_folder {
+                row.set_expanded(!row.is_expanded());
+            } else {
                 on_open_session(id);
             }
         });
@@ -146,48 +173,54 @@ impl SessionTree {
         gesture.set_button(gdk::BUTTON_SECONDARY);
         let for_menu = tree.clone();
         gesture.connect_pressed(move |_, _, x, y| {
-            let selection = for_menu.tree_view.selection();
-            match for_menu.tree_view.path_at_pos(x as i32, y as i32) {
-                Some((Some(path), _, _, _)) => selection.select_path(&path),
-                _ => selection.unselect_all(),
-            }
+            let position = for_menu.position_at(x, y);
+            for_menu
+                .selection
+                .set_selected(position.unwrap_or(gtk4::INVALID_LIST_POSITION));
             for_menu.show_context_menu(x, y);
         });
-        tree.tree_view.add_controller(gesture);
+        tree.list_view.add_controller(gesture);
         tree
     }
 
     /// Reload the tree from the store.
     pub fn refresh(&self) {
-        self.model.clear();
         let rows = match collect_rows(&self.store) {
             Ok(rows) => rows,
             Err(err) => {
                 eprintln!("Wayterm: failed to load the session tree: {err}");
+                self.root.remove_all();
                 return;
             }
         };
-        let theme = gtk4::IconTheme::for_display(&self.tree_view.display());
-        let mut folder_iters = HashMap::new();
+        let theme = gtk4::IconTheme::for_display(&self.list_view.display());
+        // Folders with contents get a child store; rows arrive parents
+        // first, so each folder's store exists before its children.
+        let non_empty: HashSet<Option<i64>> = rows.iter().map(|row| row.parent_id).collect();
+        let mut stores = HashMap::new();
+        let mut top = Vec::new();
         for row in rows {
-            let parent = row.parent_id.and_then(|id| folder_iters.get(&id));
-            let iter = self.model.insert(parent, -1);
+            let children = (row.is_folder && non_empty.contains(&Some(row.id))).then(|| {
+                let store = gio::ListStore::new::<glib::BoxedAnyObject>();
+                stores.insert(row.id, store.clone());
+                store
+            });
             let icon = resolve_icon(row.icon.as_deref(), row.default_icon, |name| {
                 theme.has_icon(name)
             });
-            self.model.set(
-                &iter,
-                &[
-                    (COL_ICON, &icon),
-                    (COL_NAME, &row.name),
-                    (COL_ID, &row.id),
-                    (COL_IS_FOLDER, &row.is_folder),
-                ],
-            );
-            if row.is_folder {
-                folder_iters.insert(row.id, iter);
+            let node = glib::BoxedAnyObject::new(Node {
+                id: row.id,
+                is_folder: row.is_folder,
+                name: row.name,
+                icon: icon.to_string(),
+                children,
+            });
+            match row.parent_id.and_then(|id| stores.get(&id)) {
+                Some(store) => store.append(&node),
+                None => top.push(node),
             }
         }
+        self.root.splice(0, self.root.n_items(), &top);
     }
 
     /// The tree inside its scrolled window.
@@ -196,12 +229,27 @@ impl SessionTree {
     }
 
     fn selected(&self) -> Option<Selected> {
-        let (model, iter) = self.tree_view.selection().selected()?;
-        Some((
-            model.get::<i64>(&iter, COL_ID as i32),
-            model.get::<bool>(&iter, COL_IS_FOLDER as i32),
-            model.get::<String>(&iter, COL_NAME as i32),
-        ))
+        let node = node_of(&self.selection.selected_item()?)?;
+        let node = node.borrow::<Node>();
+        Some((node.id, node.is_folder, node.name.clone()))
+    }
+
+    /// The model position of the row at `(x, y)` in list view coordinates.
+    fn position_at(&self, x: f64, y: f64) -> Option<u32> {
+        let mut widget = self.list_view.pick(x, y, gtk4::PickFlags::DEFAULT);
+        while let Some(current) = widget {
+            if let Some(item) = data::<glib::WeakRef<gtk4::ListItem>>(&current, LIST_ITEM_KEY) {
+                return item
+                    .upgrade()
+                    .map(|item| item.position())
+                    .filter(|&position| position != gtk4::INVALID_LIST_POSITION);
+            }
+            if current == *self.list_view.upcast_ref::<gtk4::Widget>() {
+                break;
+            }
+            widget = current.parent();
+        }
+        None
     }
 
     /// Log a failed mutation, or refresh after a successful one.
@@ -300,7 +348,7 @@ impl SessionTree {
         // parent's), not at the sidebar's edge.
         let click = gtk4::graphene::Point::new(x as f32, y as f32);
         let at = self
-            .tree_view
+            .list_view
             .compute_point(&self.scroll, &click)
             .unwrap_or(click);
         self.popover.set_pointing_to(Some(&gdk::Rectangle::new(
@@ -352,8 +400,58 @@ impl SessionTree {
     }
 
     fn parent(&self) -> Option<gtk4::Window> {
-        window_of(&self.tree_view)
+        window_of(&self.list_view)
     }
+}
+
+/// Row widgets: an expander (indent and disclosure arrow) around the
+/// icon and name.
+fn row_factory() -> gtk4::SignalListItemFactory {
+    let factory = gtk4::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        let content = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        content.append(&gtk4::Image::new());
+        content.append(&gtk4::Label::builder().xalign(0.0).build());
+        let expander = gtk4::TreeExpander::builder().child(&content).build();
+        set_data(&expander, LIST_ITEM_KEY, item.downgrade());
+        item.set_child(Some(&expander));
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+            return;
+        };
+        let Some(expander) = item.child().and_downcast::<gtk4::TreeExpander>() else {
+            return;
+        };
+        let row = item.item().and_downcast::<gtk4::TreeListRow>();
+        expander.set_list_row(row.as_ref());
+        let Some(node) = row.and_then(|row| node_of(row.upcast_ref())) else {
+            return;
+        };
+        let node = node.borrow::<Node>();
+        let Some(content) = expander.child() else {
+            return;
+        };
+        if let Some(image) = content.first_child().and_downcast::<gtk4::Image>() {
+            image.set_icon_name(Some(&node.icon));
+        }
+        if let Some(label) = content.last_child().and_downcast::<gtk4::Label>() {
+            label.set_text(&node.name);
+        }
+    });
+    factory.connect_unbind(|_, item| {
+        if let Some(expander) = item
+            .downcast_ref::<gtk4::ListItem>()
+            .and_then(|item| item.child())
+            .and_downcast::<gtk4::TreeExpander>()
+        {
+            expander.set_list_row(None);
+        }
+    });
+    factory
 }
 
 #[cfg(test)]
@@ -367,7 +465,7 @@ pub(super) mod gtk_tests {
     use std::sync::Arc;
 
     /// Repeated right-clicks reuse one menu, and parenting it raises no GTK
-    /// criticals (a popover on the TreeView itself did, once per click).
+    /// criticals.
     pub(in crate::ui) fn context_menu_is_reused_and_parented_cleanly() {
         let criticals = Arc::new(AtomicUsize::new(0));
         let count = criticals.clone();
@@ -396,11 +494,51 @@ pub(super) mod gtk_tests {
         glib::log_remove_handler(Some("Gtk"), handler);
 
         assert_eq!(criticals.load(Ordering::SeqCst), 0);
-        let mut child = tree.tree_view.first_child();
+        let mut child = tree.list_view.first_child();
         while let Some(widget) = child {
-            assert!(!widget.is::<gtk4::Popover>(), "popover on the TreeView");
+            assert!(!widget.is::<gtk4::Popover>(), "popover on the list view");
             child = widget.next_sibling();
         }
         window.destroy();
+    }
+
+    /// Folders nest their contents, expand on demand, and selection maps
+    /// back to the stored row; a refresh rebuilds the model.
+    pub(in crate::ui) fn rows_nest_expand_and_select() {
+        let store = Rc::new(SessionStore::in_memory().unwrap());
+        let folder = store.insert_folder("A", None).unwrap();
+        let empty = store.insert_folder("Empty", None).unwrap();
+        let inner = store
+            .insert_session(&crate::store::model::SessionConfig {
+                name: "inner".to_string(),
+                folder_id: Some(folder),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .insert_session(&crate::store::model::SessionConfig {
+                name: "outer".to_string(),
+                ..Default::default()
+            })
+            .unwrap();
+        let tree = SessionTree::new(store.clone(), |_| {});
+        tree.refresh();
+
+        // A, Empty, outer — collapsed; only the non-empty folder expands.
+        assert_eq!(tree.tree_model.n_items(), 3);
+        let row = tree.tree_model.row(0).unwrap();
+        assert!(row.is_expandable());
+        assert!(!tree.tree_model.row(1).unwrap().is_expandable());
+        row.set_expanded(true);
+        assert_eq!(tree.tree_model.n_items(), 4);
+
+        tree.selection.set_selected(1);
+        assert_eq!(tree.selected(), Some((inner, false, "inner".to_string())));
+        tree.selection.set_selected(2);
+        assert_eq!(tree.selected(), Some((empty, true, "Empty".to_string())));
+
+        store.delete_folder(empty).unwrap();
+        tree.refresh();
+        assert_eq!(tree.tree_model.n_items(), 2);
     }
 }

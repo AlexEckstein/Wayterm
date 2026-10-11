@@ -36,6 +36,7 @@ mod gtk_tests {
         gtk4::init().expect("gtk init");
         super::session_dialog::gtk_tests::tmux_group_entry_follows_name_until_user_edits();
         super::session_tree::gtk_tests::context_menu_is_reused_and_parented_cleanly();
+        super::session_tree::gtk_tests::rows_nest_expand_and_select();
         super::icons::gtk_tests::custom_svg_resolves_and_picker_round_trips();
         super::folder_dialog::gtk_tests::edit_folder_prefills_name_and_icon();
         super::settings::gtk_tests::pages_and_general_switches();
