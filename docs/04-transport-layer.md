@@ -56,8 +56,9 @@ dismissed a prompt or closed the tab, and is never retried.
 
 A transport owns one channel, never the SSH session. The session is an
 `SshConnection` — one authenticated russh handle that opens session
-channels (`SSHTransport`), SFTP subsystem channels (doc 09), and, from
-Phase 11, direct-tcpip channels (doc 11).
+channels (`SSHTransport`), SFTP subsystem channels (doc 09), and
+direct-tcpip channels for jump hosts and local forwards (doc 11 §Jump
+hosts and port forwarding).
 
 `ConnectionSupervisor` (one per window) shares one connection per
 (host, port, username). Consumers hold `Arc`s; a monitor task disconnects
