@@ -24,6 +24,12 @@ the `sftp` subsystem and turns it into a `russh_sftp` session on the first
 command. Dropping the last sidebar handle ends the task; the connection
 stays with the supervisor.
 
+With the `sftp_on_connect` setting off (doc 06), a new SSH tab's sidebar
+starts hidden and the connect flow only hands it the connection: the task
+starts on the first `toggle_sftp` that shows it, so a user who never opens
+the sidebar never opens an SFTP channel. A sidebar already shown when the
+connect lands attaches at once.
+
 ## Commands
 
 ```rust

@@ -47,7 +47,7 @@ use crate::ui::hostkey_dialog;
 use crate::ui::main_window::{route_status, SUPERVISOR_KEY};
 use crate::ui::rdp_tab;
 use crate::ui::session_ended::{self, EndedChoice};
-use crate::ui::sftp_sidebar::{supports_sftp, SftpSidebar};
+use crate::ui::sftp_sidebar::{self, supports_sftp, SftpSidebar};
 use crate::ui::tab_label;
 use crate::ui::tab_resilience;
 use crate::ui::tray;
@@ -312,7 +312,7 @@ async fn finish_connect(
     spawn_state_forward(page.clone(), gen, cancel, state_rx, events);
 
     if let (Some(conn), Some(sidebar)) = (conn, SessionTab::sidebar_for_page(page)) {
-        sidebar.attach(conn);
+        sidebar.attach_on_connect(conn);
         sidebar_attached(page).set(true);
     }
     follow_terminal_title(page, &widget, &session.name);
@@ -501,8 +501,9 @@ fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
 }
 
 /// Let go of the page's hold on its connection — the transport and the
-/// sidebar's SFTP task — so the supervisor can evict a dead session and the
-/// next attempt dials fresh; a live shared one is simply handed out again.
+/// sidebar's SFTP task (or the connection it keeps for its first show) — so
+/// the supervisor can evict a dead session and the next attempt dials fresh;
+/// a live shared one is simply handed out again.
 fn release_connection(page: &gtk4::Widget) {
     close_terminal(page);
     if !sidebar_attached(page).replace(false) {
@@ -830,8 +831,8 @@ fn gen_slot(page: &gtk4::Widget) -> Rc<Cell<u64>> {
 }
 
 /// The page: a paned whose end child is the session's area, with the SFTP
-/// sidebar at the start for SSH. Tagged with the session id for dedup and
-/// persistence.
+/// sidebar at the start for SSH (hidden while `sftp_on_connect` is off).
+/// Tagged with the session id for dedup and persistence.
 fn page_content(session: &SessionConfig) -> gtk4::Widget {
     let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
     paned.set_end_child(Some(&centered_label(&format!(
@@ -842,6 +843,9 @@ fn page_content(session: &SessionConfig) -> gtk4::Widget {
     paned.set_hexpand(true);
     if supports_sftp(&session.session_type) {
         let sidebar = SftpSidebar::new();
+        if !sftp_sidebar::open_on_connect() {
+            sidebar.toggle_visible();
+        }
         paned.set_position(SIDEBAR_WIDTH);
         paned.set_start_child(Some(sidebar.widget()));
         set_data(&paned, SIDEBAR_KEY, sidebar);

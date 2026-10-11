@@ -15,6 +15,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use gtk4::glib;
@@ -64,6 +65,29 @@ pub const NOT_CONNECTED: &str = "SFTP needs a live SSH connection";
 pub const SESSION_ENDED: &str = "SFTP session ended — reconnect?";
 /// The command could not be queued at all (task gone, channel closed).
 pub const COMMAND_FAILED: &str = "SFTP command could not be queued";
+
+/// Settings row (doc 06): show the sidebar and open its SFTP channel when
+/// an SSH tab connects. Off, the sidebar starts hidden and attaches on its
+/// first show, so no channel opens for a sidebar nobody looks at.
+pub const SFTP_ON_CONNECT_SETTING: &str = "sftp_on_connect";
+
+static OPEN_ON_CONNECT: AtomicBool = AtomicBool::new(true);
+
+/// `sftp_on_connect`, pushed in at startup and on every change; tabs read
+/// it when they are built and when they connect.
+pub fn install_settings(open_on_connect: bool) {
+    OPEN_ON_CONNECT.store(open_on_connect, Ordering::SeqCst);
+}
+
+pub fn open_on_connect() -> bool {
+    OPEN_ON_CONNECT.load(Ordering::SeqCst)
+}
+
+/// Whether a freshly connected sidebar attaches at once or waits for its
+/// first show. A sidebar the user already opened attaches regardless.
+pub fn attach_on_connect(open_on_connect: bool, visible: bool) -> bool {
+    open_on_connect || visible
+}
 
 /// One listing row, in store order.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -533,6 +557,8 @@ struct SidebarInner {
     state: RefCell<SftpView>,
     /// The live client, once [`SftpSidebar::attach`] has been called.
     client: RefCell<Option<SftpClient>>,
+    /// A connection waiting for the first show (`sftp_on_connect` off).
+    deferred: RefCell<Option<Arc<SshConnection>>>,
     /// Commands waiting for room in the bounded channel.
     pending: RefCell<PendingQueue<SftpCommand>>,
     /// The idle flush of `pending`, while scheduled.
@@ -560,6 +586,7 @@ impl SftpSidebar {
     /// Start an SFTP task over the shared connection and list
     /// [`START_PATH`]. Re-attaching replaces (and ends) the previous task.
     pub fn attach(&self, connection: Arc<SshConnection>) {
+        self.inner.deferred.borrow_mut().take();
         *self.inner.client.borrow_mut() = Some(SftpClient::new(connection));
         self.inner.state.borrow_mut().attach();
         self.inner.render();
@@ -572,9 +599,28 @@ impl SftpSidebar {
         self.inner.container.upcast_ref()
     }
 
+    /// Attach the newly connected tab's sidebar now, or keep the
+    /// connection for its first show (see [`attach_on_connect`]).
+    pub fn attach_on_connect(&self, connection: Arc<SshConnection>) {
+        let visible = self.inner.state.borrow().visible;
+        if attach_on_connect(open_on_connect(), visible) {
+            self.attach(connection);
+        } else {
+            *self.inner.deferred.borrow_mut() = Some(connection);
+        }
+    }
+
     /// Show or hide the sidebar (`toggle_sftp`); returns the new state.
+    /// The first show attaches a deferred connection.
     pub fn toggle_visible(&self) -> bool {
-        self.inner.toggle_visible()
+        let visible = self.inner.toggle_visible();
+        if visible {
+            let deferred = self.inner.deferred.borrow_mut().take();
+            if let Some(connection) = deferred {
+                self.attach(connection);
+            }
+        }
+        visible
     }
 }
 
@@ -720,6 +766,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
         buttons,
         state: RefCell::new(SftpView::detached()),
         client: RefCell::new(None),
+        deferred: RefCell::new(None),
         pending: RefCell::default(),
         flush_source: RefCell::new(None),
         chooser: RefCell::new(None),

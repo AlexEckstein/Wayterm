@@ -467,6 +467,26 @@ fn only_ssh_sessions_get_a_sidebar() {
     }
 }
 
+#[test]
+fn a_connect_attaches_at_once_unless_sftp_on_connect_is_off_and_hidden() {
+    // (sftp_on_connect, sidebar visible) → attach now?
+    assert!(attach_on_connect(true, true));
+    assert!(
+        attach_on_connect(true, false),
+        "a user-hidden sidebar still attaches"
+    );
+    assert!(attach_on_connect(false, true), "the user already opened it");
+    assert!(
+        !attach_on_connect(false, false),
+        "no SFTP channel until first shown"
+    );
+}
+
+#[test]
+fn sftp_on_connect_names_its_settings_row() {
+    assert_eq!(SFTP_ON_CONNECT_SETTING, "sftp_on_connect");
+}
+
 // --- constants -------------------------------------------------------------
 
 #[test]
