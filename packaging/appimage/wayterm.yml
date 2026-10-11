@@ -1,0 +1,24 @@
+# pkg2appimage recipe. CI-only tooling: the release workflow builds the
+# .deb with cargo-deb first and points WAYTERM_DEB at it; pkg2appimage
+# then resolves the runtime libraries (GTK 4, VTE) from the noble archive.
+#
+#   WAYTERM_DEB=$PWD/target/debian/wayterm_<ver>_amd64.deb \
+#     ./pkg2appimage packaging/appimage/wayterm.yml
+
+app: wayterm
+
+ingredients:
+  dist: noble
+  sources:
+    - deb http://archive.ubuntu.com/ubuntu/ noble main universe
+    - deb http://archive.ubuntu.com/ubuntu/ noble-updates main universe
+  script:
+    - cp "${WAYTERM_DEB}" .
+  packages:
+    - wayterm
+
+script:
+  # The .deb already installs the desktop file, metainfo and hicolor icons
+  # under usr/share; AppImage wants the desktop file and an icon at the root.
+  - cp usr/share/applications/com.alex-eckstein.wayterm.desktop .
+  - cp usr/share/icons/hicolor/256x256/apps/com.alex-eckstein.wayterm.png .
