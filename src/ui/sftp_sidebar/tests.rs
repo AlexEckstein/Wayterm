@@ -490,13 +490,6 @@ fn sftp_on_connect_names_its_settings_row() {
 // --- constants -------------------------------------------------------------
 
 #[test]
-fn column_indices_match_the_listing_layout() {
-    assert_eq!((COL_ICON, COL_NAME), (0, 1));
-    assert_eq!((COL_SIZE, COL_MODIFIED), (2, 3));
-    assert_eq!((COL_PERMS, COL_ROW), (4, 5));
-}
-
-#[test]
 fn sidebar_messages_name_the_condition_they_report() {
     assert!(NOT_CONNECTED.contains("SSH connection"));
     assert!(
