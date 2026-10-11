@@ -30,20 +30,28 @@ fn install_tokio_runtime() {
     std::mem::forget(runtime);
 }
 
-/// `$XDG_DATA_HOME/wayterm/wayterm.sqlite3` (default `~/.local/share`),
-/// creating the directory if needed.
-pub fn default_db_path() -> PathBuf {
-    let data_home = std::env::var_os("XDG_DATA_HOME")
+/// `$XDG_DATA_HOME/wayterm` (default `~/.local/share/wayterm`).
+pub fn data_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let dir = data_home.join("wayterm");
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("wayterm")
+}
+
+/// `$XDG_DATA_HOME/wayterm/wayterm.sqlite3`, creating the directory if
+/// needed.
+pub fn default_db_path() -> PathBuf {
+    let dir = data_dir();
     // Best effort: opening the store reports an unusable path.
     let _ = std::fs::create_dir_all(&dir);
     dir.join("wayterm.sqlite3")
 }
 
 fn build_ui(app: &gtk4::Application) {
+    if let Some(display) = gtk4::gdk::Display::default() {
+        crate::ui::icons::register_custom_icons(&display);
+    }
     let store =
         Rc::new(SessionStore::open(&default_db_path()).expect("failed to open session store"));
 

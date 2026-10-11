@@ -54,10 +54,20 @@ impl SessionStore {
         rows.collect()
     }
 
-    pub fn rename_folder(&self, id: i64, new_name: &str) -> rusqlite::Result<()> {
+    /// `QueryReturnedNoRows` if `id` does not exist.
+    pub fn get_folder(&self, id: i64) -> rusqlite::Result<Folder> {
+        self.conn.query_row(
+            "SELECT id, name, parent_id, sort_order, icon FROM folders WHERE id = ?1",
+            [id],
+            row_to_folder,
+        )
+    }
+
+    /// Set a folder's name and icon (`None` = the default folder icon).
+    pub fn update_folder(&self, id: i64, name: &str, icon: Option<&str>) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE folders SET name = ?1, updated_at = datetime('now') WHERE id = ?2",
-            params![new_name, id],
+            "UPDATE folders SET name = ?1, icon = ?2, updated_at = datetime('now') WHERE id = ?3",
+            params![name, icon, id],
         )?;
         Ok(())
     }
@@ -289,6 +299,7 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     conn.execute_batch(MIGRATION_001)?;
     conn.execute_batch(MIGRATION_002)?;
+    migrate_003(conn)?;
     // `hotkeys` has no UNIQUE constraint, so re-running the seed would
     // duplicate rows: seed exactly once, atomically, keyed on an empty
     // `settings` table.
@@ -311,8 +322,8 @@ const SESSION_COLUMNS: &str = "name, type, folder_id, sort_order, \
     vnc_color_depth, vnc_options, \
     serial_device, serial_baud_rate, serial_data_bits, serial_parity, serial_stop_bits, \
     serial_flow_control, local_shell, local_working_dir, \
-    terminal_backend, color_scheme, font_family, font_size, opacity, notes";
-const SESSION_COLUMN_COUNT: usize = 37;
+    terminal_backend, color_scheme, font_family, font_size, opacity, icon, notes";
+const SESSION_COLUMN_COUNT: usize = 38;
 
 fn placeholders(count: usize) -> String {
     vec!["?"; count].join(", ")
@@ -359,6 +370,7 @@ fn session_values(c: &SessionConfig) -> rusqlite::Result<[Value; SESSION_COLUMN_
         c.font_family.clone().into(),
         c.font_size.into(),
         c.opacity.into(),
+        c.icon.clone().into(),
         c.notes.clone().into(),
     ])
 }
@@ -455,6 +467,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     font_family      TEXT,
     font_size        REAL,
     opacity          REAL,
+    icon             TEXT,                    -- icon name; NULL = the type's default
 
     -- Metadata
     last_connected   TEXT,
@@ -512,6 +525,21 @@ CREATE TABLE IF NOT EXISTS rdp_trust (
     PRIMARY KEY (host, port)
 );
 "#;
+
+/// Schema v3 — `sessions.icon` (doc 06). `CREATE TABLE IF NOT EXISTS`
+/// leaves an existing table alone, and `ADD COLUMN` has no `IF NOT
+/// EXISTS`, so the column is added only where it is missing.
+fn migrate_003(conn: &Connection) -> rusqlite::Result<()> {
+    let has_icon: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'icon')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_icon {
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN icon TEXT;")?;
+    }
+    Ok(())
+}
 
 /// First-run seed (doc 06 §Default Data). The hotkey rows are
 /// informational (`is_default = 1` rows never load); doc 07's table in
@@ -613,6 +641,7 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
         font_family: row.get("font_family")?,
         font_size: row.get("font_size")?,
         opacity: row.get("opacity")?,
+        icon: row.get("icon")?,
         notes: row.get("notes")?,
         last_connected: row.get("last_connected")?,
         connect_count: row.get("connect_count")?,

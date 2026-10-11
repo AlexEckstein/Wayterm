@@ -139,7 +139,6 @@ pub fn apply_import(
 ) -> rusqlite::Result<ImportReport> {
     let mut by_path: HashMap<String, i64> = HashMap::new();
     let mut folder_ids = Vec::with_capacity(folders.len());
-    let mut icons_dropped = 0;
     for spec in &folders {
         let parent_id = match &spec.parent {
             Some(parent) => {
@@ -154,17 +153,12 @@ pub fn apply_import(
             }
             None => None,
         };
-        if spec.icon.is_some() {
-            icons_dropped += 1;
-        }
         let id = store.insert_folder(&spec.name, parent_id)?;
+        if let Some(icon) = &spec.icon {
+            store.update_folder(id, &spec.name, Some(icon))?;
+        }
         by_path.insert(spec.path(), id);
         folder_ids.push(id);
-    }
-    if icons_dropped > 0 {
-        report.warnings.push(format!(
-            "{icons_dropped} folder icon(s) not imported (the store sets no folder icon yet)"
-        ));
     }
 
     // Jump targets go in first so their ids exist; one hop only (doc 11),

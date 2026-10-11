@@ -3,7 +3,7 @@
 use crate::store::model::{SessionConfig, SessionType};
 use crate::store::SessionStore;
 
-use super::{collect_rows, icon_for_session_type, SessionRow};
+use super::{collect_rows, SessionRow};
 
 #[test]
 fn collect_rows_empty_store() {
@@ -17,6 +17,9 @@ fn collect_rows_hierarchy_and_order() {
 
     let folder_a = store.insert_folder("A", None).unwrap();
     let folder_b = store.insert_folder("B", Some(folder_a)).unwrap();
+    store
+        .update_folder(folder_b, "B", Some("network-server-symbolic"))
+        .unwrap();
 
     let s1 = SessionConfig {
         name: "s1".to_string(),
@@ -29,6 +32,7 @@ fn collect_rows_hierarchy_and_order() {
     let s2 = SessionConfig {
         name: "s2".to_string(),
         session_type: SessionType::VNC,
+        icon: Some("wayterm-homelab".to_string()),
         ..Default::default()
     };
     let s2_id = store.insert_session(&s2).unwrap();
@@ -44,41 +48,36 @@ fn collect_rows_hierarchy_and_order() {
                 id: folder_a,
                 is_folder: true,
                 name: "A".to_string(),
-                icon: "📁",
+                icon: None,
+                default_icon: "folder-symbolic",
                 parent_id: None,
             },
             SessionRow {
                 id: folder_b,
                 is_folder: true,
                 name: "B".to_string(),
-                icon: "📁",
+                icon: Some("network-server-symbolic".to_string()),
+                default_icon: "folder-symbolic",
                 parent_id: Some(folder_a),
             },
             SessionRow {
                 id: s1_id,
                 is_folder: false,
                 name: "s1".to_string(),
-                icon: "🖥",
+                icon: None,
+                default_icon: "network-server-symbolic",
                 parent_id: Some(folder_a),
             },
             SessionRow {
                 id: s2_id,
                 is_folder: false,
                 name: "s2".to_string(),
-                icon: "📺",
+                icon: Some("wayterm-homelab".to_string()),
+                default_icon: "video-display-symbolic",
                 parent_id: None,
             },
         ]
     );
-}
-
-#[test]
-fn icon_mapping_for_all_session_types() {
-    assert_eq!(icon_for_session_type(&SessionType::SSH), "🖥");
-    assert_eq!(icon_for_session_type(&SessionType::RDP), "🖼");
-    assert_eq!(icon_for_session_type(&SessionType::VNC), "📺");
-    assert_eq!(icon_for_session_type(&SessionType::Serial), "🔌");
-    assert_eq!(icon_for_session_type(&SessionType::LocalShell), "🏠");
 }
 
 #[test]

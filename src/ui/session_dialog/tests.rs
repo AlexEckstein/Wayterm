@@ -179,6 +179,23 @@ fn notes_round_trip() {
 }
 
 #[test]
+fn icon_is_trimmed_and_blank_means_default() {
+    let chosen = DialogFields {
+        icon: " wayterm-homelab ".to_string(),
+        ..DialogFields::default()
+    };
+    assert_eq!(
+        config_from_fields(&chosen, &[]).icon.as_deref(),
+        Some("wayterm-homelab")
+    );
+    let blank = DialogFields {
+        icon: "  ".to_string(),
+        ..DialogFields::default()
+    };
+    assert_eq!(config_from_fields(&blank, &[]).icon, None);
+}
+
+#[test]
 fn empty_optional_strings_become_none() {
     let folders = sample_folders();
     let fields = DialogFields {

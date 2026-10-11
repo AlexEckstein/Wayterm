@@ -21,6 +21,7 @@ use crate::store::model::{
     SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES,
     SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT, TMUX_NAME_PREFIX,
 };
+use crate::ui::icons::{session_type_icon, IconPicker};
 use crate::ui::widgets::{ok_cancel_row, set_margins, Modal};
 
 // Type DropDown indices, in doc 06 order.
@@ -49,6 +50,8 @@ pub struct DialogFields {
     pub port: u32,
     pub username: String,
     pub auth_index: u32,
+    /// Icon name; empty = the type's default.
+    pub icon: String,
     pub notes: String,
     pub tmux_enabled: bool,
     /// As shown: the full `wayterm-<suffix>` name.
@@ -81,6 +84,7 @@ impl Default for DialogFields {
             port: 22,
             username: String::new(),
             auth_index: 0,
+            icon: String::new(),
             notes: String::new(),
             tmux_enabled: false,
             tmux_session_name: String::new(),
@@ -220,6 +224,7 @@ pub fn config_from_fields(fields: &DialogFields, folders: &[Folder]) -> SessionC
         rdp_compression: session_type == SessionType::RDP,
         tmux_enabled: fields.tmux_enabled,
         tmux_session_name,
+        icon: trimmed_opt(&fields.icon),
         notes: trimmed_opt(&fields.notes),
         last_connected: fields.last_connected.clone(),
         connect_count: fields.connect_count,
@@ -405,6 +410,7 @@ struct Widgets {
     port: gtk4::SpinButton,
     username: gtk4::Entry,
     auth: gtk4::DropDown,
+    icon: IconPicker,
     notes: gtk4::TextView,
     tmux: gtk4::CheckButton,
     tmux_name: gtk4::Entry,
@@ -433,6 +439,7 @@ impl Widgets {
             port: self.port.value() as u32,
             username: self.username.text().into(),
             auth_index: self.auth.selected(),
+            icon: self.icon.icon().unwrap_or_default(),
             notes: buffer
                 .text(&buffer.start_iter(), &buffer.end_iter(), true)
                 .into(),
@@ -472,6 +479,9 @@ impl Widgets {
         self.username.set_text(&text(&config.username));
         self.auth
             .set_selected(auth_index_for(config.auth_method.as_ref()));
+        self.icon
+            .set_default(session_type_icon(&config.session_type));
+        self.icon.set_icon(config.icon.as_deref());
         self.notes.buffer().set_text(&text(&config.notes));
         self.tmux.set_active(config.tmux_enabled);
         self.serial_device.set_text(&text(&config.serial_device));
@@ -572,6 +582,8 @@ impl SessionDialog {
         let port = form.spin("Port:", 1.0, 65535.0);
         let username = form.entry("Username:", "");
         let auth = form.dropdown("Auth Method:", &AUTH_LABELS);
+        let icon = IconPicker::new(session_type_icon(&SessionType::SSH));
+        form.add("Icon:", icon.widget());
         let notes = gtk4::TextView::builder()
             .wrap_mode(gtk4::WrapMode::WordChar)
             .top_margin(6)
@@ -636,6 +648,7 @@ impl SessionDialog {
             port,
             username,
             auth,
+            icon,
             notes,
             tmux,
             tmux_name,
@@ -666,15 +679,18 @@ impl SessionDialog {
             dropdown.set_selected(index);
         }
 
-        // A type change reveals its group and resets the port to its
-        // default, so a stale 22 is never stored for RDP.
-        let (for_type, port) = (groups.clone(), widgets.port.clone());
+        // A type change reveals its group, resets the port to its default
+        // (so a stale 22 is never stored for RDP), and swaps the default
+        // icon.
+        let (for_type, port, icon) = (groups.clone(), widgets.port.clone(), widgets.icon.clone());
         widgets
             .session_type
             .connect_notify_local(Some("selected"), move |dropdown, _| {
                 for_type.apply(dropdown.selected());
-                let default = default_port_for(&session_type_from_index(dropdown.selected()));
+                let session_type = session_type_from_index(dropdown.selected());
+                let default = default_port_for(&session_type);
                 port.set_value(default.unwrap_or(PORT_SPIN_PLACEHOLDER).into());
+                icon.set_default(session_type_icon(&session_type));
             });
         groups.apply(widgets.session_type.selected());
 
@@ -756,20 +772,32 @@ pub(super) mod gtk_tests {
             ..Default::default()
         };
         let dialog = SessionDialog::edit(&parent, &stored, &[]);
+        assert_eq!(dialog.widgets.icon.icon(), None);
         assert!(dialog.widgets.tmux.is_active());
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-shared");
         assert_eq!(dialog.widgets.port.value(), 2222.0);
         dialog.widgets.name.set_text("renamed");
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-shared");
+        dialog.widgets.session_type.set_selected(TYPE_INDEX_LOCAL);
+        assert_eq!(
+            dialog.widgets.icon.shown_icon().as_deref(),
+            Some("utilities-terminal-symbolic"),
+            "the default icon follows the type"
+        );
 
         // Without a stored name, the derived one keeps following.
         let derived = SessionConfig {
             id: 8,
             name: "prod".into(),
             tmux_enabled: true,
+            icon: Some("wayterm-homelab".into()),
             ..Default::default()
         };
         let dialog = SessionDialog::edit(&parent, &derived, &[]);
+        assert_eq!(
+            dialog.widgets.icon.icon().as_deref(),
+            Some("wayterm-homelab")
+        );
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-prod");
         dialog.widgets.name.set_text("renamed");
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-renamed");
