@@ -1,0 +1,99 @@
+name: Release
+
+# Tag push `v*` builds the .deb and the AppImage and attaches both to the
+# GitHub Release for that tag. workflow_dispatch builds the artifacts only;
+# the release job runs for tag refs alone.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK4 / VTE build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev libvte-2.91-gtk4-dev libsqlite3-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deb
+        run: cargo install --locked cargo-deb --version 3.8.0
+
+      - name: Build .deb
+        run: cargo deb --locked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: target/debian/*.deb
+          if-no-files-found: error
+          overwrite: true
+
+  appimage:
+    runs-on: ubuntu-24.04
+    needs: [deb]
+    env:
+      # pkg2appimage publishes only a `continuous` tag; the asset name
+      # carries the commit, which pins the tool.
+      PKG2APPIMAGE_URL: https://github.com/AppImageCommunity/pkg2appimage/releases/download/continuous/pkg2appimage-1eceb30-x86_64.AppImage
+      # No FUSE on the runner.
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb
+          path: dist
+
+      - name: Fetch pkg2appimage
+        run: |
+          curl -fsSL -o pkg2appimage "$PKG2APPIMAGE_URL"
+          chmod +x pkg2appimage
+
+      - name: Build AppImage
+        run: |
+          rm -rf wayterm out
+          WAYTERM_DEB="$(readlink -f dist/*.deb)" ./pkg2appimage packaging/appimage/wayterm.yml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: out/*.AppImage
+          if-no-files-found: error
+          overwrite: true
+
+  release:
+    runs-on: ubuntu-24.04
+    needs: [deb, appimage]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create or update the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.deb
+            dist/*.AppImage
+          fail_on_unmatched_files: true

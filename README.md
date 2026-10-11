@@ -27,6 +27,13 @@ scripts/run-sshd-tests.sh        # suites against a throwaway local sshd (needs 
 xvfb-run -a cargo test -- --ignored   # tests that need a display
 ```
 
+## Packages
+
+- `.deb`: `cargo deb` (metadata in `Cargo.toml`, output in `target/debian/`).
+- Flatpak: `flatpak-builder --user --install build-dir packaging/flatpak/com.alex-eckstein.wayterm.json`.
+- AppImage: pkg2appimage recipe `packaging/appimage/wayterm.yml`, built from the `.deb` in CI.
+- Releases: pushing a `v*` tag runs `.github/workflows/release.yml`, which attaches the `.deb` and AppImage to the GitHub Release.
+
 ## Stack
 
 | | Choice | Why |
