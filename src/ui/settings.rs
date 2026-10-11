@@ -30,6 +30,8 @@ pub fn create_settings_window(
         .build();
 
     let header = gtk4::HeaderBar::new();
+    // The Close button is the only way out; no duplicate window X.
+    header.set_show_title_buttons(false);
     let close_button = gtk4::Button::with_label("Close");
     {
         let window = window.clone();
