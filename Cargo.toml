@@ -41,6 +41,7 @@ serialport = { version = "4.10.1", default-features = false }
 vnc-rs = "0.6"
 x11rb = "0.13"
 gdk4-x11 = "0.11"
+serde_yaml_ng = "0.10"
 
 [dev-dependencies]
 des = "0.8"
@@ -49,3 +50,22 @@ tempfile = "3"
 # which the reconnect driver's backoff tests use to assert the doc 04 curve
 # against virtual time (doc 04 §Lifecycle & Cancellation).
 tokio = { version = "1", features = ["test-util"] }
+
+[package.metadata.deb]
+maintainer = "Alex Eckstein <alexceckstein@gmail.com>"
+section = "net"
+priority = "optional"
+extended-description = """\
+An open source, multi-protocol connection manager and terminal for Linux, \
+in the spirit of MobaXterm but built for a desktop that already has the \
+tools: saved sessions in a tree, tabbed SSH terminals with an SFTP sidebar, \
+configurable hotkeys, and (planned) RDP and VNC tabs."""
+assets = [
+    ["target/release/wayterm", "usr/bin/", "755"],
+    ["packaging/desktop/com.alex-eckstein.wayterm.desktop", "usr/share/applications/", "644"],
+    ["packaging/metainfo/com.alex-eckstein.wayterm.appdata.xml", "usr/share/metainfo/", "644"],
+    ["assets/icons/scalable/apps/com.alex-eckstein.wayterm.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["assets/icons/hicolor/64x64/apps/com.alex-eckstein.wayterm.png", "usr/share/icons/hicolor/64x64/apps/", "644"],
+    ["assets/icons/hicolor/128x128/apps/com.alex-eckstein.wayterm.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+    ["assets/icons/hicolor/256x256/apps/com.alex-eckstein.wayterm.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+]

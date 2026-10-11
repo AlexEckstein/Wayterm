@@ -11,9 +11,9 @@ the last. Phase numbers are referenced from code and other docs.
 | 4 | Hotkeys and polish | done, with gaps below |
 | 5 | Local shell and serial | done |
 | 6 | VNC tabs | done, with gaps below |
-| 7 | RDP tabs | not started |
-| 8 | tmux persistence | persistence done; reconnect wiring pending |
-| 9 | Import/export, packaging | not started |
+| 7 | RDP tabs | done |
+| 8 | tmux persistence | done |
+| 9 | Import/export, packaging | done, with gaps below |
 | 10 | libghostty-vt backend | when its C API stabilizes |
 | 11 | Jump hosts and port forwarding | not started |
 | 12 | Testing hardening | continuous |
@@ -130,12 +130,37 @@ is the feature's point. **Verify:** run vim (or any long-running
 command), kill the network, reconnect, vim is still there — covered by
 the sshd suite.
 
-## Phase 9: Import/export and packaging
+## Phase 9: Import/export and packaging — done
 
-`~/.ssh/config` import first (doc 06 — the adoption driver, offered on
-first run), then JSON export/import, Remmina, MobaXterm, Asbru. Packages:
-.deb, Flatpak (test portal access to SSH keys, the keyring, and files
-early), AppImage, and a release workflow. Install a Wayterm icon.
+Import/export (`src/transfer/`, doc 06 §Import and export): importers for
+`~/.ssh/config` (Wayterm's own block scanner, `Include` followed),
+Remmina, MobaXterm, Asbru-CM, and Wayterm JSON — pure readers, with
+`apply_import` the single store writer; JSON export
+(`{"version":1,"folders":[…]}`, no secrets). The Import/Export windows
+(`src/ui/import_dialog.rs`) open from the session-tree menu and the
+`win.import-sessions` / `win.export-sessions` actions, and the import is
+offered once on first run when the store is empty. Packaging
+(`packaging/`): a `.deb` via `cargo deb` (metadata in `Cargo.toml`), a
+Flatpak manifest, a pkg2appimage AppImage recipe built from the `.deb`,
+the Wayterm icon (SVG + 64/128/256 PNG) with the desktop entry and
+AppStream metainfo, and `.github/workflows/release.yml`, which on a
+`v*` tag attaches the `.deb` and AppImage to the GitHub Release.
+**Verify:** the `src/transfer/` unit suite — `~/.ssh/config` forms,
+templates, `Match`, the `Include` chain (cycles, depth cap, non-regular
+files), `ProxyJump`, position remapping, a JSON export → import
+roundtrip, newer-version refusal, no secret in an export, one fixture
+per foreign format.
+
+Gaps, each small:
+
+- Folder icons from a source are dropped with a warning:
+  `insert_folder` takes no icon (store API, doc 06).
+- MobaXterm and Remmina field semantics are checked against
+  hand-written fixtures only; a check against real exports is pending.
+- The Flatpak build runs with `--share=network` so cargo can fetch
+  crates — fine for local builds, not for Flathub (needs vendored cargo
+  sources). The Flatpak is not built by the release workflow, and its
+  sandbox access to SSH keys, the keyring and files is not yet verified.
 
 ## Phase 10: libghostty-vt backend
 

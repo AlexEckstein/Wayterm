@@ -199,9 +199,34 @@ yet; lookups fall through to the prompt — doc 11 §CredentialManager.)
 
 ## Import and export (Phase 9)
 
-- **Export** sessions as JSON (`{"version": 1, "folders": [...]}`) without
-  credentials.
-- **Import**, in priority order: `~/.ssh/config` (via `russh-config`; one
-  session per `Host`, wildcard blocks as templates, offered on first run),
-  then Remmina `.remmina` files, MobaXterm exports, Asbru YAML. Importers
-  only read their sources.
+Code: `src/transfer/` (engines), `src/ui/import_dialog.rs` (windows).
+
+- **Import**, in priority order: `~/.ssh/config`, then Remmina `.remmina`
+  files, MobaXterm `.ini`/`.mxtsessions` exports, Asbru-CM YAML — plus
+  Wayterm's own JSON export. `~/.ssh/config` goes through Wayterm's own
+  read-only block scanner, not `russh-config` (it cannot enumerate `Host`
+  blocks or follow `Include`): one session per exact `Host` alias,
+  wildcard patterns become template sessions, negated patterns and
+  `Match` blocks are skipped, `Include` is followed where it appears
+  (depth-capped, cycle-safe), key files are never read.
+- **Export** is JSON: `{"version": 1, "folders": [...]}` with folders
+  nested (each holding its `children` and `sessions`); a top-level
+  `sessions` array appears only when sessions live outside any folder.
+  A jump host is named, not numbered. Import accepts `version` ≤ 1 and
+  refuses newer documents. Secrets are never exported (`SessionConfig`
+  holds none); an export → import roundtrip is tested.
+- **Importers are pure readers**: source text in, folders + sessions +
+  report out — no store access. `apply_import` is the single store
+  writer. Parsed folder and jump-host references are positions in the
+  parse result, remapped by `apply_import` to the ids the store assigns
+  (one jump hop only, doc 11).
+- **Nothing is dropped silently.** Remmina/MobaXterm/Asbru secret fields
+  are skipped with a warning; unmappable entries (unsupported protocols,
+  missing hosts) are warnings and count as skipped; the import report
+  lists them all.
+- **Gap:** folder icons from a source are dropped with a warning —
+  `insert_folder` takes no icon yet (store API).
+- **UI:** when the store is empty on first start, Wayterm offers the
+  import once (recorded in the `import_offered` setting). Import and
+  Export are on the session-tree menu and are window actions
+  (`win.import-sessions` / `win.export-sessions`).
