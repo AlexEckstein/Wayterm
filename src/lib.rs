@@ -5,6 +5,7 @@ pub mod rdp;
 pub mod sftp;
 pub mod store;
 pub mod terminal;
+pub mod transfer;
 pub mod transport;
 pub mod ui;
 pub mod vnc;
