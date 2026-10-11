@@ -49,7 +49,7 @@ fn collect_rows_hierarchy_and_order() {
                 is_folder: true,
                 name: "A".to_string(),
                 icon: None,
-                default_icon: "folder-symbolic",
+                default_icon: "wayterm-folder-symbolic",
                 parent_id: None,
             },
             SessionRow {
@@ -57,7 +57,7 @@ fn collect_rows_hierarchy_and_order() {
                 is_folder: true,
                 name: "B".to_string(),
                 icon: Some("network-server-symbolic".to_string()),
-                default_icon: "folder-symbolic",
+                default_icon: "wayterm-folder-symbolic",
                 parent_id: Some(folder_a),
             },
             SessionRow {
@@ -65,7 +65,7 @@ fn collect_rows_hierarchy_and_order() {
                 is_folder: false,
                 name: "s1".to_string(),
                 icon: None,
-                default_icon: "network-server-symbolic",
+                default_icon: "wayterm-server-symbolic",
                 parent_id: Some(folder_a),
             },
             SessionRow {
@@ -73,7 +73,7 @@ fn collect_rows_hierarchy_and_order() {
                 is_folder: false,
                 name: "s2".to_string(),
                 icon: Some("wayterm-homelab".to_string()),
-                default_icon: "video-display-symbolic",
+                default_icon: "wayterm-remote-desktop-symbolic",
                 parent_id: None,
             },
         ]

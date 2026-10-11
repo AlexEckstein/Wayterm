@@ -781,7 +781,7 @@ pub(super) mod gtk_tests {
         dialog.widgets.session_type.set_selected(TYPE_INDEX_LOCAL);
         assert_eq!(
             dialog.widgets.icon.shown_icon().as_deref(),
-            Some("utilities-terminal-symbolic"),
+            Some("wayterm-terminal-symbolic"),
             "the default icon follows the type"
         );
 
