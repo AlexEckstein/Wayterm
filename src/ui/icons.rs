@@ -1,8 +1,12 @@
 //! Session-tree icons (doc 06): every icon is an icon name, drawn through
-//! the GTK icon theme. Custom icons are SVGs copied into
-//! `$XDG_DATA_HOME/wayterm/icons/`, which is on the theme's search path,
-//! so they are just more names (`wayterm-<file stem>`). A `-symbolic` SVG
-//! is recolored to match the theme like the built-in ones.
+//! the GTK icon theme. Wayterm ships its own symbolic set (servers, racks,
+//! databases, UPS, network gear, …) compiled into the binary as a
+//! GResource (`assets/tree-icons`, `build.rs`), so the defaults and the
+//! picker look the same on every desktop whatever icon theme is installed.
+//! Custom icons are SVGs copied into `$XDG_DATA_HOME/wayterm/icons/`,
+//! which is on the theme's search path, so they are just more names
+//! (`wayterm-<file stem>`). `-symbolic` SVGs, the built-in ones included,
+//! are recolored to match the theme.
 //!
 //! Everything above the GTK layer is display-free.
 
@@ -18,59 +22,80 @@ use crate::store::model::SessionType;
 use crate::ui::widgets::window_of;
 
 /// The default folder icon.
-pub const FOLDER_ICON: &str = "folder-symbolic";
+pub const FOLDER_ICON: &str = "wayterm-folder-symbolic";
 
-/// Prefix of every imported icon's name, so it never shadows a theme icon.
+/// Prefix of every built-in and imported icon's name, so none shadows a
+/// theme icon.
 pub const CUSTOM_PREFIX: &str = "wayterm-";
 
 /// Imported SVGs larger than this are refused (icons are a few KiB).
 pub const MAX_SVG_BYTES: u64 = 1024 * 1024;
 
-/// Offered in the picker, after the defaults. All freedesktop names that
-/// Adwaita ships in symbolic form.
-pub const CURATED: &[&str] = &[
-    "folder-symbolic",
-    "folder-remote-symbolic",
-    "folder-documents-symbolic",
-    "user-home-symbolic",
-    "network-server-symbolic",
-    "network-workgroup-symbolic",
-    "computer-symbolic",
-    "video-display-symbolic",
-    "utilities-terminal-symbolic",
-    "network-wired-symbolic",
-    "network-wireless-symbolic",
-    "network-cellular-symbolic",
-    "drive-harddisk-symbolic",
-    "drive-multidisk-symbolic",
-    "media-flash-symbolic",
-    "media-removable-symbolic",
-    "printer-symbolic",
-    "phone-symbolic",
-    "camera-web-symbolic",
-    "input-gaming-symbolic",
-    "web-browser-symbolic",
-    "applications-system-symbolic",
-    "applications-engineering-symbolic",
-    "applications-science-symbolic",
-    "emblem-system-symbolic",
-    "system-run-symbolic",
-    "security-high-symbolic",
-    "dialog-password-symbolic",
-    "emblem-important-symbolic",
-    "starred-symbolic",
-    "weather-clear-symbolic",
+/// Where the built-in icons live in the GResource bundle; laid out as a
+/// hicolor `scalable/actions` directory, as `IconTheme` requires.
+const BUILTIN_RESOURCE_PATH: &str = "/com/alex-eckstein/wayterm/icons";
+
+/// The built-in icons, in picker order: infrastructure, network, compute,
+/// devices, organizing. One SVG each in `assets/tree-icons` (a test keeps
+/// the two in step).
+pub const BUILTIN: &[&str] = &[
+    "wayterm-server-symbolic",
+    "wayterm-server-rack-symbolic",
+    "wayterm-database-symbolic",
+    "wayterm-nas-symbolic",
+    "wayterm-harddisk-symbolic",
+    "wayterm-ups-symbolic",
+    "wayterm-power-symbolic",
+    "wayterm-cpu-symbolic",
+    "wayterm-sbc-symbolic",
+    "wayterm-switch-symbolic",
+    "wayterm-router-symbolic",
+    "wayterm-firewall-symbolic",
+    "wayterm-wifi-symbolic",
+    "wayterm-vpn-symbolic",
+    "wayterm-web-symbolic",
+    "wayterm-cloud-symbolic",
+    "wayterm-backup-symbolic",
+    "wayterm-vm-symbolic",
+    "wayterm-container-symbolic",
+    "wayterm-cluster-symbolic",
+    "wayterm-terminal-symbolic",
+    "wayterm-code-symbolic",
+    "wayterm-gear-symbolic",
+    "wayterm-monitoring-symbolic",
+    "wayterm-key-symbolic",
+    "wayterm-desktop-symbolic",
+    "wayterm-remote-desktop-symbolic",
+    "wayterm-laptop-symbolic",
+    "wayterm-serial-symbolic",
+    "wayterm-printer-symbolic",
+    "wayterm-camera-symbolic",
+    "wayterm-media-symbolic",
+    "wayterm-mail-symbolic",
+    "wayterm-home-symbolic",
+    "wayterm-lightbulb-symbolic",
+    "wayterm-sensor-symbolic",
+    "wayterm-folder-symbolic",
+    "wayterm-star-symbolic",
 ];
 
 /// The icon a session of `session_type` has when it sets none.
 pub fn session_type_icon(session_type: &SessionType) -> &'static str {
     match session_type {
-        SessionType::SSH => "network-server-symbolic",
-        SessionType::RDP => "computer-symbolic",
-        SessionType::VNC => "video-display-symbolic",
-        SessionType::Serial => "network-wired-symbolic",
-        SessionType::LocalShell => "utilities-terminal-symbolic",
+        SessionType::SSH => "wayterm-server-symbolic",
+        SessionType::RDP => "wayterm-desktop-symbolic",
+        SessionType::VNC => "wayterm-remote-desktop-symbolic",
+        SessionType::Serial => "wayterm-serial-symbolic",
+        SessionType::LocalShell => "wayterm-terminal-symbolic",
     }
+}
+
+/// A readable label for an icon name: `wayterm-server-rack-symbolic` →
+/// `server rack`.
+pub fn icon_label(name: &str) -> String {
+    let name = name.strip_prefix(CUSTOM_PREFIX).unwrap_or(name);
+    let name = name.strip_suffix("-symbolic").unwrap_or(name);
+    name.replace('-', " ")
 }
 
 /// The name to draw: `custom` when set and `available`, else `default` —
@@ -128,7 +153,8 @@ fn numbered(name: &str, n: u32) -> String {
 /// Copy the SVG at `source` into `dir` and return its icon name. Only
 /// `.svg` files that look like SVG and are at most [`MAX_SVG_BYTES`] are
 /// taken. Importing the same file again reuses its name; a different file
-/// with the same name gets a counter, so existing icons never change.
+/// with the same name, or one named like a built-in icon, gets a counter,
+/// so existing icons never change.
 pub fn import_svg(source: &Path, dir: &Path) -> io::Result<String> {
     let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidData, message);
     let is_svg = source
@@ -148,6 +174,10 @@ pub fn import_svg(source: &Path, dir: &Path) -> io::Result<String> {
     let base = icon_name_for_file(source);
     let mut name = base.clone();
     for n in 2.. {
+        if BUILTIN.contains(&name.as_str()) {
+            name = numbered(&base, n);
+            continue;
+        }
         let target = dir.join(format!("{name}.svg"));
         match std::fs::read(&target) {
             Ok(existing) if existing == bytes => return Ok(name),
@@ -182,13 +212,26 @@ pub fn custom_icons(dir: &Path) -> Vec<String> {
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// Put the custom icon directory on `display`'s icon theme. Called once at
-/// startup.
-pub fn register_custom_icons(display: &gdk::Display) {
+/// Put the built-in icons and the custom icon directory on `display`'s
+/// icon theme. Called once at startup.
+pub fn register_icons(display: &gdk::Display) {
+    register_builtin_icons(display);
     let dir = custom_icon_dir();
     // Best effort: a missing directory only means no custom icons yet.
     let _ = std::fs::create_dir_all(&dir);
     gtk4::IconTheme::for_display(display).add_search_path(dir);
+}
+
+/// Register the embedded GResource bundle (once per process) and put its
+/// icons on `display`'s theme.
+fn register_builtin_icons(display: &gdk::Display) {
+    static REGISTER: std::sync::Once = std::sync::Once::new();
+    REGISTER.call_once(|| {
+        if let Err(err) = gio::resources_register_include!("tree-icons.gresource") {
+            eprintln!("Wayterm: failed to load the built-in icons: {err}");
+        }
+    });
+    gtk4::IconTheme::for_display(display).add_resource_path(BUILTIN_RESOURCE_PATH);
 }
 
 /// Make the theme re-read its search path, so an icon imported a moment
@@ -201,7 +244,7 @@ fn rescan(display: &gdk::Display) {
 }
 
 /// An icon chooser: a preview, the icon name (empty = the default), a grid
-/// of curated and imported icons, "Import SVG…", and a reset button.
+/// of built-in and imported icons, "Import SVG…", and a reset button.
 #[derive(Clone)]
 pub struct IconPicker {
     root: gtk4::Box,
@@ -284,7 +327,7 @@ impl IconPicker {
     pub fn set_default(&self, default: &'static str) {
         self.default.set(default);
         self.entry
-            .set_placeholder_text(Some(&format!("Default ({default})")));
+            .set_placeholder_text(Some(&format!("Default ({})", icon_label(default))));
         self.update_preview();
     }
 
@@ -306,42 +349,61 @@ impl IconPicker {
         self.error.set_visible(true);
     }
 
-    /// The defaults, the curated set, then every imported SVG — rebuilt on
-    /// each open so a fresh import shows up.
+    /// The built-in icons, then every imported SVG under its own heading —
+    /// rebuilt on each open so a fresh import shows up.
     fn grid_popover(&self) -> gtk4::Popover {
+        let popover = gtk4::Popover::new();
+        let sections = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        let builtin: Vec<String> = BUILTIN.iter().map(|name| name.to_string()).collect();
+        let imported = custom_icons(&custom_icon_dir());
+        for (title, names) in [("Built-in", builtin), ("Imported", imported)] {
+            if names.is_empty() {
+                continue;
+            }
+            let heading = gtk4::Label::builder()
+                .label(title)
+                .xalign(0.0)
+                .css_classes(["heading"])
+                .build();
+            sections.append(&heading);
+            sections.append(&self.icon_grid(&names, &popover));
+        }
+        let scroll = gtk4::ScrolledWindow::builder()
+            .child(&sections)
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(360)
+            .build();
+        popover.set_child(Some(&scroll));
+        popover
+    }
+
+    /// One button per icon; a click picks it and closes `popover`.
+    fn icon_grid(&self, names: &[String], popover: &gtk4::Popover) -> gtk4::FlowBox {
         let flow = gtk4::FlowBox::builder()
             .selection_mode(gtk4::SelectionMode::None)
             .max_children_per_line(8)
             .min_children_per_line(8)
+            .homogeneous(true)
             .build();
-        let popover = gtk4::Popover::new();
-        let custom = custom_icons(&custom_icon_dir());
-        let names = CURATED
-            .iter()
-            .map(|name| name.to_string())
-            .chain(custom)
-            .collect::<Vec<_>>();
         for name in names {
+            let image = gtk4::Image::builder()
+                .icon_name(name)
+                .pixel_size(24)
+                .build();
             let button = gtk4::Button::builder()
-                .icon_name(&name)
-                .tooltip_text(&name)
+                .child(&image)
+                .tooltip_text(icon_label(name))
                 .has_frame(false)
                 .build();
-            let (picker, popover) = (self.clone(), popover.clone());
+            let (picker, popover, name) = (self.clone(), popover.clone(), name.clone());
             button.connect_clicked(move |_| {
                 picker.set_icon(Some(&name));
                 popover.popdown();
             });
             flow.insert(&button, -1);
         }
-        let scroll = gtk4::ScrolledWindow::builder()
-            .child(&flow)
-            .hscrollbar_policy(gtk4::PolicyType::Never)
-            .propagate_natural_height(true)
-            .max_content_height(320)
-            .build();
-        popover.set_child(Some(&scroll));
-        popover
+        flow
     }
 
     fn choose_svg(&self) {
@@ -398,6 +460,12 @@ pub(super) mod gtk_tests {
     /// the theme rescans, and the picker maps empty to the default.
     pub(in crate::ui) fn custom_svg_resolves_and_picker_round_trips() {
         let display = gdk::Display::default().expect("display");
+        register_builtin_icons(&display);
+        let theme = gtk4::IconTheme::for_display(&display);
+        for name in BUILTIN {
+            assert!(theme.has_icon(name), "built-in {name} is in the theme");
+        }
+
         let tmp = tempfile::tempdir().unwrap();
         let source = tmp.path().join("Home Lab.svg");
         std::fs::write(
@@ -409,7 +477,6 @@ pub(super) mod gtk_tests {
         let name = import_svg(&source, &dir).unwrap();
         assert_eq!(name, "wayterm-home-lab");
 
-        let theme = gtk4::IconTheme::for_display(&display);
         theme.add_search_path(&dir);
         rescan(&display);
         assert!(theme.has_icon(&name), "imported icon is in the theme");

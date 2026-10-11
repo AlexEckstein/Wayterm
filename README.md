@@ -17,8 +17,10 @@ and what comes next (local shell and serial, VNC, RDP).
 
 ## Build and test
 
-Needs GTK 4, VTE for GTK 4 (≥ 0.72) and SQLite headers (Debian/Ubuntu:
-`libgtk-4-dev libvte-2.91-gtk4-dev libsqlite3-dev`).
+Needs GTK 4, VTE for GTK 4 (≥ 0.72), SQLite headers, and
+`glib-compile-resources` for the built-in icons (Debian/Ubuntu:
+`libgtk-4-dev libvte-2.91-gtk4-dev libsqlite3-dev`; the first pulls in
+`libglib2.0-dev-bin`, which has the tool).
 
 ```sh
 cargo run

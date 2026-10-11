@@ -50,7 +50,7 @@ pub fn default_db_path() -> PathBuf {
 
 fn build_ui(app: &gtk4::Application) {
     if let Some(display) = gtk4::gdk::Display::default() {
-        crate::ui::icons::register_custom_icons(&display);
+        crate::ui::icons::register_icons(&display);
     }
     let store =
         Rc::new(SessionStore::open(&default_db_path()).expect("failed to open session store"));

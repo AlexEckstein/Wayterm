@@ -19,9 +19,75 @@ fn every_session_type_has_a_symbolic_default() {
     ] {
         let icon = session_type_icon(&session_type);
         assert!(icon.ends_with("-symbolic"), "{icon}");
-        assert!(CURATED.contains(&icon), "{icon} is offered in the picker");
+        assert!(BUILTIN.contains(&icon), "{icon} is built in");
     }
-    assert!(CURATED.contains(&FOLDER_ICON));
+    assert!(BUILTIN.contains(&FOLDER_ICON));
+}
+
+fn builtin_dir() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/tree-icons")
+}
+
+/// Every name in `BUILTIN` has an SVG, every SVG is listed, and the
+/// GResource manifest bundles exactly those files.
+#[test]
+fn builtin_list_matches_the_svgs_and_the_manifest() {
+    let svgs = custom_icons(&builtin_dir().join("scalable/actions"));
+    let mut listed: Vec<String> = BUILTIN.iter().map(|name| name.to_string()).collect();
+    listed.sort();
+    let mut unique = listed.clone();
+    unique.dedup();
+    assert_eq!(listed, unique, "no duplicates");
+    assert_eq!(svgs, listed);
+
+    let manifest = std::fs::read_to_string(builtin_dir().join("tree-icons.gresource.xml")).unwrap();
+    for name in BUILTIN {
+        assert!(
+            manifest.contains(&format!(">scalable/actions/{name}.svg<")),
+            "{name} is bundled"
+        );
+    }
+    assert_eq!(manifest.matches("<file ").count(), BUILTIN.len());
+}
+
+/// GTK recolors a symbolic SVG by overriding the fill of `rect`, `circle`
+/// and `path` only: any other shape, or a stroke, would keep its own color
+/// and vanish on a dark theme.
+#[test]
+fn builtin_svgs_use_only_recolorable_shapes() {
+    for name in BUILTIN {
+        let path = builtin_dir().join(format!("scalable/actions/{name}.svg"));
+        let svg = std::fs::read_to_string(&path).unwrap();
+        assert!(svg.contains(r#"viewBox="0 0 16 16""#), "{name}: 16×16");
+        assert!(!svg.contains("stroke"), "{name}: no strokes");
+        for tag in svg.split('<').skip(1) {
+            let element = tag
+                .trim_start_matches('/')
+                .split(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                .next()
+                .unwrap();
+            assert!(
+                ["svg", "rect", "circle", "path"].contains(&element),
+                "{name}: <{element}> is not recolored"
+            );
+        }
+    }
+}
+
+#[test]
+fn icon_labels_are_readable() {
+    assert_eq!(icon_label("wayterm-server-rack-symbolic"), "server rack");
+    assert_eq!(icon_label("wayterm-proxmox"), "proxmox");
+    assert_eq!(icon_label("network-server-symbolic"), "network server");
+}
+
+#[test]
+fn import_never_takes_a_builtin_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("server-symbolic.svg");
+    std::fs::write(&source, SVG).unwrap();
+    let name = import_svg(&source, &tmp.path().join("icons")).unwrap();
+    assert_eq!(name, "wayterm-server-2-symbolic");
 }
 
 #[test]
@@ -50,13 +116,13 @@ fn icon_names_are_prefixed_and_sanitized() {
 fn import_copies_reuses_and_numbers() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("icons");
-    let source = tmp.path().join("NAS-symbolic.svg");
+    let source = tmp.path().join("Synology-symbolic.svg");
     std::fs::write(&source, SVG).unwrap();
 
     let name = import_svg(&source, &dir).unwrap();
-    assert_eq!(name, "wayterm-nas-symbolic");
+    assert_eq!(name, "wayterm-synology-symbolic");
     assert_eq!(
-        std::fs::read_to_string(dir.join("wayterm-nas-symbolic.svg")).unwrap(),
+        std::fs::read_to_string(dir.join("wayterm-synology-symbolic.svg")).unwrap(),
         SVG
     );
     // The same file again: same name, no copy.
@@ -64,17 +130,20 @@ fn import_copies_reuses_and_numbers() {
     assert_eq!(custom_icons(&dir), std::slice::from_ref(&name));
 
     // A different file with the same stem leaves the first alone.
-    let other = tmp.path().join("other").join("NAS-symbolic.svg");
+    let other = tmp.path().join("other").join("Synology-symbolic.svg");
     std::fs::create_dir_all(other.parent().unwrap()).unwrap();
     std::fs::write(&other, SVG.replace("16 16", "24 24")).unwrap();
-    assert_eq!(import_svg(&other, &dir).unwrap(), "wayterm-nas-2-symbolic");
     assert_eq!(
-        std::fs::read_to_string(dir.join("wayterm-nas-symbolic.svg")).unwrap(),
+        import_svg(&other, &dir).unwrap(),
+        "wayterm-synology-2-symbolic"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("wayterm-synology-symbolic.svg")).unwrap(),
         SVG
     );
     assert_eq!(
         custom_icons(&dir),
-        ["wayterm-nas-2-symbolic", "wayterm-nas-symbolic"]
+        ["wayterm-synology-2-symbolic", "wayterm-synology-symbolic"]
     );
 }
 

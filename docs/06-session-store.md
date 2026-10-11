@@ -158,17 +158,30 @@ exact earlier wire format.
 ### Icons
 
 `folders.icon` and `sessions.icon` hold an icon name drawn through the
-GTK icon theme (`src/ui/icons.rs`); NULL means the default —
-`folder-symbolic` for folders, and per session type `network-server`
-(SSH), `computer` (RDP), `video-display` (VNC), `network-wired`
-(serial), `utilities-terminal` (local), all `-symbolic`. A name the
+GTK icon theme (`src/ui/icons.rs`); NULL means the default. A name the
 theme cannot find (a deleted custom icon, another machine) draws the
 default, never a broken image.
+
+Wayterm ships its own set of 38 symbolic icons (`assets/tree-icons/`,
+compiled into the binary as a GResource by `build.rs`, which needs
+`glib-compile-resources` from the GLib dev tools), so the defaults and
+the picker look the same whatever icon theme is installed. They cover
+infrastructure (server, server rack, database, NAS, disk, UPS, power,
+CPU, single-board computer), network (switch, router, firewall, Wi-Fi,
+VPN, web, cloud, backup), compute (VM, container, cluster, terminal,
+code, gear, monitoring, key), devices (desktop, remote desktop, laptop,
+serial, printer, camera, media, mail, home, light bulb, sensor), plus
+folder and star. Names are `wayterm-<icon>-symbolic`. The defaults:
+`folder` for folders, and per session type `server` (SSH), `desktop`
+(RDP), `remote-desktop` (VNC), `serial` (serial), `terminal` (local).
+Built-in SVGs use only filled `rect`/`circle`/`path` shapes — the only
+ones GTK recolors — which a test enforces.
 
 Custom icons are SVG only. "Import SVG…" copies the file into
 `$XDG_DATA_HOME/wayterm/icons/`, which is on the icon theme's search
 path, and stores the name `wayterm-<file stem>` (lowercased, other
-characters folded to `-`; no file paths in the database). A
+characters folded to `-`; no file paths in the database; a name a
+built-in icon has gets a counter). A
 `-symbolic` SVG is recolored to the theme like the built-in icons.
 Files over 1 MiB, without an `<svg` element, or that GTK cannot load
 are refused; re-importing the same file reuses its name, and a
@@ -177,9 +190,9 @@ never changes underneath its users.
 
 The icon is edited in the session dialog and, for folders, in the
 session tree's **Edit Folder** dialog (name + icon). Both offer a grid
-of curated theme icons plus every imported SVG, a free-text icon name
-(any icon of the installed theme), Import SVG…, and a reset to the
-default.
+of the built-in icons and, under its own heading, every imported SVG; a
+free-text icon name (any icon of the installed theme); Import SVG…; and
+a reset to the default.
 
 ## Default Data
 
