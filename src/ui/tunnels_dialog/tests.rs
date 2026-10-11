@@ -8,8 +8,14 @@ use super::model::{
     ForwardRuleDraft, KIND_INDEX_DYNAMIC, KIND_INDEX_LOCAL, KIND_INDEX_REMOTE, OFFLINE_STATUS,
     V2_NOTE,
 };
-use super::status_source::{FakeStatusSource, ForwardState, ForwardStatus, ForwardStatusSource};
+use super::status_source::{
+    EngineStatusBridge, FakeStatusSource, ForwardState, ForwardStatus, ForwardStatusSource,
+};
 use crate::store::model::{ForwardKind, ForwardRule};
+use crate::transport::forward::{
+    ForwardEngine, ForwardEvent, ForwardState as EngineState, OpenerFuture,
+};
+use crate::transport::types::TransportError;
 
 fn sample_rule() -> ForwardRule {
     ForwardRule {
@@ -267,4 +273,176 @@ fn fake_source_broadcasts_to_subscribers() {
     };
     source.emit(update.clone());
     assert_eq!(rx.try_recv(), Ok(update));
+}
+
+// --- EngineStatusBridge (the wave integrator's engine→dialog adapter) ------
+
+/// An engine whose channel opens always fail: no sockets, no sshd, just
+/// the event stream the bridge consumes.
+fn closed_engine() -> (ForwardEngine, tokio::sync::mpsc::Receiver<ForwardEvent>) {
+    let opener = std::sync::Arc::new(|_host: String, _port: u16| {
+        Box::pin(async move {
+            Err(TransportError::ChannelError(
+                "no channels in test".to_string(),
+            ))
+        }) as OpenerFuture
+    });
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    (ForwardEngine::with_opener(opener, tx), rx)
+}
+
+fn remote_rule() -> ForwardRule {
+    ForwardRule {
+        kind: ForwardKind::Remote,
+        bind_addr: "127.0.0.1".to_string(),
+        bind_port: 9999,
+        remote_host: "db.lan".to_string(),
+        remote_port: 22,
+        enabled: true,
+    }
+}
+
+#[test]
+fn bridge_maps_engine_states_and_rule_ids() {
+    let (engine, _rx) = closed_engine();
+    let bridge = EngineStatusBridge::new(engine);
+    assert!(bridge.snapshot().is_empty(), "nothing reported yet");
+
+    // Out of order on purpose: the snapshot sorts by rule index.
+    bridge.handle_event(ForwardEvent {
+        rule_id: 2,
+        state: EngineState::Active { conns: 3 },
+    });
+    bridge.handle_event(ForwardEvent {
+        rule_id: 0,
+        state: EngineState::LastFailed {
+            error: "refused".to_string(),
+        },
+    });
+    bridge.handle_event(ForwardEvent {
+        rule_id: 1,
+        state: EngineState::Listening,
+    });
+    bridge.handle_event(ForwardEvent {
+        rule_id: 3,
+        state: EngineState::Stopped,
+    });
+    assert_eq!(
+        bridge.snapshot(),
+        vec![
+            ForwardStatus {
+                // LastFailed is the engine's name for the dialog's Failed.
+                rule_index: 0,
+                state: ForwardState::Failed {
+                    error: "refused".to_string(),
+                },
+            },
+            ForwardStatus {
+                rule_index: 1,
+                state: ForwardState::Listening,
+            },
+            ForwardStatus {
+                rule_index: 2,
+                state: ForwardState::Active { conns: 3 },
+            },
+            ForwardStatus {
+                rule_index: 3,
+                state: ForwardState::Stopped,
+            },
+        ]
+    );
+
+    // A repeated event moves the cached entry, it does not duplicate it.
+    bridge.handle_event(ForwardEvent {
+        rule_id: 2,
+        state: EngineState::Stopped,
+    });
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot.len(), 4);
+    assert_eq!(lookup_status(&snapshot, 2), Some(&ForwardState::Stopped));
+}
+
+#[test]
+fn bridge_snapshot_leaves_unreported_rules_to_the_stopped_fallback() {
+    let (engine, _rx) = closed_engine();
+    let bridge = EngineStatusBridge::new(engine);
+    bridge.handle_event(ForwardEvent {
+        rule_id: 0,
+        state: EngineState::Listening,
+    });
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot.len(), 1);
+    // Per the trait docs the dialog renders a missing entry as Stopped.
+    assert_eq!(lookup_status(&snapshot, 1), None);
+    assert_eq!(status_text(lookup_status(&snapshot, 1), true), "Stopped");
+}
+
+#[test]
+fn bridge_fans_out_and_prunes_dead_subscribers() {
+    let (engine, _rx) = closed_engine();
+    let bridge = EngineStatusBridge::new(engine);
+    let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel();
+    let (tx2, rx2) = tokio::sync::mpsc::unbounded_channel();
+    bridge.subscribe(tx1);
+    bridge.subscribe(tx2);
+    drop(rx2);
+
+    let first = ForwardStatus {
+        rule_index: 0,
+        state: ForwardState::Listening,
+    };
+    bridge.handle_event(ForwardEvent {
+        rule_id: first.rule_index,
+        state: EngineState::Listening,
+    });
+    assert_eq!(rx1.try_recv(), Ok(first));
+
+    // The dead sender was pruned on that send: later updates still reach
+    // the live subscriber instead of accumulating dead entries.
+    let second = ForwardStatus {
+        rule_index: 0,
+        state: ForwardState::Stopped,
+    };
+    bridge.handle_event(ForwardEvent {
+        rule_id: second.rule_index,
+        state: EngineState::Stopped,
+    });
+    assert_eq!(rx1.try_recv(), Ok(second));
+    assert!(rx1.try_recv().is_err(), "no duplicate deliveries");
+}
+
+#[tokio::test]
+async fn bridge_set_rule_enabled_is_queued_and_reaches_the_engine() {
+    let (engine, mut rx) = closed_engine();
+    // A Remote rule never binds a socket (v2, skipped with Stopped), so
+    // this toggle exercises the full engine path with no network.
+    engine.start(vec![remote_rule()]).await;
+    assert!(matches!(
+        timeout_recv(&mut rx).await.state,
+        EngineState::Stopped
+    ));
+    let bridge = EngineStatusBridge::new(engine);
+
+    // Returns at once (queued, never blocking the GTK thread); the
+    // resulting state arrives back through the event drain.
+    bridge.set_rule_enabled(0, false);
+    bridge.set_rule_enabled(0, true);
+    assert_eq!(
+        timeout_recv(&mut rx).await,
+        ForwardEvent {
+            rule_id: 0,
+            state: EngineState::Stopped,
+        },
+        "re-enabling a skipped Remote rule must report Stopped again"
+    );
+
+    // Unknown ids are ignored by the engine, never a panic or a hang.
+    bridge.set_rule_enabled(99, true);
+}
+
+async fn timeout_recv(rx: &mut tokio::sync::mpsc::Receiver<ForwardEvent>) -> ForwardEvent {
+    tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out waiting for a forward event")
+        .expect("event channel closed")
 }

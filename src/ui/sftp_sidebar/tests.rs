@@ -504,4 +504,27 @@ fn sidebar_messages_name_the_condition_they_report() {
         "doc 09 asks for a prompt"
     );
     assert!(!COMMAND_FAILED.is_empty());
+    assert!(
+        JUMPED_UNAVAILABLE.contains("jumped"),
+        "a jumped tab must show the v1 limitation, not a spinner"
+    );
+}
+
+#[test]
+fn jumped_sessions_show_the_limitation_instead_of_attaching() {
+    // Doc 11 v1: no SFTP task ever starts over a jumped connection.
+    let mut view = SftpView::detached();
+    view.mark_jump_unsupported();
+    assert!(!view.connected);
+    assert_eq!(view.error.as_deref(), Some(JUMPED_UNAVAILABLE));
+    assert_eq!(view.toolbar, ToolbarState::DISABLED);
+
+    // Even an attached view falls back to the notice, never a listing.
+    let mut view = SftpView::detached();
+    view.attach();
+    view.set_listing("/home/user", &listing());
+    view.mark_jump_unsupported();
+    assert!(!view.connected);
+    assert_eq!(view.error.as_deref(), Some(JUMPED_UNAVAILABLE));
+    assert_eq!(view.toolbar, ToolbarState::DISABLED);
 }

@@ -52,8 +52,9 @@ CREATE TABLE sessions (
                                               -- THROUGH the referenced session (doc 11).
                                               -- v1: max depth 1, enforced in UI + connect logic.
     forward_rules   TEXT,                     -- JSON array, doc 11 §Port forwarding:
-                                              -- [{type:"local", bind:"127.0.0.1:8080",
-                                              --   remote_host:"web1.lan", remote_port:80, enabled:true}]
+                                              -- [{kind:"local", bind_addr:"127.0.0.1",
+                                              --   bind_port:8080, remote_host:"web1.lan",
+                                              --   remote_port:80, enabled:true}]
 
     -- RDP-specific
     rdp_domain      TEXT,

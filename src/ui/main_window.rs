@@ -92,7 +92,7 @@ impl MainWindow {
             let (store, notebook) = (store.clone(), notebook.clone());
             SessionTree::new(store.clone(), move |id| match store.get_session(id) {
                 Ok(config) => {
-                    SessionTab::open(&notebook, &config);
+                    SessionTab::open(&notebook, &config, &store);
                 }
                 Err(err) => eprintln!("Wayterm: failed to load session {id}: {err}"),
             })
@@ -264,8 +264,8 @@ fn install_transfer_actions(
 /// `win.tunnels` (Phase 11): the current tab's Tunnels dialog. It always
 /// opens — with no engine (not connected, non-SSH, or no tab at all it is
 /// a no-op) the dialog is the offline fallback: rules editable, live cells
-/// reading "no active connection". The P11-1 bridge passes the live status
-/// source instead of `None` here; the dialog already speaks it.
+/// reading "no active connection". A connected SSH tab passes its page's
+/// live status source instead of `None`; the dialog already speaks it.
 fn install_tunnels_action(
     window: &gtk4::ApplicationWindow,
     notebook: &gtk4::Notebook,
@@ -280,7 +280,8 @@ fn install_tunnels_action(
         let Ok(mut config) = store.get_session(id) else {
             return;
         };
-        let dialog = tunnels_dialog::TunnelsDialog::new(parent.upcast_ref(), &config, None);
+        let source = SessionTab::current_forward_source(&notebook);
+        let dialog = tunnels_dialog::TunnelsDialog::new(parent.upcast_ref(), &config, source);
         if let Some(rules) = dialog.run() {
             config.forward_rules = if rules.is_empty() { None } else { Some(rules) };
             if let Err(err) = store.update_session(&config) {
