@@ -12,6 +12,7 @@
 //! "`<session>` connection lost".
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc as std_mpsc;
 
 use gtk4::glib;
@@ -243,14 +244,15 @@ pub fn handle_app_action(app: &gtk4::Application, action: TrayAction) {
     }
 }
 
-/// Hide on close instead of quitting, when the tray allows it.
+/// Hide on close instead of quitting, when the tray allows it. The setting
+/// is read at each close, so a change in Settings applies at once.
 pub fn install_close_handler(
     window: &gtk4::ApplicationWindow,
     tray_available: bool,
-    setting_enabled: bool,
+    store: Rc<SessionStore>,
 ) {
     window.connect_close_request(move |window| {
-        if should_minimize_to_tray(tray_available, setting_enabled) {
+        if should_minimize_to_tray(tray_available, minimize_to_tray_enabled(&store)) {
             window.set_visible(false);
             glib::Propagation::Stop
         } else {

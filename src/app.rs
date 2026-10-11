@@ -59,8 +59,7 @@ fn build_ui(app: &gtk4::Application) {
         Err(err) => eprintln!("Wayterm: failed to load custom hotkeys: {err}"),
     }
 
-    let minimize_to_tray = tray::minimize_to_tray_enabled(&store);
-    let main_window = MainWindow::new(app, store, Rc::new(RefCell::new(hotkeys)));
+    let main_window = MainWindow::new(app, store.clone(), Rc::new(RefCell::new(hotkeys)));
     let window = main_window.window();
     let tray_available = match tray::init_tray(app) {
         Ok(handle) => {
@@ -74,5 +73,5 @@ fn build_ui(app: &gtk4::Application) {
             false
         }
     };
-    tray::install_close_handler(window, tray_available, minimize_to_tray);
+    tray::install_close_handler(window, tray_available, store);
 }

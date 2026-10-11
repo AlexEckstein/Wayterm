@@ -173,6 +173,13 @@ duplicate rows; that constraint is the first schema-v2 candidate).
 Boolean settings are on unless explicitly `0`/`false`/`no`/`off`; a
 missing or unreadable row is on, so a typo never disables a safety prompt.
 
+The Settings window's General page switches `confirm_close`,
+`reconnect_on_drop`, `sftp_on_connect`, and `minimize_to_tray`. Each flip
+writes `1`/`0` at once and applies live: the first two count from the
+next tab close or connection drop, open tabs included; `sftp_on_connect`
+governs tabs opened or connected afterwards; the tray setting is read at
+each window close. Its other page, Keyboard Shortcuts, is doc 07's.
+
 The seed also inserts 28 `hotkeys` rows with `is_default = 1`. They are
 informational: only `is_default = 0` rows (user overrides) are ever loaded,
 and doc 07's table is the source of truth. The seed predates two fixes
