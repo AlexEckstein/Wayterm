@@ -226,8 +226,15 @@ where
 
 /// `ssh -W host:port [user@]host` argv. No secrets ever appear here: the
 /// child is only the transport, auth happens through the stream.
+/// `BatchMode=yes` keeps OpenSSH from ever prompting on a tty Wayterm does
+/// not own (doc 11).
 pub(crate) fn ssh_w_argv(jump: &ConnectParams, target_host: &str, target_port: u16) -> Vec<String> {
-    let mut argv = vec!["-W".to_string(), format!("{target_host}:{target_port}")];
+    let mut argv = vec![
+        "-W".to_string(),
+        format!("{target_host}:{target_port}"),
+        "-o".to_string(),
+        "BatchMode=yes".to_string(),
+    ];
     if jump.port != 22 {
         argv.push("-p".to_string());
         argv.push(jump.port.to_string());
@@ -433,6 +440,8 @@ mod tests {
             vec![
                 "-W",
                 "inner.test:2202",
+                "-o",
+                "BatchMode=yes",
                 "-p",
                 "2222",
                 "jumpuser@bastion.test"
@@ -444,11 +453,26 @@ mod tests {
             ..jump.clone()
         };
         let argv = ssh_w_argv(&default_port, "inner.test", 22);
-        assert_eq!(argv, vec!["-W", "inner.test:22", "jumpuser@bastion.test"]);
+        assert_eq!(
+            argv,
+            vec!["-W", "inner.test:22", "-o", "BatchMode=yes", "jumpuser@bastion.test"]
+        );
         for secret in ["s3cr3t-password", "passphrase"] {
             assert!(
                 !argv.iter().any(|a| a.contains(secret)),
                 "secret material must never reach the child argv"
+            );
+        }
+        // BatchMode=yes is positional after -W in both shapes above; assert
+        // it outright so a reorder cannot silently drop the no-prompt guard.
+        for argv in [
+            ssh_w_argv(&jump, "inner.test", 2202),
+            ssh_w_argv(&default_port, "inner.test", 22),
+        ] {
+            assert!(
+                argv.windows(2)
+                    .any(|pair| pair == ["-o", "BatchMode=yes"]),
+                "ssh -W must never prompt on a tty Wayterm does not own: {argv:?}"
             );
         }
     }
