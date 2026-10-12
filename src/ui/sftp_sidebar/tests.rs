@@ -6,6 +6,7 @@
 //! renders a view, so none of it needs a display.
 
 use super::*;
+use crate::sftp::DirEntry;
 
 fn entry(name: &str, is_dir: bool, size: u64) -> DirEntry {
     DirEntry {
