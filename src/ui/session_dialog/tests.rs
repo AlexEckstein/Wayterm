@@ -1025,3 +1025,77 @@ fn collect_peer_sessions_walks_every_folder() {
     assert!(names.contains(&"root-box"), "root sessions: {names:?}");
     assert!(names.contains(&"nested-box"), "nested sessions: {names:?}");
 }
+
+// --- Save password to keyring ----------------------------------------------
+
+mod save_password {
+    use crate::transport::credentials::CredentialError;
+    use crate::ui::session_dialog::{
+        password_rows_visible, save_password_state, should_store_password, store_error_message,
+        SAVE_PASSWORD_LABEL, SAVE_PASSWORD_LABEL_EMPTY, TYPE_INDEX_RDP, TYPE_INDEX_SSH,
+    };
+
+    // AUTH_LABELS order: password, key, agent, keyboard-interactive, none.
+    const PASSWORD: u32 = 0;
+    const KEY: u32 = 1;
+
+    #[test]
+    fn rows_show_for_the_password_method_only() {
+        assert!(password_rows_visible(PASSWORD));
+        for other in 1..5 {
+            assert!(!password_rows_visible(other), "auth index {other}");
+        }
+    }
+
+    #[test]
+    fn checkbox_is_disabled_until_a_password_is_typed() {
+        assert_eq!(
+            save_password_state(false),
+            (false, SAVE_PASSWORD_LABEL_EMPTY)
+        );
+        assert_eq!(save_password_state(true), (true, SAVE_PASSWORD_LABEL));
+        assert_eq!(
+            SAVE_PASSWORD_LABEL_EMPTY,
+            "Save password to keyring (enter password to enable)"
+        );
+    }
+
+    #[test]
+    fn store_only_for_checked_ssh_password_with_text() {
+        assert!(should_store_password(
+            TYPE_INDEX_SSH,
+            PASSWORD,
+            true,
+            "test-secret-XYZ"
+        ));
+        assert!(!should_store_password(
+            TYPE_INDEX_SSH,
+            PASSWORD,
+            false,
+            "test-secret-XYZ"
+        ));
+        assert!(!should_store_password(TYPE_INDEX_SSH, PASSWORD, true, ""));
+        assert!(!should_store_password(
+            TYPE_INDEX_SSH,
+            KEY,
+            true,
+            "test-secret-XYZ"
+        ));
+        assert!(!should_store_password(
+            TYPE_INDEX_RDP,
+            PASSWORD,
+            true,
+            "test-secret-XYZ"
+        ));
+    }
+
+    #[test]
+    fn store_failure_names_the_reason() {
+        let err = CredentialError::Unavailable("no credential source supports storing".into());
+        assert_eq!(
+            store_error_message(&err),
+            "Could not store password: credential source unavailable: \
+             no credential source supports storing"
+        );
+    }
+}

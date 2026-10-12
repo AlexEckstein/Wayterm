@@ -8,10 +8,12 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
 
+use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
 use crate::ui::folder_dialog::FolderDialog;
 use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
 use crate::ui::session_dialog::{collect_peer_sessions, SessionDialog};
+use crate::ui::tab::credential_manager;
 use crate::ui::widgets::{confirm, data, prompt_text, set_data, window_of};
 
 /// One row of the tree, in display order.
@@ -501,12 +503,21 @@ impl SessionTree {
                 Err(err) => return eprintln!("Wayterm: failed to load session {id}: {err}"),
             },
         };
-        if let Some(config) = dialog.run() {
-            match id {
-                None => self.finish("save the session", self.store.insert_session(&config)),
-                Some(_) => self.finish("save the session", self.store.update_session(&config)),
-            }
-        }
+        let tree = self.clone();
+        let save = Box::new(move |config: &SessionConfig| {
+            let saved = match id {
+                None => tree.store.insert_session(config),
+                Some(id) => tree.store.update_session(config).map(|()| id),
+            };
+            let id = saved.as_ref().ok().copied();
+            tree.finish("save the session", saved);
+            id
+        });
+        let store = self.store.clone();
+        let store_password = Box::new(move |id: i64, name: &str, secret: &_| {
+            credential_manager(name, Some(&store)).store(&id.to_string(), name, "password", secret)
+        });
+        dialog.run(save, store_password);
     }
 
     fn parent(&self) -> Option<gtk4::Window> {

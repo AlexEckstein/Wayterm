@@ -6,6 +6,10 @@
 //! depth; local: shell and directory; VNC: a note that its password lives
 //! in the keyring). Only the selected group's values are stored.
 //!
+//! For the password method the SSH group also takes a password, kept only
+//! long enough to hand to the keyring when "Save password to keyring" is
+//! checked — the session row never holds it (doc 06 §Credential Storage).
+//!
 //! The tmux entry shows the full remote name (`wayterm-<suffix>`), which
 //! is what `tmux list-sessions` prints; the row stores the bare suffix.
 //! The entry follows the Name field until the user edits it.
@@ -14,13 +18,15 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk4::prelude::*;
+use zeroize::Zeroizing;
 
 use crate::store::model::{
-    vocab_index, Folder, SessionConfig, SessionType, DEFAULT_SERIAL_BAUD, RDP_COLOR_DEPTHS,
-    RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROLS,
-    SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES, SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS,
-    SERIAL_STOP_BITS_DEFAULT,
+    vocab_index, AuthMethod, Folder, SessionConfig, SessionType, DEFAULT_SERIAL_BAUD,
+    RDP_COLOR_DEPTHS, RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT,
+    SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES, SERIAL_PARITY_DEFAULT,
+    SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT,
 };
+use crate::transport::credentials::CredentialError;
 use crate::ui::icons::{session_type_icon, IconPicker};
 use crate::ui::tunnels_dialog::model::{
     drafts_from_rules, rules_from_drafts, ForwardRuleDraft, FORWARD_KIND_LABELS, V2_NOTE,
@@ -38,6 +44,48 @@ const VNC_KEYRING_NOTE: &str = "The VNC password is stored in your OS keyring on
                                 connect — never in Wayterm's database.";
 const TMUX_LABEL: &str = "Persist via tmux — survive reconnects; sessions on the remote host \
                           are named wayterm-<session name>";
+
+const SAVE_PASSWORD_LABEL: &str = "Save password to keyring";
+const SAVE_PASSWORD_LABEL_EMPTY: &str = "Save password to keyring (enter password to enable)";
+
+// ---------------------------------------------------------------------------
+// Store-on-save decisions (display-free)
+// ---------------------------------------------------------------------------
+
+/// The password entry and its checkbox show for the password method only.
+fn password_rows_visible(auth_index: u32) -> bool {
+    auth_index == auth_index_for(Some(&AuthMethod::Password))
+}
+
+/// The checkbox's sensitivity and label: it needs a typed password.
+fn save_password_state(password_typed: bool) -> (bool, &'static str) {
+    if password_typed {
+        (true, SAVE_PASSWORD_LABEL)
+    } else {
+        (false, SAVE_PASSWORD_LABEL_EMPTY)
+    }
+}
+
+/// Store on save only for an SSH session on the password method, with the
+/// box checked and a password typed.
+fn should_store_password(type_index: u32, auth_index: u32, checked: bool, password: &str) -> bool {
+    type_index == TYPE_INDEX_SSH
+        && password_rows_visible(auth_index)
+        && checked
+        && !password.is_empty()
+}
+
+/// The inline line shown when the keyring refuses the password.
+fn store_error_message(err: &CredentialError) -> String {
+    format!("Could not store password: {err}")
+}
+
+/// Persists the saved session: its id, or `None` when saving failed (the
+/// callback reports why).
+pub type SaveSessionFn = Box<dyn Fn(&SessionConfig) -> Option<i64>>;
+/// Stores a typed password for `(session_id, session_name)`.
+pub type StorePasswordFn =
+    Box<dyn Fn(i64, &str, &Zeroizing<Vec<u8>>) -> Result<(), CredentialError>>;
 
 /// Labelled rows in a two-column grid.
 struct FormGrid {
@@ -154,6 +202,9 @@ struct Widgets {
     port: gtk4::SpinButton,
     username: gtk4::Entry,
     auth: gtk4::DropDown,
+    password_rows: gtk4::Box,
+    password: gtk4::PasswordEntry,
+    save_password: gtk4::CheckButton,
     icon: IconPicker,
     notes: gtk4::TextView,
     tmux: gtk4::CheckButton,
@@ -217,6 +268,36 @@ impl Widgets {
             local_working_dir: self.local_working_dir.text().into(),
             ..base.clone()
         }
+    }
+
+    /// Show the password rows for the password method.
+    fn apply_auth(&self) {
+        self.password_rows
+            .set_visible(password_rows_visible(self.auth.selected()));
+    }
+
+    /// The checkbox follows whether a password is typed; clearing the
+    /// password unchecks it.
+    fn apply_password_typed(&self) {
+        let typed = !self.password.text().is_empty();
+        let (sensitive, label) = save_password_state(typed);
+        self.save_password.set_sensitive(sensitive);
+        self.save_password.set_label(Some(label));
+        if !typed {
+            self.save_password.set_active(false);
+        }
+    }
+
+    /// The typed password when it should go to the keyring on save.
+    fn password_to_store(&self) -> Option<Zeroizing<Vec<u8>>> {
+        let password = Zeroizing::new(self.password.text().to_string());
+        should_store_password(
+            self.session_type.selected(),
+            self.auth.selected(),
+            self.save_password.is_active(),
+            &password,
+        )
+        .then(|| Zeroizing::new(password.as_bytes().to_vec()))
     }
 
     fn fill(&self, config: &SessionConfig, folders: &[Folder]) {
@@ -444,15 +525,30 @@ impl SessionDialog {
         };
         // `set_selected` only notifies on change, so apply SSH explicitly.
         dialog.groups.apply(type_index_for(&config.session_type));
+        dialog.widgets.apply_auth();
         dialog
     }
 
     /// Run modally; `None` on cancel. OK only closes on success: an
     /// invalid forward draft keeps the dialog open with the error inline,
     /// and the jump choice resolves through [`resolve_jump`] on save.
-    pub fn run(self) -> Option<SessionConfig> {
+    ///
+    /// OK saves through `save`; then, when "Save password to keyring" is
+    /// checked, the typed password goes to `store_password` with the saved
+    /// id. A refused store leaves the session saved and the dialog open on
+    /// the reason, with OK turned into Close.
+    pub fn run(
+        self,
+        save: SaveSessionFn,
+        store_password: StorePasswordFn,
+    ) -> Option<SessionConfig> {
         let ok = gtk4::Button::with_label("OK");
         let cancel = self.modal.button("Cancel", || None);
+        let password_error = error_label();
+        password_error.set_visible(false);
+        set_margins(&password_error, 12);
+        self.vbox.append(&password_error);
+        let saved = Rc::new(Cell::new(false));
         {
             let (window, result, widgets, base, folders, peers, forward_error) = (
                 self.modal.window.clone(),
@@ -463,16 +559,34 @@ impl SessionDialog {
                 self.peers.clone(),
                 self.widgets.forward_error.clone(),
             );
-            ok.connect_clicked(move |_| {
+            let password_error = password_error.clone();
+            ok.connect_clicked(move |ok| {
+                if saved.get() {
+                    window.close();
+                    return;
+                }
                 let fields = widgets.fields(&base.borrow());
-                match rules_from_drafts(&fields.forward_drafts) {
-                    Ok(_) => {
-                        *result.borrow_mut() = Some(config_from_fields(&fields, &folders, &peers));
-                        window.close();
+                if let Err(errors) = rules_from_drafts(&fields.forward_drafts) {
+                    forward_error.set_text(&forward_batch_error(&errors));
+                    return;
+                }
+                let mut config = config_from_fields(&fields, &folders, &peers);
+                let secret = widgets.password_to_store();
+                let Some(id) = save(&config) else {
+                    window.close();
+                    return;
+                };
+                config.id = id;
+                let stored = secret.map(|secret| store_password(id, &config.name, &secret));
+                *result.borrow_mut() = Some(config);
+                match stored {
+                    Some(Err(err)) => {
+                        saved.set(true);
+                        password_error.set_text(&store_error_message(&err));
+                        password_error.set_visible(true);
+                        ok.set_label("Close");
                     }
-                    Err(errors) => {
-                        forward_error.set_text(&forward_batch_error(&errors));
-                    }
+                    _ => window.close(),
                 }
             });
             self.modal.window.set_default_widget(Some(&ok));
@@ -524,6 +638,28 @@ impl SessionDialog {
         form.add("Notes:", &notes_scroll);
 
         let mut ssh = FormGrid::new(6);
+        // Password (password method only): never stored on the row, only
+        // in the keyring when the box is checked.
+        let password = gtk4::PasswordEntry::builder()
+            .show_peek_icon(true)
+            .hexpand(true)
+            .activates_default(true)
+            .placeholder_text("only saved to the keyring")
+            .build();
+        let password_label = gtk4::Label::builder()
+            .label("Password:")
+            .halign(gtk4::Align::End)
+            .build();
+        let password_line = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+        password_line.append(&password_label);
+        password_line.append(&password);
+        let save_password = gtk4::CheckButton::with_label(SAVE_PASSWORD_LABEL_EMPTY);
+        save_password.set_sensitive(false);
+        let password_rows = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        password_rows.append(&password_line);
+        password_rows.append(&save_password);
+        ssh.span(&password_rows);
+
         let tmux = gtk4::CheckButton::with_label(TMUX_LABEL);
         ssh.span(&tmux);
         let tmux_name = ssh.entry("tmux session:", "wayterm-<session name>");
@@ -644,6 +780,9 @@ impl SessionDialog {
             port,
             username,
             auth,
+            password_rows,
+            password,
+            save_password,
             icon,
             notes,
             tmux,
@@ -693,6 +832,17 @@ impl SessionDialog {
                 icon.set_default(session_type_icon(&session_type));
             });
         groups.apply(widgets.session_type.selected());
+
+        let for_auth = widgets.clone();
+        widgets
+            .auth
+            .connect_notify_local(Some("selected"), move |_, _| for_auth.apply_auth());
+        widgets.apply_auth();
+        let for_password = widgets.clone();
+        widgets
+            .password
+            .connect_changed(move |_| for_password.apply_password_typed());
+        widgets.apply_password_typed();
 
         let tmux_follow = TmuxNameFollow::default();
         let (follow, entry) = (tmux_follow.clone(), widgets.tmux_name.clone());
