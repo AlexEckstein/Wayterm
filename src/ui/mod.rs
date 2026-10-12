@@ -50,6 +50,7 @@ mod gtk_tests {
         super::settings::gtk_tests::pages_and_general_switches();
         super::tab::gtk_tests::opening_a_tab_focuses_its_terminal();
         super::tab::gtk_tests::reconnect_does_not_steal_focus();
+        super::tab::gtk_tests::sftp_sidebar_follows_the_shell_directory();
         super::vnc_tab::gtk_tests::vnc_view_draws_and_routes_input();
         super::rdp_tab::gtk_tests::rdp_embed_builds_and_tracks();
         super::rdp_tab::gtk_tests::rdp_child_follows_the_area_and_dies_with_the_page();

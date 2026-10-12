@@ -65,7 +65,9 @@ pub enum SftpCommand {
   command reopens it, so a server closing the subsystem shows up as an
   error and recovers.
 - `Cd` doubles as the listing command. There is no `getcwd`, so the path
-  bar shows the requested path; browsing starts at `.`, the SFTP home.
+  bar shows the requested path; browsing starts at `.`, the SFTP home,
+  unless the shell has reported its directory by then (§Following the
+  shell).
 - `Delete` stats first: russh-sftp 3 splits removal into file and
   directory calls (directories must be empty).
 
@@ -80,6 +82,36 @@ An upload's final flush and close must succeed or the transfer fails,
 since the remote file may be incomplete. Every successful operation
 refreshes the listing.
 
+## Following the shell
+
+The sidebar follows the shell's working directory. A shell that reports
+it with OSC 7 (`file://host/path`, percent-encoded) makes VTE emit
+`current-directory-uri-changed`; the tab hands the URI to a
+`DirectoryFollower` (`src/ui/sftp_sidebar/model.rs`), and when that
+yields a path the sidebar `Cd`s there. The tab connects to the VTE
+widget directly, as it does for the window title, so
+`TerminalBackend` and `TerminalEvent` (doc 02) are unchanged.
+
+- Only a changed directory moves the sidebar. Shells re-report at every
+  prompt, so a user browsing elsewhere stays put until the shell `cd`s.
+- The first report pins the host. Reports naming another host come from
+  a nested `ssh` inside the session; their paths are not on this
+  connection, so they are ignored. This is a heuristic: if the session's
+  own shell never reports, the first nested host that does is pinned.
+- A report that lands before the SFTP task is attached
+  (`sftp_on_connect` off, sidebar not yet shown) becomes the directory
+  the first listing starts at.
+- A directory the SFTP user cannot list (after `su`, say) shows the
+  usual inline error and leaves the listing where it was.
+- Jumped sessions have no SFTP task (doc 11 v1), so nothing follows.
+
+Nothing happens unless the remote shell sends OSC 7. fish sends it by
+default. Distro `vte.sh` profiles only do so when `$VTE_VERSION` is set,
+which does not cross SSH, so bash and zsh usually need a prompt hook,
+e.g. bash's `PROMPT_COMMAND='printf "\e]7;file://%s%s\a" "$HOSTNAME" "$PWD"'`
+(unencoded paths work, except that one containing `%` is misdecoded
+or, as an invalid escape, dropped by VTE).
+
 ## Drag and drop
 
 Uploads accept both `GdkFileList` (GTK 4 file managers) and
@@ -93,8 +125,3 @@ implemented; Download uses a file chooser.
 SSH sessions only: RDP, VNC, and serial have no SSH connection. On their
 tabs the SFTP panel shows its placeholder and `toggle_sftp` is disabled. A local-shell file browser over `std::fs`
 is a possible later addition.
-
-## Later
-
-Follow the shell's working directory: VTE reports OSC 7 as
-`current-directory-uri`; the sidebar could `Cd` there.

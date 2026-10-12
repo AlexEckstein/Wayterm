@@ -1,6 +1,7 @@
 //! The display-free half of the SFTP sidebar: listing rows, toolbar
-//! rules, transfer status text, and `text/uri-list` parsing. Everything
-//! here is plain data, unit-tested without a display.
+//! rules, transfer status text, `text/uri-list` parsing, and following the
+//! shell's directory. Everything here is plain data, unit-tested without a
+//! display.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -9,7 +10,8 @@ use crate::sftp::DirEntry;
 /// The synthetic "go up" row.
 pub const PARENT_ROW: &str = "..";
 
-/// Where the sidebar starts browsing.
+/// Where the sidebar starts browsing, unless the shell reports its
+/// directory first ([`SftpView::start_at`]).
 pub const START_PATH: &str = ".";
 
 const DIR_ICON: &str = "📁";
@@ -274,14 +276,47 @@ pub fn parse_uri_list(text: &str) -> Vec<String> {
 
 /// One `file://` URI to a local path, or `None` when it is not one.
 fn uri_to_path(uri: &str) -> Option<String> {
+    let (host, path) = split_file_uri(uri)?;
+    (host.is_empty() || host.eq_ignore_ascii_case("localhost")).then_some(path)
+}
+
+/// A `file://` URI's host and percent-decoded path.
+fn split_file_uri(uri: &str) -> Option<(&str, String)> {
     let rest = uri.strip_prefix("file://")?;
     let slash = rest.find('/')?;
-    let host = &rest[..slash];
-    if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
-        return None;
-    }
     let path = percent_decode(&rest[slash..]);
-    (!path.is_empty()).then_some(path)
+    (!path.is_empty()).then(|| (&rest[..slash], path))
+}
+
+/// Follows the shell's working directory from the terminal's OSC 7
+/// reports (`file://host/path`, doc 09 §Following the shell).
+///
+/// The first report pins the host: a nested `ssh` inside the session
+/// reports another one, and its paths mean nothing to this session's SFTP
+/// channel. Only a changed directory yields a target, so the user can
+/// browse elsewhere in the sidebar until the shell changes directory.
+#[derive(Clone, Debug, Default)]
+pub struct DirectoryFollower {
+    host: Option<String>,
+    last: Option<String>,
+}
+
+impl DirectoryFollower {
+    /// The directory to show for this report, or `None` when the sidebar
+    /// should stay where it is.
+    pub fn report(&mut self, uri: &str) -> Option<String> {
+        let (host, path) = split_file_uri(uri)?;
+        match &self.host {
+            Some(pinned) if !pinned.eq_ignore_ascii_case(host) => return None,
+            Some(_) => {}
+            None => self.host = Some(host.to_string()),
+        }
+        if self.last.as_deref() == Some(path.as_str()) {
+            return None;
+        }
+        self.last = Some(path.clone());
+        Some(path)
+    }
 }
 
 /// Decode `%XX` escapes in a URI path; invalid escapes stay verbatim.
@@ -343,6 +378,9 @@ pub struct SftpView {
     pub shown: bool,
     /// Whether a live SFTP client is attached.
     pub connected: bool,
+    /// Where the first listing starts: [`START_PATH`], or the shell's
+    /// directory when it was reported first.
+    start: String,
     /// Running transfers, oldest first; the bar shows whichever updated last.
     pub transfers: Vec<TransferState>,
     /// Derived button sensitivity.
@@ -364,6 +402,7 @@ impl SftpView {
             status: String::new(),
             shown: true,
             connected: false,
+            start: START_PATH.to_string(),
             transfers: Vec::new(),
             toolbar: ToolbarState::DISABLED,
             selected: None,
@@ -386,12 +425,23 @@ impl SftpView {
         self.recompute_toolbar();
     }
 
-    /// Directory the sidebar browses — [`START_PATH`] until the first listing.
+    /// Directory the sidebar browses — the start path until the first
+    /// listing.
     pub fn current_path(&self) -> &str {
         if self.path.is_empty() {
-            START_PATH
+            &self.start
         } else {
             &self.path
+        }
+    }
+
+    /// Start browsing at `path` instead of [`START_PATH`]: the shell
+    /// reported its directory before a client was attached. Ignored once
+    /// a listing exists.
+    pub fn start_at(&mut self, path: &str) {
+        if self.path.is_empty() {
+            self.start = path.to_string();
+            self.path_text = path.to_string();
         }
     }
 
