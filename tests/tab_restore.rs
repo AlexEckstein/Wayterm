@@ -4,15 +4,12 @@
 //! [`wayterm::ui::tab_state`] unit-tests the wire format itself; this file
 //! covers the other half of the contract — that the list actually lands in
 //! SQLite and comes back out the way a relaunched app needs it, through the
-//! same constructors the UI uses:
+//! same constructors the UI uses, against two kinds of store:
 //!
 //! * **in-memory store** — the shape the model tests can use cheaply;
 //! * **file store** — the real thing, and the only one that can answer the
 //!   question that matters ("what happens on the next launch?"), since a
-//!   relaunch is a fresh `open()` of the same file;
-//! * **a duplicated connection** — how [`SessionStore::duplicate`]-based
-//!   GTK wiring reaches the same file (doc 06's UI note), so the row the
-//!   window writes is the row the next launch reads.
+//!   relaunch is a fresh `open()` of the same file.
 //!
 //! No GTK and no display: nothing here constructs a widget.
 
