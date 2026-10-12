@@ -19,7 +19,8 @@ The sidebar is a path bar (Enter navigates), a toolbar
 (Upload, Download, Delete, Rename, Refresh, New folder), an inline error
 line, the listing (name, size, modified, permissions; directories first,
 case-insensitive; a `..` row except at `/`), a progress bar with Cancel,
-and a status line. `toggle_sftp` (Ctrl+Shift+B) switches the dock to the
+a status line, and a "Follow terminal directory" checkbox (§Following
+the shell). `toggle_sftp` (Ctrl+Shift+B) switches the dock to the
 SFTP panel, or back to the panel it came from.
 
 ## Connection Model
@@ -66,8 +67,7 @@ pub enum SftpCommand {
   error and recovers.
 - `Cd` doubles as the listing command. There is no `getcwd`, so the path
   bar shows the requested path; browsing starts at `.`, the SFTP home,
-  unless the shell has reported its directory by then (§Following the
-  shell).
+  unless the shell's directory is known by then (§Following the shell).
 - `Delete` stats first: russh-sftp 3 splits removal into file and
   directory calls (directories must be empty).
 
@@ -84,33 +84,57 @@ refreshes the listing.
 
 ## Following the shell
 
-The sidebar follows the shell's working directory. A shell that reports
-it with OSC 7 (`file://host/path`, percent-encoded) makes VTE emit
-`current-directory-uri-changed`; the tab hands the URI to a
-`DirectoryFollower` (`src/ui/sftp_sidebar/model.rs`), and when that
-yields a path the sidebar `Cd`s there. The tab connects to the VTE
-widget directly, as it does for the window title, so
-`TerminalBackend` and `TerminalEvent` (doc 02) are unchanged.
+While "Follow terminal directory" is ticked (the sidebar's bottom row; on
+by default, per tab, kept across a redial), the sidebar shows the
+directory the tab's shell is in. It learns that two ways:
 
-- Only a changed directory moves the sidebar. Shells re-report at every
-  prompt, so a user browsing elsewhere stays put until the shell `cd`s.
-- The first report pins the host. Reports naming another host come from
-  a nested `ssh` inside the session; their paths are not on this
-  connection, so they are ignored. This is a heuristic: if the session's
-  own shell never reports, the first nested host that does is pinned.
-- A report that lands before the SFTP task is attached
-  (`sftp_on_connect` off, sidebar not yet shown) becomes the directory
-  the first listing starts at.
-- A directory the SFTP user cannot list (after `su`, say) shows the
-  usual inline error and leaves the listing where it was.
+- **OSC 7.** A shell that reports its directory (`file://host/path`,
+  percent-encoded) makes VTE emit `current-directory-uri-changed`; the
+  tab hands the URI to a `DirectoryFollower`
+  (`src/ui/sftp_sidebar/model.rs`). The tab connects to the VTE widget
+  directly, as it does for the window title, so `TerminalBackend` and
+  `TerminalEvent` (doc 02) are unchanged. The first report pins the host:
+  reports naming another host come from a nested `ssh` inside the
+  session, whose paths are not on this connection. This is a heuristic:
+  if the session's own shell never reports, the first nested host that
+  does is pinned.
+- **Probing.** Many shells send nothing over SSH: bash by default,
+  oh-my-zsh (it turns OSC 7 off when `$SSH_TTY` is set), and any shell
+  inside tmux, which keeps OSC 7 for itself. So after each command (Enter,
+  then 300 ms without terminal output) the sidebar asks the remote with a
+  `ShellCwdProbe` (`src/sftp/shell_cwd.rs`): one `sh` on an exec channel
+  of the shared connection, its script on stdin so the login shell never
+  parses it. A tmux tab asks
+  `tmux display-message -p -t '=<name>:' '#{pane_current_path}'`. A plain
+  tab walks `/proc` from the probe up to this connection's SSH server
+  process, takes its one child on a terminal that is not running tmux
+  (the tab's shell), and reads the working directory of that terminal's
+  foreground process. Attaching and ticking the checkbox probe once too.
+  Probing stops once the shell sends an OSC 7 report.
+
+- Only a changed directory moves the sidebar (`SftpView::shell_moved`,
+  shared by both sources). Shells re-report at every prompt, so a user
+  browsing elsewhere stays put until the shell `cd`s.
+- Unticked, nothing moves and nothing is probed; ticking it again goes
+  to the shell's last known directory and probes.
+- A directory known before the SFTP task is attached (`sftp_on_connect`
+  off, sidebar not yet shown) becomes the directory the first listing
+  starts at.
+- A directory the SFTP user cannot list shows the usual inline error and
+  leaves the listing where it was. A foreground process the probe cannot
+  read (`su`, `sudo`) leaves the answer at the shell's own directory.
 - Jumped sessions have no SFTP task (doc 11 v1), so nothing follows.
 
-Nothing happens unless the remote shell sends OSC 7. fish sends it by
-default. Distro `vte.sh` profiles only do so when `$VTE_VERSION` is set,
-which does not cross SSH, so bash and zsh usually need a prompt hook,
+Limits: plain-tab probes need a Linux remote. Tabs to the same
+user@host share one connection (doc 04), and probing tells their shells
+apart only while at most one of them is a plain shell; with two, it
+gives no answer. A tmux tab follows the active pane, so switching panes
+shows after the next command. Probes see physical paths where OSC 7
+reports `$PWD`, so a symlinked directory may show under its target's
+name. Where probing cannot work, a prompt hook sending OSC 7 still does,
 e.g. bash's `PROMPT_COMMAND='printf "\e]7;file://%s%s\a" "$HOSTNAME" "$PWD"'`
-(unencoded paths work, except that one containing `%` is misdecoded
-or, as an invalid escape, dropped by VTE).
+(unencoded paths work, except that one containing `%` is misdecoded or,
+as an invalid escape, dropped by VTE).
 
 ## Drag and drop
 

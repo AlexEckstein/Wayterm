@@ -43,8 +43,9 @@ Doc 09: per-tab sidebar over the shared connection, navigation, upload
 (button and drag-drop), download (button), delete, rename, mkdir, inline
 progress with cancel. The sidebars are shown in the side dock's SFTP
 panel, which follows the current tab, and each follows its shell's
-working directory when the shell reports it (OSC 7). Not done: a
-right-click menu and dragging files out.
+working directory (OSC 7, or a probe over the connection) while its
+"Follow terminal directory" box is ticked. Not done: a right-click menu
+and dragging files out.
 
 ## Phase 4: Hotkeys and polish — done, with gaps
 
