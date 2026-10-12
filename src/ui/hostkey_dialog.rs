@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use gtk4::pango;
 use gtk4::prelude::*;
 
 use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyPrompt};

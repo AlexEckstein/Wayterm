@@ -240,7 +240,7 @@ fn parse_uri_list_rejects_non_file_uris_and_invalid_escapes_safely() {
 
 #[test]
 fn dropped_file_paths_become_upload_targets_in_the_current_directory() {
-    // Both drop formats hand the sidebar *local* paths (gdk4::File::path()
+    // Both drop formats hand the sidebar *local* paths (gio::File::path()
     // and the parsed uri-list); the upload target is the file's name inside
     // the directory the sidebar is in.
     let current = "/srv/data";

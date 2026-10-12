@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use gtk4::glib;
 use gtk4::prelude::*;
+use gtk4::{glib, pango};
 
 pub use crate::transport::auth::{ChallengePrompt, ChallengeResponder};
 use crate::ui::widgets::{ok_cancel_row, set_margins, Modal};

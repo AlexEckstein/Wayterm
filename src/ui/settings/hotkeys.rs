@@ -11,8 +11,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gtk4::glib;
 use gtk4::prelude::*;
+use gtk4::{gdk, glib};
 use thiserror::Error;
 
 use crate::hotkeys::{Action, ActionContext, ConflictPolicy, HotkeyEngine, KeyChord, RebindError};
@@ -95,28 +95,28 @@ impl SettingsView {
     }
 
     /// Escape cancels capture.
-    pub fn is_cancel_key(key: gdk4::Key) -> bool {
-        key == gdk4::Key::Escape
+    pub fn is_cancel_key(key: gdk::Key) -> bool {
+        key == gdk::Key::Escape
     }
 
     /// A bare modifier or lock key: capture keeps waiting for the chord.
-    pub fn is_modifier_only(key: gdk4::Key) -> bool {
+    pub fn is_modifier_only(key: gdk::Key) -> bool {
         matches!(
             key,
-            gdk4::Key::Shift_L
-                | gdk4::Key::Shift_R
-                | gdk4::Key::Control_L
-                | gdk4::Key::Control_R
-                | gdk4::Key::Alt_L
-                | gdk4::Key::Alt_R
-                | gdk4::Key::Super_L
-                | gdk4::Key::Super_R
-                | gdk4::Key::Meta_L
-                | gdk4::Key::Meta_R
-                | gdk4::Key::Hyper_L
-                | gdk4::Key::Hyper_R
-                | gdk4::Key::Caps_Lock
-                | gdk4::Key::Num_Lock
+            gdk::Key::Shift_L
+                | gdk::Key::Shift_R
+                | gdk::Key::Control_L
+                | gdk::Key::Control_R
+                | gdk::Key::Alt_L
+                | gdk::Key::Alt_R
+                | gdk::Key::Super_L
+                | gdk::Key::Super_R
+                | gdk::Key::Meta_L
+                | gdk::Key::Meta_R
+                | gdk::Key::Hyper_L
+                | gdk::Key::Hyper_R
+                | gdk::Key::Caps_Lock
+                | gdk::Key::Num_Lock
         )
     }
 

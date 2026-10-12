@@ -14,8 +14,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use gtk4::glib;
 use gtk4::prelude::*;
+use gtk4::{gdk, gio, glib};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
@@ -24,9 +24,6 @@ use crate::sftp::{DirEntry, Progress, SftpClient, SftpCommand};
 use crate::store::model::SessionType;
 use crate::transport::connection::SshConnection;
 use crate::ui::widgets::{confirm, prompt_text, set_margins, window_of};
-
-use gdk4 as gdk;
-use gio;
 
 // ---------------------------------------------------------------------------
 // Model layer (display-free)

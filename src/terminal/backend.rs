@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gtk4::Widget;
+use gtk4::{pango, Widget};
 use tokio::sync::mpsc;
 
 /// Capabilities a backend supports — the UI hides what is unsupported.

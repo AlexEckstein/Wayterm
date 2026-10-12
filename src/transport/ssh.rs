@@ -166,7 +166,7 @@ impl Transport for SSHTransport {
             .as_mut()
             .ok_or(TransportError::Disconnected)?;
         channel
-            .data_bytes(bytes::Bytes::copy_from_slice(data))
+            .data_bytes(data.to_vec())
             .await
             .map_err(TransportError::from_russh)
     }

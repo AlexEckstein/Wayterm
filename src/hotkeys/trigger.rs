@@ -6,7 +6,7 @@
 //! and `Delete` are case-sensitive key names. Everything here is
 //! display-free except [`parse_trigger`] and [`KeyChord::to_trigger`].
 
-use gdk4::{Key, ModifierType};
+use gtk4::gdk::{Key, ModifierType};
 
 /// UI name, accelerator token, and GDK mask of each modifier, in the
 /// order every direction emits them (so round trips are stable).

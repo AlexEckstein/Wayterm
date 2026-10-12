@@ -2921,15 +2921,11 @@ name = "wayterm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bytes",
  "des",
- "gdk4",
  "gdk4-x11",
- "gio",
  "gtk4",
  "ksni",
  "libc",
- "pango",
  "rusqlite",
  "russh",
  "russh-sftp",

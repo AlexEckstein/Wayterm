@@ -15,8 +15,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc as std_mpsc;
 
-use gtk4::glib;
 use gtk4::prelude::*;
+use gtk4::{gio, glib};
 use ksni::TrayMethods as _;
 use tokio::sync::mpsc;
 
