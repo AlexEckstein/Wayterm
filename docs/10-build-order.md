@@ -107,7 +107,7 @@ Gaps, each small:
 - Tight/ZRLE decode through the mock server is not pinned (Raw/CopyRect
   prove the pipeline; ZRLE/Tight run only against real servers).
 
-## Phase 7: RDP
+## Phase 7: RDP — done
 
 Prototype X11 reparenting *first*, standalone. Then `RdpTab` with xfreerdp
 (binary probed as `xfreerdp3`/`xfreerdp`), `/u` on argv and the password
@@ -130,7 +130,7 @@ is the feature's point. **Verify:** run vim (or any long-running
 command), kill the network, reconnect, vim is still there — covered by
 the sshd suite.
 
-## Phase 9: Import/export and packaging — done
+## Phase 9: Import/export and packaging — done, with gaps
 
 Import/export (`src/transfer/`, doc 06 §Import and export): importers for
 `~/.ssh/config` (Wayterm's own block scanner, `Include` followed),
