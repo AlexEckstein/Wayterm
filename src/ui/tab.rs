@@ -53,7 +53,7 @@ use crate::ui::main_window::{route_status, SUPERVISOR_KEY};
 use crate::ui::rdp_tab;
 use crate::ui::session_ended::{self, EndedChoice};
 use crate::ui::settings::credentials::CredentialSettings;
-use crate::ui::sftp_sidebar::{self, supports_sftp, SftpSidebar};
+use crate::ui::sftp_sidebar::{self, supports_sftp, DirectoryFollower, SftpSidebar};
 use crate::ui::side_dock;
 use crate::ui::tab_label;
 use crate::ui::tab_resilience;
@@ -502,6 +502,7 @@ async fn finish_connect(
         } else {
             sidebar.attach_on_connect(conn);
             sidebar_attached(page).set(true);
+            follow_terminal_directory(page, &widget);
             // Like the terminal's focus: only a connect the user started
             // brings the SFTP panel forward, never a reconnect.
             if sftp_sidebar::open_on_connect() && focus_on_connect(page).get() {
@@ -796,6 +797,28 @@ fn follow_terminal_title(page: &gtk4::Widget, terminal: &gtk4::Widget, session_n
     };
     apply(vte);
     vte.connect_window_title_changed(apply);
+}
+
+/// Keep the page's SFTP sidebar on the shell's working directory: VTE
+/// reports OSC 7 as `current-directory-uri` (doc 09 §Following the shell).
+/// The sidebar is looked up per report, since a redial replaces it.
+fn follow_terminal_directory(page: &gtk4::Widget, terminal: &gtk4::Widget) {
+    let Some(vte) = terminal.downcast_ref::<vte4::Terminal>() else {
+        return;
+    };
+    let page = page.downgrade();
+    let follower = RefCell::new(DirectoryFollower::default());
+    vte.connect_current_directory_uri_changed(move |term| {
+        let (Some(page), Some(uri)) = (page.upgrade(), term.current_directory_uri()) else {
+            return;
+        };
+        let Some(path) = follower.borrow_mut().report(&uri) else {
+            return;
+        };
+        if let Some(sidebar) = SessionTab::sidebar_for_page(&page) {
+            sidebar.follow_shell(path);
+        }
+    });
 }
 
 /// The terminal's title, or the session name when it is blank.
@@ -1303,5 +1326,37 @@ pub(super) mod gtk_tests {
         assert!(focus_within(&terminal), "a user-started connect");
         assert!(!focus_on_connect(&page).get(), "the request is one-shot");
         window.destroy();
+    }
+
+    /// The shell's OSC 7 report moves the page's sidebar — through the real
+    /// VTE signal — while a report from another host (a nested ssh) does not.
+    pub(in crate::ui) fn sftp_sidebar_follows_the_shell_directory() {
+        let session = SessionConfig {
+            id: 1,
+            name: "ssh-1".into(),
+            session_type: SessionType::SSH,
+            ..Default::default()
+        };
+        let page = page_content(&session);
+        let backend = create_terminal().backend;
+        let terminal = backend.widget();
+        set_terminal_area(&page, &terminal);
+        follow_terminal_directory(&page, &terminal);
+        let sidebar = SessionTab::sidebar_for_page(&page).expect("an SSH page's sidebar");
+
+        let report = |uri: &str| {
+            backend.write(format!("\x1b]7;{uri}\x07").as_bytes());
+            // VTE parses fed bytes on a timer, not inline.
+            for _ in 0..100 {
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        report("file://box/srv/my%20site");
+        assert_eq!(sidebar.path_text(), "/srv/my site");
+        report("file://inner/tmp");
+        assert_eq!(sidebar.path_text(), "/srv/my site", "another host");
+        report("file://box/var/log");
+        assert_eq!(sidebar.path_text(), "/var/log");
     }
 }

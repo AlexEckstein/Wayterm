@@ -239,6 +239,69 @@ fn parse_uri_list_rejects_non_file_uris_and_invalid_escapes_safely() {
     assert!(parse_uri_list("").is_empty());
 }
 
+// --- following the shell (OSC 7) --------------------------------------------
+
+#[test]
+fn the_follower_takes_the_reported_directory_percent_decoded() {
+    let mut follower = DirectoryFollower::default();
+    assert_eq!(
+        follower.report("file://web01/srv/my%20site").as_deref(),
+        Some("/srv/my site")
+    );
+    assert_eq!(follower.report("file://web01/").as_deref(), Some("/"));
+}
+
+#[test]
+fn the_follower_moves_only_when_the_shell_changes_directory() {
+    let mut follower = DirectoryFollower::default();
+    assert!(follower.report("file://web01/home/alice").is_some());
+    assert_eq!(
+        follower.report("file://web01/home/alice"),
+        None,
+        "every prompt re-reports; browsing elsewhere must stick"
+    );
+    assert!(follower.report("file://web01/tmp").is_some());
+    assert!(follower.report("file://web01/home/alice").is_some());
+}
+
+#[test]
+fn the_follower_ignores_hosts_other_than_the_first() {
+    let mut follower = DirectoryFollower::default();
+    assert!(follower.report("file://web01/home/alice").is_some());
+    assert_eq!(
+        follower.report("file://db01/var/lib"),
+        None,
+        "a nested ssh's paths are not on this connection"
+    );
+    assert!(follower.report("file://WEB01/etc").is_some(), "case-blind");
+}
+
+#[test]
+fn the_follower_ignores_what_is_not_a_file_uri() {
+    let mut follower = DirectoryFollower::default();
+    assert_eq!(follower.report("kitty-shell-cwd://web01/tmp"), None);
+    assert_eq!(follower.report("file://web01"), None);
+    assert_eq!(follower.report(""), None);
+    assert!(
+        follower.report("file://db01/tmp").is_some(),
+        "junk pins no host"
+    );
+}
+
+#[test]
+fn a_directory_reported_before_attach_is_where_browsing_starts() {
+    let mut view = SftpView::detached();
+    view.start_at("/srv/www");
+    assert_eq!(view.current_path(), "/srv/www");
+    assert_eq!(view.path_text, "/srv/www");
+
+    view.attach();
+    view.set_listing("/srv/www", &listing());
+    view.start_at("/tmp");
+    assert_eq!(view.current_path(), "/srv/www", "a listing outranks it");
+    assert_eq!(view.path_text, "/srv/www");
+}
+
 #[test]
 fn dropped_file_paths_become_upload_targets_in_the_current_directory() {
     // Both drop formats hand the sidebar *local* paths (gio::File::path()

@@ -3,11 +3,13 @@
 //! no GTK callback ever awaits.
 //!
 //! [`SftpView`] and the helpers in `model` are display-free (the listing,
-//! toolbar rules, `text/uri-list` parsing); [`SftpSidebar`] only renders.
+//! toolbar rules, `text/uri-list` parsing, the [`DirectoryFollower`]);
+//! [`SftpSidebar`] only renders.
 //! Drops are accepted as `GdkFileList` and as `text/uri-list` through two
 //! drop targets, because gtk4-rs does not bind the multi-type API. The
 //! path bar shows the requested path (the protocol has no `getcwd`), and
-//! browsing starts at `.`, the SFTP home directory.
+//! browsing starts at `.`, the SFTP home directory, unless the shell has
+//! reported its own directory by then — the sidebar follows that one.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -81,8 +83,9 @@ impl SftpSidebar {
         }
     }
 
-    /// Start an SFTP task over the shared connection and list
-    /// [`START_PATH`]. Re-attaching replaces (and ends) the previous task.
+    /// Start an SFTP task over the shared connection and list the start
+    /// path ([`START_PATH`] or the shell's directory). Re-attaching
+    /// replaces (and ends) the previous task.
     pub fn attach(&self, connection: Arc<SshConnection>) {
         self.inner.deferred.borrow_mut().take();
         *self.inner.client.borrow_mut() = Some(SftpClient::new(connection));
@@ -126,6 +129,24 @@ impl SftpSidebar {
         sidebar.inner.state.borrow_mut().shown = false;
         sidebar.inner.render();
         sidebar
+    }
+
+    /// Browse the directory the tab's shell reported (OSC 7, picked by a
+    /// [`DirectoryFollower`]). Before a client is attached it becomes the
+    /// directory the first listing starts at.
+    pub fn follow_shell(&self, path: String) {
+        if self.inner.client().is_some() {
+            self.inner.cd(path);
+        } else {
+            self.inner.state.borrow_mut().start_at(&path);
+            self.inner.sync_path_entry();
+        }
+    }
+
+    /// The path bar's text.
+    #[cfg(test)]
+    pub(crate) fn path_text(&self) -> String {
+        self.inner.path_entry.text().into()
     }
 
     /// Whether the sidebar has been shown.
