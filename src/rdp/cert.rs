@@ -32,7 +32,7 @@ pub const CERT_ARG_PREFIX: &str = "/cert:fingerprint:sha256:";
 
 /// What to do about the server certificate the peer presented.
 ///
-/// Produced by [`decide`]; consumed by [`cert_arg`]. The UI lane prompts on
+/// Produced by [`decide`]; consumed by [`cert_arg`]. The RDP tab prompts on
 /// `AcceptAndRecord` (TOFU approval) and hard-fails on `ChangedCert` and
 /// `NoServerCert`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,8 +86,6 @@ pub fn cert_arg(decision: &CertDecision) -> Option<String> {
 }
 
 /// SHA-256 over DER bytes, as lowercase hex without colons (64 chars).
-///
-/// Uses `sha2` (already a dependency — no new crate pinned by this module).
 pub fn fingerprint_sha256_hex(der: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(der);

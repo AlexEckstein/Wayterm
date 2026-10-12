@@ -1,5 +1,5 @@
-//! `~/.ssh/config` → sessions: a read-only block scanner (Phase 9
-//! decision 1; russh-config cannot enumerate `Host` blocks).
+//! `~/.ssh/config` → sessions: a read-only block scanner (doc 06
+//! §Import and export; russh-config cannot enumerate `Host` blocks).
 //!
 //! Each exact alias on a `Host` line is one session; wildcard patterns
 //! become template sessions; negated patterns never do; `Match` blocks are

@@ -1,12 +1,12 @@
-//! The P11-1 bridge seam: how the Tunnels dialog learns a forward rule's
+//! The forward-status seam: how the Tunnels dialog learns a forward rule's
 //! live state and how its enable toggle reaches the forward engine.
 //!
-//! The real engine (P11-1, `src/transport/forward.rs`) publishes per-rule
+//! The forward engine (`src/transport/forward.rs`) publishes per-rule
 //! status through its own channel of `ForwardEvent`s. This trait is the
 //! dialog-side shape of that feed: a snapshot for the initial paint, a
-//! broadcast subscription for live updates, and one control hook. The wave
-//! integrator bridges the two by wrapping the engine's event receiver in
-//! this trait; the dialog never imports transport types.
+//! broadcast subscription for live updates, and one control hook.
+//! [`EngineStatusBridge`] joins the two by wrapping the engine's event
+//! receiver in this trait; the dialog never imports transport types.
 //!
 //! GTK discipline follows `tab.rs`: status travels on a
 //! `tokio::sync::mpsc` unbounded channel whose receiver is drained by a
@@ -146,7 +146,7 @@ impl ForwardStatusSource for FakeStatusSource {
     }
 }
 
-/// The wave integrator's bridge from the transport engine
+/// The bridge from the transport engine
 /// (`crate::transport::forward`) into [`ForwardStatusSource`].
 ///
 /// The connect flow builds one per connected tab: it holds the tab's

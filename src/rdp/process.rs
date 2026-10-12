@@ -1,6 +1,6 @@
 //! xfreerdp subprocess wrapper (doc 08 §RDP). Display-free and tokio-side:
 //! no GTK types, no X11 types — everything here is `Send`. The embedding
-//! (reparenting into a container widget) is lane P7-2's job; this module
+//! (reparenting into a container widget) lives in `ui::rdp_tab`; this module
 //! only builds the argv, finds the binary, spawns the child, feeds it the
 //! password, and watches it exit.
 //!
@@ -62,8 +62,8 @@
 //! xfreerdp has no machine-readable "connected" signal on stderr, so
 //! [`RdpProcess::run`] emits `Connected` once when the child has lived
 //! [`CONNECTED_DELAY`] (15 s) after spawn without exiting AND stderr
-//! carries no `ERRCONNECT_*` line. Live validation of this heuristic
-//! against the rig is P7-2/wave-close work, not this lane's.
+//! carries no `ERRCONNECT_*` line. The heuristic has not yet been
+//! validated against a live server (doc 10 Phase 7).
 
 use std::collections::VecDeque;
 use std::ffi::OsStr;

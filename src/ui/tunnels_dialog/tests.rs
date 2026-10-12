@@ -275,7 +275,7 @@ fn fake_source_broadcasts_to_subscribers() {
     assert_eq!(rx.try_recv(), Ok(update));
 }
 
-// --- EngineStatusBridge (the wave integrator's engine→dialog adapter) ------
+// --- EngineStatusBridge (engine→dialog adapter) ---------------------------
 
 /// An engine whose channel opens always fail: no sockets, no sshd, just
 /// the event stream the bridge consumes.
