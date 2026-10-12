@@ -28,12 +28,12 @@ fn builtin_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/tree-icons")
 }
 
-/// Every name in `BUILTIN` has an SVG, every SVG is listed, and the
-/// GResource manifest bundles exactly those files.
+/// Every name in `BUILTIN` and `CHROME` has an SVG, every SVG is listed,
+/// and the GResource manifest bundles exactly those files.
 #[test]
 fn builtin_list_matches_the_svgs_and_the_manifest() {
     let svgs = custom_icons(&builtin_dir().join("scalable/actions"));
-    let mut listed: Vec<String> = BUILTIN.iter().map(|name| name.to_string()).collect();
+    let mut listed: Vec<String> = bundled().map(str::to_string).collect();
     listed.sort();
     let mut unique = listed.clone();
     unique.dedup();
@@ -41,13 +41,13 @@ fn builtin_list_matches_the_svgs_and_the_manifest() {
     assert_eq!(svgs, listed);
 
     let manifest = std::fs::read_to_string(builtin_dir().join("tree-icons.gresource.xml")).unwrap();
-    for name in BUILTIN {
+    for name in bundled() {
         assert!(
             manifest.contains(&format!(">scalable/actions/{name}.svg<")),
             "{name} is bundled"
         );
     }
-    assert_eq!(manifest.matches("<file ").count(), BUILTIN.len());
+    assert_eq!(manifest.matches("<file ").count(), bundled().count());
 }
 
 /// GTK recolors a symbolic SVG by overriding the fill of `rect`, `circle`
@@ -55,7 +55,7 @@ fn builtin_list_matches_the_svgs_and_the_manifest() {
 /// and vanish on a dark theme.
 #[test]
 fn builtin_svgs_use_only_recolorable_shapes() {
-    for name in BUILTIN {
+    for name in bundled() {
         let path = builtin_dir().join(format!("scalable/actions/{name}.svg"));
         let svg = std::fs::read_to_string(&path).unwrap();
         assert!(svg.contains(r#"viewBox="0 0 16 16""#), "{name}: 16×16");
@@ -88,6 +88,12 @@ fn import_never_takes_a_builtin_name() {
     std::fs::write(&source, SVG).unwrap();
     let name = import_svg(&source, &tmp.path().join("icons")).unwrap();
     assert_eq!(name, "wayterm-server-2-symbolic");
+
+    // The dock's icons are bundled too, though not in the picker.
+    let source = tmp.path().join("sftp-symbolic.svg");
+    std::fs::write(&source, SVG).unwrap();
+    let name = import_svg(&source, &tmp.path().join("icons")).unwrap();
+    assert_eq!(name, "wayterm-sftp-2-symbolic");
 }
 
 #[test]

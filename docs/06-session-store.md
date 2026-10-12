@@ -184,14 +184,16 @@ serial, printer, camera, media, mail, home, light bulb, sensor), plus
 folder and star. Names are `wayterm-<icon>-symbolic`. The defaults:
 `folder` for folders, and per session type `server` (SSH), `desktop`
 (RDP), `remote-desktop` (VNC), `serial` (serial), `terminal` (local).
-Built-in SVGs use only filled `rect`/`circle`/`path` shapes — the only
-ones GTK recolors — which a test enforces.
+Two more, `macro` and `sftp`, are the side dock's tab icons (doc 01):
+bundled the same way but not offered in the picker. Built-in SVGs use
+only filled `rect`/`circle`/`path` shapes — the only ones GTK recolors —
+which a test enforces.
 
 Custom icons are SVG only. "Import SVG…" copies the file into
 `$XDG_DATA_HOME/wayterm/icons/`, which is on the icon theme's search
 path, and stores the name `wayterm-<file stem>` (lowercased, other
 characters folded to `-`; no file paths in the database; a name a
-built-in icon has gets a counter). A
+bundled icon has gets a counter). A
 `-symbolic` SVG is recolored to the theme like the built-in icons.
 Files over 1 MiB, without an `<svg` element, or that GTK cannot load
 are refused; re-importing the same file reuses its name, and a
@@ -222,7 +224,7 @@ duplicate rows; that constraint is the first schema-v2 candidate).
 | `tmux_default` | `0` | |
 | `host_key_policy` | `strict` | doc 11 |
 | `minimize_to_tray` | (not seeded) | missing = on |
-| `sftp_on_connect` | (not seeded) | missing = on; off defers the SFTP sidebar (doc 09) |
+| `sftp_on_connect` | (not seeded) | missing = on; off defers the SFTP sidebar until first viewed (doc 09) |
 | `open_tabs` | (written at runtime) | JSON tab list (doc 10 Phase 4) |
 
 Boolean settings are on unless explicitly `0`/`false`/`no`/`off`; a

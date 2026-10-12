@@ -1,19 +1,26 @@
 # SFTP Sidebar
 
-A remote file browser beside each SSH terminal: navigate, upload,
-download, delete, rename, mkdir, and drag files in. GTK half in
+A remote file browser for each SSH tab, shown in the side dock's SFTP
+panel (doc 01): navigate, upload, download, delete, rename, mkdir, and
+drag files in. GTK half in
 `src/ui/sftp_sidebar.rs` (its display-free model in
 `src/ui/sftp_sidebar/model.rs`), tokio half in `src/sftp/`.
 
 ## Layout
 
-Each SSH tab's page is a `GtkPaned`: the sidebar on the left, the terminal
-on the right. The sidebar is a path bar (Enter navigates), a toolbar
+Each SSH tab owns its sidebar, but the tab's page holds only the
+terminal: the side dock's SFTP panel (`src/ui/side_dock.rs`) hosts the
+current tab's sidebar and swaps it as the notebook switches tabs. Tabs
+without one (local, serial, RDP, VNC, or no tab at all) get a
+placeholder. A redial replaces the page's sidebar, ending the old SFTP
+task, and the panel hosts the new one.
+
+The sidebar is a path bar (Enter navigates), a toolbar
 (Upload, Download, Delete, Rename, Refresh, New folder), an inline error
 line, the listing (name, size, modified, permissions; directories first,
 case-insensitive; a `..` row except at `/`), a progress bar with Cancel,
-and a status line. `toggle_sftp` (Ctrl+Shift+B) shows or hides the active
-tab's sidebar.
+and a status line. `toggle_sftp` (Ctrl+Shift+B) switches the dock to the
+SFTP panel, or back to the panel it came from.
 
 ## Connection Model
 
@@ -25,11 +32,14 @@ the `sftp` subsystem and turns it into a `russh_sftp` session on the first
 command. Dropping the last sidebar handle ends the task; the connection
 stays with the supervisor.
 
-With the `sftp_on_connect` setting off (doc 06), a new SSH tab's sidebar
-starts hidden and the connect flow only hands it the connection: the task
-starts on the first `toggle_sftp` that shows it, so a user who never opens
-the sidebar never opens an SFTP channel. A sidebar already shown when the
-connect lands attaches at once.
+With the `sftp_on_connect` setting on (the default, doc 06), a sidebar
+attaches when its tab connects, and a connect the user started on the
+current tab brings the SFTP panel forward; a reconnect never switches the
+dock. Off, a new SSH tab's sidebar starts hidden and the connect flow
+only hands it the connection: the task starts the first time the SFTP
+panel has that tab's sidebar in view, so a user who never looks never
+opens an SFTP channel. A sidebar already shown when the connect lands
+attaches at once.
 
 ## Commands
 
@@ -80,8 +90,8 @@ implemented; Download uses a file chooser.
 
 ## Availability
 
-SSH sessions only: RDP, VNC, and serial have no SSH connection, and the
-action is disabled on their tabs. A local-shell file browser over `std::fs`
+SSH sessions only: RDP, VNC, and serial have no SSH connection. On their
+tabs the SFTP panel shows its placeholder and `toggle_sftp` is disabled. A local-shell file browser over `std::fs`
 is a possible later addition.
 
 ## Later

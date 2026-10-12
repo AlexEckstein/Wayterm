@@ -26,9 +26,10 @@ pub const SESSION_ENDED: &str = "SFTP session ended — reconnect?";
 /// The command could not be queued at all (task gone, channel closed).
 pub const COMMAND_FAILED: &str = "SFTP command could not be queued";
 
-/// Settings row (doc 06): show the sidebar and open its SFTP channel when
-/// an SSH tab connects. Off, the sidebar starts hidden and attaches on its
-/// first show, so no channel opens for a sidebar nobody looks at.
+/// Settings row (doc 06): open the sidebar's SFTP channel when an SSH tab
+/// connects, and bring the side dock's SFTP panel forward. Off, the
+/// sidebar starts hidden and attaches on its first show, so no channel
+/// opens for a sidebar nobody looks at.
 pub const SFTP_ON_CONNECT_SETTING: &str = "sftp_on_connect";
 
 static OPEN_ON_CONNECT: AtomicBool = AtomicBool::new(true);
@@ -45,8 +46,8 @@ pub fn open_on_connect() -> bool {
 
 /// Whether a freshly connected sidebar attaches at once or waits for its
 /// first show. A sidebar the user already opened attaches regardless.
-pub fn attach_on_connect(open_on_connect: bool, visible: bool) -> bool {
-    open_on_connect || visible
+pub fn attach_on_connect(open_on_connect: bool, shown: bool) -> bool {
+    open_on_connect || shown
 }
 
 /// One listing row, in store order.
@@ -336,8 +337,10 @@ pub struct SftpView {
     pub progress_text: String,
     /// Transfer status line.
     pub status: String,
-    /// Whether the sidebar part of the paned is shown.
-    pub visible: bool,
+    /// Whether the sidebar has been shown — in view in the side dock, or
+    /// built while `sftp_on_connect` is on. A hidden sidebar keeps its
+    /// connection for the first show.
+    pub shown: bool,
     /// Whether a live SFTP client is attached.
     pub connected: bool,
     /// Running transfers, oldest first; the bar shows whichever updated last.
@@ -359,7 +362,7 @@ impl SftpView {
             fraction: 0.0,
             progress_text: String::new(),
             status: String::new(),
-            visible: true,
+            shown: true,
             connected: false,
             transfers: Vec::new(),
             toolbar: ToolbarState::DISABLED,
@@ -475,10 +478,9 @@ impl SftpView {
         self.transfers.last().map(|transfer| transfer.id)
     }
 
-    /// Show or hide the sidebar; returns the new visibility.
-    pub fn toggle_visible(&mut self) -> bool {
-        self.visible = !self.visible;
-        self.visible
+    /// Mark the sidebar shown; `true` on its first show.
+    pub fn show(&mut self) -> bool {
+        !std::mem::replace(&mut self.shown, true)
     }
 
     fn transfer_label(&self, id: u64) -> Option<String> {

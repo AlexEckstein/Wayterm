@@ -92,7 +92,8 @@ impl SftpSidebar {
         self.inner.cd(start);
     }
 
-    /// The root widget (the start child of the tab's paned).
+    /// The root widget, hosted by the side dock's SFTP panel while its tab
+    /// is current (`ui::side_dock`).
     pub fn widget(&self) -> &gtk4::Widget {
         self.inner.container.upcast_ref()
     }
@@ -100,8 +101,7 @@ impl SftpSidebar {
     /// Attach the newly connected tab's sidebar now, or keep the
     /// connection for its first show (see [`attach_on_connect`]).
     pub fn attach_on_connect(&self, connection: Arc<SshConnection>) {
-        let visible = self.inner.state.borrow().visible;
-        if attach_on_connect(open_on_connect(), visible) {
+        if attach_on_connect(open_on_connect(), self.is_shown()) {
             self.attach(connection);
         } else {
             *self.inner.deferred.borrow_mut() = Some(connection);
@@ -119,17 +119,31 @@ impl SftpSidebar {
         self.inner.render();
     }
 
-    /// Show or hide the sidebar (`toggle_sftp`); returns the new state.
-    /// The first show attaches a deferred connection.
-    pub fn toggle_visible(&self) -> bool {
-        let visible = self.inner.toggle_visible();
-        if visible {
-            let deferred = self.inner.deferred.borrow_mut().take();
-            if let Some(connection) = deferred {
-                self.attach(connection);
-            }
+    /// A sidebar that stays hidden, and opens no SFTP channel, until its
+    /// first [`show`](Self::show) (`sftp_on_connect` off).
+    pub fn hidden() -> Self {
+        let sidebar = Self::new();
+        sidebar.inner.state.borrow_mut().shown = false;
+        sidebar.inner.render();
+        sidebar
+    }
+
+    /// Whether the sidebar has been shown.
+    pub fn is_shown(&self) -> bool {
+        self.inner.state.borrow().shown
+    }
+
+    /// Show the sidebar: the side dock's SFTP panel has it in view. The
+    /// first show attaches a deferred connection.
+    pub fn show(&self) {
+        if !self.inner.state.borrow_mut().show() {
+            return;
         }
-        visible
+        self.inner.render();
+        let deferred = self.inner.deferred.borrow_mut().take();
+        if let Some(connection) = deferred {
+            self.attach(connection);
+        }
     }
 }
 
@@ -415,13 +429,6 @@ impl SidebarInner {
         self.column_view.add_controller(uri_target);
     }
 
-    /// Flip the sidebar's visibility and render it.
-    fn toggle_visible(self: &Rc<Self>) -> bool {
-        let visible = self.state.borrow_mut().toggle_visible();
-        self.render();
-        visible
-    }
-
     /// Render the view into the widgets.
     fn render(&self) {
         // Copy the rows out: replacing the model fires the selection
@@ -452,7 +459,7 @@ impl SidebarInner {
         self.progress_bar
             .set_text(Some(state.progress_text.as_str()));
         self.status_label.set_text(&state.status);
-        self.container.set_visible(state.visible);
+        self.container.set_visible(state.shown);
         drop(state);
         self.render_toolbar();
     }

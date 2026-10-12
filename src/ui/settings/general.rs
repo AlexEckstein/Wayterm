@@ -42,8 +42,8 @@ pub const TOGGLES: [Toggle; 4] = [
     Toggle {
         key: sftp_sidebar::SFTP_ON_CONNECT_SETTING,
         title: "Open SFTP on connect",
-        subtitle: "Show the SFTP sidebar when an SSH session connects. Off: it stays \
-                   hidden, and opens no SFTP channel, until you show it.",
+        subtitle: "Switch the side panel to SFTP when an SSH session connects. Off: \
+                   no SFTP channel opens until you view that tab's SFTP panel.",
     },
     Toggle {
         key: tray::MINIMIZE_TO_TRAY_KEY,

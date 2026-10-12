@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The built-in tree icons (doc 06 §Icons), compiled by build.rs. -->
+<!-- The built-in tree icons and the side dock's icons (doc 06 §Icons),
+     compiled by build.rs. -->
 <gresources>
   <gresource prefix="/com/alex-eckstein/wayterm/icons/scalable/actions">
     <file alias="wayterm-backup-symbolic.svg">scalable/actions/wayterm-backup-symbolic.svg</file>
@@ -19,6 +20,7 @@
     <file alias="wayterm-key-symbolic.svg">scalable/actions/wayterm-key-symbolic.svg</file>
     <file alias="wayterm-laptop-symbolic.svg">scalable/actions/wayterm-laptop-symbolic.svg</file>
     <file alias="wayterm-lightbulb-symbolic.svg">scalable/actions/wayterm-lightbulb-symbolic.svg</file>
+    <file alias="wayterm-macro-symbolic.svg">scalable/actions/wayterm-macro-symbolic.svg</file>
     <file alias="wayterm-mail-symbolic.svg">scalable/actions/wayterm-mail-symbolic.svg</file>
     <file alias="wayterm-media-symbolic.svg">scalable/actions/wayterm-media-symbolic.svg</file>
     <file alias="wayterm-monitoring-symbolic.svg">scalable/actions/wayterm-monitoring-symbolic.svg</file>
@@ -32,6 +34,7 @@
     <file alias="wayterm-serial-symbolic.svg">scalable/actions/wayterm-serial-symbolic.svg</file>
     <file alias="wayterm-server-rack-symbolic.svg">scalable/actions/wayterm-server-rack-symbolic.svg</file>
     <file alias="wayterm-server-symbolic.svg">scalable/actions/wayterm-server-symbolic.svg</file>
+    <file alias="wayterm-sftp-symbolic.svg">scalable/actions/wayterm-sftp-symbolic.svg</file>
     <file alias="wayterm-star-symbolic.svg">scalable/actions/wayterm-star-symbolic.svg</file>
     <file alias="wayterm-switch-symbolic.svg">scalable/actions/wayterm-switch-symbolic.svg</file>
     <file alias="wayterm-terminal-symbolic.svg">scalable/actions/wayterm-terminal-symbolic.svg</file>

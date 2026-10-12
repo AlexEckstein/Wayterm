@@ -22,7 +22,8 @@ the last. Phase numbers are referenced from code and other docs.
 
 Main window with the session tree beside the notebook; SQLite store
 (doc 06); folder and session CRUD from the tree's context menu; the
-session dialog with per-type groups.
+session dialog with per-type groups. The tree now sits in the side dock
+(doc 01), whose Macros panel is a placeholder until macros get a design.
 
 ## Phase 2: SSH terminal — done
 
@@ -40,7 +41,8 @@ yet — the tab shows the rejection as a connection error.
 
 Doc 09: per-tab sidebar over the shared connection, navigation, upload
 (button and drag-drop), download (button), delete, rename, mkdir, inline
-progress with cancel. Not done: a right-click menu and dragging files out.
+progress with cancel. The sidebars are shown in the side dock's SFTP
+panel, which follows the current tab. Not done: a right-click menu and dragging files out.
 
 ## Phase 4: Hotkeys and polish — done, with gaps
 

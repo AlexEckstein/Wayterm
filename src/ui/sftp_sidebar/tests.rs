@@ -305,7 +305,7 @@ fn detached_view_is_empty_disabled_and_starts_at_the_home_path() {
     assert_eq!(view.path, "");
     assert_eq!(view.current_path(), START_PATH);
     assert_eq!(view.toolbar, ToolbarState::DISABLED);
-    assert!(view.visible, "doc 09 starts with the sidebar shown");
+    assert!(view.shown, "doc 09 starts with the sidebar shown");
 }
 
 #[test]
@@ -445,12 +445,13 @@ fn progress_for_an_unknown_transfer_is_ignored() {
 }
 
 #[test]
-fn toggle_flips_the_sidebar_visibility() {
+fn only_the_first_show_counts() {
     let mut view = SftpView::detached();
-    assert!(!view.toggle_visible(), "first toggle hides the sidebar");
-    assert!(!view.visible);
-    assert!(view.toggle_visible(), "second toggle shows it again");
-    assert!(view.visible);
+    view.shown = false;
+    assert!(view.show(), "the first show");
+    assert!(view.shown);
+    assert!(!view.show(), "already shown");
+    assert!(view.shown);
 }
 
 // --- availability ----------------------------------------------------------
@@ -470,11 +471,11 @@ fn only_ssh_sessions_get_a_sidebar() {
 
 #[test]
 fn a_connect_attaches_at_once_unless_sftp_on_connect_is_off_and_hidden() {
-    // (sftp_on_connect, sidebar visible) → attach now?
+    // (sftp_on_connect, sidebar shown) → attach now?
     assert!(attach_on_connect(true, true));
     assert!(
         attach_on_connect(true, false),
-        "a user-hidden sidebar still attaches"
+        "a sidebar built while the setting was off still attaches"
     );
     assert!(attach_on_connect(false, true), "the user already opened it");
     assert!(

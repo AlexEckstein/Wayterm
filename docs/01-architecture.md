@@ -1,20 +1,40 @@
 # Architecture Overview
 
-Wayterm is a GTK 4 application in Rust: a session tree beside a notebook of
-tabs, with a status bar below. SSH tabs pair a terminal with an SFTP
-sidebar; RDP and VNC tabs are planned (doc 08).
+Wayterm is a GTK 4 application in Rust: a side dock beside a notebook of
+tabs, with a status bar below. The dock's icon tabs switch its panel
+between the session tree, macros, and the current tab's SFTP sidebar;
+SSH tabs pair a terminal with that sidebar; RDP and VNC tabs are planned
+(doc 08).
 
 ```
 ┌ Main window ─────────────────────────────────────────────────────┐
-│ ┌ Session tree ┐ ┌ Notebook ───────────────────────────────────┐ │
-│ │ folders      │ │ SSH tab: ┌ SFTP sidebar ┐┌ Terminal (VTE) ┐ │ │
-│ │ sessions     │ │          │ russh-sftp   ││ TerminalBackend│ │ │
-│ │ (SQLite)     │ │          └──────────────┘└────────────────┘ │ │
-│ └──────────────┘ └─────────────────────────────────────────────┘ │
+│ ┌─────────┐┌ Panel ────────┐ ┌ Notebook ───────────────────────┐ │
+│ │ Sessions││ session tree, │ │ SSH tab: ┌ Terminal (VTE) ────┐ │ │
+│ │ Macros  ││ macros, or the│ │          │ TerminalBackend    │ │ │
+│ │ SFTP    ││ tab's SFTP    │ │          └────────────────────┘ │ │
+│ │         ││ sidebar       │ │                                 │ │
+│ └─────────┘└───────────────┘ └─────────────────────────────────┘ │
 │ Status bar: state · host · time connected                        │
 └──────────────────────────────────────────────────────────────────┘
  GTK main thread ── channels ── tokio runtime (SSH, SFTP, reconnect)
 ```
+
+## Side dock
+
+A column of icon-only tabs on the window's left edge
+(`src/ui/side_dock.rs`), MobaXterm style. Each tab names itself in a
+tooltip and as its accessible label, and picks the panel beside the
+notebook:
+
+| Tab | Panel |
+|---|---|
+| Sessions | the session tree (doc 06) |
+| Macros | a placeholder until macros are designed: replaying one into a terminal needs an input method on `TerminalBackend`, a trait change |
+| SFTP | the current tab's SFTP sidebar, or a placeholder on tabs without one (doc 09) |
+
+The strip sits outside the paned, so dragging the panel shut never hides
+the tabs. Its icons ship in the binary beside the tree icons (doc 06
+§Icons), so a tab never draws blank.
 
 ## Principles
 
@@ -47,7 +67,7 @@ sidebar; RDP and VNC tabs are planned (doc 08).
 | `sftp` | SFTP task and commands | 09 |
 | `store` | SQLite store and session model | 06 |
 | `hotkeys` | action registry, conflicts, defaults, persistence | 07 |
-| `ui` | window, tabs, dialogs, session tree, sidebar, settings, tray | 07, 09, 10 |
+| `ui` | window, side dock, tabs, dialogs, session tree, sidebar, settings, tray | 01, 07, 09, 10 |
 
 The tray is a StatusNotifierItem over D-Bus via `ksni` (pure Rust, no GTK3
 bindings); disconnect alerts use `gio::Notification`. Without a tray host
