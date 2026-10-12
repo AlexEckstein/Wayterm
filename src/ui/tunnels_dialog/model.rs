@@ -28,6 +28,54 @@ pub const FORWARD_KIND_LABELS: [&str; 3] = ["Local", "Remote (v2)", "Dynamic (v2
 pub const V2_NOTE: &str =
     "Remote and dynamic forwarding are v2 (doc 11) — only Local rules start in this version.";
 
+/// The help popover's contents: one (term, explanation) pair per row
+/// control, in row order, plus how saving works.
+pub const HELP_ENTRIES: [(&str, &str); 9] = [
+    (
+        "Kind",
+        "Local forwards a port on this computer to a host the SSH server can \
+         reach (like ssh -L). Remote (ssh -R) and Dynamic (SOCKS, ssh -D) are \
+         planned for v2 and never start in this version.",
+    ),
+    (
+        "Bind address",
+        "The local address the listener binds to. Keep 127.0.0.1 so only this \
+         computer can connect; 0.0.0.0 opens the port to your whole network.",
+    ),
+    (
+        "Bind port",
+        "The local port to listen on (1-65535). Point your client at \
+         bind address:bind port. Ports below 1024 usually need root.",
+    ),
+    (
+        "Remote host",
+        "The host the SSH server connects to on your behalf. It is resolved on \
+         the server, so localhost means the server itself.",
+    ),
+    (
+        "Remote port",
+        "The port on the remote host that traffic is delivered to (1-65535).",
+    ),
+    (
+        "Enabled",
+        "Whether the rule runs with the connection. While connected, toggling \
+         it starts or stops the listener immediately.",
+    ),
+    (
+        "Status",
+        "Live state of the listener: Stopped, Listening, the number of open \
+         connections, or an error. Reads \"no active connection\" when the \
+         session is not connected.",
+    ),
+    ("Remove", "Deletes the rule."),
+    (
+        "Saving",
+        "OK saves the rules; Cancel discards edits. New or changed rules take \
+         effect the next time the session is opened in a tab. Tunnels close \
+         with their tab.",
+    ),
+];
+
 /// The status cell when the dialog has no engine to ask (offline or a
 /// non-SSH session): editing still works, live state does not.
 pub const OFFLINE_STATUS: &str = "no active connection";
