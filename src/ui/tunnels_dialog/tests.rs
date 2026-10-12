@@ -446,3 +446,34 @@ async fn timeout_recv(rx: &mut tokio::sync::mpsc::Receiver<ForwardEvent>) -> For
         .expect("timed out waiting for a forward event")
         .expect("event channel closed")
 }
+
+#[tokio::test]
+async fn bridge_apply_drops_removed_rows_and_reaches_the_engine() {
+    let (engine, mut rx) = closed_engine();
+    let bridge = EngineStatusBridge::new(engine);
+    for rule_id in 0..3 {
+        bridge.handle_event(ForwardEvent {
+            rule_id,
+            state: EngineState::Listening,
+        });
+    }
+
+    // One rule left: rows 1 and 2 leave the snapshot at once.
+    bridge.apply_rules(vec![remote_rule()]);
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(snapshot[0].rule_index, 0);
+
+    // The engine applied it: the (v2, skipped) rule reports Stopped.
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("engine event")
+        .expect("channel open");
+    assert_eq!(
+        event,
+        ForwardEvent {
+            rule_id: 0,
+            state: EngineState::Stopped,
+        }
+    );
+}

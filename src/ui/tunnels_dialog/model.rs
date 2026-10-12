@@ -70,9 +70,9 @@ pub const HELP_ENTRIES: [(&str, &str); 9] = [
     ("Remove", "Deletes the rule."),
     (
         "Saving",
-        "OK saves the rules; Cancel discards edits. New or changed rules take \
-         effect the next time the session is opened in a tab. Tunnels close \
-         with their tab.",
+        "OK saves the rules and applies them to the open tab right away; \
+         unchanged rules keep their connections. Cancel discards edits. \
+         Tunnels close with their tab.",
     ),
 ];
 

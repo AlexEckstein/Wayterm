@@ -156,6 +156,27 @@ impl SessionTab {
             .map(|bridge| bridge as Arc<dyn ForwardStatusSource>)
     }
 
+    /// Hand saved Tunnels rules to `session_id`'s open tab, if any: its
+    /// page config takes them (so every redial arms them too) and a live
+    /// engine applies them now, leaving unchanged rules running.
+    pub(crate) fn apply_forward_rules(
+        notebook: &gtk4::Notebook,
+        session_id: i64,
+        rules: Option<Vec<ForwardRule>>,
+    ) {
+        let Some((_, page)) = find_tab(notebook, session_id) else {
+            return;
+        };
+        if let Some(session) = data::<Rc<SessionConfig>>(&page, SESSION_KEY) {
+            let mut updated = (*session).clone();
+            updated.forward_rules = rules.clone();
+            set_data(&page, SESSION_KEY, Rc::new(updated));
+        }
+        if let Some(Some(bridge)) = data::<Option<Arc<EngineStatusBridge>>>(&page, FORWARD_KEY) {
+            bridge.apply_rules(rules.unwrap_or_default());
+        }
+    }
+
     /// The current tab's terminal, once connected (the terminal actions'
     /// target).
     pub fn active_terminal(notebook: &gtk4::Notebook) -> Option<Arc<dyn TerminalBackend>> {

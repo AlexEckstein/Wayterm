@@ -108,8 +108,12 @@ Rules live in `sessions.forward_rules` (doc 06). The caller owns a
 `transport::forward::ForwardEngine` per live connection: `start(rules)`
 serves every enabled local rule (one `TcpListener` each, one
 direct-tcpip channel per accepted connection piped with
-`copy_bidirectional`), `set_enabled` toggles one rule live, and `stop`
-closes listeners and aborts per-connection tasks. Status flows as
+`copy_bidirectional`), `set_enabled` toggles one rule live, `apply`
+swaps in an edited rule set (rules compare by position: unchanged rules
+keep their listener and connections, changed or new ones restart,
+removed ones stop), and `stop` closes listeners and aborts
+per-connection tasks. Saving the Tunnels dialog applies its rules to
+the session's open tab at once, and the tab's redials arm the new set. Status flows as
 `ForwardEvent`s (`Listening` / `Active { conns }` / `LastFailed` /
 `Stopped`) for the Tunnels dialog. An empty `bind_addr` means loopback,
 never `0.0.0.0`. Listeners close with the connection and return on

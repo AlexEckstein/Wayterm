@@ -139,6 +139,28 @@ impl ForwardEngine {
         }
     }
 
+    /// Apply an edited rule set to the running engine (the Tunnels dialog's
+    /// OK). Rules are compared by position: an unchanged rule keeps its
+    /// listener and live connections; a changed rule restarts; a removed
+    /// rule stops without a `Stopped` event (it has no row any more); a new
+    /// rule starts. Every stop finishes before any start, so a rule that
+    /// moved rows or a port handed to another rule rebinds cleanly.
+    pub async fn apply(&self, rules: Vec<ForwardRule>) {
+        let old = std::mem::replace(&mut *lock(&self.inner.rules), rules.clone());
+        let changed: Vec<RuleId> = (0..rules.len())
+            .filter(|&id| old.get(id) != Some(&rules[id]))
+            .collect();
+        for &id in &changed {
+            self.stop_rule_quiet(id).await;
+        }
+        for id in rules.len()..old.len() {
+            self.stop_rule_quiet(id).await;
+        }
+        for id in changed {
+            self.start_rule_inner(id, &rules[id]).await;
+        }
+    }
+
     /// Live enable toggle for the Tunnels dialog: starts or stops one
     /// rule's listener without touching the others. Unknown ids are
     /// ignored; disabling aborts that rule's live connections.
@@ -197,13 +219,22 @@ impl ForwardEngine {
     }
 
     async fn stop_rule_inner(&self, id: RuleId) {
+        if self.stop_rule_quiet(id).await {
+            self.emit(id, ForwardState::Stopped);
+        }
+    }
+
+    /// Stop one rule's tasks; `true` if it was running. Waits for the
+    /// listener task to end so its port is free when this returns.
+    async fn stop_rule_quiet(&self, id: RuleId) -> bool {
         let tasks = lock(&self.inner.tasks).remove(&id);
-        let Some(tasks) = tasks else { return };
+        let Some(tasks) = tasks else { return false };
         tasks.listener.abort();
         for conn in tasks.conns {
             conn.abort();
         }
-        self.emit(id, ForwardState::Stopped);
+        let _ = tasks.listener.await;
+        true
     }
 
     /// `quiet`: skip `Stopped` events (used by `start`, which emits fresh
@@ -565,6 +596,84 @@ mod tests {
 
         // Unknown ids are ignored, never a panic.
         engine.set_enabled(99, true).await;
+        engine.stop().await;
+    }
+
+    #[tokio::test]
+    async fn apply_keeps_unchanged_rules_and_starts_new_ones() {
+        let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
+        let (kept_port, new_port) = (free_port().await, free_port().await);
+        let kept = local_rule(kept_port, "remote.test", 80, true);
+        engine.start(vec![kept.clone()]).await;
+        assert!(matches!(
+            next_event(&mut rx).await.state,
+            ForwardState::Listening
+        ));
+        // Hold one forwarded connection open across the apply.
+        let mut live = TcpStream::connect(("127.0.0.1", kept_port)).await.unwrap();
+        assert_eq!(
+            next_event(&mut rx).await.state,
+            ForwardState::Active { conns: 1 }
+        );
+
+        engine
+            .apply(vec![kept, local_rule(new_port, "remote.test", 81, true)])
+            .await;
+        // Only the new rule reports: the unchanged one was left alone.
+        assert_eq!(
+            next_event(&mut rx).await,
+            ForwardEvent {
+                rule_id: 1,
+                state: ForwardState::Listening,
+            }
+        );
+        timeout(IO_WAIT, live.write_all(b"still-up"))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut out = [0u8; 8];
+        timeout(IO_WAIT, live.read_exact(&mut out))
+            .await
+            .expect("kept connection must survive the apply")
+            .unwrap();
+        assert_eq!(&out, b"still-up");
+        assert_eq!(write_and_echo(new_port, b"new-rule").await, b"new-rule");
+        engine.stop().await;
+    }
+
+    #[tokio::test]
+    async fn apply_restarts_moved_rules_and_stops_removed_ones() {
+        let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
+        let (first_port, second_port) = (free_port().await, free_port().await);
+        let second = local_rule(second_port, "remote.test", 81, true);
+        engine
+            .start(vec![
+                local_rule(first_port, "remote.test", 80, true),
+                second.clone(),
+            ])
+            .await;
+        for _ in 0..2 {
+            assert!(matches!(
+                next_event(&mut rx).await.state,
+                ForwardState::Listening
+            ));
+        }
+
+        // Row 0 removed: the second rule moves to index 0 and must rebind
+        // the port its old listener (index 1) still held.
+        engine.apply(vec![second]).await;
+        assert_eq!(
+            next_event(&mut rx).await,
+            ForwardEvent {
+                rule_id: 0,
+                state: ForwardState::Listening,
+            }
+        );
+        assert!(
+            TcpStream::connect(("127.0.0.1", first_port)).await.is_err(),
+            "the removed rule must stop listening"
+        );
+        assert_eq!(write_and_echo(second_port, b"moved").await, b"moved");
         engine.stop().await;
     }
 

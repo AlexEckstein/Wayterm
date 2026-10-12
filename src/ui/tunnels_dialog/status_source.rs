@@ -20,6 +20,7 @@ use std::sync::Mutex;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::store::model::ForwardRule;
 use crate::transport::forward::{ForwardEngine, ForwardEvent, ForwardState as EngineState};
 
 /// One rule's live state, by position in the session's `forward_rules`.
@@ -193,6 +194,22 @@ impl EngineStatusBridge {
     /// Cheap to clone: every clone drives the same listeners.
     pub fn engine(&self) -> ForwardEngine {
         self.engine.clone()
+    }
+
+    /// Apply an edited rule set live (see [`ForwardEngine::apply`]): rows
+    /// past the new end drop out of the snapshot now, and the engine's
+    /// events repaint every rule it restarts. Queued on the runtime, never
+    /// awaited on the GTK thread.
+    pub fn apply_rules(&self, rules: Vec<ForwardRule>) {
+        let len = rules.len();
+        self.states
+            .lock()
+            .expect("bridge states lock")
+            .retain(|&rule_index, _| rule_index < len);
+        let engine = self.engine.clone();
+        tokio::spawn(async move {
+            engine.apply(rules).await;
+        });
     }
 
     /// Fold one engine event into the snapshot and fan it out to every

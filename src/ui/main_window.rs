@@ -266,6 +266,7 @@ fn install_transfer_actions(
 /// a no-op) the dialog is the offline fallback: rules editable, live cells
 /// reading "no active connection". A connected SSH tab passes its page's
 /// live status source instead of `None`; the dialog already speaks it.
+/// Saved rules apply to the tab right away (unchanged rules keep running).
 fn install_tunnels_action(
     window: &gtk4::ApplicationWindow,
     notebook: &gtk4::Notebook,
@@ -286,7 +287,9 @@ fn install_tunnels_action(
             config.forward_rules = if rules.is_empty() { None } else { Some(rules) };
             if let Err(err) = store.update_session(&config) {
                 eprintln!("Wayterm: failed to save tunnel rules: {err}");
+                return;
             }
+            SessionTab::apply_forward_rules(&notebook, id, config.forward_rules);
         }
     });
     window.add_action(&action);
