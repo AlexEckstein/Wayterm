@@ -256,7 +256,7 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         .unwrap_or(HostKeyPolicy::Strict);
     let verifier = HostKeyVerifier::new(policy, hostkey_dialog::host_key_prompt(), None);
     let responder = auth_dialog::challenge_responder(session.name.clone());
-    let creds = credential_manager(&session.name);
+    let creds = credential_manager(session.id, &session.name);
     let method = transport_auth_method(session);
     let params = ConnectParams {
         host: host.clone(),
@@ -283,7 +283,7 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         let jump_verifier =
             HostKeyVerifier::new(jump_policy, hostkey_dialog::host_key_prompt(), None);
         let jump_responder = auth_dialog::challenge_responder(jump_cfg.name.clone());
-        let jump_creds = credential_manager(&jump_cfg.name);
+        let jump_creds = credential_manager(jump_cfg.id, &jump_cfg.name);
         // Plain data: the blocking pool owns this copy (`Rc` is not `Send`).
         let target: SessionConfig = (**session).clone();
         tokio::task::spawn_blocking(move || {
@@ -813,9 +813,12 @@ fn transport_auth_method(session: &SessionConfig) -> connection::AuthMethod {
     }
 }
 
-/// Keyring first, then a one-field challenge dialog (doc 11).
+/// Keyring first, then a one-field challenge dialog (doc 11), for saved
+/// session `session_id`.
 // used by ui::vnc_tab and ui::rdp_tab
-pub(crate) fn credential_manager(session_name: &str) -> CredentialManager {
+pub(crate) fn credential_manager(session_id: i64, session_name: &str) -> CredentialManager {
+    let session_id = session_id.to_string();
+    let keyring = KeyringSource::new(&session_id, session_name);
     let name = session_name.to_string();
     let prompt = PromptSource::new(Arc::new(move |_session_id, secret_type| {
         let label = match secret_type {
@@ -834,7 +837,7 @@ pub(crate) fn credential_manager(session_name: &str) -> CredentialManager {
         .and_then(|answers| answers.into_iter().next())
         .map(|answer| Zeroizing::new(answer.into_bytes()))
     }));
-    CredentialManager::new(vec![Box::new(KeyringSource), Box::new(prompt)])
+    CredentialManager::for_session(&session_id, vec![Box::new(keyring), Box::new(prompt)])
 }
 
 // ---------------------------------------------------------------------------
