@@ -44,7 +44,7 @@ gdk4-x11 = "0.11"
 serde_yaml_ng = "0.10"
 
 [dev-dependencies]
-des = "0.8"
+des = "0.9"
 tempfile = "3"
 # test-util enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,
 # which the reconnect driver's backoff tests use to assert the doc 04 curve

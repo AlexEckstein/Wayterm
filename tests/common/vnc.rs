@@ -17,8 +17,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use des::cipher::generic_array::GenericArray;
-use des::cipher::{BlockEncrypt, KeyInit};
+use des::cipher::{Array, BlockCipherEncrypt, KeyInit};
 use des::Des;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedReadHalf;
@@ -234,10 +233,10 @@ pub fn vnc_auth_response(password: &str, challenge: &[u8; 16]) -> [u8; 16] {
     for (k, b) in key.iter_mut().zip(password.bytes()) {
         *k = b.reverse_bits();
     }
-    let cipher = Des::new(GenericArray::from_slice(&key));
+    let cipher = Des::new(&Array(key));
     let mut out = [0u8; 16];
     for (i, chunk) in challenge.chunks(8).enumerate() {
-        let mut block = GenericArray::clone_from_slice(chunk);
+        let mut block = Array::try_from(chunk).expect("8-byte chunk");
         cipher.encrypt_block(&mut block);
         out[i * 8..(i + 1) * 8].copy_from_slice(&block);
     }
