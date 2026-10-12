@@ -10,6 +10,7 @@ use gtk4::{gdk, gio, glib};
 
 use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
+use crate::transport::credentials::CredentialError;
 use crate::ui::folder_dialog::FolderDialog;
 use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
 use crate::ui::session_dialog::{collect_peer_sessions, SessionDialog};
@@ -440,7 +441,13 @@ impl SessionTree {
                         &format!("Delete session '{name}'?"),
                         "This cannot be undone.",
                         "Delete",
-                        move || tree.finish("delete the session", tree.store.delete_session(id)),
+                        move || {
+                            let deleted = tree.store.delete_session(id);
+                            if deleted.is_ok() {
+                                delete_keyring_entries(id, &delete_keyring_entry);
+                            }
+                            tree.finish("delete the session", deleted);
+                        },
                     );
                 }),
             );
@@ -523,6 +530,41 @@ impl SessionTree {
     fn parent(&self) -> Option<gtk4::Window> {
         window_of(&self.list_view)
     }
+}
+
+/// Every secret type a session can have in the keyring (doc 06
+/// §Credential Storage).
+const SECRET_TYPES: [&str; 4] = ["password", "key_passphrase", "vnc_password", "rdp_password"];
+
+/// Remove a deleted session's keyring entries, one per secret type. A
+/// failure is logged and the rest still run: keyring trouble never blocks
+/// a delete. Returns how many deletions failed.
+fn delete_keyring_entries(
+    session_id: i64,
+    delete: &dyn Fn(&str, &str) -> Result<(), CredentialError>,
+) -> usize {
+    let session_id = session_id.to_string();
+    SECRET_TYPES
+        .iter()
+        .filter(|secret_type| match delete(&session_id, secret_type) {
+            Ok(()) => false,
+            Err(err) => {
+                eprintln!(
+                    "Wayterm: failed to delete the {secret_type} keyring entry of session \
+                     {session_id}: {err}"
+                );
+                true
+            }
+        })
+        .count()
+}
+
+/// One keyring entry's deletion.
+// BRIDGE(K1): call KeyringSource::delete_entry(session_id, secret_type)
+// here. The stub keyring on main stores nothing, so there is nothing to
+// delete.
+fn delete_keyring_entry(_session_id: &str, _secret_type: &str) -> Result<(), CredentialError> {
+    Ok(())
 }
 
 /// The node shown by a row widget's list item.
@@ -654,6 +696,52 @@ fn row_factory(tree: &SessionTree) -> gtk4::SignalListItemFactory {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod keyring_cleanup_tests {
+    use std::cell::RefCell;
+
+    use super::*;
+
+    #[test]
+    fn every_secret_type_is_deleted_for_the_session() {
+        let calls = RefCell::new(Vec::new());
+        let failed = delete_keyring_entries(42, &|id, secret_type| {
+            calls.borrow_mut().push(format!("{id}:{secret_type}"));
+            Ok(())
+        });
+        assert_eq!(failed, 0);
+        assert_eq!(
+            calls.into_inner(),
+            [
+                "42:password",
+                "42:key_passphrase",
+                "42:vnc_password",
+                "42:rdp_password"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failure_is_counted_and_the_rest_still_run() {
+        let calls = RefCell::new(0);
+        let failed = delete_keyring_entries(7, &|_, secret_type| {
+            *calls.borrow_mut() += 1;
+            match secret_type {
+                "password" => Err(CredentialError::StoreError("locked".into())),
+                "vnc_password" => Err(CredentialError::Unavailable("no keyring".into())),
+                _ => Ok(()),
+            }
+        });
+        assert_eq!(failed, 2);
+        assert_eq!(calls.into_inner(), SECRET_TYPES.len());
+    }
+
+    #[test]
+    fn the_main_fallback_deleter_never_fails() {
+        assert_eq!(delete_keyring_entries(1, &delete_keyring_entry), 0);
+    }
+}
 
 /// Widget checks; they need a display and run from `ui::gtk_tests`.
 #[cfg(test)]
