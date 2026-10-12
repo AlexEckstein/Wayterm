@@ -288,22 +288,21 @@ fn split_file_uri(uri: &str) -> Option<(&str, String)> {
     (!path.is_empty()).then(|| (&rest[..slash], path))
 }
 
-/// Follows the shell's working directory from the terminal's OSC 7
-/// reports (`file://host/path`, doc 09 §Following the shell).
+/// Reads the shell's working directory from the terminal's OSC 7 reports
+/// (`file://host/path`, doc 09 §Following the shell).
 ///
 /// The first report pins the host: a nested `ssh` inside the session
 /// reports another one, and its paths mean nothing to this session's SFTP
-/// channel. Only a changed directory yields a target, so the user can
-/// browse elsewhere in the sidebar until the shell changes directory.
+/// channel. Whether the directory changed is [`SftpView::shell_moved`]'s
+/// call, since probes find it too.
 #[derive(Clone, Debug, Default)]
 pub struct DirectoryFollower {
     host: Option<String>,
-    last: Option<String>,
 }
 
 impl DirectoryFollower {
-    /// The directory to show for this report, or `None` when the sidebar
-    /// should stay where it is.
+    /// The reported directory, or `None` when the report is not a
+    /// `file://` URI for this session's host.
     pub fn report(&mut self, uri: &str) -> Option<String> {
         let (host, path) = split_file_uri(uri)?;
         match &self.host {
@@ -311,10 +310,6 @@ impl DirectoryFollower {
             Some(_) => {}
             None => self.host = Some(host.to_string()),
         }
-        if self.last.as_deref() == Some(path.as_str()) {
-            return None;
-        }
-        self.last = Some(path.clone());
         Some(path)
     }
 }
@@ -381,6 +376,13 @@ pub struct SftpView {
     /// Where the first listing starts: [`START_PATH`], or the shell's
     /// directory when it was reported first.
     start: String,
+    /// "Follow terminal directory": the listing moves when the shell
+    /// changes directory.
+    pub following: bool,
+    /// The shell's directory as last seen, reported (OSC 7) or probed.
+    shell_dir: Option<String>,
+    /// The shell reports its directory itself, so probing stops.
+    shell_reports: bool,
     /// Running transfers, oldest first; the bar shows whichever updated last.
     pub transfers: Vec<TransferState>,
     /// Derived button sensitivity.
@@ -403,6 +405,9 @@ impl SftpView {
             shown: true,
             connected: false,
             start: START_PATH.to_string(),
+            following: true,
+            shell_dir: None,
+            shell_reports: false,
             transfers: Vec::new(),
             toolbar: ToolbarState::DISABLED,
             selected: None,
@@ -443,6 +448,39 @@ impl SftpView {
             self.start = path.to_string();
             self.path_text = path.to_string();
         }
+    }
+
+    /// The shell is in `path`: `reported` by the shell itself (OSC 7) or
+    /// found by a probe. `Some(path)` when the listing should go there:
+    /// following is on and the shell moved, so browsing elsewhere sticks
+    /// until the shell changes directory.
+    pub fn shell_moved(&mut self, path: &str, reported: bool) -> Option<String> {
+        self.shell_reports |= reported;
+        if self.shell_dir.as_deref() == Some(path) {
+            return None;
+        }
+        self.shell_dir = Some(path.to_string());
+        self.following.then(|| path.to_string())
+    }
+
+    /// Tick or untick "Follow terminal directory". Ticking it returns the
+    /// shell's last directory when the listing is elsewhere.
+    pub fn set_following(&mut self, on: bool) -> Option<String> {
+        self.following = on;
+        let dir = self.shell_dir.as_deref().filter(|_| on)?;
+        (dir != self.current_path()).then(|| dir.to_string())
+    }
+
+    /// Whether to ask the remote where the shell is: following is on and
+    /// the shell does not report it.
+    pub fn wants_probe(&self) -> bool {
+        self.following && !self.shell_reports
+    }
+
+    /// The tab connected again: a new shell, whose directory is unknown.
+    pub fn new_shell(&mut self) {
+        self.shell_dir = None;
+        self.shell_reports = false;
     }
 
     /// Show a successful listing of `path` and make it the current directory.

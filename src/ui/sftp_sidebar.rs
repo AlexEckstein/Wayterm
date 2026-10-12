@@ -8,10 +8,13 @@
 //! Drops are accepted as `GdkFileList` and as `text/uri-list` through two
 //! drop targets, because gtk4-rs does not bind the multi-type API. The
 //! path bar shows the requested path (the protocol has no `getcwd`), and
-//! browsing starts at `.`, the SFTP home directory, unless the shell has
-//! reported its own directory by then — the sidebar follows that one.
+//! browsing starts at `.`, the SFTP home directory, unless the shell's
+//! directory is known by then. While "Follow terminal directory" is ticked
+//! the sidebar follows the shell: from its OSC 7 reports, or, for a shell
+//! that sends none, by asking the remote ([`ShellCwdProbe`]) after each
+//! command.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -21,7 +24,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::backpressure::PendingQueue;
-use crate::sftp::{Progress, SftpClient, SftpCommand};
+use crate::sftp::{Progress, SftpClient, SftpCommand, ShellCwdProbe};
 use crate::store::model::SessionType;
 use crate::transport::connection::SshConnection;
 use crate::ui::widgets::{confirm, prompt_text, set_margins, window_of};
@@ -55,6 +58,7 @@ struct SidebarInner {
     error_label: gtk4::Label,
     progress_bar: gtk4::ProgressBar,
     status_label: gtk4::Label,
+    follow_check: gtk4::CheckButton,
     buttons: Buttons,
     state: RefCell<SftpView>,
     /// The live client, once [`SftpSidebar::attach`] has been called.
@@ -65,6 +69,11 @@ struct SidebarInner {
     pending: RefCell<PendingQueue<SftpCommand>>,
     /// The idle flush of `pending`, while scheduled.
     flush_source: RefCell<Option<glib::SourceId>>,
+    /// Asks the remote where the current shell is.
+    probe: RefCell<Option<ShellCwdProbe>>,
+    /// A probe is running; another request waits for it (`probe_again`).
+    probing: Cell<bool>,
+    probe_again: Cell<bool>,
 }
 
 /// The SFTP sidebar (doc 09). Clones share everything; dropping the last
@@ -93,6 +102,8 @@ impl SftpSidebar {
         self.inner.render();
         let start = self.inner.state.borrow().current_path().to_string();
         self.inner.cd(start);
+        // A reattached tmux session may be anywhere already.
+        self.inner.probe_shell();
     }
 
     /// The root widget, hosted by the side dock's SFTP panel while its tab
@@ -131,16 +142,35 @@ impl SftpSidebar {
         sidebar
     }
 
-    /// Browse the directory the tab's shell reported (OSC 7, picked by a
+    /// The tab connected: follow its new shell, asking the remote through
+    /// `probe` until the shell reports its directory itself. Call before
+    /// attaching, so the first listing can probe.
+    pub fn follow_new_shell(&self, probe: ShellCwdProbe) {
+        self.inner.state.borrow_mut().new_shell();
+        *self.inner.probe.borrow_mut() = Some(probe);
+    }
+
+    /// The tab's shell reported its directory (OSC 7, picked by a
     /// [`DirectoryFollower`]). Before a client is attached it becomes the
     /// directory the first listing starts at.
     pub fn follow_shell(&self, path: String) {
-        if self.inner.client().is_some() {
-            self.inner.cd(path);
-        } else {
-            self.inner.state.borrow_mut().start_at(&path);
-            self.inner.sync_path_entry();
-        }
+        self.inner.shell_seen(&path, true);
+    }
+
+    /// A command ran in the terminal: ask the remote where the shell is,
+    /// unless following is off or the shell reports that itself.
+    pub fn probe_shell(&self) {
+        self.inner.probe_shell();
+    }
+
+    /// Whether "Follow terminal directory" is ticked.
+    pub fn is_following(&self) -> bool {
+        self.inner.state.borrow().following
+    }
+
+    /// Tick or untick "Follow terminal directory", as the user would.
+    pub fn set_following(&self, on: bool) {
+        self.inner.follow_check.set_active(on);
     }
 
     /// The path bar's text.
@@ -310,6 +340,14 @@ fn build_sidebar() -> Rc<SidebarInner> {
     status_label.set_xalign(0.0);
     status_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
 
+    // 6. Following the shell (doc 09 §Following the shell), on by default.
+    let follow_check = gtk4::CheckButton::with_label("Follow terminal directory");
+    follow_check.set_active(true);
+    follow_check.set_tooltip_text(Some(
+        "Show the directory the terminal's shell is in, whenever it changes",
+    ));
+    follow_check.set_focus_on_click(false);
+
     let container = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
     set_margins(&container, 4);
     container.append(&path_entry);
@@ -318,6 +356,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
     container.append(&scrolled);
     container.append(&progress_row);
     container.append(&status_label);
+    container.append(&follow_check);
 
     let inner = Rc::new(SidebarInner {
         container,
@@ -328,12 +367,16 @@ fn build_sidebar() -> Rc<SidebarInner> {
         error_label,
         progress_bar,
         status_label,
+        follow_check,
         buttons,
         state: RefCell::new(SftpView::detached()),
         client: RefCell::new(None),
         deferred: RefCell::new(None),
         pending: RefCell::default(),
         flush_source: RefCell::new(None),
+        probe: RefCell::new(None),
+        probing: Cell::new(false),
+        probe_again: Cell::new(false),
     });
     inner.connect_signals();
     inner.connect_drag_drop();
@@ -409,6 +452,10 @@ impl SidebarInner {
         self.buttons
             .cancel
             .connect_clicked(move |_| for_cancel.cancel_transfer());
+
+        let for_follow = Rc::clone(self);
+        self.follow_check
+            .connect_toggled(move |check| for_follow.set_following(check.is_active()));
     }
 
     /// Uploads from drops: a `GdkFileList` target and a `text/uri-list` one.
@@ -480,6 +527,7 @@ impl SidebarInner {
         self.progress_bar
             .set_text(Some(state.progress_text.as_str()));
         self.status_label.set_text(&state.status);
+        self.follow_check.set_active(state.following);
         self.container.set_visible(state.shown);
         drop(state);
         self.render_toolbar();
@@ -567,6 +615,65 @@ impl SidebarInner {
             return true;
         }
         report.remaining == 0
+    }
+
+    /// The shell is in `path` (`reported` over OSC 7, or probed): go there
+    /// if following says so. Before a client is attached, the first
+    /// listing starts there instead.
+    fn shell_seen(self: &Rc<Self>, path: &str, reported: bool) {
+        let target = self.state.borrow_mut().shell_moved(path, reported);
+        if let Some(target) = target {
+            self.go_to_shell_dir(target);
+        }
+    }
+
+    fn go_to_shell_dir(self: &Rc<Self>, path: String) {
+        if self.client().is_some() {
+            self.cd(path);
+        } else {
+            self.state.borrow_mut().start_at(&path);
+            self.sync_path_entry();
+        }
+    }
+
+    /// The checkbox changed (render setting it to the state is no change).
+    /// Ticking it catches up with the shell and asks where it is now.
+    fn set_following(self: &Rc<Self>, on: bool) {
+        if self.state.borrow().following == on {
+            return;
+        }
+        let target = self.state.borrow_mut().set_following(on);
+        if let Some(target) = target {
+            self.go_to_shell_dir(target);
+        }
+        self.probe_shell();
+    }
+
+    /// Ask the remote where the shell is, one probe at a time: a request
+    /// made while one runs is served once it ends.
+    fn probe_shell(self: &Rc<Self>) {
+        if !self.state.borrow().wants_probe() {
+            return;
+        }
+        let Some(probe) = self.probe.borrow().clone() else {
+            return;
+        };
+        if self.probing.replace(true) {
+            self.probe_again.set(true);
+            return;
+        }
+        let reply = probe.spawn();
+        let sidebar = Rc::clone(self);
+        glib::MainContext::default().spawn_local(async move {
+            let dir = reply.await.ok().flatten();
+            sidebar.probing.set(false);
+            if let Some(dir) = dir {
+                sidebar.shell_seen(&dir, false);
+            }
+            if sidebar.probe_again.replace(false) {
+                sidebar.probe_shell();
+            }
+        });
     }
 
     /// Re-list the current directory.
@@ -894,5 +1001,31 @@ pub(super) mod gtk_tests {
         inner.render();
         assert_eq!(inner.state.borrow().selected_path(), None);
         assert!(!inner.buttons.download.is_sensitive());
+    }
+
+    /// "Follow terminal directory" is the bottom row, ticked. Unticked, the
+    /// shell's moves leave the sidebar where it is; ticking it again
+    /// catches up with the shell.
+    pub(in crate::ui) fn follow_checkbox_toggles_following() {
+        let sidebar = SftpSidebar::new();
+        let inner = &sidebar.inner;
+        assert_eq!(
+            inner.container.last_child().as_ref(),
+            Some(inner.follow_check.upcast_ref::<gtk4::Widget>())
+        );
+        assert!(inner.follow_check.is_active());
+        assert!(sidebar.is_following());
+
+        sidebar.follow_shell("/srv".into());
+        assert_eq!(sidebar.path_text(), "/srv");
+
+        inner.follow_check.set_active(false);
+        assert!(!sidebar.is_following());
+        sidebar.follow_shell("/var/log".into());
+        assert_eq!(sidebar.path_text(), "/srv", "unticked: stays");
+
+        sidebar.set_following(true);
+        assert!(inner.follow_check.is_active());
+        assert_eq!(sidebar.path_text(), "/var/log", "ticked: catches up");
     }
 }

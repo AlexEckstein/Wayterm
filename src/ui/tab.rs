@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 use vte4::prelude::*;
 use zeroize::Zeroizing;
 
+use crate::sftp::ShellCwdProbe;
 use crate::store::model::{AuthMethod, ForwardRule, HostKeyPolicy, SessionConfig, SessionType};
 use crate::store::SessionStore;
 use crate::terminal::{create_terminal, TerminalBackend};
@@ -88,6 +89,9 @@ const TEARDOWN_HOOK_KEY: &str = "wayterm-teardown-hook";
 /// An unallocated VTE reports 24×80, so measuring waits (≈2 s at most)
 /// for the widget to get a size.
 const ALLOC_WAIT_STEPS: u32 = 125;
+/// After Enter, how long the terminal must stay quiet before the SFTP
+/// sidebar asks where the shell is (doc 09 §Following the shell).
+const PROBE_QUIET: Duration = Duration::from_millis(300);
 
 /// The last state a page published, replayed into the status bar when the
 /// page becomes current.
@@ -500,6 +504,7 @@ async fn finish_connect(
             // sidebar shows the limitation instead of attaching.
             sidebar.show_jump_placeholder();
         } else {
+            sidebar.follow_new_shell(ShellCwdProbe::new(&conn, session.tmux_remote_name()));
             sidebar.attach_on_connect(conn);
             sidebar_attached(page).set(true);
             follow_terminal_directory(page, &widget);
@@ -748,6 +753,7 @@ fn release_connection(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     } else {
         SftpSidebar::hidden()
     };
+    sidebar.set_following(old.is_following());
     SessionTab::set_sidebar_for_page(page, sidebar);
     side_dock::sidebar_replaced(notebook);
 }
@@ -799,17 +805,20 @@ fn follow_terminal_title(page: &gtk4::Widget, terminal: &gtk4::Widget, session_n
     vte.connect_window_title_changed(apply);
 }
 
-/// Keep the page's SFTP sidebar on the shell's working directory: VTE
-/// reports OSC 7 as `current-directory-uri` (doc 09 §Following the shell).
-/// The sidebar is looked up per report, since a redial replaces it.
+/// Keep the page's SFTP sidebar on the shell's working directory (doc 09
+/// §Following the shell): VTE reports OSC 7 as `current-directory-uri`,
+/// and after each command — Enter, then [`PROBE_QUIET`] without output —
+/// the sidebar may ask the remote instead. The sidebar is looked up each
+/// time, since a redial replaces it.
 fn follow_terminal_directory(page: &gtk4::Widget, terminal: &gtk4::Widget) {
     let Some(vte) = terminal.downcast_ref::<vte4::Terminal>() else {
         return;
     };
     let page = page.downgrade();
     let follower = RefCell::new(DirectoryFollower::default());
+    let for_report = page.clone();
     vte.connect_current_directory_uri_changed(move |term| {
-        let (Some(page), Some(uri)) = (page.upgrade(), term.current_directory_uri()) else {
+        let (Some(page), Some(uri)) = (for_report.upgrade(), term.current_directory_uri()) else {
             return;
         };
         let Some(path) = follower.borrow_mut().report(&uri) else {
@@ -818,6 +827,36 @@ fn follow_terminal_directory(page: &gtk4::Widget, terminal: &gtk4::Widget) {
         if let Some(sidebar) = SessionTab::sidebar_for_page(&page) {
             sidebar.follow_shell(path);
         }
+    });
+
+    let armed = Rc::new(Cell::new(false));
+    let for_commit = Rc::clone(&armed);
+    vte.connect_commit(move |_, text, _| {
+        if text.contains(['\r', '\n']) {
+            for_commit.set(true);
+        }
+    });
+    let quiet: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    vte.connect_contents_changed(move |_| {
+        if !armed.get() {
+            return;
+        }
+        if let Some(pending) = quiet.take() {
+            pending.remove();
+        }
+        let (page, armed, fired) = (page.clone(), Rc::clone(&armed), Rc::clone(&quiet));
+        let source = glib::timeout_add_local_once(PROBE_QUIET, move || {
+            // A fired source must not be removed again.
+            fired.take();
+            armed.set(false);
+            if let Some(sidebar) = page
+                .upgrade()
+                .and_then(|page| SessionTab::sidebar_for_page(&page))
+            {
+                sidebar.probe_shell();
+            }
+        });
+        *quiet.borrow_mut() = Some(source);
     });
 }
 
