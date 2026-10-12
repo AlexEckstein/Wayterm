@@ -39,7 +39,7 @@ use crate::ui::widgets::{set_margins, Modal};
 
 use model::{
     drafts_from_rules, lookup_status, rules_from_drafts, status_text, ForwardRuleDraft,
-    FORWARD_KIND_LABELS, KIND_INDEX_LOCAL, V2_NOTE,
+    FORWARD_KIND_LABELS, HELP_ENTRIES, KIND_INDEX_LOCAL, V2_NOTE,
 };
 
 /// The window action id, registered in `main_window.rs` like the other
@@ -111,7 +111,12 @@ impl TunnelsDialog {
         let title = gtk4::Label::builder()
             .label(format!("Port forwards for “{}”", session.name))
             .halign(gtk4::Align::Start)
+            .hexpand(true)
             .build();
+        let help = help_button();
+        let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        header.append(&title);
+        header.append(&help);
         let offline = gtk4::Label::builder()
             .label("No active connection — editing rules only; live status unavailable.")
             .halign(gtk4::Align::Start)
@@ -175,7 +180,7 @@ impl TunnelsDialog {
 
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         set_margins(&vbox, 12);
-        vbox.append(&title);
+        vbox.append(&header);
         vbox.append(&offline);
         vbox.append(&v2);
         vbox.append(&scroll);
@@ -328,6 +333,42 @@ fn add_row(
     });
 }
 
+/// The top-right help icon: a popover explaining each row control
+/// ([`HELP_ENTRIES`]).
+fn help_button() -> gtk4::MenuButton {
+    let grid = gtk4::Grid::builder()
+        .row_spacing(8)
+        .column_spacing(12)
+        .build();
+    set_margins(&grid, 6);
+    for (row, (term, explanation)) in (0..).zip(HELP_ENTRIES) {
+        let term = gtk4::Label::builder()
+            .label(term)
+            .halign(gtk4::Align::Start)
+            .valign(gtk4::Align::Start)
+            .build();
+        term.add_css_class("heading");
+        let explanation = gtk4::Label::builder()
+            .label(explanation)
+            .halign(gtk4::Align::Start)
+            .xalign(0.0)
+            .wrap(true)
+            .max_width_chars(60)
+            .build();
+        grid.attach(&term, 0, row, 1, 1);
+        grid.attach(&explanation, 1, row, 1, 1);
+    }
+    let popover = gtk4::Popover::builder().child(&grid).build();
+    let button = gtk4::MenuButton::builder()
+        .icon_name("dialog-question-symbolic")
+        .tooltip_text("What do these options mean?")
+        .popover(&popover)
+        .valign(gtk4::Align::Center)
+        .build();
+    button.add_css_class("flat");
+    button
+}
+
 fn row_entry(text: &str, placeholder: &str, width: i32) -> gtk4::Entry {
     gtk4::Entry::builder()
         .text(text)
@@ -387,6 +428,18 @@ pub(super) mod gtk_tests {
         // are insensitive, but the rules still render.
         let dialog = TunnelsDialog::new(&parent, &session, None);
         assert_eq!(dialog.rows.borrow().len(), 2);
+        // The help icon carries a popover explaining every row control.
+        let help = dialog
+            .vbox
+            .first_child()
+            .and_then(|header| header.last_child())
+            .and_downcast::<gtk4::MenuButton>()
+            .expect("help button ends the header row")
+            .popover()
+            .expect("help popover");
+        let grid = help.child().and_downcast::<gtk4::Grid>().expect("grid");
+        let first = grid.child_at(0, 0).and_downcast::<gtk4::Label>();
+        assert_eq!(first.map(|l| l.text()).as_deref(), Some("Kind"));
         for row in dialog.rows.borrow().iter() {
             assert_eq!(row.status.text(), model::OFFLINE_STATUS);
             assert!(!row.enabled.is_sensitive(), "offline: no engine control");
