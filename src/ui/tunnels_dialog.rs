@@ -8,9 +8,9 @@
 //! but every status cell reads "no active connection" and the controls
 //! that need an engine stay insensitive. With `Some`, the enable toggle
 //! live-applies through [`ForwardStatusSource::set_rule_enabled`] and
-//! status updates arrive on a `glib` channel drained by
+//! status updates arrive on a tokio unbounded channel drained by
 //! `MainContext::spawn_local` (the `tab.rs` pattern): no blocking recv on
-//! the UI path. Persistence happens on OK: [`Self::run`] returns the
+//! the UI path. Persistence happens on OK: [`TunnelsDialog::run`] returns the
 //! validated rules and the caller writes them back through the store, so
 //! the store roundtrip stays intact.
 //!

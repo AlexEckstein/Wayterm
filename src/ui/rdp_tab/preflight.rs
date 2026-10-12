@@ -20,7 +20,7 @@ use crate::ui::widgets::set_margins;
 /// `/cert:fingerprint:…` token, if any).
 ///
 /// Username and host are trimmed; an empty username maps to `""` — the
-/// caller ([`start`]) rejects it with an error view first, like the SSH
+/// caller ([`start`](super::start)) rejects it with an error view first, like the SSH
 /// arm's missing-username. Geometry defaults to 1024×768; `depth` maps to
 /// `/bpp:` (`None` skips the arg). Toggles come from `rdp_options`, or these
 /// defaults when absent: audio off, clipboard/fonts/printer

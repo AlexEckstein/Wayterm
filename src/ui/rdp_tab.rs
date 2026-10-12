@@ -35,8 +35,9 @@
 //! ## Trust store access
 //!
 //! The credential chain (`credential_manager`) carries secrets only. The
-//! trust table is reached the other allowed way: [`default_db_path`] +
-//! [`SessionStore::open`] on the blocking thread at cert-resolution time.
+//! trust table is reached the other allowed way:
+//! [`default_db_path`](crate::app::default_db_path) +
+//! [`SessionStore::open`](crate::store::SessionStore::open) on the blocking thread at cert-resolution time.
 //! That is a second read-only-mostly handle to the same SQLite file, which
 //! is safe: schema init is idempotent, reads are concurrent under WAL, and
 //! trust writes are rare single-row upserts serialized by SQLite itself.

@@ -53,7 +53,7 @@ pub trait ForwardStatusSource: Send + Sync {
     /// blocking; the resulting state arrives as a [`ForwardStatus`] update.
     fn set_rule_enabled(&self, rule_index: usize, enabled: bool);
     /// Send every future [`ForwardStatus`] to `sender` as well. The dialog
-    /// calls this once with its drain's sender; the integrator's bridge
+    /// calls this once with its drain's sender; [`EngineStatusBridge`]
     /// forwards engine events into all registered senders.
     fn subscribe(&self, sender: UnboundedSender<ForwardStatus>);
 }

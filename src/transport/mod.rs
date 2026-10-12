@@ -1,5 +1,5 @@
 //! Byte-stream transports — SSH, local PTY, and serial — behind the generic
-//! [`Transport`] trait (doc 04).
+//! [`Transport`](types::Transport) trait (doc 04).
 //!
 //! RDP/VNC are not byte streams (doc 08); they never appear here.
 

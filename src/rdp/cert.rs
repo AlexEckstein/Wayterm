@@ -137,7 +137,8 @@ pub const PROBE_FINGERPRINT: &str =
 /// parseable fingerprint (nothing is ever invented). xfreerdp, not this
 /// parser, enforces the pin; this only decides what the user is shown and
 /// what is recorded. The UI supplies raw stderr lines — the ring's
-/// [`process::RdpProcess::error_digest`] or live lines.
+/// [`RdpProcess::error_digest`](super::process::RdpProcess::error_digest)
+/// or live lines.
 pub fn parse_seen_fingerprint(lines: &[String]) -> Option<String> {
     let mut found: Option<String> = None;
     for candidate in lines.iter().filter_map(|line| fingerprint_on(line)) {
