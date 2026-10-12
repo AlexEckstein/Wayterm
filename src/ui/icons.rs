@@ -79,6 +79,16 @@ pub const BUILTIN: &[&str] = &[
     "wayterm-star-symbolic",
 ];
 
+/// Icons the window itself draws (the side dock's tabs, `ui::side_dock`):
+/// bundled with [`BUILTIN`] so they look the same on every theme, but not
+/// offered in the picker.
+pub const CHROME: &[&str] = &["wayterm-macro-symbolic", "wayterm-sftp-symbolic"];
+
+/// Every icon in the GResource bundle.
+fn bundled() -> impl Iterator<Item = &'static str> {
+    BUILTIN.iter().chain(CHROME).copied()
+}
+
 /// The icon a session of `session_type` has when it sets none.
 pub fn session_type_icon(session_type: &SessionType) -> &'static str {
     match session_type {
@@ -153,7 +163,7 @@ fn numbered(name: &str, n: u32) -> String {
 /// Copy the SVG at `source` into `dir` and return its icon name. Only
 /// `.svg` files that look like SVG and are at most [`MAX_SVG_BYTES`] are
 /// taken. Importing the same file again reuses its name; a different file
-/// with the same name, or one named like a built-in icon, gets a counter,
+/// with the same name, or one named like a bundled icon, gets a counter,
 /// so existing icons never change.
 pub fn import_svg(source: &Path, dir: &Path) -> io::Result<String> {
     let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidData, message);
@@ -174,7 +184,7 @@ pub fn import_svg(source: &Path, dir: &Path) -> io::Result<String> {
     let base = icon_name_for_file(source);
     let mut name = base.clone();
     for n in 2.. {
-        if BUILTIN.contains(&name.as_str()) {
+        if bundled().any(|bundled| bundled == name) {
             name = numbered(&base, n);
             continue;
         }
@@ -462,8 +472,8 @@ pub(super) mod gtk_tests {
         let display = gdk::Display::default().expect("display");
         register_builtin_icons(&display);
         let theme = gtk4::IconTheme::for_display(&display);
-        for name in BUILTIN {
-            assert!(theme.has_icon(name), "built-in {name} is in the theme");
+        for name in bundled() {
+            assert!(theme.has_icon(name), "bundled {name} is in the theme");
         }
 
         let tmp = tempfile::tempdir().unwrap();
