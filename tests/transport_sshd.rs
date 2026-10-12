@@ -11,7 +11,7 @@ use tokio::time::timeout;
 use zeroize::Zeroizing;
 
 use common::*;
-use wayterm::sftp::{commands::DirEntry, SftpClient, SftpCommand};
+use wayterm::sftp::{commands::DirEntry, SftpClient, SftpCommand, ShellCwdProbe};
 use wayterm::transport::auth::{authenticate_chain, AuthConfig, AuthMethodKind, AuthOutcome};
 use wayterm::transport::connection::{AuthMethod, SshConnection};
 use wayterm::transport::credentials::CredentialManager;
@@ -465,4 +465,68 @@ async fn sftp_command_errors_after_connection_disconnect() {
     );
 
     drop(client);
+}
+
+// ---- Following the shell (doc 09) ----
+
+/// Key auth when the fixture has a key, so the probe tests also run
+/// against a password-less local sshd.
+async fn connect_any(f: &Fixture) -> Arc<SshConnection> {
+    match f.key_path.clone() {
+        Some(path) => {
+            connect_with(
+                f,
+                AuthMethod::Key {
+                    path,
+                    passphrase: None,
+                },
+                CredentialManager::new(vec![]),
+                password_responder(&f.password),
+            )
+            .await
+        }
+        None => connect_password(f).await,
+    }
+}
+
+/// A shell on `connection`, past its first command.
+async fn started_shell(
+    connection: &Arc<SshConnection>,
+    command: &str,
+) -> (SSHTransport, mpsc::Receiver<TransportEvent>) {
+    let (mut shell, mut rx) = ssh_transport(Arc::clone(connection));
+    shell.connect().await.expect("connect failed");
+    // The echo shows `ran-%s`; only the output says `ran-it`.
+    let line = format!("{command}; printf 'ran-%s\\n' it\n");
+    shell.write(line.as_bytes()).await.expect("write failed");
+    collect_echo(&mut rx, "ran-it").await;
+    (shell, rx)
+}
+
+#[tokio::test]
+async fn shell_cwd_probe_finds_the_shells_directory() {
+    let Some(f) = fixture() else { return };
+    let connection = connect_any(&f).await;
+    let probe = ShellCwdProbe::new(&connection, None);
+
+    let (mut shell, _rx) = started_shell(&connection, "cd /tmp").await;
+    assert_eq!(probe.run().await.as_deref(), Some("/tmp"));
+
+    let (mut second, _rx2) = started_shell(&connection, "cd /").await;
+    assert_eq!(
+        probe.run().await,
+        None,
+        "two shells on one connection cannot be told apart"
+    );
+
+    second.disconnect().await.expect("disconnect failed");
+    shell.disconnect().await.expect("disconnect failed");
+}
+
+#[tokio::test]
+async fn shell_cwd_probe_gives_up_on_a_missing_tmux_session() {
+    let Some(f) = fixture() else { return };
+    let connection = connect_any(&f).await;
+    let probe = ShellCwdProbe::new(&connection, Some("wayterm-no-such-session".into()));
+    assert_eq!(probe.run().await, None);
 }

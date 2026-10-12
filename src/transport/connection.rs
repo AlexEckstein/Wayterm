@@ -70,7 +70,8 @@ impl SshConnection {
         &self.username
     }
 
-    /// Shell/exec/PTY channels (`SSHTransport`).
+    /// Shell/exec/PTY channels (`SSHTransport`, the SFTP sidebar's shell
+    /// probes).
     pub async fn open_session_channel(&self) -> Result<Channel<Msg>, TransportError> {
         self.handle
             .lock()
