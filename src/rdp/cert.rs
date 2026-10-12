@@ -87,8 +87,7 @@ pub fn cert_arg(decision: &CertDecision) -> Option<String> {
 
 /// SHA-256 over DER bytes, as lowercase hex without colons (64 chars).
 ///
-/// Uses `sha2` 0.10 (already a dependency; verified against the registry as
-/// the current 0.10.x line — no new crate pinned by this module).
+/// Uses `sha2` (already a dependency — no new crate pinned by this module).
 pub fn fingerprint_sha256_hex(der: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(der);

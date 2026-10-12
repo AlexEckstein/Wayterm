@@ -30,8 +30,7 @@ russh = "0.64"
 async-trait = "0.1"
 tokio-util = "0.7"
 zeroize = "1"
-base64 = "0.22"
-sha2 = "0.10"
+sha2 = "0.11"
 bytes = "1"
 thiserror = "2"
 russh-sftp = "3.0"
@@ -39,12 +38,12 @@ ksni = "0.3"
 libc = "0.2"
 serialport = { version = "4.10.1", default-features = false }
 vnc-rs = "0.6"
-x11rb = "0.13"
+x11rb = "0.14"
 gdk4-x11 = "0.11"
 serde_yaml_ng = "0.10"
 
 [dev-dependencies]
-des = "0.8"
+des = "0.9"
 tempfile = "3"
 # test-util enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,
 # which the reconnect driver's backoff tests use to assert the doc 04 curve
