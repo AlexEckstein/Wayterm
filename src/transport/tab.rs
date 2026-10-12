@@ -193,7 +193,7 @@ impl TerminalTab {
     }
 
     /// Cancel both tasks and wait for them (doc 04 §Lifecycle). The pump gets
-    /// [`CLOSE_JOIN_TIMEOUT`] to disconnect before it is aborted. Idempotent.
+    /// `CLOSE_JOIN_TIMEOUT` to disconnect before it is aborted. Idempotent.
     pub async fn close(&mut self) {
         self.cancel.cancel();
         if let Some(mut pump) = self.pump_task.take() {
