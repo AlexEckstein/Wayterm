@@ -35,7 +35,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::store::model::{ForwardRule, SessionConfig};
-use crate::ui::widgets::{set_margins, Modal};
+use crate::ui::widgets::{button_row, set_margins, Modal};
 
 use model::{
     drafts_from_rules, lookup_status, rules_from_drafts, status_text, ForwardRuleDraft,
@@ -224,11 +224,7 @@ impl TunnelsDialog {
             });
             self.modal.window.set_default_widget(Some(&ok));
         }
-        let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-        buttons.set_halign(gtk4::Align::End);
-        buttons.append(&cancel);
-        buttons.append(&ok);
-        self.vbox.append(&buttons);
+        self.vbox.append(&button_row(&[&cancel, &ok]));
         self.modal.run()
     }
 }

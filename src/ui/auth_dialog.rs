@@ -5,11 +5,11 @@
 
 use std::sync::Arc;
 
+use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{glib, pango};
 
 pub use crate::transport::auth::{ChallengePrompt, ChallengeResponder};
-use crate::ui::widgets::{ok_cancel_row, set_margins, Modal};
+use crate::ui::widgets::{ok_cancel_row, set_margins, wrapped_label, Modal};
 
 /// One dialog row: its label and whether the entry echoes.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -99,12 +99,7 @@ pub fn run_challenges(
     let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
     set_margins(&vbox, 12);
     if let Some(text) = instructions_label(instructions) {
-        let label = gtk4::Label::builder()
-            .label(text)
-            .wrap(true)
-            .wrap_mode(pango::WrapMode::WordChar)
-            .xalign(0.0)
-            .build();
+        let label = wrapped_label(&text);
         label.add_css_class("dim-label");
         vbox.append(&label);
     }

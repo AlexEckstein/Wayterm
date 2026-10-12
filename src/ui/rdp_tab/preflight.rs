@@ -14,7 +14,7 @@ use crate::rdp::{is_supported_version, probe_binary, RdpSpec, MIN_FREERDP_MAJOR}
 use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
 use crate::ui::auth_dialog::top_level_parent;
-use crate::ui::widgets::set_margins;
+use crate::ui::widgets::{button_row, set_margins, wrapped_label, Modal};
 
 /// `RdpSpec` for the session row with `cert_arg` attached (the resolved
 /// `/cert:fingerprint:…` token, if any).
@@ -121,24 +121,7 @@ pub enum ChangeChoice {
 /// Accept. Must run on the GTK main thread (callers on the blocking pool go
 /// through `run_on_gtk_main_thread`).
 pub fn unknown_cert_decision(host: &str, port: u16, seen_fp: &str) -> Option<AcceptRecord> {
-    let modal = crate::ui::widgets::Modal::<AcceptRecord>::new(
-        "RDP certificate verification",
-        top_level_parent().as_ref(),
-    );
-    modal.window.set_default_width(520);
-    modal.window.set_resizable(false);
-    let body = gtk4::Label::builder()
-        .label(unknown_cert_text(host, port, seen_fp))
-        .wrap(true)
-        .wrap_mode(gtk4::pango::WrapMode::WordChar)
-        .xalign(0.0)
-        .build();
-    body.set_selectable(true);
-    let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    set_margins(&vbox, 12);
-    vbox.append(&body);
-    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    row.set_halign(gtk4::Align::End);
+    let modal = Modal::<AcceptRecord>::new(CERT_TITLE, top_level_parent().as_ref());
     let reject = modal.button("Reject", || None);
     let record = AcceptRecord {
         host: host.to_string(),
@@ -147,42 +130,46 @@ pub fn unknown_cert_decision(host: &str, port: u16, seen_fp: &str) -> Option<Acc
     };
     let accept = modal.button("Accept", move || Some(record.clone()));
     modal.window.set_default_widget(Some(&accept));
-    row.append(&reject);
-    row.append(&accept);
-    vbox.append(&row);
-    modal.window.set_child(Some(&vbox));
+    fill_cert_modal(
+        &modal,
+        520,
+        &unknown_cert_text(host, port, seen_fp),
+        &[&reject, &accept],
+    );
     modal.run()
 }
 
 /// Show the changed-certificate warning; only an explicit update connects.
 /// Must run on the GTK main thread; a closed window refuses.
 pub fn changed_cert_decision(host: &str, port: u16, stored: &str, seen: &str) -> ChangeChoice {
-    let modal = crate::ui::widgets::Modal::<ChangeChoice>::new(
-        "RDP certificate verification",
-        top_level_parent().as_ref(),
-    );
-    modal.window.set_default_width(560);
+    let modal = Modal::<ChangeChoice>::new(CERT_TITLE, top_level_parent().as_ref());
+    let disconnect = modal.button("Disconnect", || Some(ChangeChoice::KeepRefusing));
+    modal.window.set_default_widget(Some(&disconnect));
+    let update = modal.button("Update and Connect", || Some(ChangeChoice::UpdateAndRetry));
+    let text = changed_cert_text(stored, seen, host, port);
+    fill_cert_modal(&modal, 560, &text, &[&disconnect, &update]);
+    modal.run().unwrap_or(ChangeChoice::KeepRefusing)
+}
+
+const CERT_TITLE: &str = "RDP certificate verification";
+
+/// Lay out a certificate modal: fixed width, selectable body text, then
+/// `buttons` right-aligned.
+fn fill_cert_modal<T: 'static>(
+    modal: &Modal<T>,
+    width: i32,
+    text: &str,
+    buttons: &[&gtk4::Button],
+) {
+    modal.window.set_default_width(width);
     modal.window.set_resizable(false);
-    let body = gtk4::Label::builder()
-        .label(changed_cert_text(stored, seen, host, port))
-        .wrap(true)
-        .wrap_mode(gtk4::pango::WrapMode::WordChar)
-        .xalign(0.0)
-        .build();
+    let body = wrapped_label(text);
     body.set_selectable(true);
     let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
     set_margins(&vbox, 12);
     vbox.append(&body);
-    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    row.set_halign(gtk4::Align::End);
-    let disconnect = modal.button("Disconnect", || Some(ChangeChoice::KeepRefusing));
-    modal.window.set_default_widget(Some(&disconnect));
-    let update = modal.button("Update and Connect", || Some(ChangeChoice::UpdateAndRetry));
-    row.append(&disconnect);
-    row.append(&update);
-    vbox.append(&row);
+    vbox.append(&button_row(buttons));
     modal.window.set_child(Some(&vbox));
-    modal.run().unwrap_or(ChangeChoice::KeepRefusing)
 }
 
 /// The stored fingerprint for `(host, port)`, via a throwaway store handle

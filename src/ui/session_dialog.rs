@@ -25,7 +25,7 @@ use crate::ui::icons::{session_type_icon, IconPicker};
 use crate::ui::tunnels_dialog::model::{
     drafts_from_rules, rules_from_drafts, ForwardRuleDraft, FORWARD_KIND_LABELS, V2_NOTE,
 };
-use crate::ui::widgets::{set_margins, Modal};
+use crate::ui::widgets::{button_row, set_margins, Modal};
 
 mod model;
 pub use model::*;
@@ -477,11 +477,7 @@ impl SessionDialog {
             });
             self.modal.window.set_default_widget(Some(&ok));
         }
-        let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-        buttons.set_halign(gtk4::Align::End);
-        buttons.append(&cancel);
-        buttons.append(&ok);
-        buttons.set_margin_top(12);
+        let buttons = button_row(&[&cancel, &ok]);
         set_margins(&buttons, 12);
         self.vbox.append(&buttons);
         self.modal.run()

@@ -4,12 +4,11 @@
 
 use std::sync::Arc;
 
-use gtk4::pango;
 use gtk4::prelude::*;
 
 use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyPrompt};
 use crate::ui::auth_dialog::{run_on_gtk_main_thread, top_level_parent};
-use crate::ui::widgets::{set_margins, Modal};
+use crate::ui::widgets::{button_row, set_margins, wrapped_label, Modal};
 
 /// Unknown-host buttons: cancel first, then the affirmative one.
 pub const UNKNOWN_BUTTONS: [&str; 2] = ["Reject", "Accept"];
@@ -92,18 +91,10 @@ fn show(facts: &HostKeyFacts, notice: HostKeyNotice) -> Option<bool> {
         HostKeyNotice::Unknown => ("dialog-question-symbolic", "dim-label", &UNKNOWN_BUTTONS),
         HostKeyNotice::Changed => ("dialog-warning-symbolic", "error", &CHANGED_BUTTONS),
     };
-    let wrapped = |text: &str| {
-        gtk4::Label::builder()
-            .label(text)
-            .wrap(true)
-            .wrap_mode(pango::WrapMode::WordChar)
-            .xalign(0.0)
-            .build()
-    };
     let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
     header.append(&gtk4::Image::from_icon_name(icon));
-    header.append(&wrapped(&notice_headline(facts, notice)));
-    let body = wrapped(&notice_detail(facts, notice));
+    header.append(&wrapped_label(&notice_headline(facts, notice)));
+    let body = wrapped_label(&notice_detail(facts, notice));
     body.set_selectable(true);
     body.add_css_class(body_class);
 
@@ -114,17 +105,16 @@ fn show(facts: &HostKeyFacts, notice: HostKeyNotice) -> Option<bool> {
     // The changed-key notice has no buttons: closing the window is the
     // only (rejecting) answer.
     if buttons.len() > 1 {
-        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-        row.set_halign(gtk4::Align::End);
+        let mut row = Vec::new();
         for (index, label) in buttons.iter().enumerate() {
             let accepted = index == 1;
             let button = modal.button(label, move || Some(accepted));
             if accepted {
                 modal.window.set_default_widget(Some(&button));
             }
-            row.append(&button);
+            row.push(button);
         }
-        vbox.append(&row);
+        vbox.append(&button_row(&row.iter().collect::<Vec<_>>()));
     }
     modal.window.set_child(Some(&vbox));
     modal.run()
