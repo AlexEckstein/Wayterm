@@ -252,16 +252,74 @@ fn the_follower_takes_the_reported_directory_percent_decoded() {
 }
 
 #[test]
-fn the_follower_moves_only_when_the_shell_changes_directory() {
-    let mut follower = DirectoryFollower::default();
-    assert!(follower.report("file://web01/home/alice").is_some());
+fn the_listing_moves_only_when_the_shell_changes_directory() {
+    let mut view = SftpView::detached();
     assert_eq!(
-        follower.report("file://web01/home/alice"),
+        view.shell_moved("/home/alice", true).as_deref(),
+        Some("/home/alice")
+    );
+    assert_eq!(
+        view.shell_moved("/home/alice", true),
         None,
         "every prompt re-reports; browsing elsewhere must stick"
     );
-    assert!(follower.report("file://web01/tmp").is_some());
+    assert_eq!(
+        view.shell_moved("/home/alice", false),
+        None,
+        "a probe finding the same directory is no move either"
+    );
+    assert_eq!(view.shell_moved("/tmp", false).as_deref(), Some("/tmp"));
+    assert!(view.shell_moved("/home/alice", true).is_some());
+}
+
+#[test]
+fn unticking_follow_keeps_the_listing_and_ticking_catches_up() {
+    let mut view = SftpView::detached();
+    view.attach();
+    view.set_listing("/srv", &listing());
+    assert!(view.following, "on by default");
+
+    assert_eq!(view.set_following(false), None);
+    assert_eq!(view.shell_moved("/var/log", false), None, "not following");
+    assert!(!view.wants_probe());
+    assert_eq!(view.current_path(), "/srv");
+
+    assert_eq!(view.set_following(true).as_deref(), Some("/var/log"));
+    view.set_listing("/var/log", &listing());
+    view.set_following(false);
+    assert_eq!(
+        view.set_following(true),
+        None,
+        "already there: nothing to catch up"
+    );
+}
+
+#[test]
+fn a_shell_that_reports_its_directory_is_not_probed() {
+    let mut view = SftpView::detached();
+    assert!(view.wants_probe());
+    view.shell_moved("/home/alice", false);
+    assert!(view.wants_probe(), "probe answers keep the probes coming");
+    view.shell_moved("/home/alice", true);
+    assert!(!view.wants_probe(), "OSC 7 takes over");
+
+    view.new_shell();
+    assert!(view.wants_probe(), "a new shell may not report");
+    assert_eq!(
+        view.shell_moved("/home/alice", false).as_deref(),
+        Some("/home/alice"),
+        "and its directory is news"
+    );
+}
+
+#[test]
+fn the_follower_passes_every_report_from_its_host() {
+    let mut follower = DirectoryFollower::default();
     assert!(follower.report("file://web01/home/alice").is_some());
+    assert!(
+        follower.report("file://web01/home/alice").is_some(),
+        "repeats are SftpView::shell_moved's to drop"
+    );
 }
 
 #[test]

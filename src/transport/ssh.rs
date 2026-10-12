@@ -57,7 +57,7 @@ impl SSHTransport {
 
 /// Quote one argument for the remote `/bin/sh -c` (tmux session names may
 /// contain `;` and other metacharacters).
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     if !s.is_empty()
         && s.chars()
             .all(|c| c.is_alphanumeric() || "_-./@+".contains(c))
