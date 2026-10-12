@@ -245,7 +245,7 @@ fn run_with_timeout(
     // Sized up front so a short secret is never left behind by a regrow.
     let mut stdout = Zeroizing::new(Vec::with_capacity(4096));
     if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut *stdout)
+        pipe.read_to_end(&mut stdout)
             .map_err(|err| format!("reading bw output failed: {err}"))?;
     }
     Ok((status, stdout))
