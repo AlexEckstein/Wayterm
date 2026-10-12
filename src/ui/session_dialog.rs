@@ -1,6 +1,6 @@
 //! The session dialog: create or edit a [`SessionConfig`] (doc 06).
 //!
-//! [`config_from_fields`] (in [`model`]) holds all of the mapping and is
+//! [`config_from_fields`] (in `model`) holds all of the mapping and is
 //! display-free; the GTK part only gathers [`DialogFields`]. Choosing a type reveals that
 //! type's group (SSH: tmux; serial: line settings; RDP: domain, resolution,
 //! depth; local: shell and directory; VNC: a note that its password lives

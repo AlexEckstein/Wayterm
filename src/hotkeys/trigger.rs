@@ -44,7 +44,7 @@ pub fn ui_key_to_accel(key: &str) -> Option<String> {
 
 /// `"<Control><Shift>t"` → `"Ctrl+Shift+t"`, the reverse of
 /// [`ui_key_to_accel`]. Chord-preserving rather than string-identical
-/// (modifiers come back in [`MODS`] order). `None` for anything
+/// (modifiers come back in `MODS` order). `None` for anything
 /// [`parse_trigger`] would reject.
 pub fn accel_to_ui_key(accel: &str) -> Option<String> {
     let mut rest = accel;

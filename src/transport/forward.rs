@@ -18,7 +18,7 @@
 //! snapshot stays honest.
 //!
 //! Testability: the accept/copy/shutdown core runs against a
-//! [`ChannelOpener`] closure, so unit tests inject an in-process fake while
+//! `ChannelOpener` closure, so unit tests inject an in-process fake while
 //! [`ForwardEngine::new`] wires the real `SshConnection` path (covered by
 //! `tests/forward_sshd.rs`). `SshConnection` itself stays concrete — no
 //! new generics on any protected seam.

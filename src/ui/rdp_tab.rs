@@ -5,7 +5,7 @@
 //! password through the credential chain, resolve the server certificate
 //! through the `rdp_trust` store table, then spawn. Everything that blocks
 //! (password prompt, trust-store reads, the probe spawn, cert dialogs)
-//! runs on the blocking pool inside [`dial`]; the GTK thread only builds
+//! runs on the blocking pool inside `dial`; the GTK thread only builds
 //! widgets and pumps the runner's events.
 //!
 //! ## Embedding (spike-validated on FreeRDP 3.15 + xrdp + openbox)
@@ -16,19 +16,19 @@
 //! - **Spawn** passes the host XID as `parent_xid` (`/parent-window:`).
 //! - **Maintenance** keeps one x11rb connection on the GTK thread: the host
 //!   tree is snapshotted before OUR spawn, then discovery (~1 s, again ~3 s)
-//!   tracks only the newcomer past that baseline ([`track_newcomer`]). A
+//!   tracks only the newcomer past that baseline (`track_newcomer`). A
 //!   pre-existing child is never ours: GTK keeps at least one of its own
 //!   under the toplevel (measured 0x20000D alongside host 0x20000C — the
 //!   tree never holds "exactly one"), and an orphan from a killed previous
 //!   run may linger. `ConfigureWindow` positions our tracked child at the
-//!   area's surface-relative origin ([`area_origin`] — the host XID is the
+//!   area's surface-relative origin (`area_origin` — the host XID is the
 //!   toplevel window the area shares, not a per-area window) on resize plus
 //!   a 250 ms poll fallback, and X input focus is handed to our child when
 //!   focus sits on the parent (without the handoff there is no keyboard
 //!   under a WM). Configure and focus only the tracked window, and kill
 //!   nothing (teardown signals our own process group via
 //!   [`RdpProcess::terminate`](crate::rdp::RdpProcess::terminate)).
-//! - **Teardown:** [`EngineSlot`] owns the process handle and the runner
+//! - **Teardown:** `EngineSlot` owns the process handle and the runner
 //!   task; page close, retry, or a superseded attempt aborts the runner and
 //!   terminates our own child.
 //!
@@ -54,8 +54,8 @@
 //!
 //! ## FreeRDP version
 //!
-//! The binary is probed once per process ([`cached_probe`]). FreeRDP 2.x is
-//! refused with an error view ([`usable_freerdp`]): the argv speaks
+//! The binary is probed once per process (`cached_probe`). FreeRDP 2.x is
+//! refused with an error view (`usable_freerdp`): the argv speaks
 //! FreeRDP 3 (`rdp::process`). `/from-stdin` was buggy around 3.5–3.17
 //! (fixed in 3.20), so below 3.20 the connecting overlay carries a warning
 //! ([`warn_below`], pure and tested); it disappears at Connected with the

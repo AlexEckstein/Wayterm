@@ -2,7 +2,7 @@
 //! sends commands, and applies the replies from `spawn_local` futures, so
 //! no GTK callback ever awaits.
 //!
-//! [`SftpView`] and the helpers in [`model`] are display-free (the listing,
+//! [`SftpView`] and the helpers in `model` are display-free (the listing,
 //! toolbar rules, `text/uri-list` parsing); [`SftpSidebar`] only renders.
 //! Drops are accepted as `GdkFileList` and as `text/uri-list` through two
 //! drop targets, because gtk4-rs does not bind the multi-type API. The

@@ -15,7 +15,7 @@
 //!   blit is a per-row `to_ne_bytes` copy ([`blit_rows`]). `RGB24` (not
 //!   `ARGB32`) ignores the pad byte outright.
 //! - **Scaled blits need `Extend::Pad`** and a fill of just the picture
-//!   rectangle, or the border pixels fade to black ([`View::paint`]).
+//!   rectangle, or the border pixels fade to black (`View::paint`).
 //! - **Cairo strides** may exceed `width * 4`; always copy row by row.
 //! - **`ImageSurface::data` needs the only reference** to the surface, so the
 //!   cached surface is touched before it is handed to the context, never
@@ -27,7 +27,7 @@
 //!   remote-input controllers; window accelerators still fire first.
 //! - **Weak page refs in tasks:** a task holding the page strongly would keep
 //!   it alive after the tab is closed, and the engine is cancelled only when
-//!   the page's data drops ([`EngineSlot`]).
+//!   the page's data drops (`EngineSlot`).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

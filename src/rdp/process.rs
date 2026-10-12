@@ -299,7 +299,7 @@ pub fn probe_binary() -> Option<(String, String)> {
     parse_version(&text).map(|version| (name, version))
 }
 
-/// Minimal child environment: [`ALLOWED_ENV`] entries copied from our own
+/// Minimal child environment: `ALLOWED_ENV` entries copied from our own
 /// env when present. Everything else is dropped (`env_clear` at spawn).
 pub fn minimal_env() -> Vec<(String, String)> {
     ALLOWED_ENV
