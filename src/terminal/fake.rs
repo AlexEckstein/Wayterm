@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use gtk4::Widget;
+use gtk4::{pango, Widget};
 
 use super::backend::{TerminalBackend, TerminalFeatures};
 

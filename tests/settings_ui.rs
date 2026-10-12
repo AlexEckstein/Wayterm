@@ -9,6 +9,8 @@
 //! exactly the way the GTK layer calls them. No test opens a window or
 //! initializes GTK.
 
+use gtk4::gdk;
+
 use wayterm::hotkeys::{
     ActionContext, ActionRegistry, ConflictPolicy, HotkeyEngine, KeyChord, RebindError,
     DEFAULT_ACTIONS,
@@ -172,27 +174,27 @@ fn capture_round_trips_through_the_accel_parser() {
 
 #[test]
 fn escape_is_the_capture_cancel_key() {
-    assert!(SettingsView::is_cancel_key(gdk4::Key::Escape));
+    assert!(SettingsView::is_cancel_key(gdk::Key::Escape));
     assert!(!SettingsView::is_cancel_key(
-        gdk4::Key::from_name("t").expect("t key")
+        gdk::Key::from_name("t").expect("t key")
     ));
     assert!(!SettingsView::is_cancel_key(
-        gdk4::Key::from_name("Return").expect("Return key")
+        gdk::Key::from_name("Return").expect("Return key")
     ));
 }
 
 #[test]
 fn bare_modifiers_are_not_chords() {
     for key in [
-        gdk4::Key::Shift_L,
-        gdk4::Key::Shift_R,
-        gdk4::Key::Control_L,
-        gdk4::Key::Control_R,
-        gdk4::Key::Alt_L,
-        gdk4::Key::Alt_R,
-        gdk4::Key::Super_L,
-        gdk4::Key::Super_R,
-        gdk4::Key::Caps_Lock,
+        gdk::Key::Shift_L,
+        gdk::Key::Shift_R,
+        gdk::Key::Control_L,
+        gdk::Key::Control_R,
+        gdk::Key::Alt_L,
+        gdk::Key::Alt_R,
+        gdk::Key::Super_L,
+        gdk::Key::Super_R,
+        gdk::Key::Caps_Lock,
     ] {
         assert!(
             SettingsView::is_modifier_only(key),
@@ -200,9 +202,9 @@ fn bare_modifiers_are_not_chords() {
         );
     }
     assert!(!SettingsView::is_modifier_only(
-        gdk4::Key::from_name("t").expect("t key")
+        gdk::Key::from_name("t").expect("t key")
     ));
-    assert!(!SettingsView::is_modifier_only(gdk4::Key::Escape));
+    assert!(!SettingsView::is_modifier_only(gdk::Key::Escape));
 }
 
 // --- Conflict wiring -------------------------------------------------------

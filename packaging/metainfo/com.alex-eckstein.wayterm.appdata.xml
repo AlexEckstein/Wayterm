@@ -10,7 +10,8 @@
       An open source, multi-protocol connection manager and terminal for
       Linux, in the spirit of MobaXterm but built for a desktop that already
       has the tools: saved sessions in a tree, tabbed SSH terminals with an
-      SFTP sidebar, configurable hotkeys, and (planned) RDP and VNC tabs.
+      SFTP sidebar, local shell and serial tabs, embedded RDP and VNC tabs,
+      and configurable hotkeys.
     </p>
   </description>
   <developer id="com.alex-eckstein">

@@ -3,17 +3,19 @@
 An open source, multi-protocol connection manager and terminal for Linux,
 in the spirit of MobaXterm but built for a desktop that already has the
 tools: saved sessions in a tree, tabbed SSH terminals with an SFTP
-sidebar, configurable hotkeys, and (planned) RDP and VNC tabs.
+sidebar, local shell and serial tabs, embedded RDP and VNC tabs, and
+configurable hotkeys.
 
 App id `com.alex-eckstein.wayterm` · [github.com/AlexEckstein/Wayterm](https://github.com/AlexEckstein/Wayterm) · Apache-2.0
 
 ## Status
 
-Phases 1–4 of the [build order](docs/10-build-order.md) are done: session
-management, SSH terminal tabs with host-key verification and the full auth
-chain, the SFTP sidebar, hotkey settings, tab restore, and a tray icon.
-Doc 10 lists what is still to be wired (hotkey accelerators, reconnect)
-and what comes next (local shell and serial, VNC, RDP).
+Phases 1–9 and 11 of the [build order](docs/10-build-order.md) are done:
+session management, SSH terminal tabs with host-key verification and the
+full auth chain, the SFTP sidebar, hotkeys, tab restore and a tray icon,
+local shell and serial tabs, VNC and RDP tabs, tmux persistence,
+import/export and packaging, and jump hosts with local port forwarding.
+Doc 10 lists the known gaps in each phase and what comes next.
 
 ## Build and test
 
@@ -46,7 +48,7 @@ xvfb-run -a cargo test -- --ignored   # tests that need a display
 | SSH, SFTP | russh, russh-sftp | pure Rust; SFTP reuses the terminal's SSH session |
 | Store | SQLite (rusqlite) | sessions, settings, hotkey overrides |
 | Secrets | OS keyring (libsecret) | never in the database |
-| RDP, VNC | xfreerdp + X11 reparenting; libvncclient or vnc-rs | planned (doc 08) |
+| RDP, VNC | xfreerdp 3 + X11 reparenting; vnc-rs | a crash stays in xfreerdp; pure Rust, tokio-native RFB (doc 08) |
 | Tray | StatusNotifierItem via ksni | no GTK3 dependency |
 
 ## Design documents

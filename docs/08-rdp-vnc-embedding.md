@@ -12,8 +12,9 @@ GTK 4 dropped `GtkSocket`/`GtkPlug`, so embedding is manual:
 
 1. realize a container widget and take its X11 window id
    (`gdk4_x11::X11Surface::xid`);
-2. spawn `xfreerdp /parent-window-id:<xid> /v:host:port /w: /h: /bpp:`
-   (defaults 1024×768, 32 bpp);
+2. spawn `xfreerdp /parent-window:<xid> /v:host:port /w: /h: /bpp:`
+   (defaults 1024×768, 32 bpp; the flag is `/parent-window:`, not
+   `/parent-window-id:`, as verified on FreeRDP 3.15);
 3. find xfreerdp's child window with x11rb `query_tree` and resize it with
    `configure_window` when the container resizes.
 

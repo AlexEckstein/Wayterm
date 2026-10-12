@@ -1,5 +1,5 @@
 //! Display-free state tests for the RDP tab (doc 08 §RDP): the pure
-//! mapping the GTK handlers call, and the argv contract tie-in with P7-1.
+//! mapping the GTK handlers call, and its tie-in with the `rdp::process` argv contract.
 //! No GTK widgets are built here. The live rig hook at the bottom is
 //! `#[ignore]`-gated on `RDP_TEST_*`.
 
@@ -123,9 +123,9 @@ fn changed_cert_text_names_both_fingerprints() {
 }
 
 #[test]
-fn spec_ties_into_the_p7_1_argv_contract() {
-    // The mapping end to P7-1's pinned argv: flag names and order come from
-    // `build_args` (notably `/parent-window:`, never `-id` suffixed).
+fn spec_ties_into_the_argv_contract() {
+    // The mapping end to `build_args`' pinned argv: flag names and order come from
+    // there (notably `/parent-window:`, never `-id` suffixed).
     let spec = spec_from_session(&session(), None);
     let args = build_args(&spec, Some(0x200004));
     assert_eq!(

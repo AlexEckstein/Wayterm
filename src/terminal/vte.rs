@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk4::glib;
-use gtk4::Widget;
+use gtk4::{pango, Widget};
 use tokio::sync::mpsc;
 use vte4::prelude::*;
 use vte4::Terminal as VteTerminal;

@@ -15,8 +15,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc as std_mpsc;
 
-use gtk4::glib;
 use gtk4::prelude::*;
+use gtk4::{gio, glib};
 use ksni::TrayMethods as _;
 use tokio::sync::mpsc;
 
@@ -28,7 +28,7 @@ pub const MINIMIZE_TO_TRAY_KEY: &str = "minimize_to_tray";
 pub const NOTIFICATION_TITLE: &str = "Wayterm";
 /// The SNI id: unique and stable.
 pub const TRAY_ID: &str = crate::app::APP_ID;
-/// Always present in hicolor; a Wayterm icon is packaging work (Phase 9).
+/// A stock icon, always present in hicolor.
 pub const TRAY_ICON_NAME: &str = "utilities-terminal";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

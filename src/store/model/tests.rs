@@ -403,8 +403,8 @@ fn pre_per_type_field_json_still_deserializes() {
 
 #[test]
 fn pre_per_type_field_json_round_trips_with_per_type_fields_preserved() {
-    // The full pre-P1.5 wire format, spelled out field-by-field: the dialog
-    // work adds no column, so this payload must keep its exact spelling and
+    // The wire format from before per-type fields, spelled out
+    // field-by-field: per-type fields add no column, so this payload must keep its exact spelling and
     // round-trip through the struct unchanged.
     let json = r#"{
         "id": 11,

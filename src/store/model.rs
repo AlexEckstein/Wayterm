@@ -47,7 +47,7 @@ pub enum HostKeyPolicy {
     Off,
 }
 
-/// Port-forward direction (doc 11). Only `Local` is planned for v1; all
+/// Port-forward direction (doc 11). Only `Local` is implemented in v1; all
 /// three are in the wire format so the JSON stays stable.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

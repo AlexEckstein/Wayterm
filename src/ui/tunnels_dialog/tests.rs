@@ -1,6 +1,6 @@
 //! Display-free tests: the store roundtrip through drafts, the validation
 //! the dialogs share, the status summaries the rows render, and the fake
-//! source the integrator's bridge replaces.
+//! source that stands in for [`super::status_source::EngineStatusBridge`].
 
 use super::model::{
     apply_status, draft_from_rule, drafts_from_rules, kind_from_index, kind_index_for,
@@ -275,7 +275,7 @@ fn fake_source_broadcasts_to_subscribers() {
     assert_eq!(rx.try_recv(), Ok(update));
 }
 
-// --- EngineStatusBridge (the wave integrator's engine→dialog adapter) ------
+// --- EngineStatusBridge (engine→dialog adapter) ---------------------------
 
 /// An engine whose channel opens always fail: no sockets, no sshd, just
 /// the event stream the bridge consumes.

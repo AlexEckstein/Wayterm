@@ -23,15 +23,11 @@ tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-gdk4 = "0.11.5"
-gio = "0.22.10"
-pango = "0.22.9"
 russh = "0.64"
 async-trait = "0.1"
 tokio-util = "0.7"
 zeroize = "1"
 sha2 = "0.11"
-bytes = "1"
 thiserror = "2"
 russh-sftp = "3.0"
 ksni = "0.3"
@@ -58,7 +54,8 @@ extended-description = """\
 An open source, multi-protocol connection manager and terminal for Linux, \
 in the spirit of MobaXterm but built for a desktop that already has the \
 tools: saved sessions in a tree, tabbed SSH terminals with an SFTP sidebar, \
-configurable hotkeys, and (planned) RDP and VNC tabs."""
+local shell and serial tabs, embedded RDP and VNC tabs, and configurable \
+hotkeys."""
 assets = [
     ["target/release/wayterm", "usr/bin/", "755"],
     ["packaging/desktop/com.alex-eckstein.wayterm.desktop", "usr/share/applications/", "644"],

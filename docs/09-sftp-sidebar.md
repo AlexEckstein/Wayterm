@@ -2,7 +2,8 @@
 
 A remote file browser beside each SSH terminal: navigate, upload,
 download, delete, rename, mkdir, and drag files in. GTK half in
-`src/ui/sftp_sidebar.rs`, tokio half in `src/sftp/`.
+`src/ui/sftp_sidebar.rs` (its display-free model in
+`src/ui/sftp_sidebar/model.rs`), tokio half in `src/sftp/`.
 
 ## Layout
 

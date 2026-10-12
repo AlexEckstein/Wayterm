@@ -560,10 +560,9 @@ fn every_action_targets_its_window_action() {
     assert_eq!(action_name("toggle_sftp"), "win.toggle_sftp");
 }
 
-/// `toggle_sftp` used to be installed by hand with this exact accel; the
-/// engine must produce the same one so the dedupe changes nothing.
+/// The engine must give `toggle_sftp` its documented default accel.
 #[test]
-fn toggle_sftp_keeps_its_former_manual_accel() {
+fn toggle_sftp_gets_its_default_accel() {
     let engine = engine();
     assert_eq!(
         live_accel(engine.action("toggle_sftp").unwrap()).as_deref(),

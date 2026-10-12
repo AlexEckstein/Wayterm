@@ -12,7 +12,7 @@
 //! key-name table GTK's accelerator parser uses, which is what makes a
 //! binding dead in the first place.
 
-use gdk4::{Key, ModifierType};
+use gtk4::gdk::{Key, ModifierType};
 
 use super::*;
 
