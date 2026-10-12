@@ -40,8 +40,10 @@ pub use model::*;
 // GTK layer
 // ---------------------------------------------------------------------------
 
-const VNC_KEYRING_NOTE: &str = "The VNC password is stored in your OS keyring on first \
-                                connect — never in Wayterm's database.";
+const VNC_KEYRING_NOTE: &str = "The VNC password is looked up in your OS keyring \
+                                (saved sessions only) — never stored in Wayterm's database. \
+                                Save it with your keyring tools (or via KeePassXC's Secret \
+                                Service); the connect prompt stores nothing.";
 const TMUX_LABEL: &str = "Persist via tmux — survive reconnects; sessions on the remote host \
                           are named wayterm-<session name>";
 
