@@ -180,7 +180,7 @@ fn map_engine_state(state: &EngineState) -> ForwardState {
 
 impl EngineStatusBridge {
     /// Wrap a live engine handle. The caller spawns the drain task that
-    /// feeds [`Self::handle_event`]; see `ui::tab::finish_connect`.
+    /// feeds [`Self::handle_event`]; see `ui::tab::arm_forward_engine`.
     pub fn new(engine: ForwardEngine) -> Self {
         Self {
             engine,
