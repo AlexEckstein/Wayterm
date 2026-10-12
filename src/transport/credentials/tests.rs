@@ -431,3 +431,115 @@ fn keyring_debug_never_shows_stored_secrets() {
     assert!(debug.contains("keyring") && debug.contains("42"));
     assert!(!debug.contains("test-secret"));
 }
+
+// ---------------------------------------------------------------------------
+// BitwardenSource, against the fake bw under tests/fixtures/ (no real CLI)
+// ---------------------------------------------------------------------------
+
+fn fake_bw() -> String {
+    format!("{}/tests/fixtures/fake-bw", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn bitwarden(session_name: &str, key: Option<&str>) -> BitwardenSource {
+    BitwardenSource::with_session_key(
+        &fake_bw(),
+        session_name,
+        key.map(|k| Zeroizing::new(k.to_string())),
+    )
+}
+
+#[test]
+fn bitwarden_item_is_prefixed_session_name() {
+    assert_eq!(bitwarden_item_name("prod db"), "wayterm/prod db");
+}
+
+#[test]
+fn bitwarden_lookup_returns_trimmed_stdout() {
+    let secret = bitwarden("ok", None).lookup("1", "password").unwrap();
+    assert_eq!(&*secret, b"test-secret-XYZ");
+}
+
+#[test]
+fn bitwarden_passes_the_session_key_through_the_environment() {
+    // The fixture exits non-zero if the key shows up in argv.
+    let with_key = bitwarden("needs-session", Some("fake-session-key"));
+    assert_eq!(
+        &*with_key.lookup("1", "password").unwrap(),
+        b"test-secret-XYZ"
+    );
+    assert!(bitwarden("needs-session", None)
+        .lookup("1", "password")
+        .is_none());
+}
+
+#[test]
+fn bitwarden_missing_binary_is_a_miss() {
+    let source = BitwardenSource::with_session_key(
+        "/nonexistent/wayterm-test/bw",
+        "ok",
+        Some(Zeroizing::new("fake-session-key".into())),
+    );
+    assert!(source.lookup("1", "password").is_none());
+}
+
+#[test]
+fn bitwarden_non_zero_exit_and_empty_output_are_misses() {
+    assert!(bitwarden("missing-item", None)
+        .lookup("1", "password")
+        .is_none());
+    assert!(bitwarden("empty", None).lookup("1", "password").is_none());
+}
+
+#[test]
+fn bitwarden_timeout_kills_the_child_and_misses() {
+    let source = bitwarden("slow", None).with_timeout(Duration::from_millis(300));
+    let started = Instant::now();
+    assert!(source.lookup("1", "password").is_none());
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "child was killed"
+    );
+}
+
+#[test]
+fn bitwarden_is_read_only() {
+    let secret = Zeroizing::new(b"x".to_vec());
+    assert!(matches!(
+        bitwarden("ok", None).store("1", "ok", "password", &secret),
+        Err(CredentialError::Unavailable(_))
+    ));
+}
+
+#[test]
+fn bitwarden_status_probe_never_gets_the_session_key() {
+    // `bitwarden_status` strips BW_SESSION, so the fixture's guard
+    // (exit 91 when it is set) never trips even if the parent has it.
+    assert_eq!(
+        bitwarden_status(&fake_bw()),
+        BitwardenStatus::Detected {
+            state: Some("locked".into())
+        }
+    );
+    assert!(matches!(
+        bitwarden_status("/nonexistent/wayterm-test/bw"),
+        BitwardenStatus::NotDetected(_)
+    ));
+}
+
+#[test]
+fn bitwarden_status_classification() {
+    assert_eq!(
+        classify_bitwarden_status(true, br#"{"status":"unauthenticated"}"#),
+        BitwardenStatus::Detected {
+            state: Some("unauthenticated".into())
+        }
+    );
+    assert_eq!(
+        classify_bitwarden_status(true, b"not json"),
+        BitwardenStatus::Detected { state: None }
+    );
+    assert!(matches!(
+        classify_bitwarden_status(false, b""),
+        BitwardenStatus::NotDetected(_)
+    ));
+}

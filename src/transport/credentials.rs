@@ -1,11 +1,14 @@
-//! Credential lookup (doc 11 §CredentialManager): keyring → prompt →
-//! store-if-checked. Secrets are `Zeroizing<Vec<u8>>` and are never logged,
-//! `Debug`-printed, or written to SQLite.
+//! Credential lookup (doc 11 §CredentialManager): keyring → Bitwarden (when
+//! enabled) → prompt → store-if-checked. Secrets are `Zeroizing<Vec<u8>>`
+//! and are never logged, `Debug`-printed, or written to SQLite.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
+use std::io::Read;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
@@ -294,6 +297,181 @@ impl CredentialSource for KeyringSource {
     fn source_name(&self) -> &str {
         "keyring"
     }
+}
+
+/// How long one `bw` invocation may run before it is killed.
+pub const BITWARDEN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The Bitwarden item a session resolves: `wayterm/<session_name>`.
+pub fn bitwarden_item_name(session_name: &str) -> String {
+    format!("wayterm/{session_name}")
+}
+
+/// Read-only source backed by the Bitwarden CLI (doc 11 §Credential
+/// sources): one `bw get password` per lookup, nothing cached. The vault
+/// session key comes from `BW_SESSION` at construction and reaches the
+/// child through its environment only — argv is world-readable in
+/// `/proc/<pid>/cmdline`.
+pub struct BitwardenSource {
+    bin: String,
+    item: String,
+    session_key: Option<Zeroizing<String>>,
+    timeout: Duration,
+}
+
+impl BitwardenSource {
+    /// A source for `session_name`, running `bin`, with the user's
+    /// `BW_SESSION` (if any).
+    pub fn new(bin: &str, session_name: &str) -> Self {
+        let session_key = std::env::var("BW_SESSION").ok().map(Zeroizing::new);
+        Self::with_session_key(bin, session_name, session_key)
+    }
+
+    /// As [`Self::new`], with the session key given rather than read from
+    /// the environment.
+    pub fn with_session_key(
+        bin: &str,
+        session_name: &str,
+        session_key: Option<Zeroizing<String>>,
+    ) -> Self {
+        Self {
+            bin: bin.to_string(),
+            item: bitwarden_item_name(session_name),
+            session_key,
+            timeout: BITWARDEN_TIMEOUT,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+}
+
+impl CredentialSource for BitwardenSource {
+    /// The item's password answers whatever secret the session's method
+    /// asks for (a session has one method, so one secret).
+    fn lookup(&self, _session_id: &str, _secret_type: &str) -> Option<Zeroizing<Vec<u8>>> {
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(["get", "password", "--raw", &self.item, "--nointeraction"]);
+        match &self.session_key {
+            Some(key) => cmd.env("BW_SESSION", key.as_str()),
+            None => cmd.env_remove("BW_SESSION"),
+        };
+        let (status, stdout) = match run_with_timeout(cmd, self.timeout) {
+            Ok(done) => done,
+            Err(err) => {
+                eprintln!("Wayterm: bitwarden lookup for '{}': {err}", self.item);
+                return None;
+            }
+        };
+        if !status.success() {
+            eprintln!(
+                "Wayterm: bitwarden lookup for '{}' failed ({status})",
+                self.item
+            );
+            return None;
+        }
+        let text = Zeroizing::new(String::from_utf8_lossy(&stdout).into_owned());
+        drop(stdout);
+        let secret = text.trim();
+        if secret.is_empty() {
+            eprintln!("Wayterm: bitwarden item '{}' has no password", self.item);
+            return None;
+        }
+        Some(Zeroizing::new(secret.as_bytes().to_vec()))
+    }
+
+    fn store(
+        &self,
+        _session_id: &str,
+        _session_name: &str,
+        _secret_type: &str,
+        _secret: &Zeroizing<Vec<u8>>,
+    ) -> Result<(), CredentialError> {
+        Err(CredentialError::Unavailable(
+            "bitwarden is read-only".into(),
+        ))
+    }
+
+    fn source_name(&self) -> &str {
+        "bitwarden"
+    }
+}
+
+/// What `bw status` says, reduced to what the Settings page shows. The
+/// probe runs without `BW_SESSION`, so it never holds a secret, and only
+/// the `status` field of its output is kept.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BitwardenStatus {
+    /// The CLI ran; `state` is its `status` field (`unauthenticated`,
+    /// `locked`, `unlocked`) when it printed one.
+    Detected { state: Option<String> },
+    /// The CLI is missing, failed, or timed out; the reason is one line.
+    NotDetected(String),
+}
+
+/// Run `<bin> status --nointeraction` and classify the result.
+pub fn bitwarden_status(bin: &str) -> BitwardenStatus {
+    let mut cmd = Command::new(bin);
+    cmd.args(["status", "--nointeraction"])
+        .env_remove("BW_SESSION");
+    match run_with_timeout(cmd, BITWARDEN_TIMEOUT) {
+        Ok((status, stdout)) => classify_bitwarden_status(status.success(), &stdout),
+        Err(err) => BitwardenStatus::NotDetected(err),
+    }
+}
+
+/// Classify a finished `bw status` run.
+pub fn classify_bitwarden_status(success: bool, stdout: &[u8]) -> BitwardenStatus {
+    if !success {
+        return BitwardenStatus::NotDetected("bw status failed".into());
+    }
+    let state = serde_json::from_slice::<serde_json::Value>(stdout)
+        .ok()
+        .and_then(|json| json.get("status")?.as_str().map(str::to_string));
+    BitwardenStatus::Detected { state }
+}
+
+/// Spawn `cmd` with stdout captured and wait up to `timeout`, polling;
+/// a child still running then is killed. `Err` is a one-line reason with
+/// no output in it.
+fn run_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+) -> Result<(ExitStatus, Zeroizing<Vec<u8>>), String> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().map_err(|err| format!("cannot run bw: {err}"))?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                kill(&mut child);
+                return Err(format!("bw timed out after {}s", timeout.as_secs_f32()));
+            }
+            Err(err) => {
+                kill(&mut child);
+                return Err(format!("waiting for bw failed: {err}"));
+            }
+        }
+    };
+    // Sized up front so a short secret is never left behind by a regrow.
+    let mut stdout = Zeroizing::new(Vec::with_capacity(4096));
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_end(&mut stdout)
+            .map_err(|err| format!("reading bw output failed: {err}"))?;
+    }
+    Ok((status, stdout))
+}
+
+fn kill(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Sources in priority order; the first hit wins.

@@ -243,14 +243,41 @@ lacks `goto_tab_1` … `goto_tab_9`; a test pins exactly those differences.
 
 ## Credential Storage
 
-Secrets go in the OS keyring under libsecret schema
-`com.alex-eckstein.wayterm.Session`, with attributes `session_id`,
-`session_name`, and `secret_type` (`password`, `key_passphrase`,
-`vnc_password`, `rdp_password`). `auth_method` only records which method to
-use. Export/import never includes secrets. The application id
-`com.alex-eckstein.wayterm` is baked into keyring schemas and XDG paths —
-changing it orphans stored credentials. (The keyring source is not wired
-yet; lookups fall through to the prompt — doc 11 §CredentialManager.)
+Secrets never touch SQLite: `auth_method` only records which method to
+use, and export/import never includes secrets. At connect time the
+credential chain (doc 11 §CredentialManager) asks, in order:
+
+1. **OS keyring** — libsecret schema `com.alex-eckstein.wayterm.Session`,
+   attributes `session_id`, `session_name`, and `secret_type`
+   (`password`, `key_passphrase`, `vnc_password`, `rdp_password`). The
+   application id `com.alex-eckstein.wayterm` is baked into the schema and
+   XDG paths — changing it orphans stored credentials.
+2. **Bitwarden** (only when enabled) — the read-only `bw` CLI source, item
+   `wayterm/<session name>` (doc 11 §Credential sources).
+3. **Prompt** — the challenge dialog; always last.
+
+Any `org.freedesktop.secrets` provider serves the keyring step. KeePassXC
+users enable its Secret Service integration and Wayterm's entries land in
+their KeePassXC database — Wayterm has no KeePass-specific code.
+
+**Store on save.** For an SSH session on the password method, the session
+dialog takes a password and offers **Save password to keyring** (disabled
+until a password is typed). On OK the session is saved first, then the
+password goes to the keyring under the saved session's id as
+`secret_type = password`; the row never holds it. A refused store is shown
+inline in the dialog ("Could not store password: …") and the session stays
+saved. RDP and VNC have no checkbox.
+
+**Delete with the session.** Deleting a session also deletes its keyring
+entries, one per secret type. A keyring failure is logged and never
+blocks the delete.
+
+**Settings.** The Settings window's Credentials page writes two rows, both
+unseeded: `bitwarden.enabled` and `bitwarden.bin` (the CLI path; blank or
+missing means `bw`). Unlike the boolean rows of §Default Data,
+`bitwarden.enabled` is **off** unless explicitly `1`/`true`/`yes`/`on`:
+running an external CLI on every connect is opt-in. The page also shows
+whether the keyring and the CLI answer.
 
 ## Import and export (Phase 9)
 
