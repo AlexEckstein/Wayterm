@@ -1,0 +1,41 @@
+#!/bin/sh
+# Fake Bitwarden CLI for the BitwardenSource tests. Fake secrets only.
+# Behavior is keyed by the item name (`bw get password --raw <item>
+# --nointeraction`) or by the `status` subcommand.
+
+# A session key must never appear in argv.
+if [ -n "$BW_SESSION" ]; then
+    for arg in "$@"; do
+        [ "$arg" = "$BW_SESSION" ] && exit 90
+    done
+fi
+
+if [ "$1" = "status" ]; then
+    # The status probe must never receive the session key.
+    [ -n "$BW_SESSION" ] && exit 91
+    [ "$2" = "--nointeraction" ] || exit 64
+    echo '{"serverUrl":null,"lastSync":null,"userEmail":"user@example.invalid","status":"locked"}'
+    exit 0
+fi
+
+[ "$1" = "get" ] && [ "$2" = "password" ] && [ "$3" = "--raw" ] \
+    && [ "$5" = "--nointeraction" ] && [ $# -eq 5 ] || exit 64
+
+case "$4" in
+    wayterm/ok)
+        printf 'test-secret-XYZ\n'
+        ;;
+    wayterm/needs-session)
+        [ "$BW_SESSION" = "fake-session-key" ] || { echo "Vault is locked." >&2; exit 1; }
+        printf 'test-secret-XYZ\n'
+        ;;
+    wayterm/empty)
+        ;;
+    wayterm/slow)
+        exec sleep 30
+        ;;
+    *)
+        echo "Not found." >&2
+        exit 1
+        ;;
+esac
