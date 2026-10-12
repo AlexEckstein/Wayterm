@@ -82,7 +82,7 @@ use crate::transport::credentials::CredentialManager;
 use crate::transport::types::TransportState;
 use crate::ui::auth_dialog::run_on_gtk_main_thread;
 use crate::ui::tab::{
-    credential_manager, current_gen, publish_status, set_terminal_area, show_error_view,
+    credential_manager, current_gen, page_store, publish_status, set_terminal_area, show_error_view,
 };
 use crate::ui::widgets::{centered_label, data_or_default, set_data, set_margins};
 
@@ -527,7 +527,8 @@ fn wait_for_xid(
 
 /// Run the dial on the blocking pool and attach its result.
 fn launch_dial(attempt: &Attempt, parent_xid: Option<u32>, embed: Option<Embed>) {
-    let creds = credential_manager(&attempt.session.name);
+    let store = attempt.page().as_ref().and_then(page_store);
+    let creds = credential_manager(&attempt.session.name, store.as_deref());
     let session_id = attempt.session.id.to_string();
     let base = spec_from_session(&attempt.session, None);
     let task = tokio::task::spawn_blocking(move || dial(base, &session_id, parent_xid, &creds));

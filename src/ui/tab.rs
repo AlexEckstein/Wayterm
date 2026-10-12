@@ -37,7 +37,9 @@ use crate::store::model::{AuthMethod, ForwardRule, HostKeyPolicy, SessionConfig,
 use crate::store::SessionStore;
 use crate::terminal::{create_terminal, TerminalBackend};
 use crate::transport::connection::{self, SshConnection};
-use crate::transport::credentials::{CredentialManager, KeyringSource, PromptSource};
+use crate::transport::credentials::{
+    BitwardenSource, CredentialManager, CredentialSource, KeyringSource, PromptSource,
+};
 use crate::transport::forward::{ForwardEngine, ForwardEvent};
 use crate::transport::hostkey::HostKeyVerifier;
 use crate::transport::jump::{self, HopInputs};
@@ -50,6 +52,7 @@ use crate::ui::hostkey_dialog;
 use crate::ui::main_window::{route_status, SUPERVISOR_KEY};
 use crate::ui::rdp_tab;
 use crate::ui::session_ended::{self, EndedChoice};
+use crate::ui::settings::credentials::CredentialSettings;
 use crate::ui::sftp_sidebar::{self, supports_sftp, SftpSidebar};
 use crate::ui::tab_label;
 use crate::ui::tab_resilience;
@@ -256,7 +259,8 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         .unwrap_or(HostKeyPolicy::Strict);
     let verifier = HostKeyVerifier::new(policy, hostkey_dialog::host_key_prompt(), None);
     let responder = auth_dialog::challenge_responder(session.name.clone());
-    let creds = credential_manager(&session.name);
+    let store = page_store(page);
+    let creds = credential_manager(&session.name, store.as_deref());
     let method = transport_auth_method(session);
     let params = ConnectParams {
         host: host.clone(),
@@ -283,7 +287,7 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         let jump_verifier =
             HostKeyVerifier::new(jump_policy, hostkey_dialog::host_key_prompt(), None);
         let jump_responder = auth_dialog::challenge_responder(jump_cfg.name.clone());
-        let jump_creds = credential_manager(&jump_cfg.name);
+        let jump_creds = credential_manager(&jump_cfg.name, store.as_deref());
         // Plain data: the blocking pool owns this copy (`Rc` is not `Send`).
         let target: SessionConfig = (**session).clone();
         tokio::task::spawn_blocking(move || {
@@ -348,8 +352,10 @@ fn uses_jump_dial(session: &SessionConfig) -> bool {
     session.session_type == SessionType::SSH && session.jump_session_id.is_some()
 }
 
-/// The page's store, kept by [`SessionTab::open`] for jump resolution.
-fn page_store(page: &gtk4::Widget) -> Option<Rc<SessionStore>> {
+/// The page's store, kept by [`SessionTab::open`] for jump resolution and
+/// the credential settings.
+// used by ui::vnc_tab and ui::rdp_tab
+pub(crate) fn page_store(page: &gtk4::Widget) -> Option<Rc<SessionStore>> {
     data(page, STORE_KEY)
 }
 
@@ -813,11 +819,57 @@ fn transport_auth_method(session: &SessionConfig) -> connection::AuthMethod {
     }
 }
 
-/// Keyring first, then a one-field challenge dialog (doc 11).
-// used by ui::vnc_tab and ui::rdp_tab
-pub(crate) fn credential_manager(session_name: &str) -> CredentialManager {
+/// What the prompt says when the keyring cannot be reached.
+const KEYRING_UNAVAILABLE_HINT: &str = "Keyring unavailable — prompting for credentials.";
+
+/// Keyring first, then Bitwarden when enabled, then a one-field challenge
+/// dialog (doc 11 §CredentialManager). The settings come from `store`;
+/// without one (a page opened with no store) Bitwarden stays off.
+// used by ui::vnc_tab, ui::rdp_tab and ui::session_tree
+pub(crate) fn credential_manager(
+    session_name: &str,
+    store: Option<&SessionStore>,
+) -> CredentialManager {
+    let settings = store.map(CredentialSettings::load).unwrap_or_default();
+    // BRIDGE(K1): connect KeyringSource::available() to this hint.
+    let keyring_unreachable = false;
+    let prompt = prompt_source(session_name, prompt_instructions(keyring_unreachable));
+    CredentialManager::new(credential_sources(
+        &settings,
+        session_name,
+        Box::new(KeyringSource),
+        Box::new(prompt),
+    ))
+}
+
+/// The prompt's instructions line: the keyring hint, or nothing.
+fn prompt_instructions(keyring_unreachable: bool) -> Option<&'static str> {
+    keyring_unreachable.then_some(KEYRING_UNAVAILABLE_HINT)
+}
+
+/// The chain in priority order: keyring, Bitwarden when enabled, and the
+/// prompt always last.
+fn credential_sources(
+    settings: &CredentialSettings,
+    session_name: &str,
+    keyring: Box<dyn CredentialSource>,
+    prompt: Box<dyn CredentialSource>,
+) -> Vec<Box<dyn CredentialSource>> {
+    let mut sources = vec![keyring];
+    if settings.bitwarden_enabled {
+        sources.push(Box::new(BitwardenSource::new(
+            &settings.bitwarden_bin,
+            session_name,
+        )));
+    }
+    sources.push(prompt);
+    sources
+}
+
+/// The challenge dialog with one masked field.
+fn prompt_source(session_name: &str, instructions: Option<&'static str>) -> PromptSource {
     let name = session_name.to_string();
-    let prompt = PromptSource::new(Arc::new(move |_session_id, secret_type| {
+    PromptSource::new(Arc::new(move |_session_id, secret_type| {
         let label = match secret_type {
             "key_passphrase" => "Passphrase: ",
             _ => "Password: ",
@@ -828,13 +880,58 @@ pub(crate) fn credential_manager(session_name: &str) -> CredentialManager {
         }];
         let name = name.clone();
         auth_dialog::run_on_gtk_main_thread(move || {
-            auth_dialog::run_challenges(&name, None, &prompts)
+            auth_dialog::run_challenges(&name, instructions, &prompts)
         })
         .flatten()
         .and_then(|answers| answers.into_iter().next())
         .map(|answer| Zeroizing::new(answer.into_bytes()))
-    }));
-    CredentialManager::new(vec![Box::new(KeyringSource), Box::new(prompt)])
+    }))
+}
+
+#[cfg(test)]
+mod credential_chain_tests {
+    use super::*;
+
+    fn names(settings: &CredentialSettings) -> Vec<String> {
+        let prompt = PromptSource::new(Arc::new(|_, _| None));
+        credential_sources(settings, "prod", Box::new(KeyringSource), Box::new(prompt))
+            .iter()
+            .map(|source| source.source_name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn bitwarden_sits_between_keyring_and_prompt_when_enabled() {
+        let on = CredentialSettings {
+            bitwarden_enabled: true,
+            ..CredentialSettings::default()
+        };
+        assert_eq!(names(&on), ["keyring", "bitwarden", "prompt"]);
+    }
+
+    #[test]
+    fn bitwarden_is_absent_when_disabled() {
+        assert_eq!(names(&CredentialSettings::default()), ["keyring", "prompt"]);
+    }
+
+    #[test]
+    fn the_manager_reads_the_store_and_ends_with_the_prompt() {
+        let store = SessionStore::in_memory().unwrap();
+        let debug = |mgr: CredentialManager| format!("{mgr:?}");
+        assert!(
+            debug(credential_manager("prod", Some(&store))).contains(r#"["keyring", "prompt"]"#)
+        );
+        crate::ui::settings::credentials::save_enabled(&store, true).unwrap();
+        assert!(debug(credential_manager("prod", Some(&store)))
+            .contains(r#"["keyring", "bitwarden", "prompt"]"#));
+        assert!(debug(credential_manager("prod", None)).contains(r#"["keyring", "prompt"]"#));
+    }
+
+    #[test]
+    fn the_hint_shows_only_when_the_keyring_is_unreachable() {
+        assert_eq!(prompt_instructions(false), None);
+        assert_eq!(prompt_instructions(true), Some(KEYRING_UNAVAILABLE_HINT));
+    }
 }
 
 // ---------------------------------------------------------------------------
