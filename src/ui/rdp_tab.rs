@@ -84,7 +84,7 @@ use crate::ui::auth_dialog::run_on_gtk_main_thread;
 use crate::ui::tab::{
     credential_manager, current_gen, publish_status, set_terminal_area, show_error_view,
 };
-use crate::ui::widgets::{centered_label, data, set_data, set_margins};
+use crate::ui::widgets::{centered_label, data_or_default, set_data, set_margins};
 
 mod preflight;
 mod x11;
@@ -166,11 +166,7 @@ impl Attempt {
 }
 
 fn rdp_gen_slot(page: &gtk4::Widget) -> Rc<Cell<u64>> {
-    data(page, RDP_GEN_KEY).unwrap_or_else(|| {
-        let slot = Rc::new(Cell::new(0));
-        set_data(page, RDP_GEN_KEY, slot.clone());
-        slot
-    })
+    data_or_default(page, RDP_GEN_KEY)
 }
 
 fn rdp_gen_value(page: &gtk4::Widget) -> u64 {

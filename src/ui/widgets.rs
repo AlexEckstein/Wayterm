@@ -24,6 +24,19 @@ pub fn set_data<T: 'static>(widget: &impl IsA<glib::Object>, key: &str, value: T
     // SAFETY: see `data`.
     unsafe { widget.set_data(key, value) }
 }
+/// The value under `key`, first storing `T::default()` if there is none.
+/// Meant for shared handles (`Rc<Cell<_>>`, `Rc<RefCell<_>>`), where the
+/// returned clone and the stored value are the same slot.
+pub fn data_or_default<T: Clone + Default + 'static>(
+    widget: &impl IsA<glib::Object>,
+    key: &str,
+) -> T {
+    data(widget, key).unwrap_or_else(|| {
+        let value = T::default();
+        set_data(widget, key, value.clone());
+        value
+    })
+}
 
 pub fn set_margins(widget: &impl IsA<gtk4::Widget>, margin: i32) {
     widget.set_margin_top(margin);
@@ -41,6 +54,26 @@ pub fn centered_label(text: &str) -> gtk4::Label {
     label.set_halign(gtk4::Align::Center);
     label.set_justify(gtk4::Justification::Center);
     label
+}
+
+/// A left-aligned label that wraps at word or character boundaries.
+pub fn wrapped_label(text: &str) -> gtk4::Label {
+    gtk4::Label::builder()
+        .label(text)
+        .wrap(true)
+        .wrap_mode(gtk4::pango::WrapMode::WordChar)
+        .xalign(0.0)
+        .build()
+}
+
+/// `buttons` in a right-aligned row, in the given order.
+pub fn button_row(buttons: &[&gtk4::Button]) -> gtk4::Box {
+    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+    row.set_halign(gtk4::Align::End);
+    for button in buttons {
+        row.append(*button);
+    }
+    row
 }
 
 /// A modal window built by the caller: buttons write their answer into
@@ -102,12 +135,8 @@ pub fn ok_cancel_row<T: 'static>(
 ) -> gtk4::Box {
     let ok = modal.button("OK", ok);
     let cancel = modal.button("Cancel", || None);
-    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    row.set_halign(gtk4::Align::End);
-    row.append(&cancel);
-    row.append(&ok);
     modal.window.set_default_widget(Some(&ok));
-    row
+    button_row(&[&cancel, &ok])
 }
 
 /// Ask for one line of text. Enter confirms, Escape cancels.

@@ -56,7 +56,7 @@ use crate::ui::tab_resilience;
 use crate::ui::tray;
 use crate::ui::tunnels_dialog::{EngineStatusBridge, ForwardStatusSource};
 use crate::ui::vnc_tab;
-use crate::ui::widgets::{centered_label, data, set_data, set_margins, window_of};
+use crate::ui::widgets::{centered_label, data, data_or_default, set_data, set_margins, window_of};
 
 /// The session id on a tab's page (read back by tab persistence).
 pub const SESSION_ID_KEY: &str = "wayterm-session-tab-id";
@@ -985,11 +985,7 @@ fn publish_page_state(page: &gtk4::Widget, state: TransportState) {
 }
 
 fn terminal_slot(page: &gtk4::Widget) -> TerminalSlot {
-    data(page, TERM_TAB_KEY).unwrap_or_else(|| {
-        let slot = TerminalSlot::default();
-        set_data(page, TERM_TAB_KEY, slot.clone());
-        slot
-    })
+    data_or_default(page, TERM_TAB_KEY)
 }
 
 /// Tear down the page's terminal, if any, in the background.
@@ -1023,27 +1019,15 @@ fn settle_redial(page: &gtk4::Widget, result: Result<(), TransportError>) {
 }
 
 fn redial_slot(page: &gtk4::Widget) -> RedialSlot {
-    data(page, REDIAL_KEY).unwrap_or_else(|| {
-        let slot = RedialSlot::default();
-        set_data(page, REDIAL_KEY, slot.clone());
-        slot
-    })
+    data_or_default(page, REDIAL_KEY)
 }
 
 fn sidebar_attached(page: &gtk4::Widget) -> Rc<Cell<bool>> {
-    data(page, SIDEBAR_ATTACHED_KEY).unwrap_or_else(|| {
-        let flag = Rc::new(Cell::new(false));
-        set_data(page, SIDEBAR_ATTACHED_KEY, flag.clone());
-        flag
-    })
+    data_or_default(page, SIDEBAR_ATTACHED_KEY)
 }
 
 fn focus_on_connect(page: &gtk4::Widget) -> Rc<Cell<bool>> {
-    data(page, FOCUS_ON_CONNECT_KEY).unwrap_or_else(|| {
-        let flag = Rc::new(Cell::new(false));
-        set_data(page, FOCUS_ON_CONNECT_KEY, flag.clone());
-        flag
-    })
+    data_or_default(page, FOCUS_ON_CONNECT_KEY)
 }
 
 // used by ui::vnc_tab and ui::rdp_tab
@@ -1052,11 +1036,7 @@ pub(crate) fn current_gen(page: &gtk4::Widget) -> u64 {
 }
 
 fn gen_slot(page: &gtk4::Widget) -> Rc<Cell<u64>> {
-    data(page, CONNECT_GEN_KEY).unwrap_or_else(|| {
-        let slot = Rc::new(Cell::new(0));
-        set_data(page, CONNECT_GEN_KEY, slot.clone());
-        slot
-    })
+    data_or_default(page, CONNECT_GEN_KEY)
 }
 
 /// The page: a paned whose end child is the session's area, with the SFTP
