@@ -42,8 +42,8 @@ use crate::store::model::{SessionConfig, VncOptions};
 use crate::transport::credentials::CredentialManager;
 use crate::transport::types::TransportState;
 use crate::ui::tab::{
-    credential_manager, current_gen, publish_status, set_terminal_area, show_connecting_view,
-    show_error_view,
+    credential_manager, current_gen, page_store, publish_status, set_terminal_area,
+    show_connecting_view, show_error_view,
 };
 use crate::ui::widgets::{centered_label, set_data};
 use crate::vnc::{
@@ -465,7 +465,7 @@ pub(crate) fn start(
     show_connecting_view(page, &host, port);
     publish_status(page, TransportState::Connecting, &host, port);
 
-    let creds = credential_manager(&session.name);
+    let creds = credential_manager(session.id, &session.name, page_store(page).as_deref());
     let (id, dial_host) = (session.id.to_string(), host.clone());
     let task = tokio::task::spawn_blocking(move || dial(&creds, &id, &dial_host, port));
 

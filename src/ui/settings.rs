@@ -1,7 +1,9 @@
 //! The Settings window: a sidebar of pages beside the selected one —
-//! [`general`] and Keyboard Shortcuts ([`hotkeys`], doc 07). Every page
+//! [`general`], [`credentials`] (doc 11), and Keyboard Shortcuts
+//! ([`hotkeys`], doc 07). Every page
 //! saves each change at once and applies it live; there is no Apply button.
 
+pub mod credentials;
 pub mod general;
 pub mod hotkeys;
 
@@ -15,6 +17,7 @@ use crate::store::SessionStore;
 
 /// Stack names of the pages, in sidebar order.
 pub const GENERAL_PAGE: &str = "general";
+pub const CREDENTIALS_PAGE: &str = "credentials";
 pub const SHORTCUTS_PAGE: &str = "keyboard-shortcuts";
 
 /// The settings window (unpresented), opened on General.
@@ -72,6 +75,11 @@ fn pages(engine: Rc<RefCell<HotkeyEngine>>, store: Rc<SessionStore>) -> gtk4::St
     stack.set_hexpand(true);
     stack.add_titled(&general::page(store.clone()), Some(GENERAL_PAGE), "General");
     stack.add_titled(
+        &credentials::page(store.clone()),
+        Some(CREDENTIALS_PAGE),
+        "Credentials",
+    );
+    stack.add_titled(
         &hotkeys::page(engine, store),
         Some(SHORTCUTS_PAGE),
         "Keyboard Shortcuts",
@@ -95,7 +103,7 @@ pub(super) mod gtk_tests {
         }
     }
 
-    /// The sidebar lists General, then Keyboard Shortcuts, and opens on
+    /// The sidebar lists General, Credentials, then Keyboard Shortcuts, and opens on
     /// General; each General switch shows and saves its own row.
     pub(in crate::ui) fn pages_and_general_switches() {
         let store = Rc::new(SessionStore::in_memory().unwrap());
@@ -119,6 +127,7 @@ pub(super) mod gtk_tests {
             listed,
             vec![
                 (GENERAL_PAGE.to_string(), "General".to_string()),
+                (CREDENTIALS_PAGE.to_string(), "Credentials".to_string()),
                 (SHORTCUTS_PAGE.to_string(), "Keyboard Shortcuts".to_string()),
             ]
         );

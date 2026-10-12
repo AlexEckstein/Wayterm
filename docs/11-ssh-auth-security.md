@@ -67,13 +67,52 @@ Secrets are `Zeroizing`, never logged, never in SQLite.
 
 ## CredentialManager
 
-Lookup goes keyring → prompt, first hit wins; storing (when the user opts
-in) goes to the first source that can. The prompt is the challenge dialog
-with one masked field; cancelling aborts the connect. Keyring attributes
-are in doc 06 §Credential Storage. Status: the keyring source is a stub
-(always misses), so secrets are prompted for every connect. When it is
-wired: offer to delete a session's keyring entries when the session is
-deleted.
+Lookup walks the sources in priority order, first hit wins:
+**keyring → Bitwarden (when enabled) → prompt**. The prompt is always
+last: it is the challenge dialog with one masked field, and cancelling it
+aborts the connect. Storing walks the same list and uses the first source
+that can; a source that cannot store answers `Unavailable` and the walk
+moves on (only the keyring stores). The chain is built per connect from
+the Settings rows (doc 06 §Credential Storage), so a toggle applies to
+the next connect.
+
+- **Availability hint.** When the keyring backend cannot be reached, the
+  prompt's instructions line reads "Keyring unavailable — prompting for
+  credentials." so a prompt that used to be answered silently is
+  explained.
+- **Store on save.** The session dialog's **Save password to keyring**
+  box stores the typed password under the saved session's id (doc 06).
+  A refusal is shown inline; the session save is not undone.
+- **Delete on session delete.** Deleting a session deletes its keyring
+  entries for every secret type; failures are logged, never blocking.
+- **Fallback identity.** The SSH auth chain currently looks secrets up
+  under the placeholder session id `_live_connect`, not the session's
+  real id, so keyring entries keyed by id are only reached once the real
+  id is threaded through. The Bitwarden source is unaffected: it is
+  built per session and keys on the session name.
+
+### Credential sources
+
+- **Keyring** — any Secret Service (`org.freedesktop.secrets`) provider:
+  GNOME Keyring, KWallet's Secret Service bridge, or KeePassXC with its
+  Secret Service integration enabled, which makes a KeePassXC database a
+  drop-in store with no KeePass-specific code in Wayterm. Attributes are
+  in doc 06 §Credential Storage.
+- **Bitwarden** — the `bw` CLI, off by default (`bitwarden.enabled`), the
+  binary from `bitwarden.bin` (default `bw`). A session looks up the item
+  named `wayterm/<session name>` (exact name, no aliases) with
+  `bw get password --raw wayterm/<name> --nointeraction`; trimmed stdout
+  is the secret, and it answers whichever secret type the session's
+  method asks for. The vault session key is read from `BW_SESSION` in
+  Wayterm's environment when the source is built and handed to the child
+  through its environment only — never argv, which any local user can
+  read in `/proc/<pid>/cmdline`; Wayterm never writes `BW_SESSION`
+  itself. Each lookup runs one `bw` (10 s timeout, then killed), nothing
+  is cached between connects, and a missing binary, non-zero exit,
+  timeout, or empty output is a logged miss that falls through to the
+  prompt. The source is read-only: storing answers `Unavailable`. The
+  Settings page's status probe runs `bw status --nointeraction` without
+  `BW_SESSION` and keeps only the `status` field.
 
 ## RDP credentials
 
@@ -173,6 +212,8 @@ CI also runs fmt, clippy `-D warnings`, the whole test suite, and a weekly
 - **russh-sftp 3.0:** `SftpSession::new(channel.into_stream())`;
   `read_dir` is a sync iterator; `remove_file`/`remove_dir`; async
   `File::close`.
+- **oo7 0.6:** the Secret Service client behind the keyring source
+  (schema and attributes in doc 06 §Credential Storage).
 - **FreeRDP ≥ 3.20** for `/from-stdin` (doc 08). **VTE ≥ 0.72** for
   scrollback extraction; SIXEL from 0.62, detected at runtime.
 

@@ -124,7 +124,7 @@ impl SshConnection {
         creds: &CredentialManager,
         responder: Option<ChallengeResponder>,
     ) -> Result<(), TransportError> {
-        let config = auth_config(method, creds, responder)?;
+        let config = auth_config(method, creds.session_id(), creds, responder)?;
         let mut handle = self.handle.lock().await;
         match authenticate_chain(&mut handle, &self.username, &config).await? {
             AuthOutcome::Success => Ok(()),
@@ -144,15 +144,16 @@ impl fmt::Debug for SshConnection {
     }
 }
 
-/// Turn the preferred method into the chain's inputs. A credential prompt
-/// the user cancels aborts the connect with [`TransportError::Cancelled`]
-/// instead of falling through to a failure screen.
+/// Turn the preferred method into the chain's inputs, looking secrets up
+/// under `session_id`. A credential prompt the user cancels aborts the
+/// connect with [`TransportError::Cancelled`] instead of falling through to
+/// a failure screen.
 pub(crate) fn auth_config(
     method: &AuthMethod,
+    session_id: &str,
     creds: &CredentialManager,
     responder: Option<ChallengeResponder>,
 ) -> Result<AuthConfig, TransportError> {
-    const SESSION_ID: &str = "_live_connect";
     let mut config = AuthConfig {
         key_path: None,
         key_passphrase: None,
@@ -171,7 +172,7 @@ pub(crate) fn auth_config(
                 // missing or corrupt one.
                 None if key_needs_passphrase(path) => Some(
                     creds
-                        .lookup(SESSION_ID, "key_passphrase")
+                        .lookup(session_id, "key_passphrase")
                         .ok_or(TransportError::Cancelled)?,
                 ),
                 None => None,
@@ -180,7 +181,7 @@ pub(crate) fn auth_config(
         AuthMethod::Password(_) => {
             config.password = Some(
                 creds
-                    .lookup(SESSION_ID, "password")
+                    .lookup(session_id, "password")
                     .ok_or(TransportError::Cancelled)?,
             );
             config.try_keyboard_interactive = true;
@@ -278,10 +279,15 @@ mod tests {
     use super::*;
     use crate::transport::credentials::PromptSource;
 
-    /// Answers only `secret_type` prompts, with `secret`.
+    const SESSION: &str = "42";
+
+    /// Answers only `secret_type` prompts for [`SESSION`], with `secret`.
     fn creds_for(secret_type: &'static str, secret: &'static [u8]) -> CredentialManager {
         CredentialManager::new(vec![Box::new(PromptSource::new(Arc::new(
-            move |_, asked| (asked == secret_type).then(|| Zeroizing::new(secret.to_vec())),
+            move |session_id, asked| {
+                (session_id == SESSION && asked == secret_type)
+                    .then(|| Zeroizing::new(secret.to_vec()))
+            },
         )))])
     }
 
@@ -316,11 +322,11 @@ mod tests {
 
     #[test]
     fn agent_and_none_enable_only_what_they_name() {
-        let agent = auth_config(&AuthMethod::Agent, &no_creds(), None).unwrap();
+        let agent = auth_config(&AuthMethod::Agent, SESSION, &no_creds(), None).unwrap();
         assert!(agent.try_agent && !agent.try_keyboard_interactive);
         assert!(agent.key_path.is_none() && agent.password.is_none());
 
-        let none = auth_config(&AuthMethod::None, &no_creds(), None).unwrap();
+        let none = auth_config(&AuthMethod::None, SESSION, &no_creds(), None).unwrap();
         assert!(!none.try_agent && !none.try_keyboard_interactive);
         assert!(none.key_path.is_none() && none.password.is_none());
     }
@@ -331,7 +337,7 @@ mod tests {
             path: "/tmp/key".into(),
             passphrase: Some("inline-pass".into()),
         };
-        let config = auth_config(&method, &no_creds(), None).unwrap();
+        let config = auth_config(&method, SESSION, &no_creds(), None).unwrap();
         assert_eq!(config.key_path.as_deref(), Some("/tmp/key"));
         assert_eq!(
             config.key_passphrase.as_deref(),
@@ -347,36 +353,55 @@ mod tests {
             return;
         };
         let path = encrypted.to_string_lossy().into_owned();
-        let config = auth_config(&key(&path), &creds_for("key_passphrase", b"cm-pass"), None);
+        let config = auth_config(
+            &key(&path),
+            SESSION,
+            &creds_for("key_passphrase", b"cm-pass"),
+            None,
+        );
         assert_eq!(
             config.unwrap().key_passphrase.as_deref(),
             Some(&b"cm-pass".to_vec())
         );
-        let cancelled = auth_config(&key(&path), &cancelling_creds(), None);
+        let cancelled = auth_config(&key(&path), SESSION, &cancelling_creds(), None);
         assert!(matches!(cancelled, Err(TransportError::Cancelled)));
 
         let plain_dir = tempfile::tempdir().unwrap();
         let plain = generate_test_key(plain_dir.path(), "").unwrap();
         let creds = creds_for("key_passphrase", b"cm-pass");
-        let config = auth_config(&key(plain.to_string_lossy()), &creds, None).unwrap();
+        let config = auth_config(&key(plain.to_string_lossy()), SESSION, &creds, None).unwrap();
         assert!(
             config.key_passphrase.is_none(),
             "unencrypted key: no prompt"
         );
 
-        let config = auth_config(&key("/nonexistent-wayterm-key"), &creds, None).unwrap();
+        let config = auth_config(&key("/nonexistent-wayterm-key"), SESSION, &creds, None).unwrap();
         assert!(config.key_passphrase.is_none(), "unreadable key: no prompt");
     }
 
     #[test]
     fn password_comes_from_the_credential_lookup() {
         let method = AuthMethod::Password("ignored".into());
-        let config = auth_config(&method, &creds_for("password", b"cm-password"), None).unwrap();
+        let config = auth_config(
+            &method,
+            SESSION,
+            &creds_for("password", b"cm-password"),
+            None,
+        )
+        .unwrap();
         assert_eq!(config.password.as_deref(), Some(&b"cm-password".to_vec()));
         assert!(config.try_keyboard_interactive);
 
-        let cancelled = auth_config(&method, &cancelling_creds(), None);
+        let cancelled = auth_config(&method, SESSION, &cancelling_creds(), None);
         assert!(matches!(cancelled, Err(TransportError::Cancelled)));
+    }
+
+    #[test]
+    fn lookups_key_on_the_given_session_id() {
+        let method = AuthMethod::Password(String::new());
+        let creds = creds_for("password", b"cm-password");
+        let other = auth_config(&method, "43", &creds, None);
+        assert!(matches!(other, Err(TransportError::Cancelled)));
     }
 
     #[test]
@@ -384,6 +409,7 @@ mod tests {
         let responder: ChallengeResponder = Arc::new(|_| Some(vec!["answer".into()]));
         let config = auth_config(
             &AuthMethod::KeyboardInteractive,
+            SESSION,
             &no_creds(),
             Some(responder),
         )
