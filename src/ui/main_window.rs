@@ -1,6 +1,7 @@
-//! The main window (doc 01): the session tree beside the tab notebook, the
-//! status bar below. It also owns the window-wide connection supervisor
-//! and the router that decides which tab drives the status bar.
+//! The main window (doc 01): the side dock — its icon strip and panel —
+//! beside the tab notebook, the status bar below. It also owns the
+//! window-wide connection supervisor and the router that decides which
+//! tab drives the status bar.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,6 +17,7 @@ use crate::transport::connection::SshConnection;
 use crate::transport::supervisor::ConnectionSupervisor;
 use crate::transport::types::TransportState;
 use crate::ui::session_tree::SessionTree;
+use crate::ui::side_dock::SideDock;
 use crate::ui::status_bar::StatusBar;
 use crate::ui::tab::SessionTab;
 use crate::ui::tab_restore::TabPersistence;
@@ -27,6 +29,8 @@ pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
 const STATUS_ROUTER_KEY: &str = "wayterm-status-router";
 
 const TOGGLE_SFTP_ACTION: &str = "toggle_sftp";
+/// The dock panel's starting width: room for the SFTP sidebar's columns.
+const DOCK_PANEL_WIDTH: i32 = 320;
 
 /// Lets only the notebook's current page drive the status bar, and never
 /// pushes the same (page, state) twice, so the elapsed timer is not reset
@@ -98,13 +102,20 @@ impl MainWindow {
             })
         };
         session_tree.refresh();
+        let dock = SideDock::new(&session_tree.widget(), &notebook);
 
         let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
-        paned.set_position(280);
-        paned.set_start_child(Some(&session_tree.widget()));
+        paned.set_position(DOCK_PANEL_WIDTH);
+        paned.set_start_child(Some(dock.panel()));
         paned.set_end_child(Some(&notebook));
         paned.set_vexpand(true);
         paned.set_hexpand(true);
+        // The strip stays outside the paned, so dragging the panel shut
+        // never hides the tabs.
+        let body = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        body.append(dock.strip());
+        body.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
+        body.append(&paned);
 
         let status_bar = Rc::new(StatusBar::new());
         let router = Rc::new(RefCell::new(StatusRouter {
@@ -141,7 +152,7 @@ impl MainWindow {
 
         let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         root.append(&header);
-        root.append(&paned);
+        root.append(&body);
         root.append(status_bar.widget());
 
         let window = gtk4::ApplicationWindow::builder()
@@ -158,7 +169,7 @@ impl MainWindow {
             Arc::new(ConnectionSupervisor::<SshConnection>::new()),
         );
 
-        install_toggle_sftp(&window, &notebook);
+        install_toggle_sftp(&window, &notebook, &dock);
         install_tunnels_action(&window, &notebook, &store);
         terminal_actions::install(&window, &notebook);
         let for_actions = notebook.clone();
@@ -292,17 +303,17 @@ fn install_tunnels_action(
     window.add_action(&action);
 }
 
-/// `toggle_sftp` (doc 09) acts on the active tab's sidebar and is disabled
-/// on pages without one — which is how non-SSH tabs hide the toggle. Its
-/// chord is the hotkey engine's.
-fn install_toggle_sftp(window: &gtk4::ApplicationWindow, notebook: &gtk4::Notebook) {
+/// `toggle_sftp` (doc 09) switches the dock to the SFTP panel, or back
+/// from it, and is disabled on pages without a sidebar — which is how
+/// non-SSH tabs hide the toggle. Its chord is the hotkey engine's.
+fn install_toggle_sftp(
+    window: &gtk4::ApplicationWindow,
+    notebook: &gtk4::Notebook,
+    dock: &SideDock,
+) {
     let action = gio::SimpleAction::new(TOGGLE_SFTP_ACTION, None);
-    let for_activate = notebook.clone();
-    action.connect_activate(move |_, _| {
-        if let Some(sidebar) = SessionTab::active_sidebar(&for_activate) {
-            sidebar.toggle_visible();
-        }
-    });
+    let dock = dock.clone();
+    action.connect_activate(move |_, _| dock.toggle_sftp());
     let for_state = action.clone();
     notebook.connect_switch_page(move |_, page, _| {
         for_state.set_enabled(SessionTab::sidebar_for_page(page).is_some());

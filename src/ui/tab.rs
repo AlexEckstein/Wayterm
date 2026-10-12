@@ -1,10 +1,10 @@
 //! Session tabs and the SSH connect flow (doc 04).
 //!
-//! An SSH tab's page is a paned: the SFTP sidebar (doc 09) on the left —
-//! per tab, since each browses its own connection — and the terminal area
-//! on the right. Every other type gets the area alone: a terminal for
-//! local and serial, the remote desktop for VNC and RDP (`vnc_tab`,
-//! `rdp_tab`).
+//! A tab's page holds the session's area: a terminal for SSH, local and
+//! serial, the remote desktop for VNC and RDP (`vnc_tab`, `rdp_tab`). An
+//! SSH page also owns an SFTP sidebar (doc 09) — per tab, since each
+//! browses its own connection — which the side dock's SFTP panel shows
+//! while the tab is current (`side_dock`).
 //!
 //! Connecting: validate the row, show "Connecting…", get a shared
 //! connection from the window's supervisor (prompts run on the GTK thread
@@ -51,6 +51,7 @@ use crate::ui::main_window::{route_status, SUPERVISOR_KEY};
 use crate::ui::rdp_tab;
 use crate::ui::session_ended::{self, EndedChoice};
 use crate::ui::sftp_sidebar::{self, supports_sftp, SftpSidebar};
+use crate::ui::side_dock;
 use crate::ui::tab_label;
 use crate::ui::tab_resilience;
 use crate::ui::tray;
@@ -81,7 +82,6 @@ const FWD_EVENT_BUF: usize = 64;
 // Notebook data key.
 const TEARDOWN_HOOK_KEY: &str = "wayterm-teardown-hook";
 
-const SIDEBAR_WIDTH: i32 = 320;
 /// An unallocated VTE reports 24×80, so measuring waits (≈2 s at most)
 /// for the widget to get a size.
 const ALLOC_WAIT_STEPS: u32 = 125;
@@ -132,13 +132,14 @@ impl SessionTab {
         page
     }
 
-    /// The current page's SFTP sidebar (what `toggle_sftp` acts on).
-    pub fn active_sidebar(notebook: &gtk4::Notebook) -> Option<SftpSidebar> {
-        Self::sidebar_for_page(&current_page(notebook)?)
-    }
-
     pub fn sidebar_for_page(page: &gtk4::Widget) -> Option<SftpSidebar> {
         data(page, SIDEBAR_KEY)
+    }
+
+    /// Give `page` its sidebar; the side dock hosts it while the page is
+    /// current.
+    pub(in crate::ui) fn set_sidebar_for_page(page: &gtk4::Widget, sidebar: SftpSidebar) {
+        set_data(page, SIDEBAR_KEY, sidebar);
     }
 
     pub(crate) fn page_status(page: &gtk4::Widget) -> Option<PageStatusCell> {
@@ -163,7 +164,7 @@ impl SessionTab {
     }
 }
 
-fn current_page(notebook: &gtk4::Notebook) -> Option<gtk4::Widget> {
+pub(crate) fn current_page(notebook: &gtk4::Notebook) -> Option<gtk4::Widget> {
     notebook.nth_page(Some(notebook.current_page()?))
 }
 
@@ -495,6 +496,11 @@ async fn finish_connect(
         } else {
             sidebar.attach_on_connect(conn);
             sidebar_attached(page).set(true);
+            // Like the terminal's focus: only a connect the user started
+            // brings the SFTP panel forward, never a reconnect.
+            if sftp_sidebar::open_on_connect() && focus_on_connect(page).get() {
+                side_dock::reveal_sftp(notebook, page);
+            }
         }
     }
     follow_terminal_title(page, &widget, &session.name);
@@ -647,7 +653,7 @@ fn spawn_state_drain(
                     };
                     if tab_resilience::on_connection_lost(session.id, events).is_some() {
                         // Free the dead session during the first backoff.
-                        release_connection(&page);
+                        release_connection(&notebook, &page);
                     }
                 }
                 TransportEvent::SessionEnded => {
@@ -710,7 +716,7 @@ fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
     if notebook.page_num(page).is_none() {
         return;
     }
-    release_connection(page);
+    release_connection(notebook, page);
     // `start_connect` takes the next generation first thing.
     redial_slot(page).replace(Some((current_gen(page).wrapping_add(1), reply)));
     start_connect(notebook, page, &session);
@@ -721,26 +727,22 @@ fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
 /// sidebar's SFTP task (or the connection it keeps for its first show) — so
 /// the supervisor can evict a dead session and the next attempt dials fresh;
 /// a live shared one is simply handed out again.
-fn release_connection(page: &gtk4::Widget) {
+fn release_connection(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     stop_forward_engine(page);
     close_terminal(page);
     if !sidebar_attached(page).replace(false) {
         return;
     }
-    let (Some(paned), Some(old)) = (
-        page.downcast_ref::<gtk4::Paned>(),
-        SessionTab::sidebar_for_page(page),
-    ) else {
+    let Some(old) = SessionTab::sidebar_for_page(page) else {
         return;
     };
-    let sidebar = SftpSidebar::new();
-    if !old.widget().is_visible() {
-        sidebar.toggle_visible();
-    }
-    let position = paned.position();
-    paned.set_start_child(Some(sidebar.widget()));
-    paned.set_position(position);
-    set_data(page, SIDEBAR_KEY, sidebar);
+    let sidebar = if old.is_shown() {
+        SftpSidebar::new()
+    } else {
+        SftpSidebar::hidden()
+    };
+    SessionTab::set_sidebar_for_page(page, sidebar);
+    side_dock::sidebar_replaced(notebook);
 }
 
 /// Disconnect landed while a redial was in flight: drop the attempt.
@@ -841,11 +843,18 @@ pub(crate) fn credential_manager(session_name: &str) -> CredentialManager {
 // Page views and bookkeeping
 // ---------------------------------------------------------------------------
 
+/// Make `child` the page's only child, filling it.
 // used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn set_terminal_area(page: &gtk4::Widget, child: &impl IsA<gtk4::Widget>) {
-    if let Some(paned) = page.downcast_ref::<gtk4::Paned>() {
-        paned.set_end_child(Some(child));
+    let Some(page) = page.downcast_ref::<gtk4::Box>() else {
+        return;
+    };
+    while let Some(old) = page.first_child() {
+        page.remove(&old);
     }
+    child.set_hexpand(true);
+    child.set_vexpand(true);
+    page.append(child);
 }
 
 /// A centered column for the status views.
@@ -1039,28 +1048,27 @@ fn gen_slot(page: &gtk4::Widget) -> Rc<Cell<u64>> {
     data_or_default(page, CONNECT_GEN_KEY)
 }
 
-/// The page: a paned whose end child is the session's area, with the SFTP
-/// sidebar at the start for SSH (hidden while `sftp_on_connect` is off).
-/// Tagged with the session id for dedup and persistence.
+/// The page: a box holding the session's area. SSH pages carry their SFTP
+/// sidebar as data for the side dock (hidden while `sftp_on_connect` is
+/// off). Tagged with the session id for dedup and persistence.
 fn page_content(session: &SessionConfig) -> gtk4::Widget {
-    let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
-    paned.set_end_child(Some(&centered_label(&format!(
-        "{}\nnot connected",
-        session.name
-    ))));
-    paned.set_vexpand(true);
-    paned.set_hexpand(true);
+    let page = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    page.set_vexpand(true);
+    page.set_hexpand(true);
+    set_terminal_area(
+        page.upcast_ref(),
+        &centered_label(&format!("{}\nnot connected", session.name)),
+    );
     if supports_sftp(&session.session_type) {
-        let sidebar = SftpSidebar::new();
-        if !sftp_sidebar::open_on_connect() {
-            sidebar.toggle_visible();
-        }
-        paned.set_position(SIDEBAR_WIDTH);
-        paned.set_start_child(Some(sidebar.widget()));
-        set_data(&paned, SIDEBAR_KEY, sidebar);
+        let sidebar = if sftp_sidebar::open_on_connect() {
+            SftpSidebar::new()
+        } else {
+            SftpSidebar::hidden()
+        };
+        SessionTab::set_sidebar_for_page(page.upcast_ref(), sidebar);
     }
-    set_data(&paned, SESSION_ID_KEY, session.id);
-    paned.upcast()
+    set_data(&page, SESSION_ID_KEY, session.id);
+    page.upcast()
 }
 
 /// The tab label; closing asks first when the transport is live (doc 04
@@ -1148,8 +1156,11 @@ pub(super) mod gtk_tests {
     pub(in crate::ui) fn reconnect_does_not_steal_focus() {
         let notebook = gtk4::Notebook::new();
         let tree = gtk4::Entry::new();
+        // Stands in for the SFTP sidebar's path entry, in the side dock.
+        let sidebar_entry = gtk4::Entry::new();
         let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         root.append(&tree);
+        root.append(&sidebar_entry);
         root.append(&notebook);
         let window = gtk4::Window::new();
         window.set_child(Some(&root));
@@ -1161,11 +1172,6 @@ pub(super) mod gtk_tests {
             ..Default::default()
         };
         let page = page_content(&session);
-        // Stands in for the SFTP sidebar's path entry, inside the page.
-        let sidebar_entry = gtk4::Entry::new();
-        page.downcast_ref::<gtk4::Paned>()
-            .expect("page is a paned")
-            .set_start_child(Some(&sidebar_entry));
         let backend = create_terminal().backend;
         let terminal = backend.widget();
         set_terminal_area(&page, &terminal);

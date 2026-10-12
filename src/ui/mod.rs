@@ -12,6 +12,7 @@ pub mod session_ended;
 pub mod session_tree;
 pub mod settings;
 pub mod sftp_sidebar;
+pub mod side_dock;
 pub mod status_bar;
 pub mod tab;
 pub mod tab_label;
@@ -42,6 +43,8 @@ mod gtk_tests {
         super::session_tree::gtk_tests::moving_a_session_keeps_folders_open();
         super::session_tree::gtk_tests::moving_a_folder_refuses_cycles();
         super::sftp_sidebar::gtk_tests::listing_renders_and_selection_drives_toolbar();
+        super::side_dock::gtk_tests::icon_tabs_switch_the_panel();
+        super::side_dock::gtk_tests::sftp_panel_follows_the_current_tab();
         super::icons::gtk_tests::custom_svg_resolves_and_picker_round_trips();
         super::folder_dialog::gtk_tests::edit_folder_prefills_name_and_icon();
         super::settings::gtk_tests::pages_and_general_switches();
