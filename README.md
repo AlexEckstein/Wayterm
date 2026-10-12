@@ -28,7 +28,8 @@ Needs GTK 4, VTE for GTK 4 (≥ 0.72), SQLite headers, and
 cargo run
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 scripts/run-sshd-tests.sh        # suites against a throwaway local sshd (needs sudo)
-xvfb-run -a cargo test -- --ignored   # tests that need a display
+# tests that need a display; force X11 so a Wayland session can't capture them
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored
 ```
 
 ## Packages
