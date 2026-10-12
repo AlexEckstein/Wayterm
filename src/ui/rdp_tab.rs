@@ -527,7 +527,7 @@ fn wait_for_xid(
 
 /// Run the dial on the blocking pool and attach its result.
 fn launch_dial(attempt: &Attempt, parent_xid: Option<u32>, embed: Option<Embed>) {
-    let creds = credential_manager(&attempt.session.name);
+    let creds = credential_manager(attempt.session.id, &attempt.session.name);
     let session_id = attempt.session.id.to_string();
     let base = spec_from_session(&attempt.session, None);
     let task = tokio::task::spawn_blocking(move || dial(base, &session_id, parent_xid, &creds));

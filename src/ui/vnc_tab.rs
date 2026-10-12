@@ -465,7 +465,7 @@ pub(crate) fn start(
     show_connecting_view(page, &host, port);
     publish_status(page, TransportState::Connecting, &host, port);
 
-    let creds = credential_manager(&session.name);
+    let creds = credential_manager(session.id, &session.name);
     let (id, dial_host) = (session.id.to_string(), host.clone());
     let task = tokio::task::spawn_blocking(move || dial(&creds, &id, &dial_host, port));
 
