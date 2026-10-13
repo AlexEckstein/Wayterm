@@ -8,8 +8,8 @@
 //! placeholder for tabs without one. A sidebar counts as shown — and a
 //! deferred SFTP channel opens — only once the panel has it in view.
 //!
-//! Macros is a placeholder panel until the feature is designed.
-//! [`DockPage`] and [`toggle_target`] are display-free.
+//! The Macros panel is the window's [`MacrosPanel`](super::macros_panel)
+//! (doc 12). [`DockPage`] and [`toggle_target`] are display-free.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -98,9 +98,13 @@ struct DockInner {
 }
 
 impl SideDock {
-    /// The dock around the session tree, its SFTP panel following
-    /// `notebook`. It starts on Sessions.
-    pub fn new(sessions: &impl IsA<gtk4::Widget>, notebook: &gtk4::Notebook) -> Self {
+    /// The dock around the session tree and the macros panel, its SFTP
+    /// panel following `notebook`. It starts on Sessions.
+    pub fn new(
+        sessions: &impl IsA<gtk4::Widget>,
+        macros: &impl IsA<gtk4::Widget>,
+        notebook: &gtk4::Notebook,
+    ) -> Self {
         let sftp = SftpPanel::new();
         let stack = gtk4::Stack::new();
         stack.set_hexpand(true);
@@ -108,7 +112,7 @@ impl SideDock {
         for page in DockPage::ALL {
             let child: gtk4::Widget = match page {
                 DockPage::Sessions => sessions.clone().upcast(),
-                DockPage::Macros => empty_state(page.icon(), "No macros yet"),
+                DockPage::Macros => macros.clone().upcast(),
                 DockPage::Sftp => sftp.stack.clone().upcast(),
             };
             stack
@@ -288,7 +292,7 @@ impl SftpPanel {
 }
 
 /// A dim icon over a line of text, centered: a panel with nothing to show.
-fn empty_state(icon: &str, text: &str) -> gtk4::Widget {
+pub(in crate::ui) fn empty_state(icon: &str, text: &str) -> gtk4::Widget {
     let image = gtk4::Image::from_icon_name(icon);
     image.set_pixel_size(48);
     let label = gtk4::Label::new(Some(text));
@@ -346,7 +350,8 @@ pub(super) mod gtk_tests {
     pub(in crate::ui) fn icon_tabs_switch_the_panel() {
         let notebook = gtk4::Notebook::new();
         let tree = gtk4::Label::new(Some("tree"));
-        let dock = SideDock::new(&tree, &notebook);
+        let macros = gtk4::Label::new(Some("macros"));
+        let dock = SideDock::new(&tree, &macros, &notebook);
         let visible = || dock.inner.stack.visible_child_name().map(|n| n.to_string());
 
         let tabs = &dock.inner.tabs;
@@ -370,6 +375,10 @@ pub(super) mod gtk_tests {
         tabs[1].1.set_active(true);
         assert_eq!(dock.current(), DockPage::Macros);
         assert_eq!(visible().as_deref(), Some("macros"));
+        assert_eq!(
+            dock.inner.stack.visible_child().as_ref(),
+            Some(macros.upcast_ref())
+        );
         assert!(!tabs[0].1.is_active(), "one tab at a time");
 
         dock.toggle_sftp();
@@ -384,7 +393,7 @@ pub(super) mod gtk_tests {
     /// replaced sidebar is hosted anew, and a closed tab's is let go.
     pub(in crate::ui) fn sftp_panel_follows_the_current_tab() {
         let notebook = gtk4::Notebook::new();
-        let dock = SideDock::new(&gtk4::Label::new(None), &notebook);
+        let dock = SideDock::new(&gtk4::Label::new(None), &gtk4::Label::new(None), &notebook);
         let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         root.append(dock.strip());
         root.append(dock.panel());

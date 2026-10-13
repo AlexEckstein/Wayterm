@@ -16,6 +16,7 @@ use crate::store::SessionStore;
 use crate::transport::connection::SshConnection;
 use crate::transport::supervisor::ConnectionSupervisor;
 use crate::transport::types::TransportState;
+use crate::ui::macros_panel::MacrosPanel;
 use crate::ui::session_tree::SessionTree;
 use crate::ui::side_dock::SideDock;
 use crate::ui::status_bar::StatusBar;
@@ -102,7 +103,8 @@ impl MainWindow {
             })
         };
         session_tree.refresh();
-        let dock = SideDock::new(&session_tree.widget(), &notebook);
+        let macros = MacrosPanel::new(store.clone(), &notebook);
+        let dock = SideDock::new(&session_tree.widget(), macros.widget(), &notebook);
 
         let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
         paned.set_position(DOCK_PANEL_WIDTH);
