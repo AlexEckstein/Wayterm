@@ -7,6 +7,7 @@ use super::backend::{TerminalBackend, TerminalFeatures};
 /// One interaction/scrollback call recorded by [`FakeBackend`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Interaction {
+    SendInput(Vec<u8>),
     CopySelection,
     Paste(String),
     SelectAll,
@@ -55,6 +56,10 @@ impl TerminalBackend for FakeBackend {
 
     fn write(&self, data: &[u8]) {
         lock(&self.written).extend_from_slice(data);
+    }
+
+    fn send_input(&self, data: &[u8]) {
+        self.record(Interaction::SendInput(data.to_vec()));
     }
 
     fn set_size(&self, _rows: u32, _cols: u32) {}

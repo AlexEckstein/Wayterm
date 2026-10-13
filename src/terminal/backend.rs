@@ -39,6 +39,9 @@ pub trait TerminalBackend {
     fn widget(&self) -> Widget;
     /// Transport bytes → terminal. Main thread only.
     fn write(&self, data: &[u8]);
+    /// Input → transport, as if typed (macro playback, doc 12): sent as
+    /// `DataOut` through the same queue as keystrokes. Main thread only.
+    fn send_input(&self, data: &[u8]);
     fn set_size(&self, rows: u32, cols: u32);
     fn features(&self) -> TerminalFeatures;
 
