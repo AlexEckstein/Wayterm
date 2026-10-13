@@ -208,7 +208,6 @@ struct Widgets {
     password: gtk4::PasswordEntry,
     save_password: gtk4::CheckButton,
     icon: IconPicker,
-    notes: gtk4::TextView,
     tmux: gtk4::CheckButton,
     tmux_name: gtk4::Entry,
     jump: gtk4::DropDown,
@@ -231,7 +230,6 @@ struct Widgets {
 impl Widgets {
     /// The current values; `base` carries the edited row's identity.
     fn fields(&self, base: &DialogFields) -> DialogFields {
-        let buffer = self.notes.buffer();
         DialogFields {
             name: self.name.text().into(),
             type_index: self.session_type.selected(),
@@ -241,9 +239,6 @@ impl Widgets {
             username: self.username.text().into(),
             auth_index: self.auth.selected(),
             icon: self.icon.icon().unwrap_or_default(),
-            notes: buffer
-                .text(&buffer.start_iter(), &buffer.end_iter(), true)
-                .into(),
             tmux_enabled: self.tmux.is_active(),
             tmux_session_name: self.tmux_name.text().into(),
             jump_session_id: self
@@ -324,7 +319,6 @@ impl Widgets {
         self.icon
             .set_default(session_type_icon(&config.session_type));
         self.icon.set_icon(config.icon.as_deref());
-        self.notes.buffer().set_text(&text(&config.notes));
         self.tmux.set_active(config.tmux_enabled);
         self.serial_device.set_text(&text(&config.serial_device));
         let baud = config
@@ -623,21 +617,6 @@ impl SessionDialog {
         let auth = form.dropdown("Auth Method:", &AUTH_LABELS);
         let icon = IconPicker::new(session_type_icon(&SessionType::SSH));
         form.add("Icon:", icon.widget());
-        let notes = gtk4::TextView::builder()
-            .wrap_mode(gtk4::WrapMode::WordChar)
-            .top_margin(6)
-            .bottom_margin(6)
-            .left_margin(6)
-            .right_margin(6)
-            .build();
-        let notes_scroll = gtk4::ScrolledWindow::builder()
-            .child(&notes)
-            .vexpand(true)
-            .hexpand(true)
-            .has_frame(true)
-            .height_request(120)
-            .build();
-        form.add("Notes:", &notes_scroll);
 
         let mut ssh = FormGrid::new(6);
         // Password (password method only): never stored on the row, only
@@ -786,7 +765,6 @@ impl SessionDialog {
             password,
             save_password,
             icon,
-            notes,
             tmux,
             tmux_name,
             jump,
@@ -868,6 +846,10 @@ impl SessionDialog {
         for group in &groups.0 {
             vbox.append(group);
         }
+        // Takes the spare height, keeping the buttons at the bottom.
+        let spacer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        spacer.set_vexpand(true);
+        vbox.append(&spacer);
         modal.window.set_child(Some(&vbox));
 
         Self {

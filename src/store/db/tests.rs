@@ -375,6 +375,42 @@ fn open_adds_session_icon_to_an_older_database() {
     SessionStore::open(&path).unwrap();
 }
 
+/// A database created while `sessions.notes` existed loses the column on
+/// open and keeps its rows.
+#[test]
+fn open_drops_session_notes_from_an_older_database() {
+    let has_notes = |conn: &Connection| -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'notes')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("old.sqlite3");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(MIGRATION_001).unwrap();
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN notes TEXT;")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (name, type, notes) VALUES ('old', '\"ssh\"', 'kept nowhere')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let store = SessionStore::open(&path).unwrap();
+    assert!(!has_notes(&store.conn));
+    let old = store.list_sessions(None).unwrap().remove(0);
+    assert_eq!(old.name, "old");
+    store.update_session(&old).unwrap();
+    // Opening again is a no-op.
+    drop(store);
+    SessionStore::open(&path).unwrap();
+}
+
 #[test]
 fn delete_folder_cascades_and_orphans_sessions() {
     let store = SessionStore::in_memory().unwrap();
@@ -516,7 +552,6 @@ fn sample_ssh_config(folder_id: Option<i64>) -> SessionConfig {
         font_size: Some(12.5),
         opacity: Some(0.9),
         icon: Some("network-server-symbolic".to_string()),
-        notes: Some("primary db".to_string()),
         last_connected: Some("2026-10-02T12:00:00Z".to_string()),
         connect_count: 17,
     }
@@ -561,7 +596,6 @@ fn assert_session_eq(left: &SessionConfig, right: &SessionConfig) {
     assert_eq!(left.font_size, right.font_size);
     assert_eq!(left.opacity, right.opacity);
     assert_eq!(left.icon, right.icon);
-    assert_eq!(left.notes, right.notes);
 }
 
 #[test]

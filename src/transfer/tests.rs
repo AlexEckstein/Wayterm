@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 
-use super::ssh_config::TEMPLATE_NOTE;
 use super::*;
 use crate::store::model::{AuthMethod, SessionType, SshOptions};
 
@@ -89,18 +88,11 @@ Host !nope
     let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["*.corp", "exact", "?b"]);
     let template = find(&sessions, "*.corp");
-    assert_eq!(template.notes.as_deref(), Some(TEMPLATE_NOTE));
-    assert!(template
-        .notes
-        .as_deref()
-        .unwrap()
-        .starts_with("[template from ~/.ssh/config]"));
     assert_eq!(template.host, None, "no host for a wildcard pattern");
     assert_eq!(template.username.as_deref(), Some("ops"));
     assert_eq!(find(&sessions, "?b").port, Some(23));
     let exact = find(&sessions, "exact");
     assert_eq!(exact.host.as_deref(), Some("%h.internal"));
-    assert_eq!(exact.notes, None);
     assert_eq!(report.templates, 2);
     assert_eq!(report.skipped, 2);
 }
@@ -346,7 +338,7 @@ fn apply_import_remaps_folders_and_drops_second_hops() {
 // ---- JSON ----
 
 /// A store with root/sub folders, nested sessions, a jump, and a root
-/// session whose notes mention passwords.
+/// session.
 fn sample_store() -> SessionStore {
     let store = SessionStore::in_memory().unwrap();
     let prod = store.insert_folder("prod", None).unwrap();
@@ -378,7 +370,6 @@ fn sample_store() -> SessionStore {
             session_type: SessionType::RDP,
             host: Some("desk.example".into()),
             port: Some(3389),
-            notes: Some("the password is in the team vault; ask for the password".into()),
             ..SessionConfig::default()
         })
         .unwrap();
@@ -474,10 +465,11 @@ fn json_roundtrip_keeps_icons() {
 
 #[test]
 fn json_import_shapes() {
+    // `notes` is in exports made before sessions lost the field: ignored.
     let text = r#"{
         "version": 1,
         "future_field": {"x": 1},
-        "sessions": [{"name": "loose", "host": "h", "id": 99, "folder_id": 42}],
+        "sessions": [{"name": "loose", "host": "h", "id": 99, "folder_id": 42, "notes": "old"}],
         "folders": [{"name": "f", "sessions": [{"name": "s", "jump_session": "ghost"}]}]
     }"#;
     let (folders, sessions, report) = parse_source(ImportSource::Wayterm, text, None).unwrap();
@@ -511,10 +503,6 @@ fn json_newer_version_is_refused() {
 #[test]
 fn json_export_holds_no_secrets() {
     let text = export_json(&sample_store()).unwrap();
-    assert!(
-        text.contains("ask for the password"),
-        "the notes are exported"
-    );
     for needle in ["password=", "ssh_password="] {
         assert!(!text.contains(needle), "export contains {needle}");
     }
@@ -717,7 +705,6 @@ fn asbru_fixture() {
     );
     assert_eq!(db.auth_method, Some(AuthMethod::Key));
     assert_eq!(db.key_path.as_deref(), Some("/home/u/.ssh/id_db"));
-    assert_eq!(db.notes.as_deref(), Some("primary database"));
     let kiosk = find(&sessions, "kiosk");
     assert_eq!(
         (kiosk.session_type.clone(), kiosk.folder_id),
@@ -728,7 +715,7 @@ fn asbru_fixture() {
     assert!(has_warning(&report, "secret skipped: pass, passphrase"));
     assert!(has_warning(
         &report,
-        "Asbru fields not imported: terminal options"
+        "Asbru fields not imported: description, terminal options"
     ));
     assert_secret_absent(&sessions, "c2VjcmV0LXZhbHVl");
 

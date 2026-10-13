@@ -319,6 +319,7 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.execute_batch(MIGRATION_001)?;
     conn.execute_batch(MIGRATION_002)?;
     migrate_003(conn)?;
+    migrate_004(conn)?;
     // `hotkeys` has no UNIQUE constraint, so re-running the seed would
     // duplicate rows: seed exactly once, atomically, keyed on an empty
     // `settings` table.
@@ -341,8 +342,8 @@ const SESSION_COLUMNS: &str = "name, type, folder_id, sort_order, \
     vnc_color_depth, vnc_options, \
     serial_device, serial_baud_rate, serial_data_bits, serial_parity, serial_stop_bits, \
     serial_flow_control, local_shell, local_working_dir, \
-    terminal_backend, color_scheme, font_family, font_size, opacity, icon, notes";
-const SESSION_COLUMN_COUNT: usize = 38;
+    terminal_backend, color_scheme, font_family, font_size, opacity, icon";
+const SESSION_COLUMN_COUNT: usize = 37;
 
 fn placeholders(count: usize) -> String {
     vec!["?"; count].join(", ")
@@ -390,7 +391,6 @@ fn session_values(c: &SessionConfig) -> rusqlite::Result<[Value; SESSION_COLUMN_
         c.font_size.into(),
         c.opacity.into(),
         c.icon.clone().into(),
-        c.notes.clone().into(),
     ])
 }
 
@@ -492,8 +492,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_connected   TEXT,
     connect_count    INTEGER DEFAULT 0,
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    notes            TEXT
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Global hotkey bindings
@@ -556,6 +555,20 @@ fn migrate_003(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     if !has_icon {
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN icon TEXT;")?;
+    }
+    Ok(())
+}
+
+/// Schema v4 — drop `sessions.notes` (doc 06). A database created before
+/// v4 still has the column; one created since never did.
+fn migrate_004(conn: &Connection) -> rusqlite::Result<()> {
+    let has_notes: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'notes')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_notes {
+        conn.execute_batch("ALTER TABLE sessions DROP COLUMN notes;")?;
     }
     Ok(())
 }
@@ -661,7 +674,6 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
         font_size: row.get("font_size")?,
         opacity: row.get("opacity")?,
         icon: row.get("icon")?,
-        notes: row.get("notes")?,
         last_connected: row.get("last_connected")?,
         connect_count: row.get("connect_count")?,
     })

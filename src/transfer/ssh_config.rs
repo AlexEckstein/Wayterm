@@ -15,9 +15,6 @@ use crate::store::model::{AuthMethod, SessionConfig, SshOptions};
 /// `Include` nesting limit.
 const MAX_INCLUDE_DEPTH: usize = 5;
 
-/// `notes` marker of a session made from a wildcard pattern.
-pub(super) const TEMPLATE_NOTE: &str = "[template from ~/.ssh/config]";
-
 pub fn parse(text: &str, base_dir: Option<&Path>) -> Parsed {
     let mut scanner = Scanner {
         base_dir: base_dir.map(Path::to_path_buf),
@@ -102,13 +99,11 @@ impl Scanner {
             let index = match self.by_name.get(pattern) {
                 Some(&index) => index,
                 None => {
-                    let template = pattern.contains(['*', '?']);
-                    if template {
+                    if pattern.contains(['*', '?']) {
                         self.report.templates += 1;
                     }
                     self.sessions.push(SessionConfig {
                         name: pattern.clone(),
-                        notes: template.then(|| TEMPLATE_NOTE.to_string()),
                         ..SessionConfig::default()
                     });
                     self.proxy_jump.push(None);
