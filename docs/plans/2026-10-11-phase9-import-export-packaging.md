@@ -35,7 +35,9 @@ stays OUT of Cargo.toml.** Verified reason: russh-config 0.58 cannot
 enumerate Host blocks (API is `parse(file, host)` per alias; `Include` is
 swallowed as an unknown keyword). The scanner: exact-name `Host` blocks →
 sessions (aliases joined `"; "` per OpenSSH multi-name lines); wildcard
-blocks (`*`, `?`, lists) → template sessions with a marker in `notes`;
+blocks (`*`, `?`, lists) → template sessions with a marker in `notes`
+(superseded 2026-10-12: sessions no longer have `notes`, so templates
+carry no marker);
 `Match` blocks skipped, counted in the report; `Include` followed with
 depth ≤ 5 and cycle detection (relative paths resolve against the
 including file's dir; `~` expands); negated `!` patterns never create
