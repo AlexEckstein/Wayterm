@@ -17,13 +17,14 @@ the last. Phase numbers are referenced from code and other docs.
 | 10 | libghostty-vt backend | when its C API stabilizes |
 | 11 | Jump hosts and port forwarding | done, with v1 limits below |
 | 12 | Testing hardening | continuous |
+| 13 | Keystroke macros | done |
 
 ## Phase 1: Skeleton — done
 
 Main window with the session tree beside the notebook; SQLite store
 (doc 06); folder and session CRUD from the tree's context menu; the
 session dialog with per-type groups. The tree now sits in the side dock
-(doc 01), whose Macros panel is a placeholder until macros get a design.
+(doc 01), whose Macros panel arrived in Phase 13.
 
 ## Phase 2: SSH terminal — done
 
@@ -202,6 +203,19 @@ Strategy); `forward_sshd` and `jump_sshd` suites for Phase 11 (local
 rig + doc 11 §Testing Strategy). To do: run `connect_flow`, `tmux_persistence` and
 `reconnect_sshd` in CI too (they need only the CI sshd); `cargo-fuzz`
 targets for known_hosts handling and SFTP path joining.
+
+## Phase 13: Keystroke macros — done
+
+Doc 12: `TerminalBackend::send_input` (VTE: `feed_child`); the input tap
+spliced between terminal and pump on every connect; the recorder
+(per-keystroke pauses, mouse/focus reports skipped); the key notation;
+playback with stop; the `macros` table; the side dock's Macros panel
+(Record/Stop, Play/Stop, Edit, Delete) and the step editor. **Verify:**
+the `macros` unit suites, the store's macro CRUD, and the xvfb
+record-then-play roundtrip through a real VTE terminal.
+
+Limits: terminal tabs only; no hotkeys to play a macro; macros are not
+in the session import/export.
 
 ## Risks
 

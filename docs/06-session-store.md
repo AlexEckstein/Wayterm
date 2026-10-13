@@ -1,7 +1,8 @@
 # Session Store
 
-Sessions, folders, hotkey overrides, and settings live in one SQLite
-database (`$XDG_DATA_HOME/wayterm/wayterm.sqlite3`) through `rusqlite`
+Sessions, folders, hotkey overrides, settings, and keystroke macros
+(doc 12) live in one SQLite database
+(`$XDG_DATA_HOME/wayterm/wayterm.sqlite3`) through `rusqlite`
 (`src/store/`). Credentials never do: they live in the OS keyring
 (§Credential Storage).
 
@@ -11,9 +12,9 @@ database (`$XDG_DATA_HOME/wayterm/wayterm.sqlite3`) through `rusqlite`
 applies this schema (with `IF NOT EXISTS`) and, on a fresh database, the
 seed below. There is no migration framework yet: later additions are
 idempotent steps run on every open — the `rdp_trust` table (doc 08),
-`sessions.icon`, which `ALTER TABLE` adds to databases created before
-it existed, and dropping the retired `sessions.notes` column from
-databases that still have it.
+the `macros` table (doc 12), `sessions.icon`, which `ALTER TABLE` adds
+to databases created before it existed, and dropping the retired
+`sessions.notes` column from databases that still have it.
 
 ```sql
 -- Session folders for tree organization
@@ -164,6 +165,9 @@ rows load it as `false`).
 with defaults, so JSON written before a field existed still loads. Its
 `icon` is serialized only when set, so a session without one keeps the
 exact earlier wire format.
+
+`macros.steps` is a JSON array of `{"delay_ms", "keys"}` steps, `keys` a
+byte array so non-UTF-8 input survives (doc 12 §Storage).
 
 ### Icons
 

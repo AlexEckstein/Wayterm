@@ -29,7 +29,7 @@ notebook:
 | Tab | Panel |
 |---|---|
 | Sessions | the session tree (doc 06) |
-| Macros | a placeholder until macros are designed: replaying one into a terminal needs an input method on `TerminalBackend`, a trait change |
+| Macros | saved keystroke macros: record, edit, play into the current terminal tab (doc 12) |
 | SFTP | the current tab's SFTP sidebar, or a placeholder on tabs without one (doc 09) |
 
 The strip sits outside the paned, so dragging the panel shut never hides
@@ -67,7 +67,8 @@ the tabs. Its icons ship in the binary beside the tree icons (doc 06
 | `sftp` | SFTP task and commands | 09 |
 | `store` | SQLite store and session model | 06 |
 | `hotkeys` | action registry, conflicts, defaults, persistence | 07 |
-| `ui` | window, side dock, tabs, dialogs, session tree, sidebar, settings, tray | 01, 07, 09, 10 |
+| `macros` | macro model, recorder, input tap, key notation, playback | 12 |
+| `ui` | window, side dock, tabs, dialogs, session tree, sidebar, macros panel and editor, settings, tray | 01, 07, 09, 10, 12 |
 
 The tray is a StatusNotifierItem over D-Bus via `ksni` (pure Rust, no GTK3
 bindings); disconnect alerts use `gio::Notification`. Without a tray host

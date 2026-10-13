@@ -17,6 +17,7 @@ Either way `widget()` returns the `gtk::Widget` the tab embeds.
 pub trait TerminalBackend {
     fn widget(&self) -> Widget;
     fn write(&self, data: &[u8]);            // transport → terminal, main thread
+    fn send_input(&self, data: &[u8]);       // input as if typed → DataOut (doc 12)
     fn set_size(&self, rows: u32, cols: u32);
     fn features(&self) -> TerminalFeatures;
     fn set_color_scheme(&self, name: &str);  // appearance: no-op if unsupported
@@ -44,7 +45,9 @@ pub enum TerminalEvent { DataOut(Vec<u8>), SizeChange { rows: u32, cols: u32 },
 
 There is no `Send` bound: widget backends hold GTK objects and live on the
 main thread. Bytes come in through `write`; everything going out is a
-`TerminalEvent` on a bounded channel. `create_terminal()` builds the backend
+`TerminalEvent` on a bounded channel. `send_input` is input that was not
+typed — macro playback (doc 12) — and leaves as `DataOut` through the
+same queue as keystrokes. `create_terminal()` builds the backend
 and that channel together and returns a `TerminalHandle { backend, events }`;
 the receiver goes to the transport pump (doc 04 §Wiring). Backends are held
 as `Arc<dyn TerminalBackend>` because the tab, the output drain, and the
@@ -78,6 +81,11 @@ flow control (doc 04).
   clears the highlight.
 - **SIXEL** is reported from the runtime VTE version (≥ 0.62), never
   hardcoded. VTE has no Kitty graphics.
+- **Input:** `send_input` calls `feed_child`, which emits `commit`, so
+  injected input reaches every `commit` listener like a keystroke. The
+  vte4 `commit` binding reads its text as a NUL-terminated UTF-8 string,
+  so bytes it cannot carry (invalid UTF-8, NUL) are queued as `DataOut`
+  directly instead, still in order.
 - **Not yet implemented:** color schemes and opacity (need the color-scheme
   store).
 
@@ -97,12 +105,14 @@ terminal title falls back to the session name.
 
 ## FakeBackend
 
-An in-memory backend with no widget that records every `write` and
-interaction call, so the pump, the bridge, and the terminal-action routing
-are tested without a display.
+An in-memory backend with no widget that records every `write`,
+`send_input`, and interaction call, so the pump, the bridge, and the
+terminal-action routing are tested without a display.
 
 ## Engine backends (future)
 
 A `GhosttyBackend` would pair a custom render widget (drawing ghostty state
 via Cairo or GL) with the same trait and the same backpressure pattern. No
-trait change is needed; see docs 03 and 05.
+trait change is needed; see docs 03 and 05. Its `send_input` queues
+`DataOut` the way its own key handler does, so macros (doc 12) work
+unchanged.

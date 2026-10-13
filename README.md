@@ -3,18 +3,19 @@
 An open source, multi-protocol connection manager and terminal for Linux,
 in the spirit of MobaXterm but built for a desktop that already has the
 tools: saved sessions in a tree, tabbed SSH terminals with an SFTP
-sidebar, local shell and serial tabs, embedded RDP and VNC tabs, and
-configurable hotkeys.
+sidebar, local shell and serial tabs, embedded RDP and VNC tabs,
+configurable hotkeys, and keystroke macros.
 
 App id `com.alex-eckstein.wayterm` · [github.com/AlexEckstein/Wayterm](https://github.com/AlexEckstein/Wayterm) · Apache-2.0
 
 ## Status
 
-Phases 1–9 and 11 of the [build order](docs/10-build-order.md) are done:
+Phases 1–9, 11 and 13 of the [build order](docs/10-build-order.md) are done:
 session management, SSH terminal tabs with host-key verification and the
 full auth chain, the SFTP sidebar, hotkeys, tab restore and a tray icon,
 local shell and serial tabs, VNC and RDP tabs, tmux persistence,
-import/export and packaging, and jump hosts with local port forwarding.
+import/export and packaging, jump hosts with local port forwarding, and
+keystroke macros.
 Doc 10 lists the known gaps in each phase and what comes next.
 
 ## Build and test
@@ -47,7 +48,7 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored
 | Terminal | VTE behind a `TerminalBackend` trait | the standard GTK terminal widget; an engine backend can follow |
 | Async | tokio | SSH, SFTP, and reconnects off the UI thread |
 | SSH, SFTP | russh, russh-sftp | pure Rust; SFTP reuses the terminal's SSH session |
-| Store | SQLite (rusqlite) | sessions, settings, hotkey overrides |
+| Store | SQLite (rusqlite) | sessions, settings, hotkey overrides, macros |
 | Secrets | OS keyring (libsecret) | never in the database |
 | RDP, VNC | xfreerdp 3 + X11 reparenting; vnc-rs | a crash stays in xfreerdp; pure Rust, tokio-native RFB (doc 08) |
 | Tray | StatusNotifierItem via ksni | no GTK3 dependency |
@@ -65,5 +66,6 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored
 9. [SFTP sidebar](docs/09-sftp-sidebar.md)
 10. [Build order](docs/10-build-order.md)
 11. [SSH authentication and security](docs/11-ssh-auth-security.md)
+12. [Keystroke macros](docs/12-macros.md)
 
 Contributors and agents: read [AGENTS.md](AGENTS.md) first.
