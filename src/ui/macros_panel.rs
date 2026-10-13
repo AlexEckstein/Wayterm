@@ -60,6 +60,8 @@ impl MacrosPanel {
 
         let list = gtk4::ListBox::new();
         list.set_selection_mode(gtk4::SelectionMode::Single);
+        // A click selects; only a double-click (or Enter) plays.
+        list.set_activate_on_single_click(false);
         list.add_css_class("navigation-sidebar");
         let scrolled = gtk4::ScrolledWindow::builder()
             .child(&list)
@@ -88,6 +90,8 @@ impl MacrosPanel {
             button.set_focus_on_click(false);
         }
         let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        // Equal widths: Play turning into Stop moves nothing.
+        toolbar.set_homogeneous(true);
         toolbar.append(&play.button);
         toolbar.append(&edit);
         toolbar.append(&delete);
@@ -479,6 +483,10 @@ pub(super) mod gtk_tests {
             .collect();
         assert_eq!(names, ["Alpha", "zeta"]);
         assert!(!inner.play.button.is_sensitive() && !inner.edit.is_sensitive());
+        assert!(
+            !inner.list.activates_on_single_click(),
+            "a click must not play"
+        );
 
         let zeta = inner.macros.borrow()[1].id;
         panel.refresh(Some(zeta));

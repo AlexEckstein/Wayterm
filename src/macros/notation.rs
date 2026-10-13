@@ -1,7 +1,8 @@
 //! The text form of a step's keys in the macro editor (doc 12
 //! §Notation): text stands for itself, everything else is a `<Name>`
 //! token — `<Enter>`, `<Up>`, `<Ctrl-C>`, `<0x9B>` — and `<lt>` is a
-//! literal `<`. [`decode`] inverts [`encode`] for every byte string.
+//! literal `<`. A space that would be invisible at either end of an entry
+//! is `<Space>`. [`decode`] inverts [`encode`] for every byte string.
 //! Unknown tokens are errors, never literal text, so a typo in the editor
 //! cannot reach the remote shell.
 
@@ -76,6 +77,9 @@ pub fn encode(bytes: &[u8]) -> String {
         } else if let Some(name) = byte_name(first) {
             push_token(&mut text, &name);
             rest = &rest[1..];
+        } else if first == b' ' && (text.is_empty() || rest.len() == 1) {
+            push_token(&mut text, "Space");
+            rest = &rest[1..];
         } else if let Some(ch) = leading_char(rest).filter(|ch| !ch.is_control()) {
             text.push(ch);
             rest = &rest[ch.len_utf8()..];
@@ -138,6 +142,9 @@ fn token_bytes(name: &str) -> Option<Vec<u8>> {
     if let Some((_, byte)) = BYTES.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
         return Some(vec![*byte]);
     }
+    if name.eq_ignore_ascii_case("Space") {
+        return Some(b" ".to_vec());
+    }
     if let Some(hex) = strip_prefix_ignore_case(name, "0x") {
         // `from_str_radix` alone would take a sign: `<0x+1>`.
         let digits = hex.len() == 2 && hex.bytes().all(|b| b.is_ascii_hexdigit());
@@ -165,7 +172,10 @@ mod tests {
 
     #[test]
     fn keystrokes_read_as_their_names() {
-        let cases: [(&[u8], &str); 12] = [
+        let cases: [(&[u8], &str); 15] = [
+            (b" ", "<Space>"),
+            (b" ls  -l ", "<Space>ls  -l<Space>"),
+            (b"echo hi", "echo hi"),
             (b"ls -la\r", "ls -la<Enter>"),
             (b"\x1b[A", "<Up>"),
             (b"\x1bOA", "<Esc>OA"),

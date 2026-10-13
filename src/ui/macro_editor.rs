@@ -136,7 +136,7 @@ pub fn default_name(existing: &[Macro]) -> String {
 const KEYS_HELP: &str = "Each step waits its pause, then sends its keys. Text is typed as \
     written; <Enter>, <Tab>, <Esc>, <Backspace>, <Up>/<Down>/<Left>/<Right>, <Home>, <End>, \
     <PageUp>, <PageDown>, <Insert>, <Delete>, <F1>–<F12>, <Ctrl-C> and <0x1B> name other \
-    keys and bytes. Write <lt> for a literal \"<\".";
+    keys and bytes; <Space> is a space. Write <lt> for a literal \"<\".";
 
 /// The editor window. Clones share it.
 #[derive(Clone)]
