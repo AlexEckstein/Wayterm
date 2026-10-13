@@ -1,5 +1,6 @@
-//! SQLite persistence for folders, sessions, hotkeys, and settings
-//! (doc 06). No credential material ever passes through this layer.
+//! SQLite persistence for folders, sessions, hotkeys, settings (doc 06),
+//! and macros (doc 12). No credential material ever passes through this
+//! layer.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +11,7 @@ use rusqlite::{
 };
 use serde::Serialize;
 
+use crate::macros::model::{steps_from_json, steps_to_json, Macro};
 use crate::store::model::{Folder, SessionConfig};
 use crate::ui::tab_state::{self, TabState};
 
@@ -153,6 +155,40 @@ impl SessionStore {
              connect_count = connect_count + 1 WHERE id = ?1",
             [id],
         )?;
+        Ok(())
+    }
+
+    /// Every macro (doc 12), by name — case-insensitive — then id.
+    pub fn list_macros(&self) -> rusqlite::Result<Vec<Macro>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, steps FROM macros ORDER BY name COLLATE NOCASE ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], row_to_macro)?;
+        rows.collect()
+    }
+
+    /// Insert a macro (its `id` is ignored) and return the new id.
+    pub fn insert_macro(&self, m: &Macro) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO macros (name, steps) VALUES (?1, ?2)",
+            params![m.name, macro_steps(m)?],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Persist `m` over the row with its id.
+    pub fn update_macro(&self, m: &Macro) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE macros SET name = ?1, steps = ?2, updated_at = datetime('now') \
+             WHERE id = ?3",
+            params![m.name, macro_steps(m)?, m.id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_macro(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM macros WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -320,6 +356,7 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.execute_batch(MIGRATION_002)?;
     migrate_003(conn)?;
     migrate_004(conn)?;
+    conn.execute_batch(MIGRATION_005)?;
     // `hotkeys` has no UNIQUE constraint, so re-running the seed would
     // duplicate rows: seed exactly once, atomically, keyed on an empty
     // `settings` table.
@@ -400,6 +437,11 @@ fn json<T: Serialize>(value: Option<&T>) -> rusqlite::Result<Value> {
         .transpose()
         .map(Value::from)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
+
+/// The `macros.steps` column for `m`.
+fn macro_steps(m: &Macro) -> rusqlite::Result<String> {
+    steps_to_json(&m.steps).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
 }
 
 fn from_sql_error(e: serde_json::Error) -> rusqlite::Error {
@@ -573,6 +615,18 @@ fn migrate_004(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Schema v5 — keystroke macros (doc 12): `steps` is a JSON array of
+/// `{"delay_ms": …, "keys": [bytes]}`. Idempotent like v1.
+const MIGRATION_005: &str = r#"
+CREATE TABLE IF NOT EXISTS macros (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    steps       TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"#;
+
 /// First-run seed (doc 06 §Default Data). The hotkey rows are
 /// informational (`is_default = 1` rows never load); doc 07's table in
 /// `hotkeys::defaults` is the source of truth.
@@ -631,6 +685,14 @@ fn row_to_folder(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
         parent_id: row.get("parent_id")?,
         sort_order: row.get("sort_order")?,
         icon: row.get("icon")?,
+    })
+}
+
+fn row_to_macro(row: &rusqlite::Row) -> rusqlite::Result<Macro> {
+    Ok(Macro {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        steps: steps_from_json(&row.get::<_, String>("steps")?).map_err(from_sql_error)?,
     })
 }
 

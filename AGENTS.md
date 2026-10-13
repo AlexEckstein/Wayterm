@@ -13,9 +13,9 @@ multi-protocol connection manager and terminal for Linux. Rust + GTK4 +
 VTE, russh SSH, rusqlite, libsecret keyring.
 Repo: github.com/AlexEckstein/Wayterm.
 
-**Current state:** Phases 1–9 are implemented, some with known gaps
+**Current state:** Phases 1–9, 11 and 13 are implemented, some with known gaps
 (doc 10 has the status and the remaining gaps). The design docs
-`docs/01-…` through `docs/11-…` are the source of truth for
+`docs/01-…` through `docs/12-…` are the source of truth for
 architecture.
 
 ## Non-negotiable rules
@@ -96,7 +96,7 @@ Do not disable or bypass checks to get green. Do not push with
 ## Repository layout
 
 ```
-docs/            ← design docs 01–11
+docs/            ← design docs 01–12
 src/terminal/    ← TerminalBackend, VteBackend, FakeBackend (doc 02)
 src/transport/   ← Transport, SSHTransport, SshConnection, supervisor,
                    auth, host keys, credentials, reconnect, TerminalTab (docs 04/11)
@@ -106,7 +106,8 @@ src/rdp/          ← RDP process wrapper + cert policy (doc 08)
 src/store/       ← SQLite session store and model (doc 06)
 src/transfer/    ← session import/export: ssh config, Remmina, MobaXterm, Asbru, JSON (doc 06)
 src/hotkeys/     ← ActionRegistry, HotkeyEngine (doc 07)
-src/ui/          ← GTK window, tabs, dialogs, session tree, sidebar, tray (docs 01/07/09)
+src/macros/      ← macro model, recorder, input tap, key notation, playback (doc 12)
+src/ui/          ← GTK window, tabs, dialogs, session tree, sidebar, macros panel, tray (docs 01/07/09/12)
 tests/           ← integration tests; tests/common is the shared sshd fixture (doc 11)
 packaging/       ← desktop entry, metainfo, Flatpak manifest, AppImage recipe (doc 10)
 scripts/         ← local sshd runners for the integration suites

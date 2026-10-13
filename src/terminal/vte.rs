@@ -13,6 +13,8 @@ use crate::backpressure::PendingQueue;
 /// The built-in backend: the GTK4 VTE widget (doc 02). Main thread only.
 pub struct VteBackend {
     terminal: VteTerminal,
+    /// The queue `commit` feeds, for input `feed_child` cannot carry.
+    input: EventSender,
 }
 
 impl VteBackend {
@@ -22,6 +24,7 @@ impl VteBackend {
         let terminal = VteTerminal::new();
         let sender = EventSender::new(event_tx);
 
+        let input = sender.clone();
         let commit = sender.clone();
         terminal.connect_commit(move |_, data, _| {
             commit.send(TerminalEvent::DataOut(data.as_bytes().to_vec()));
@@ -50,7 +53,7 @@ impl VteBackend {
             }
         });
 
-        Self { terminal }
+        Self { terminal, input }
     }
 }
 
@@ -115,6 +118,18 @@ impl TerminalBackend for VteBackend {
 
     fn write(&self, data: &[u8]) {
         self.terminal.feed(data);
+    }
+
+    /// `feed_child` emits `commit`, so input takes the keystroke path,
+    /// `commit` listeners included. The `commit` binding reads its text
+    /// as a NUL-terminated UTF-8 string, so anything else (`<0xFF>`,
+    /// `<Ctrl-@>`) joins the same queue directly instead — still in order.
+    fn send_input(&self, data: &[u8]) {
+        if std::str::from_utf8(data).is_ok() && !data.contains(&0) {
+            self.terminal.feed_child(data);
+        } else {
+            self.input.send(TerminalEvent::DataOut(data.to_vec()));
+        }
     }
 
     fn set_size(&self, rows: u32, cols: u32) {

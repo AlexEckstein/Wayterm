@@ -1,10 +1,12 @@
-//! GTK4 user interface (docs 01, 07, 09).
+//! GTK4 user interface (docs 01, 07, 09, 12).
 
 pub mod auth_dialog;
 pub mod folder_dialog;
 pub mod hostkey_dialog;
 pub mod icons;
 pub mod import_dialog;
+pub mod macro_editor;
+pub mod macros_panel;
 pub mod main_window;
 pub mod rdp_tab;
 pub mod session_dialog;
@@ -46,6 +48,9 @@ mod gtk_tests {
         super::sftp_sidebar::gtk_tests::follow_checkbox_toggles_following();
         super::side_dock::gtk_tests::icon_tabs_switch_the_panel();
         super::side_dock::gtk_tests::sftp_panel_follows_the_current_tab();
+        super::macro_editor::gtk_tests::editor_rows_follow_the_draft();
+        super::macros_panel::gtk_tests::panel_lists_macros_and_needs_a_terminal();
+        super::macros_panel::gtk_tests::panel_records_and_plays_through_the_terminal();
         super::icons::gtk_tests::custom_svg_resolves_and_picker_round_trips();
         super::folder_dialog::gtk_tests::edit_folder_prefills_name_and_icon();
         super::settings::gtk_tests::pages_and_general_switches();

@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 use vte4::prelude::*;
 use zeroize::Zeroizing;
 
+use crate::macros::InputTap;
 use crate::sftp::ShellCwdProbe;
 use crate::store::model::{AuthMethod, ForwardRule, HostKeyPolicy, SessionConfig, SessionType};
 use crate::store::SessionStore;
@@ -72,6 +73,7 @@ const PAGE_STATUS_KEY: &str = "wayterm-page-status";
 const TERM_TAB_KEY: &str = "wayterm-terminal-tab";
 const CONNECT_GEN_KEY: &str = "wayterm-connect-gen";
 const TERMINAL_BACKEND_KEY: &str = "wayterm-terminal-backend";
+const INPUT_TAP_KEY: &str = "wayterm-input-tap";
 const SESSION_KEY: &str = "wayterm-session-config";
 const PAGE_EVENTS_KEY: &str = "wayterm-page-events";
 const REDIAL_KEY: &str = "wayterm-redial-reply";
@@ -168,6 +170,22 @@ impl SessionTab {
     /// target).
     pub fn active_terminal(notebook: &gtk4::Notebook) -> Option<Arc<dyn TerminalBackend>> {
         data(&current_page(notebook)?, TERMINAL_BACKEND_KEY)
+    }
+
+    /// The current tab's input tap, once connected (the macro recorder's
+    /// target, doc 12).
+    pub fn active_input_tap(notebook: &gtk4::Notebook) -> Option<InputTap> {
+        data(&current_page(notebook)?, INPUT_TAP_KEY)
+    }
+
+    /// Give `page` its connected terminal and the tap on its input.
+    pub(in crate::ui) fn set_terminal_for_page(
+        page: &gtk4::Widget,
+        backend: Arc<dyn TerminalBackend>,
+        tap: InputTap,
+    ) {
+        set_data(page, TERMINAL_BACKEND_KEY, backend);
+        set_data(page, INPUT_TAP_KEY, tap);
     }
 }
 
@@ -476,6 +494,8 @@ async fn finish_connect(
     }
 
     let main_ctx = glib::MainContext::default();
+    // Macro recording listens between the terminal and the pump (doc 12).
+    let (handle, input_tap) = InputTap::wrap(handle, &main_ctx);
     let wired = TerminalTab::new(session, conn.clone(), handle, &main_ctx, rows, cols);
     let (terminal_tab, state_rx) = match wired {
         Ok(wired) => wired,
@@ -483,7 +503,7 @@ async fn finish_connect(
     };
     let (host, port) = status_endpoint(session, terminal_tab.description());
     terminal_slot(page).replace(Some(terminal_tab));
-    set_data(page, TERMINAL_BACKEND_KEY, backend);
+    SessionTab::set_terminal_for_page(page, backend, input_tap);
     let cancel =
         tab_resilience::register_connected_tab(session.id, redial_fn(notebook, page, session.id));
     let events = page_events(notebook, page, session, host, port);

@@ -12,6 +12,8 @@ use std::path::PathBuf;
 
 use rusqlite::OptionalExtension;
 
+use crate::macros::MacroStep;
+
 use super::*;
 
 /// Names of the `type='table'` rows `open` must create (doc 06).
@@ -22,6 +24,7 @@ const TABLES: &[&str] = &[
     "settings",
     "connection_history",
     "rdp_trust",
+    "macros",
 ];
 
 /// Names of the indexes `open` must create (doc 06 §"Database Schema").
@@ -772,4 +775,61 @@ fn rdp_trust_rerecord_replaces_fingerprint_but_keeps_first_seen() {
         first,
         "re-recording must not move first_seen"
     );
+}
+
+fn macro_named(name: &str, steps: &[(u32, &[u8])]) -> Macro {
+    Macro {
+        id: 0,
+        name: name.into(),
+        steps: steps
+            .iter()
+            .map(|&(delay_ms, keys)| MacroStep {
+                delay_ms,
+                keys: keys.to_vec(),
+            })
+            .collect(),
+    }
+}
+
+/// Doc 12: macros roundtrip byte-exact (non-UTF-8 included), list by
+/// name case-insensitively, update in place, and delete.
+#[test]
+fn macro_crud_roundtrip() {
+    let store = SessionStore::in_memory().unwrap();
+    assert!(store.list_macros().unwrap().is_empty());
+
+    let mut deploy = macro_named("deploy", &[(0, b"l"), (180, b"s\r"), (5, &[0xff, 0])]);
+    deploy.id = store.insert_macro(&deploy).unwrap();
+    let mut backup = macro_named("Backup", &[(0, b"\x1b[A")]);
+    backup.id = store.insert_macro(&backup).unwrap();
+    assert_eq!(
+        store.list_macros().unwrap(),
+        [backup.clone(), deploy.clone()]
+    );
+
+    deploy.name = "zz deploy".into();
+    deploy.steps.remove(0);
+    store.update_macro(&deploy).unwrap();
+    assert_eq!(
+        store.list_macros().unwrap(),
+        [backup.clone(), deploy.clone()]
+    );
+
+    store.delete_macro(backup.id).unwrap();
+    assert_eq!(store.list_macros().unwrap(), [deploy]);
+}
+
+/// A database opened before macros existed gains the table on open.
+#[test]
+fn macros_table_is_added_to_an_existing_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.sqlite3");
+    SessionStore::open(&path).unwrap();
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TABLE macros;").unwrap();
+    }
+    let store = SessionStore::open(&path).unwrap();
+    let id = store.insert_macro(&macro_named("m", &[(0, b"x")])).unwrap();
+    assert_eq!(store.list_macros().unwrap()[0].id, id);
 }
