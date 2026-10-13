@@ -81,7 +81,19 @@ jobs:
     needs: [detect]
     # job-level hashFiles() is unavailable before checkout, hence `detect`
     if: needs.detect.outputs.has_rust == 'true'
+    env:
+      # Full debug info makes each GTK test binary ~280 MB, and the ~20 of
+      # them filled the runner's disk (`ld` bus errors, "No space left on
+      # device"). Line tables keep file:line in panics and backtraces.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
+      # Preinstalled toolchains this job never uses take well over 10 GB.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - uses: actions/checkout@v4
 
       - name: Install GTK4 / VTE build deps
