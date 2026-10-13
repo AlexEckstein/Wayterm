@@ -14,7 +14,7 @@ use crate::store::model::{AuthMethod, SessionConfig, SessionType};
 const ROOT: &str = "__PAC__ROOT__";
 
 /// Fields read here (or deliberately structural).
-const KNOWN_FIELDS: [&str; 11] = [
+const KNOWN_FIELDS: [&str; 10] = [
     "_is_group",
     "name",
     "parent",
@@ -25,7 +25,6 @@ const KNOWN_FIELDS: [&str; 11] = [
     "user",
     "auth type",
     "public key",
-    "description",
 ];
 
 pub fn parse(text: &str) -> Result<Parsed, ImportError> {
@@ -113,7 +112,6 @@ pub fn parse(text: &str) -> Result<Parsed, ImportError> {
             host: Some(host),
             port,
             username: text_field(entry, "user"),
-            notes: text_field(entry, "description"),
             ..SessionConfig::default()
         };
         if session.session_type == SessionType::SSH {

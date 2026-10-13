@@ -172,7 +172,6 @@ pub struct SessionConfig {
     pub icon: Option<String>,
 
     // Metadata.
-    pub notes: Option<String>,
     pub last_connected: Option<String>,
     pub connect_count: u32,
 }

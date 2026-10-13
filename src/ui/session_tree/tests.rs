@@ -137,7 +137,6 @@ fn session_persists_across_fresh_connection() {
         port: Some(22),
         username: Some("admin".to_string()),
         auth_method: Some(crate::store::model::AuthMethod::Key),
-        notes: Some("production database".to_string()),
         ..Default::default()
     };
     let id = store_a.insert_session(&session).unwrap();
@@ -152,5 +151,4 @@ fn session_persists_across_fresh_connection() {
         loaded.auth_method,
         Some(crate::store::model::AuthMethod::Key)
     );
-    assert_eq!(loaded.notes, Some("production database".to_string()));
 }

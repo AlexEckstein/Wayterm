@@ -131,7 +131,6 @@ fn session_config_json_roundtrip() {
         font_size: Some(12.5),
         opacity: Some(0.9),
         icon: Some("wayterm-homelab".to_string()),
-        notes: Some("primary db".to_string()),
         last_connected: Some("2026-10-02T12:00:00Z".to_string()),
         connect_count: 17,
     };
@@ -178,7 +177,6 @@ fn session_config_json_roundtrip() {
     assert_eq!(rt.font_size, cfg.font_size);
     assert_eq!(rt.opacity, cfg.opacity);
     assert_eq!(rt.icon, cfg.icon);
-    assert_eq!(rt.notes, cfg.notes);
     assert_eq!(rt.last_connected, cfg.last_connected);
     assert_eq!(rt.connect_count, cfg.connect_count);
 }
@@ -443,7 +441,6 @@ fn pre_per_type_field_json_round_trips_with_per_type_fields_preserved() {
         "font_family": null,
         "font_size": null,
         "opacity": null,
-        "notes": null,
         "last_connected": null,
         "connect_count": 0
     }"#;

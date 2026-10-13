@@ -39,7 +39,6 @@ pub struct DialogFields {
     pub auth_index: u32,
     /// Icon name; empty = the type's default.
     pub icon: String,
-    pub notes: String,
     pub tmux_enabled: bool,
     /// As shown: the full `wayterm-<suffix>` name.
     pub tmux_session_name: String,
@@ -78,7 +77,6 @@ impl Default for DialogFields {
             username: String::new(),
             auth_index: 0,
             icon: String::new(),
-            notes: String::new(),
             tmux_enabled: false,
             tmux_session_name: String::new(),
             serial_device: String::new(),
@@ -331,7 +329,6 @@ pub fn config_from_fields(
         tmux_enabled: fields.tmux_enabled,
         tmux_session_name,
         icon: trimmed_opt(&fields.icon),
-        notes: trimmed_opt(&fields.notes),
         last_connected: fields.last_connected.clone(),
         connect_count: fields.connect_count,
         ..Default::default()

@@ -133,7 +133,6 @@ fn edit_mode_preserves_identity_fields() {
         type_index: 0,
         folder_index: 1,
         auth_index: 1,
-        notes: "note".to_string(),
         ..Default::default()
     };
 
@@ -171,18 +170,6 @@ fn port_too_large_falls_back_to_twenty_two() {
 }
 
 #[test]
-fn notes_round_trip() {
-    let folders = sample_folders();
-    let notes = "Line one\nLine two\n  padded  ".to_string();
-    let fields = DialogFields {
-        notes: notes.clone(),
-        ..Default::default()
-    };
-    let config = config_from_fields(&fields, &folders, &[]);
-    assert_eq!(config.notes, Some(notes.trim().to_string()));
-}
-
-#[test]
 fn icon_is_trimmed_and_blank_means_default() {
     let chosen = DialogFields {
         icon: " wayterm-homelab ".to_string(),
@@ -206,14 +193,12 @@ fn empty_optional_strings_become_none() {
         name: "   ".to_string(),
         host: "   ".to_string(),
         username: "   ".to_string(),
-        notes: "   ".to_string(),
         ..Default::default()
     };
     let config = config_from_fields(&fields, &folders, &[]);
     assert_eq!(config.name, "");
     assert_eq!(config.host, None);
     assert_eq!(config.username, None);
-    assert_eq!(config.notes, None);
 }
 
 #[test]

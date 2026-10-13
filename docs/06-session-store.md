@@ -10,9 +10,10 @@ database (`$XDG_DATA_HOME/wayterm/wayterm.sqlite3`) through `rusqlite`
 `SessionStore::open` turns on `journal_mode=WAL` and `foreign_keys`, then
 applies this schema (with `IF NOT EXISTS`) and, on a fresh database, the
 seed below. There is no migration framework yet: later additions are
-idempotent steps run on every open — the `rdp_trust` table (doc 08) and
+idempotent steps run on every open — the `rdp_trust` table (doc 08),
 `sessions.icon`, which `ALTER TABLE` adds to databases created before
-it existed.
+it existed, and dropping the retired `sessions.notes` column from
+databases that still have it.
 
 ```sql
 -- Session folders for tree organization
@@ -92,8 +93,7 @@ CREATE TABLE sessions (
     last_connected   TEXT,
     connect_count    INTEGER DEFAULT 0,
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    notes            TEXT
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Global hotkey bindings
