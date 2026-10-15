@@ -41,6 +41,17 @@ serde_yaml_ng = "0.10"
 oo7 = "0.6"
 pollster = "0.4"
 
+[build-dependencies]
+# Compiles the libghostty-vt shim (src/terminal/ghostty/shim.c); only with
+# the backend-ghostty feature.
+cc = { version = "1", optional = true }
+
+[features]
+# Experimental second terminal backend over libghostty-vt (docs 02, 03, 05).
+# Off by default; needs the pinned library built locally
+# (docs/plans/phase10-pin.md).
+backend-ghostty = ["dep:cc"]
+
 [dev-dependencies]
 des = "0.9"
 tempfile = "3"
