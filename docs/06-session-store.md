@@ -235,7 +235,10 @@ Boolean settings are on unless explicitly `0`/`false`/`no`/`off`; a
 missing or unreadable row is on, so a typo never disables a safety prompt.
 
 The Settings window's General page switches `confirm_close`,
-`reconnect_on_drop`, `sftp_on_connect`, and `minimize_to_tray`. Each flip
+`reconnect_on_drop`, `sftp_on_connect`, `minimize_to_tray`, and — when
+the `backend-ghostty` build feature is present — the "Experimental
+Ghostty terminal" check box that writes `default_backend` (`vte` or
+`ghostty`, doc 05). Each flip
 writes `1`/`0` at once and applies live: the first two count from the
 next tab close or connection drop, open tabs included; `sftp_on_connect`
 governs tabs opened or connected afterwards; the tray setting is read at
