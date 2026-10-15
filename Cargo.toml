@@ -52,6 +52,14 @@ cc = { version = "1", optional = true }
 # (docs/plans/phase10-pin.md).
 backend-ghostty = ["dep:cc"]
 
+# VTE vs libghostty-vt parse throughput (doc 03 §Benchmark). A plain
+# `harness = false` loop: a bench framework would be a dev-dependency built
+# into every default test build, feature or not.
+[[bench]]
+name = "terminal_parse"
+harness = false
+required-features = ["backend-ghostty"]
+
 [dev-dependencies]
 des = "0.9"
 tempfile = "3"
