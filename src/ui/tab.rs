@@ -35,18 +35,18 @@ use zeroize::Zeroizing;
 
 use crate::macros::InputTap;
 use crate::sftp::ShellCwdProbe;
-use crate::store::model::{AuthMethod, ForwardRule, HostKeyPolicy, SessionConfig, SessionType};
+use crate::store::model::{ForwardRule, HostKeyPolicy, SessionConfig, SessionType};
 use crate::store::SessionStore;
 use crate::terminal::{create_terminal, TerminalBackend};
-use crate::transport::connection::{self, SshConnection};
+use crate::transport::connection::SshConnection;
 use crate::transport::credentials::{
     BitwardenSource, CredentialManager, CredentialSource, KeyringSource, PromptSource,
 };
 use crate::transport::forward::{ForwardEngine, ForwardEvent};
 use crate::transport::hostkey::HostKeyVerifier;
-use crate::transport::jump::{self, HopInputs};
+use crate::transport::jump;
 use crate::transport::reconnect::{ConnectFn, ConnectFuture};
-use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor};
+use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor, HopAuth};
 use crate::transport::tab::TerminalTab;
 use crate::transport::types::{TransportError, TransportEvent, TransportState};
 use crate::ui::auth_dialog::{self, ChallengePrompt};
@@ -277,10 +277,7 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
     publish_status(page, TransportState::Connecting, &host, port);
 
     let store = page_store(page);
-    let verifier = host_key_verifier(session, store.as_deref());
-    let responder = auth_dialog::challenge_responder(session.name.clone());
-    let creds = credential_manager(session.id, &session.name, store.as_deref());
-    let method = transport_auth_method(session);
+    let auth = hop_auth(session, store.as_deref());
     let params = ConnectParams {
         host: host.clone(),
         port,
@@ -297,41 +294,22 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         else {
             return;
         };
-        // Each hop authenticates with its own session's method and
-        // credentials (doc 11): fresh managers, verifiers and responders.
-        let jump_verifier = host_key_verifier(&jump_cfg, store.as_deref());
-        let jump_responder = auth_dialog::challenge_responder(jump_cfg.name.clone());
-        let jump_creds = credential_manager(jump_cfg.id, &jump_cfg.name, store.as_deref());
+        // Each hop authenticates as its own session (doc 11).
+        let jump_auth = hop_auth(&jump_cfg, store.as_deref());
         // Plain data: the blocking pool owns this copy (`Rc` is not `Send`).
         let target: SessionConfig = (**session).clone();
         tokio::task::spawn_blocking(move || {
-            let jump_hop = HopInputs {
-                creds: &jump_creds,
-                verifier: jump_verifier,
-                responder: Some(jump_responder),
-            };
-            let target_hop = HopInputs {
-                creds: &creds,
-                verifier,
-                responder: Some(responder),
-            };
             tokio::runtime::Handle::current().block_on(jump::dial_with_jump(
                 &supervisor,
                 &jump_cfg,
-                jump_hop,
+                &jump_auth,
                 &target,
-                target_hop,
+                &auth,
             ))
         })
     } else {
         tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(supervisor.get_or_connect(
-                &params,
-                &method,
-                &creds,
-                verifier,
-                Some(responder),
-            ))
+            tokio::runtime::Handle::current().block_on(supervisor.get_or_connect(&params, &auth))
         })
     };
 
@@ -359,15 +337,21 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
     });
 }
 
-/// The prompt-backed verifier for one hop, under the session's own
-/// host-key policy, else the global one (doc 11 §Policy) — strict when the
-/// page has no store to read it from.
-fn host_key_verifier(session: &SessionConfig, store: Option<&SessionStore>) -> HostKeyVerifier {
+/// How the hop `session` describes authenticates (doc 11): its stored
+/// method, its own credential chain, a prompt-backed host-key check under
+/// its own policy — else the global one, or strict when the page has no
+/// store to read that from — and the challenge dialog.
+fn hop_auth(session: &SessionConfig, store: Option<&SessionStore>) -> HopAuth {
     let policy = session
         .host_key_policy
         .clone()
         .unwrap_or_else(|| store.map_or(HostKeyPolicy::Strict, SessionStore::host_key_policy));
-    HostKeyVerifier::new(policy, hostkey_dialog::host_key_prompt(), None)
+    HopAuth {
+        method: jump::hop_auth_method(session),
+        creds: credential_manager(session.id, &session.name, store),
+        verifier: HostKeyVerifier::new(policy, hostkey_dialog::host_key_prompt(), None),
+        responder: Some(auth_dialog::challenge_responder(session.name.clone())),
+    }
 }
 
 /// Whether `session` dials through a bastion (doc 11 §Jump hosts): SSH
@@ -887,21 +871,6 @@ fn tab_title(session_name: &str, terminal_title: &str) -> String {
     match terminal_title.trim() {
         "" => session_name.to_string(),
         title => title.to_string(),
-    }
-}
-
-/// Map the stored method onto the auth chain's input. Secrets are never on
-/// the row: the chain asks the credential manager at connect time.
-fn transport_auth_method(session: &SessionConfig) -> connection::AuthMethod {
-    match session.auth_method.clone().unwrap_or(AuthMethod::Password) {
-        AuthMethod::Password => connection::AuthMethod::Password(String::new()),
-        AuthMethod::Key => connection::AuthMethod::Key {
-            path: session.key_path.clone().unwrap_or_default(),
-            passphrase: None,
-        },
-        AuthMethod::Agent => connection::AuthMethod::Agent,
-        AuthMethod::KeyboardInteractive => connection::AuthMethod::KeyboardInteractive,
-        AuthMethod::None => connection::AuthMethod::None,
     }
 }
 

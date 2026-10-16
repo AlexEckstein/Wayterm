@@ -1,6 +1,7 @@
 use super::*;
 use crate::store::model::HostKeyPolicy;
-use crate::transport::hostkey::HostKeyDecision;
+use crate::transport::credentials::CredentialManager;
+use crate::transport::hostkey::{HostKeyDecision, HostKeyVerifier};
 
 fn verifier() -> HostKeyVerifier {
     HostKeyVerifier::new(
@@ -77,24 +78,26 @@ fn hop_params_defaults_to_port_22_and_rejects_blanks() {
 }
 
 #[test]
-fn hop_auth_method_mirrors_the_connect_flow_mapping() {
+fn auth_methods_map_without_secrets() {
     let mut cfg = session(1, "s", None);
-    assert!(matches!(hop_auth_method(&cfg), AuthMethod::Password(_)));
-    cfg.auth_method = Some(StoredMethod::Key);
-    cfg.key_path = Some("/keys/k".to_string());
-    assert!(matches!(
-        hop_auth_method(&cfg),
-        AuthMethod::Key { path, .. } if path == "/keys/k"
-    ));
-    cfg.auth_method = Some(StoredMethod::Agent);
-    assert!(matches!(hop_auth_method(&cfg), AuthMethod::Agent));
-    cfg.auth_method = Some(StoredMethod::KeyboardInteractive);
-    assert!(matches!(
-        hop_auth_method(&cfg),
-        AuthMethod::KeyboardInteractive
-    ));
-    cfg.auth_method = Some(StoredMethod::None);
-    assert!(matches!(hop_auth_method(&cfg), AuthMethod::None));
+    cfg.key_path = Some("/k/id_ed25519".into());
+    for (stored, expected) in [
+        (None, "Password(\"\")"),
+        (Some(StoredMethod::Password), "Password(\"\")"),
+        (
+            Some(StoredMethod::Key),
+            "Key { path: \"/k/id_ed25519\", passphrase: None }",
+        ),
+        (Some(StoredMethod::Agent), "Agent"),
+        (
+            Some(StoredMethod::KeyboardInteractive),
+            "KeyboardInteractive",
+        ),
+        (Some(StoredMethod::None), "None"),
+    ] {
+        cfg.auth_method = stored;
+        assert_eq!(format!("{:?}", hop_auth_method(&cfg)), expected);
+    }
 }
 
 #[test]
@@ -167,24 +170,23 @@ async fn ssh_w_spawn_path_against_a_closed_port() {
     };
     // Port 9 on loopback is (almost) always closed: `ssh` exits
     // promptly with "Connection refused" on stderr (nulled here).
-    let target = JumpTarget {
-        params: ConnectParams {
-            host: "inner.test".to_string(),
-            port: 22,
-            username: "user".to_string(),
-        },
+    let target = ConnectParams {
+        host: "inner.test".to_string(),
+        port: 22,
+        username: "user".to_string(),
+    };
+    let auth = HopAuth {
         method: AuthMethod::None,
-        creds: &CredentialManager::new(vec![]),
+        creds: CredentialManager::new(vec![]),
         verifier: verifier(),
         responder: None,
-        ssh_w_fallback: true,
     };
-    let stream = SshWStream::spawn(&jump, &target.params.host, target.params.port)
+    let stream = SshWStream::spawn(&jump, &target.host, target.port)
         .await
         .expect("spawning ssh must succeed; the failure comes through the stream");
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        connect_inner(stream, &target),
+        connect_inner(stream, &target, &auth),
     )
     .await;
     match result {

@@ -29,28 +29,6 @@ fn status_endpoint_uses_the_description_only_without_a_host() {
 }
 
 #[test]
-fn auth_methods_map_without_secrets() {
-    let mut config = SessionConfig {
-        key_path: Some("/k/id_ed25519".into()),
-        ..Default::default()
-    };
-    for (stored, expected) in [
-        (None, "Password(\"\")"),
-        (Some(AuthMethod::Password), "Password(\"\")"),
-        (
-            Some(AuthMethod::Key),
-            "Key { path: \"/k/id_ed25519\", passphrase: None }",
-        ),
-        (Some(AuthMethod::Agent), "Agent"),
-        (Some(AuthMethod::KeyboardInteractive), "KeyboardInteractive"),
-        (Some(AuthMethod::None), "None"),
-    ] {
-        config.auth_method = stored;
-        assert_eq!(format!("{:?}", transport_auth_method(&config)), expected);
-    }
-}
-
-#[test]
 fn jump_dial_needs_ssh_with_a_jump_host() {
     let ssh_jumped = SessionConfig {
         session_type: SessionType::SSH,

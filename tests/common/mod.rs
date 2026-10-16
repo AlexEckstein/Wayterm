@@ -21,6 +21,7 @@ use wayterm::transport::auth::{ChallengePrompt, ChallengeResponder};
 use wayterm::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
 use wayterm::transport::credentials::{CredentialManager, PromptSource};
 use wayterm::transport::hostkey::{HostKeyDecision, HostKeyVerifier};
+use wayterm::transport::supervisor::HopAuth;
 use wayterm::transport::types::TransportEvent;
 
 pub struct Fixture {
@@ -89,6 +90,28 @@ pub fn password_responder(password: &str) -> ChallengeResponder {
                 .collect(),
         )
     })
+}
+
+/// Password auth with `password`, for the lookup and the chain's retry
+/// prompt alike, accepting any host key.
+pub fn password_auth(password: &str) -> HopAuth {
+    HopAuth {
+        method: AuthMethod::Password(String::new()),
+        creds: password_creds(password),
+        verifier: accept_all_verifier(),
+        responder: Some(password_responder(password)),
+    }
+}
+
+/// No method, no credentials, no prompts: for guards that fire before any
+/// dial.
+pub fn no_auth() -> HopAuth {
+    HopAuth {
+        method: AuthMethod::None,
+        creds: CredentialManager::new(vec![]),
+        verifier: accept_all_verifier(),
+        responder: None,
+    }
 }
 
 /// Answers every prompt with `answer` (keyboard-interactive via PAM).

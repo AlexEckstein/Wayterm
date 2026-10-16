@@ -7,9 +7,9 @@
 //! the inner hop through the same [`AppClientHandler`] path, never skipped.
 //!
 //! Shape: [`dial_with_jump`] is the config-level entry the connect flow
-//! will call (it resolves both hops from their [`SessionConfig`] rows,
-//! checks depth, dials the jump hop through the supervisor, then hands the
-//! live jump connection to [`dial_via_jump`]). [`dial_via_jump`] takes an
+//! calls (it resolves both hops from their [`SessionConfig`] rows, checks
+//! depth, dials the jump hop through the supervisor, then hands the live
+//! jump connection to [`dial_via_jump`]). [`dial_via_jump`] takes an
 //! already-connected jump [`SshConnection`], which keeps it testable
 //! against a single sshd and keeps the supervisor pool out of the inner
 //! (stream-backed) connection — the inner connection is intentionally NOT
@@ -23,33 +23,11 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::store::model::{AuthMethod as StoredMethod, SessionConfig};
-use crate::transport::auth::ChallengeResponder;
 use crate::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
-use crate::transport::credentials::CredentialManager;
-use crate::transport::hostkey::HostKeyVerifier;
-use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor};
+use crate::transport::supervisor::{
+    authenticated, connect_error, ConnectParams, ConnectionSupervisor, HopAuth,
+};
 use crate::transport::types::TransportError;
-
-/// Per-hop secrets and prompts. Each hop authenticates with its own
-/// session's method and credentials — the jump hop's auth is the jump
-/// session's, the inner's is the target's.
-pub struct HopInputs<'a> {
-    pub creds: &'a CredentialManager,
-    pub verifier: HostKeyVerifier,
-    pub responder: Option<ChallengeResponder>,
-}
-
-/// Everything [`dial_via_jump`] needs about the target hop.
-pub struct JumpTarget<'a> {
-    pub params: ConnectParams,
-    pub method: AuthMethod,
-    pub creds: &'a CredentialManager,
-    pub verifier: HostKeyVerifier,
-    pub responder: Option<ChallengeResponder>,
-    /// `sessions.ssh_options.ssh_w_fallback`: when the jump hop rejects
-    /// direct-tcpip, spawn `ssh -W` as the stream instead.
-    pub ssh_w_fallback: bool,
-}
 
 /// Depth and self-jump checks (doc 11: depth ≤ 1). Pure so the connect flow
 /// and tests can call it without dialing anything.
@@ -103,9 +81,9 @@ pub fn hop_params(config: &SessionConfig) -> Result<ConnectParams, TransportErro
     })
 }
 
-/// Map the stored method onto the auth chain's input. Mirrors
-/// `ui::tab::transport_auth_method`: secrets are never on the row, the
-/// chain asks the credential manager at connect time.
+/// Map the stored method onto the auth chain's input, for any hop, jumped
+/// or not. Secrets are never on the row: the chain asks the credential
+/// manager at connect time.
 pub fn hop_auth_method(config: &SessionConfig) -> AuthMethod {
     match config.auth_method.clone().unwrap_or(StoredMethod::Password) {
         StoredMethod::Password => AuthMethod::Password(String::new()),
@@ -120,108 +98,86 @@ pub fn hop_auth_method(config: &SessionConfig) -> AuthMethod {
 }
 
 /// Config-level jump dial for the connect flow: check the chain, dial the
-/// jump hop through the supervisor with the jump session's own params/auth,
-/// then dial the target over it. Cancellation from either hop's auth
-/// propagates as [`TransportError::Cancelled`].
+/// jump hop through the supervisor with `jump_auth`, then dial the target
+/// over it with `target_auth` — each hop authenticating as its own session
+/// (doc 11). Cancellation from either hop's auth propagates as
+/// [`TransportError::Cancelled`].
 ///
 /// The returned connection is NOT pooled: it is backed by a jump channel,
 /// not a TCP endpoint the pool key could describe.
 pub async fn dial_with_jump(
     supervisor: &ConnectionSupervisor,
     jump_config: &SessionConfig,
-    jump_auth: HopInputs<'_>,
+    jump_auth: &HopAuth,
     target_config: &SessionConfig,
-    target_auth: HopInputs<'_>,
+    target_auth: &HopAuth,
 ) -> Result<Arc<SshConnection>, TransportError> {
     check_jump_chain(jump_config, target_config)?;
-    let jump_params = hop_params(jump_config)?;
-    let jump_method = hop_auth_method(jump_config);
-    let jump_conn = supervisor
-        .get_or_connect(
-            &jump_params,
-            &jump_method,
-            jump_auth.creds,
-            jump_auth.verifier,
-            jump_auth.responder,
-        )
-        .await?;
-    let target = JumpTarget {
-        params: hop_params(target_config)?,
-        method: hop_auth_method(target_config),
-        creds: target_auth.creds,
-        verifier: target_auth.verifier,
-        responder: target_auth.responder,
-        ssh_w_fallback: target_config
-            .ssh_options
-            .as_ref()
-            .is_some_and(|o| o.ssh_w_fallback),
-    };
-    let inner = dial_via_jump(&jump_conn, &jump_params, target).await?;
+    let jump = hop_params(jump_config)?;
+    let jump_conn = supervisor.get_or_connect(&jump, jump_auth).await?;
+    let target = hop_params(target_config)?;
+    let ssh_w_fallback = target_config
+        .ssh_options
+        .as_ref()
+        .is_some_and(|o| o.ssh_w_fallback);
+    let inner = dial_via_jump(&jump_conn, &jump, &target, target_auth, ssh_w_fallback).await?;
     Ok(Arc::new(inner))
 }
 
-/// Dial the target over an already-connected jump hop: open direct-tcpip
-/// to the target, run the target's SSH session over the channel stream
-/// with the SAME dial semantics as a direct dial (host-key verification +
-/// auth chain via the supervisor's shared helpers), and return the
-/// target's connection.
+/// Dial `target` over an already-connected jump hop: open direct-tcpip to
+/// it, run its SSH session over the channel stream with the SAME dial
+/// semantics as a direct dial (host-key verification + auth chain via the
+/// supervisor's shared helpers), and return the target's connection.
 ///
-/// When the direct-tcpip open fails and `target.ssh_w_fallback` is set,
-/// spawn `ssh -W` as the stream instead (the child is transport only —
-/// the inner hop still authenticates through the stream). The fallback
-/// triggers on [`TransportError::ConnectionFailed`] as well as
+/// When the direct-tcpip open fails and `ssh_w_fallback` is set
+/// (`sessions.ssh_options.ssh_w_fallback`), spawn `ssh -W` as the stream
+/// instead (the child is transport only — the inner hop still
+/// authenticates through the stream). The fallback triggers on
+/// [`TransportError::ConnectionFailed`] as well as
 /// [`TransportError::ChannelError`]: `open_direct_tcpip` maps russh errors
 /// through `TransportError::from_russh` (always `ConnectionFailed`), so
 /// matching `ChannelError` alone would leave the fallback dead code.
 pub async fn dial_via_jump(
     jump_conn: &Arc<SshConnection>,
     jump: &ConnectParams,
-    target: JumpTarget<'_>,
+    target: &ConnectParams,
+    auth: &HopAuth,
+    ssh_w_fallback: bool,
 ) -> Result<SshConnection, TransportError> {
-    let direct = jump_conn
-        .open_direct_tcpip(&target.params.host, target.params.port)
-        .await;
-    match direct {
-        Ok(channel) => connect_inner(channel.into_stream(), &target).await,
+    match jump_conn.open_direct_tcpip(&target.host, target.port).await {
+        Ok(channel) => connect_inner(channel.into_stream(), target, auth).await,
         Err(err @ (TransportError::ChannelError(_) | TransportError::ConnectionFailed(_)))
-            if target.ssh_w_fallback =>
+            if ssh_w_fallback =>
         {
             eprintln!("Wayterm: jump: direct-tcpip rejected ({err}); falling back to ssh -W");
-            let stream = SshWStream::spawn(jump, &target.params.host, target.params.port).await?;
-            connect_inner(stream, &target).await
+            let stream = SshWStream::spawn(jump, &target.host, target.port).await?;
+            connect_inner(stream, target, auth).await
         }
         Err(err) => Err(err),
     }
 }
 
 /// Run the target's SSH session over `stream`: full host-key verification
-/// (never skipped) plus the standard auth chain, mirroring `dial_ssh`.
+/// (never skipped) plus the standard auth chain, as a direct dial does.
 async fn connect_inner<S>(
     stream: S,
-    target: &JumpTarget<'_>,
+    target: &ConnectParams,
+    auth: &HopAuth,
 ) -> Result<SshConnection, TransportError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let config = Arc::new(Config::default());
     let handler = AppClientHandler::new(
-        target.params.host.clone(),
-        target.params.port,
-        target.params.username.clone(),
-        target.verifier.clone(),
+        target.host.clone(),
+        target.port,
+        target.username.clone(),
+        auth.verifier.clone(),
         None,
     );
-    let handle = client::connect_stream(config, stream, handler)
+    let handle = client::connect_stream(Arc::new(Config::default()), stream, handler)
         .await
-        .map_err(|err| crate::transport::supervisor::connect_error(&target.params.host, err))?;
-    crate::transport::supervisor::wrap_and_authenticate(
-        handle,
-        &target.params,
-        &target.method,
-        target.creds,
-        target.responder.clone(),
-    )
-    .await
+        .map_err(|err| connect_error(&target.host, err))?;
+    authenticated(handle, target, auth).await
 }
 
 /// `ssh -W host:port [user@]host` argv. No secrets ever appear here: the

@@ -16,11 +16,8 @@ use tokio::time::timeout;
 use wayterm::store::model::SessionConfig;
 
 use common::*;
-use wayterm::transport::connection::{AuthMethod, SshConnection};
-use wayterm::transport::credentials::CredentialManager;
-use wayterm::transport::jump::{
-    check_jump_chain, dial_via_jump, dial_with_jump, hop_params, HopInputs, JumpTarget,
-};
+use wayterm::transport::connection::SshConnection;
+use wayterm::transport::jump::{check_jump_chain, dial_via_jump, dial_with_jump, hop_params};
 use wayterm::transport::supervisor::{ConnectParams, ConnectionSupervisor};
 use wayterm::transport::types::TransportError;
 
@@ -91,21 +88,10 @@ async fn jump_path_runs_exec_over_the_inner_channel() {
 
     // Hop 2: the SAME sshd as the "target", reached through direct-tcpip.
     // Host-key verification and auth run for real on the inner stream.
-    let creds = password_creds(&f.password);
-    let target = JumpTarget {
-        params: ConnectParams {
-            host: f.host.clone(),
-            port: f.port,
-            username: f.user.clone(),
-        },
-        method: AuthMethod::Password(String::new()),
-        creds: &creds,
-        verifier: accept_all_verifier(),
-        responder: Some(password_responder(&f.password)),
-        ssh_w_fallback: false,
-    };
+    let target = jump_params.clone();
+    let auth = password_auth(&f.password);
 
-    let inner = dial_via_jump(&jump_conn, &jump_params, target)
+    let inner = dial_via_jump(&jump_conn, &jump_params, &target, &auth, false)
         .await
         .expect("jump dial failed");
     let tag = unique_tag();
@@ -125,17 +111,6 @@ async fn jump_path_runs_exec_over_the_inner_channel() {
 #[tokio::test]
 async fn jump_depth_greater_than_one_fails_before_dialing() {
     let supervisor = ConnectionSupervisor::new();
-    let creds = CredentialManager::new(vec![]);
-    let jump_auth = HopInputs {
-        creds: &creds,
-        verifier: accept_all_verifier(),
-        responder: None,
-    };
-    let target_auth = HopInputs {
-        creds: &creds,
-        verifier: accept_all_verifier(),
-        responder: None,
-    };
     // The jump row itself jumps: depth 2. No fixture needed — the guard
     // fires before any network dial.
     let jump = SessionConfig {
@@ -154,7 +129,7 @@ async fn jump_depth_greater_than_one_fails_before_dialing() {
         jump_session_id: Some(1),
         ..SessionConfig::default()
     };
-    let err = dial_with_jump(&supervisor, &jump, jump_auth, &target, target_auth)
+    let err = dial_with_jump(&supervisor, &jump, &no_auth(), &target, &no_auth())
         .await
         .expect_err("depth > 1 must fail");
     assert!(
@@ -166,17 +141,6 @@ async fn jump_depth_greater_than_one_fails_before_dialing() {
 #[tokio::test]
 async fn jump_to_self_fails_before_dialing() {
     let supervisor = ConnectionSupervisor::new();
-    let creds = CredentialManager::new(vec![]);
-    let jump_auth = HopInputs {
-        creds: &creds,
-        verifier: accept_all_verifier(),
-        responder: None,
-    };
-    let target_auth = HopInputs {
-        creds: &creds,
-        verifier: accept_all_verifier(),
-        responder: None,
-    };
     let row = SessionConfig {
         id: 7,
         name: "itself".to_string(),
@@ -184,7 +148,7 @@ async fn jump_to_self_fails_before_dialing() {
         username: Some("u".to_string()),
         ..SessionConfig::default()
     };
-    let err = dial_with_jump(&supervisor, &row, jump_auth, &row, target_auth)
+    let err = dial_with_jump(&supervisor, &row, &no_auth(), &row, &no_auth())
         .await
         .expect_err("self-jump must fail");
     assert!(

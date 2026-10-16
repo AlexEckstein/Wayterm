@@ -116,56 +116,53 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
     }
 }
 
+/// How one hop authenticates (doc 11 §Flow): the method, where its secrets
+/// come from, the host-key check, and who answers challenges. Each hop of
+/// a jumped connection brings its own.
+pub struct HopAuth {
+    pub method: AuthMethod,
+    pub creds: CredentialManager,
+    pub verifier: HostKeyVerifier,
+    pub responder: Option<ChallengeResponder>,
+}
+
 impl ConnectionSupervisor<SshConnection> {
-    /// The pooled connection for `params`, dialing and authenticating only
-    /// when none is live.
+    /// The pooled connection for `params`, dialing and authenticating with
+    /// `auth` only when none is live.
     pub async fn get_or_connect(
         &self,
         params: &ConnectParams,
-        method: &AuthMethod,
-        creds: &CredentialManager,
-        verifier: HostKeyVerifier,
-        responder: Option<ChallengeResponder>,
+        auth: &HopAuth,
     ) -> Result<Arc<SshConnection>, TransportError> {
         self.get_or_connect_with(params.clone(), || async {
-            let conn = dial_ssh(params, method, creds, verifier, responder).await?;
-            Ok(Arc::new(conn))
+            let handler = AppClientHandler::new(
+                params.host.clone(),
+                params.port,
+                params.username.clone(),
+                auth.verifier.clone(),
+                None,
+            );
+            let handle = client::connect(
+                Arc::new(Config::default()),
+                (params.host.as_str(), params.port),
+                handler,
+            )
+            .await
+            .map_err(|err| connect_error(&params.host, err))?;
+            Ok(Arc::new(authenticated(handle, params, auth).await?))
         })
         .await
     }
-}
-
-async fn dial_ssh(
-    params: &ConnectParams,
-    method: &AuthMethod,
-    creds: &CredentialManager,
-    verifier: HostKeyVerifier,
-    responder: Option<ChallengeResponder>,
-) -> Result<SshConnection, TransportError> {
-    let config = Arc::new(Config::default());
-    let handler = AppClientHandler::new(
-        params.host.clone(),
-        params.port,
-        params.username.clone(),
-        verifier,
-        None,
-    );
-    let handle = client::connect(config, (params.host.as_str(), params.port), handler)
-        .await
-        .map_err(|err| connect_error(&params.host, err))?;
-    wrap_and_authenticate(handle, params, method, creds, responder).await
 }
 
 /// Wrap a fresh russh handle in an [`SshConnection`] and run the auth chain
 /// on it (doc 11 §Flow), disconnecting on failure. Shared by the direct
 /// dial above and the jump dial (`transport::jump`), which arrives with a
 /// handle built over a direct-tcpip channel instead of a TCP socket.
-pub(crate) async fn wrap_and_authenticate(
+pub(crate) async fn authenticated(
     handle: Handle<AppClientHandler>,
     params: &ConnectParams,
-    method: &AuthMethod,
-    creds: &CredentialManager,
-    responder: Option<ChallengeResponder>,
+    auth: &HopAuth,
 ) -> Result<SshConnection, TransportError> {
     let conn = SshConnection::new(
         handle,
@@ -173,7 +170,10 @@ pub(crate) async fn wrap_and_authenticate(
         params.port,
         params.username.clone(),
     );
-    if let Err(err) = conn.authenticate(method, creds, responder).await {
+    let authenticated = conn
+        .authenticate(&auth.method, &auth.creds, auth.responder.clone())
+        .await;
+    if let Err(err) = authenticated {
         let _ = conn.disconnect().await;
         return Err(err);
     }

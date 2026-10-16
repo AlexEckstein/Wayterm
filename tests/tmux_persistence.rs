@@ -39,7 +39,7 @@ use tokio::time::timeout;
 
 use common::*;
 use wayterm::store::model::{SessionConfig, SessionType, TMUX_NAME_PREFIX};
-use wayterm::transport::connection::{AuthMethod, SshConnection};
+use wayterm::transport::connection::SshConnection;
 use wayterm::transport::reconnect::{ConnectFn, ConnectFuture};
 use wayterm::transport::supervisor::{ConnectParams, ConnectionSupervisor};
 use wayterm::transport::tab::create_transport;
@@ -457,13 +457,7 @@ fn supervisor_connect(
         let (config, slot) = (config.clone(), slot.clone());
         Box::pin(async move {
             let connection = supervisor
-                .get_or_connect(
-                    &params,
-                    &AuthMethod::Password(String::new()),
-                    &password_creds(&password),
-                    accept_all_verifier(),
-                    Some(password_responder(&password)),
-                )
+                .get_or_connect(&params, &password_auth(&password))
                 .await?;
             let (mut transport, rx) = ssh_transport(&config, connection);
             transport.connect().await?;
@@ -560,13 +554,7 @@ async fn auto_reconnect_after_a_dropped_connection_keeps_the_program_running() {
         username: f.user.clone(),
     };
     let dropped = supervisor
-        .get_or_connect(
-            &params,
-            &AuthMethod::Password(String::new()),
-            &password_creds(&f.password),
-            accept_all_verifier(),
-            Some(password_responder(&f.password)),
-        )
+        .get_or_connect(&params, &password_auth(&f.password))
         .await
         .expect("the pooled connection");
     let dropped_weak: Weak<SshConnection> = Arc::downgrade(&dropped);
