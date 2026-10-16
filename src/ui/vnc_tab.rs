@@ -42,10 +42,10 @@ use crate::store::model::{SessionConfig, VncOptions};
 use crate::transport::credentials::CredentialManager;
 use crate::transport::types::TransportState;
 use crate::ui::tab::{
-    credential_manager, current_gen, page_store, publish_status, set_terminal_area,
-    show_connecting_view, show_error_view,
+    credential_manager, current_gen, filled, page_store, publish_status, set_terminal_area,
+    show_connecting_view, show_disconnected, show_error_view, show_failure, NO_HOST,
 };
-use crate::ui::widgets::{centered_label, set_data};
+use crate::ui::widgets::set_data;
 use crate::vnc::{
     ClientKeyEvent, ClientMouseEvent, VncEngine, VncPixels, VncSession, VncUiEvent, X11Event,
 };
@@ -453,14 +453,10 @@ pub(crate) fn start(
     gen: u64,
 ) {
     retire_engine(page);
-    let Some(host) = session.host.clone().filter(|host| !host.trim().is_empty()) else {
-        return show_error_view(
-            notebook,
-            page,
-            session,
-            "This session has no host configured.",
-        );
+    let Some(host) = filled(&session.host) else {
+        return show_error_view(notebook, page, session, NO_HOST);
     };
+    let host = host.to_string();
     let port = session.port.unwrap_or(DEFAULT_PORT);
     show_connecting_view(page, &host, port);
     publish_status(page, TransportState::Connecting, &host, port);
@@ -481,15 +477,11 @@ pub(crate) fn start(
         }
         let error = match result {
             Ok(Dial::Ready(engine)) => return attach(&notebook, &page, &session, engine, gen),
-            Ok(Dial::Cancelled) => {
-                set_terminal_area(&page, &centered_label("Disconnected"));
-                return publish_status(&page, TransportState::Disconnected, &host, port);
-            }
+            Ok(Dial::Cancelled) => return show_disconnected(&page, &host, port),
             Ok(Dial::Failed(error)) => error,
             Err(join_err) => format!("connect task failed: {join_err}"),
         };
-        show_error_view(&notebook, &page, &session, &error);
-        publish_status(&page, TransportState::Error(error), &host, port);
+        show_failure(&notebook, &page, &session, &error, &host, port);
     });
 }
 
@@ -547,14 +539,10 @@ fn attach(
                     }
                 }
                 VncUiEvent::Ended(reason) => {
-                    let state = state_for(&event).expect("Ended always maps to a state");
-                    match state {
-                        TransportState::Disconnected => {
-                            set_terminal_area(&page, &centered_label("Disconnected"))
-                        }
-                        _ => show_error_view(&notebook, &page, &session, reason),
+                    match state_for(&event) {
+                        Some(TransportState::Disconnected) => show_disconnected(&page, &host, port),
+                        _ => show_failure(&notebook, &page, &session, reason, &host, port),
                     }
-                    publish_status(&page, state, &host, port);
                     return;
                 }
             }

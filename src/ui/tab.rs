@@ -291,22 +291,11 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         return;
     }
 
-    let filled = |value: &Option<String>| value.clone().filter(|v| !v.trim().is_empty());
-    let Some(host) = filled(&session.host) else {
-        return show_error_view(
-            notebook,
-            page,
-            session,
-            "This session has no host configured.",
-        );
+    let Some(host) = filled(&session.host).map(str::to_string) else {
+        return show_error_view(notebook, page, session, NO_HOST);
     };
-    let Some(username) = filled(&session.username) else {
-        return show_error_view(
-            notebook,
-            page,
-            session,
-            "This session has no username configured.",
-        );
+    let Some(username) = filled(&session.username).map(str::to_string) else {
+        return show_error_view(notebook, page, session, NO_USERNAME);
     };
     let port = session.port.unwrap_or(22);
     let Some(window) = window_of(page) else {
@@ -374,15 +363,27 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
             // A cancelled prompt is a clean disconnect, not an error.
             Ok(Err(err @ (TransportError::Cancelled | TransportError::Disconnected))) => {
                 settle_redial(&page, Err(err));
-                set_terminal_area(&page, &centered_label("Disconnected"));
-                return publish_status(&page, TransportState::Disconnected, &host, port);
+                return show_disconnected(&page, &host, port);
             }
             Ok(Err(err)) => err.to_string(),
             Err(join_err) => format!("connect task failed: {join_err}"),
         };
-        show_error_view(&notebook, &page, &session, &error);
-        publish_status(&page, TransportState::Error(error), &host, port);
+        show_failure(&notebook, &page, &session, &error, &host, port);
     });
+}
+
+/// The error views for a row missing what its dial needs.
+// used by ui::vnc_tab and ui::rdp_tab
+pub(crate) const NO_HOST: &str = "This session has no host configured.";
+pub(crate) const NO_USERNAME: &str = "This session has no username configured.";
+
+/// A row's text field, trimmed; `None` when blank.
+// used by ui::vnc_tab and ui::rdp_tab
+pub(crate) fn filled(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 /// How the hop `session` describes authenticates (doc 11): its stored
@@ -435,8 +436,7 @@ fn resolve_jump_config(
         },
         None => "Jump session lookup unavailable.".to_string(),
     };
-    show_error_view(notebook, page, session, &message);
-    publish_status(page, TransportState::Error(message), host, port);
+    show_failure(notebook, page, session, &message, host, port);
     None
 }
 
@@ -1050,8 +1050,8 @@ pub(crate) fn set_terminal_area(page: &gtk4::Widget, child: &impl IsA<gtk4::Widg
     page.append(child);
 }
 
-/// A centered column for the status views.
-fn view_box() -> gtk4::Box {
+/// A centered column: the layout of every status view.
+fn status_column() -> gtk4::Box {
     let view = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
     view.set_vexpand(true);
     view.set_hexpand(true);
@@ -1060,20 +1060,78 @@ fn view_box() -> gtk4::Box {
     view
 }
 
+/// `text` over a Cancel button that runs `on_cancel`: a dial in progress.
+/// The button lives inside the page, so `on_cancel` must hold the page
+/// weakly, or a tab closed while connecting is never freed.
+// used by ui::rdp_tab
+pub(crate) fn connecting_view(text: &str, on_cancel: impl Fn() + 'static) -> gtk4::Widget {
+    let view = status_column();
+    view.append(&centered_label(text));
+    let cancel = gtk4::Button::with_label("Cancel");
+    cancel.set_halign(gtk4::Align::Center);
+    cancel.connect_clicked(move |_| on_cancel());
+    view.append(&cancel);
+    view.upcast()
+}
+
+/// A heading over a wrapped, selectable `detail`, then `buttons` in a
+/// centered row. Handlers on the buttons must hold the page weakly (see
+/// [`connecting_view`]).
+// used by ui::rdp_tab
+pub(crate) fn notice_view(heading: &str, detail: &str, buttons: &[gtk4::Button]) -> gtk4::Widget {
+    let view = status_column();
+    set_margins(&view, 24);
+    let title = gtk4::Label::new(Some(heading));
+    title.add_css_class("heading");
+    let text = gtk4::Label::new(Some(detail));
+    text.set_wrap(true);
+    text.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
+    text.set_selectable(true);
+    text.set_justify(gtk4::Justification::Center);
+    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+    row.set_halign(gtk4::Align::Center);
+    for button in buttons {
+        row.append(button);
+    }
+    view.append(&title);
+    view.append(&text);
+    view.append(&row);
+    view.upcast()
+}
+
+/// "Connecting to host:port…" with a Cancel that drops the attempt.
 // used by ui::vnc_tab
 pub(crate) fn show_connecting_view(page: &gtk4::Widget, host: &str, port: u16) {
-    let view = view_box();
-    view.append(&centered_label(&format!("Connecting to {host}:{port}…")));
-    let cancel = gtk4::Button::with_label("Cancel");
-    let (page_for_cancel, host) = (page.clone(), host.to_string());
-    cancel.connect_clicked(move |_| {
-        bump_gen(&page_for_cancel);
-        close_terminal(&page_for_cancel);
-        set_terminal_area(&page_for_cancel, &centered_label("Disconnected"));
-        publish_status(&page_for_cancel, TransportState::Disconnected, &host, port);
+    let (weak, host_for_cancel) = (page.downgrade(), host.to_string());
+    let view = connecting_view(&format!("Connecting to {host}:{port}…"), move || {
+        if let Some(page) = weak.upgrade() {
+            bump_gen(&page);
+            close_terminal(&page);
+            show_disconnected(&page, &host_for_cancel, port);
+        }
     });
-    view.append(&cancel);
     set_terminal_area(page, &view);
+}
+
+/// The attempt ended cleanly (a cancelled prompt, Cancel): "Disconnected".
+// used by ui::vnc_tab and ui::rdp_tab
+pub(crate) fn show_disconnected(page: &gtk4::Widget, host: &str, port: u16) {
+    set_terminal_area(page, &centered_label("Disconnected"));
+    publish_status(page, TransportState::Disconnected, host, port);
+}
+
+/// The attempt failed: the error view, and the error on the status bar.
+// used by ui::vnc_tab and ui::rdp_tab
+pub(crate) fn show_failure(
+    notebook: &gtk4::Notebook,
+    page: &gtk4::Widget,
+    session: &Rc<SessionConfig>,
+    message: &str,
+    host: &str,
+    port: u16,
+) {
+    show_error_view(notebook, page, session, message);
+    publish_status(page, TransportState::Error(message.to_string()), host, port);
 }
 
 /// The error message with Retry and Close Tab.
@@ -1091,31 +1149,26 @@ pub(crate) fn show_error_view(
     // An error can arrive after the terminal was built.
     close_terminal(page);
 
-    let view = view_box();
-    set_margins(&view, 24);
-    let heading = gtk4::Label::new(Some("Connection failed"));
-    heading.add_css_class("heading");
-    let detail = gtk4::Label::new(Some(message));
-    detail.set_wrap(true);
-    detail.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
-    detail.set_selectable(true);
-    detail.set_justify(gtk4::Justification::Center);
-
     let retry = gtk4::Button::with_label("Retry");
     retry.add_css_class("suggested-action");
-    let (n, p, s) = (notebook.clone(), page.clone(), session.clone());
-    retry.connect_clicked(move |_| start_connect(&n, &p, &s));
+    {
+        let (notebook, page, session) = (notebook.clone(), page.downgrade(), session.clone());
+        retry.connect_clicked(move |_| {
+            if let Some(page) = page.upgrade() {
+                start_connect(&notebook, &page, &session);
+            }
+        });
+    }
     let close = gtk4::Button::with_label("Close Tab");
-    let (notebook, page_to_close) = (notebook.clone(), page.clone());
-    close.connect_clicked(move |_| close_tab(&notebook, &page_to_close));
-
-    let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    buttons.set_halign(gtk4::Align::Center);
-    buttons.append(&retry);
-    buttons.append(&close);
-    view.append(&heading);
-    view.append(&detail);
-    view.append(&buttons);
+    {
+        let (notebook, page) = (notebook.clone(), page.downgrade());
+        close.connect_clicked(move |_| {
+            if let Some(page) = page.upgrade() {
+                close_tab(&notebook, &page);
+            }
+        });
+    }
+    let view = notice_view("Connection failed", message, &[retry, close]);
     set_terminal_area(page, &view);
 }
 
@@ -1456,6 +1509,40 @@ pub(super) mod gtk_tests {
         }
         assert_eq!(notebook.n_pages(), 0);
         assert!(gone.upgrade().is_none(), "a closed tab's page is freed");
+
+        // A failed connect shows the error view, whose buttons hold the
+        // page weakly: closing that tab frees its page too.
+        let broken = SessionConfig {
+            id: 7_002,
+            name: "broken".into(),
+            local_shell: Some("/nonexistent/wayterm-shell".into()),
+            ..session
+        };
+        let page = SessionTab::open(&notebook, &broken, &store);
+        let shows_error = |page: &gtk4::Widget| {
+            page.first_child()
+                .and_then(|view| view.first_child())
+                .and_downcast::<gtk4::Label>()
+                .is_some_and(|heading| heading.text() == "Connection failed")
+        };
+        while !shows_error(&page) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the missing shell never failed"
+            );
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let gone = page.downgrade();
+        close_tab(&notebook, &page);
+        drop(page);
+        for _ in 0..20 {
+            glib::MainContext::default().iteration(false);
+        }
+        assert!(
+            gone.upgrade().is_none(),
+            "a tab closed on its error is freed"
+        );
         window.destroy();
     }
 }

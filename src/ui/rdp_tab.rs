@@ -82,9 +82,11 @@ use crate::transport::credentials::CredentialManager;
 use crate::transport::types::TransportState;
 use crate::ui::auth_dialog::run_on_gtk_main_thread;
 use crate::ui::tab::{
-    credential_manager, current_gen, page_store, publish_status, set_terminal_area, show_error_view,
+    connecting_view, credential_manager, current_gen, filled, notice_view, page_store,
+    publish_status, set_terminal_area, show_disconnected, show_error_view, show_failure, NO_HOST,
+    NO_USERNAME,
 };
-use crate::ui::widgets::{centered_label, data_or_default, set_data, set_margins};
+use crate::ui::widgets::{centered_label, data_or_default, set_data};
 
 mod preflight;
 mod x11;
@@ -155,13 +157,18 @@ impl Attempt {
     }
 
     fn fail(&self, page: &gtk4::Widget, message: String) {
-        show_error_view(&self.notebook, page, &self.session, &message);
-        self.publish(page, TransportState::Error(message));
+        show_failure(
+            &self.notebook,
+            page,
+            &self.session,
+            &message,
+            &self.host,
+            self.port,
+        );
     }
 
     fn disconnected(&self, page: &gtk4::Widget) {
-        set_terminal_area(page, &centered_label("Disconnected"));
-        self.publish(page, TransportState::Disconnected);
+        show_disconnected(page, &self.host, self.port);
     }
 }
 
@@ -379,27 +386,11 @@ pub(crate) fn start(
 ) {
     retire_slot(page);
     let our_gen = bump_rdp_gen(page);
-    fn filled(value: &Option<String>) -> Option<&str> {
-        value
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    }
     let Some(host) = filled(&session.host) else {
-        return show_error_view(
-            notebook,
-            page,
-            session,
-            "This session has no host configured.",
-        );
+        return show_error_view(notebook, page, session, NO_HOST);
     };
     if filled(&session.username).is_none() {
-        return show_error_view(
-            notebook,
-            page,
-            session,
-            "This session has no username configured.",
-        );
+        return show_error_view(notebook, page, session, NO_USERNAME);
     };
     let (_, version) = match usable_freerdp() {
         Ok(probe) => probe,
@@ -439,30 +430,20 @@ pub(crate) fn start(
 /// Cancel button. Removed at Connected; any error view replaces the whole
 /// overlay.
 fn connecting_overlay(attempt: &Attempt, warning: Option<&str>) -> gtk4::Widget {
-    let view = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    view.set_vexpand(true);
-    view.set_hexpand(true);
-    view.set_valign(gtk4::Align::Center);
-    view.set_halign(gtk4::Align::Center);
     let mut text = format!("Connecting to {}:{}…", attempt.host, attempt.port);
     if let Some(warning) = warning {
         text.push('\n');
         text.push_str(warning);
     }
-    view.append(&centered_label(&text));
-    let cancel = gtk4::Button::with_label("Cancel");
-    cancel.set_halign(gtk4::Align::Center);
     let attempt = attempt.clone();
-    cancel.connect_clicked(move |_| {
+    connecting_view(&text, move || {
         let Some(page) = attempt.page() else {
             return;
         };
         bump_rdp_gen(&page);
         retire_slot(&page);
         attempt.disconnected(&page);
-    });
-    view.append(&cancel);
-    view.upcast()
+    })
 }
 
 /// Poll for the area's XID, then dial; give up after [`XID_POLLS_MAX`]
@@ -799,22 +780,6 @@ impl Maintainer {
 /// The doc-08 choice for Wayland-native GDK: relaunch under X11 or open
 /// xfreerdp un-embedded. Never a silent second window.
 fn show_wayland_choice(attempt: &Attempt, page: &gtk4::Widget) {
-    let view = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    view.set_vexpand(true);
-    view.set_hexpand(true);
-    view.set_valign(gtk4::Align::Center);
-    view.set_halign(gtk4::Align::Center);
-    set_margins(&view, 24);
-    let heading = gtk4::Label::new(Some("RDP embedding needs X11"));
-    heading.add_css_class("heading");
-    let detail = gtk4::Label::new(Some(
-        "This display is Wayland-native, and xfreerdp can only embed into an \
-         X11 window. Relaunch Wayterm under XWayland, or open this session \
-         in a separate xfreerdp window.",
-    ));
-    detail.set_wrap(true);
-    detail.set_wrap_mode(gtk4::pango::WrapMode::WordChar);
-    detail.set_justify(gtk4::Justification::Center);
     let relaunch = gtk4::Button::with_label("Relaunch under GDK_BACKEND=x11");
     relaunch.add_css_class("suggested-action");
     relaunch.connect_clicked(|_| relaunch_under_x11());
@@ -831,13 +796,13 @@ fn show_wayland_choice(attempt: &Attempt, page: &gtk4::Widget) {
         attempt.publish(&page, TransportState::Connecting);
         launch_dial(&attempt, None, None);
     });
-    let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    buttons.set_halign(gtk4::Align::Center);
-    buttons.append(&relaunch);
-    buttons.append(&separate);
-    view.append(&heading);
-    view.append(&detail);
-    view.append(&buttons);
+    let view = notice_view(
+        "RDP embedding needs X11",
+        "This display is Wayland-native, and xfreerdp can only embed into an \
+         X11 window. Relaunch Wayterm under XWayland, or open this session \
+         in a separate xfreerdp window.",
+        &[relaunch, separate],
+    );
     set_terminal_area(page, &view);
 }
 
