@@ -14,6 +14,7 @@ use gtk4::prelude::*;
 
 use crate::hotkeys::HotkeyEngine;
 use crate::store::SessionStore;
+use crate::ui::widgets::set_margins;
 
 /// Stack names of the pages, in sidebar order.
 pub const GENERAL_PAGE: &str = "general";
@@ -85,6 +86,81 @@ fn pages(engine: Rc<RefCell<HotkeyEngine>>, store: Rc<SessionStore>) -> gtk4::St
         "Keyboard Shortcuts",
     );
     stack
+}
+
+/// A page: `children` stacked in a margined column that scrolls vertically.
+fn scrolling_page(children: &[&gtk4::Widget]) -> gtk4::Widget {
+    let column = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    set_margins(&column, 18);
+    for child in children {
+        column.append(*child);
+    }
+    let scrolled = gtk4::ScrolledWindow::builder()
+        .child(&column)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+    scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+    scrolled.upcast()
+}
+
+/// A section heading.
+fn heading(text: &str) -> gtk4::Label {
+    let heading = gtk4::Label::new(Some(text));
+    heading.add_css_class("heading");
+    heading.set_xalign(0.0);
+    heading
+}
+
+/// The boxed list a section's rows go in.
+fn boxed_list() -> gtk4::ListBox {
+    let list = gtk4::ListBox::builder()
+        .selection_mode(gtk4::SelectionMode::None)
+        .build();
+    list.add_css_class("boxed-list");
+    list
+}
+
+/// One list row: `children` side by side.
+fn row(children: &[&gtk4::Widget]) -> gtk4::ListBoxRow {
+    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+    set_margins(&hbox, 12);
+    for child in children {
+        hbox.append(*child);
+    }
+    gtk4::ListBoxRow::builder()
+        .child(&hbox)
+        .activatable(false)
+        .build()
+}
+
+/// `title` over a dimmed `subtitle` (when given), labelling and describing
+/// `control` for assistive technology.
+fn described(title: &str, subtitle: Option<&str>, control: &impl IsA<gtk4::Widget>) -> gtk4::Box {
+    use gtk4::accessible::Relation;
+    let text = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+    text.set_hexpand(true);
+    let title = gtk4::Label::new(Some(title));
+    title.set_xalign(0.0);
+    text.append(&title);
+    let title: [&gtk4::Accessible; 1] = [title.upcast_ref()];
+    let control = control.upcast_ref::<gtk4::Widget>();
+    match subtitle {
+        Some(subtitle) => {
+            let subtitle = gtk4::Label::new(Some(subtitle));
+            subtitle.set_xalign(0.0);
+            subtitle.set_wrap(true);
+            subtitle.add_css_class("dim-label");
+            text.append(&subtitle);
+            let subtitle: [&gtk4::Accessible; 1] = [subtitle.upcast_ref()];
+            control.update_relation(&[
+                Relation::LabelledBy(&title),
+                Relation::DescribedBy(&subtitle),
+            ]);
+        }
+        None => control.update_relation(&[Relation::LabelledBy(&title)]),
+    }
+    text
 }
 
 /// Widget checks; they need a display and run from `ui::gtk_tests`.
