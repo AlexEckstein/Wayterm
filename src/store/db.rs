@@ -12,8 +12,11 @@ use rusqlite::{
 use serde::Serialize;
 
 use crate::macros::model::{steps_from_json, steps_to_json, Macro};
-use crate::store::model::{Folder, SessionConfig};
+use crate::store::model::{Folder, HostKeyPolicy, SessionConfig};
 use crate::ui::tab_state::{self, TabState};
+
+/// The settings row holding the global host-key policy (doc 06).
+pub const HOST_KEY_POLICY_SETTING: &str = "host_key_policy";
 
 /// A SQLite-backed store of session folders and saved sessions. Not
 /// `Send`: the UI shares one through an `Rc` on the main thread.
@@ -248,14 +251,33 @@ impl SessionStore {
             .optional()
     }
 
+    /// One `settings` row; `None` when absent or unreadable (logged), for
+    /// the readers whose default covers both.
+    pub fn setting(&self, key: &str) -> Option<String> {
+        self.get_setting(key).unwrap_or_else(|err| {
+            eprintln!("Wayterm: failed to read setting '{key}': {err}");
+            None
+        })
+    }
+
     /// A boolean settings row (see [`flag_enabled`]). A row that cannot be
     /// read counts as missing, i.e. on.
     pub fn flag(&self, key: &str) -> bool {
-        let value = self.get_setting(key).unwrap_or_else(|err| {
-            eprintln!("Wayterm: failed to read setting '{key}': {err}");
-            None
-        });
-        flag_enabled(value.as_deref())
+        flag_enabled(self.setting(key).as_deref())
+    }
+
+    /// The global host-key policy (doc 11), which a session without its
+    /// own follows. A missing, unreadable or unknown row is strict.
+    pub fn host_key_policy(&self) -> HostKeyPolicy {
+        match self
+            .setting(HOST_KEY_POLICY_SETTING)
+            .as_deref()
+            .map(str::trim)
+        {
+            Some("accept-new") => HostKeyPolicy::AcceptNew,
+            Some("off") => HostKeyPolicy::Off,
+            _ => HostKeyPolicy::Strict,
+        }
     }
 
     /// Upsert one `settings` row.

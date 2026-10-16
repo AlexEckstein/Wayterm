@@ -276,13 +276,9 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
     show_connecting_view(page, &host, port);
     publish_status(page, TransportState::Connecting, &host, port);
 
-    let policy = session
-        .host_key_policy
-        .clone()
-        .unwrap_or(HostKeyPolicy::Strict);
-    let verifier = HostKeyVerifier::new(policy, hostkey_dialog::host_key_prompt(), None);
-    let responder = auth_dialog::challenge_responder(session.name.clone());
     let store = page_store(page);
+    let verifier = host_key_verifier(session, store.as_deref());
+    let responder = auth_dialog::challenge_responder(session.name.clone());
     let creds = credential_manager(session.id, &session.name, store.as_deref());
     let method = transport_auth_method(session);
     let params = ConnectParams {
@@ -303,12 +299,7 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         };
         // Each hop authenticates with its own session's method and
         // credentials (doc 11): fresh managers, verifiers and responders.
-        let jump_policy = jump_cfg
-            .host_key_policy
-            .clone()
-            .unwrap_or(HostKeyPolicy::Strict);
-        let jump_verifier =
-            HostKeyVerifier::new(jump_policy, hostkey_dialog::host_key_prompt(), None);
+        let jump_verifier = host_key_verifier(&jump_cfg, store.as_deref());
         let jump_responder = auth_dialog::challenge_responder(jump_cfg.name.clone());
         let jump_creds = credential_manager(jump_cfg.id, &jump_cfg.name, store.as_deref());
         // Plain data: the blocking pool owns this copy (`Rc` is not `Send`).
@@ -366,6 +357,17 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
         show_error_view(&notebook, &page, &session, &error);
         publish_status(&page, TransportState::Error(error), &host, port);
     });
+}
+
+/// The prompt-backed verifier for one hop, under the session's own
+/// host-key policy, else the global one (doc 11 §Policy) — strict when the
+/// page has no store to read it from.
+fn host_key_verifier(session: &SessionConfig, store: Option<&SessionStore>) -> HostKeyVerifier {
+    let policy = session
+        .host_key_policy
+        .clone()
+        .unwrap_or_else(|| store.map_or(HostKeyPolicy::Strict, SessionStore::host_key_policy));
+    HostKeyVerifier::new(policy, hostkey_dialog::host_key_prompt(), None)
 }
 
 /// Whether `session` dials through a bastion (doc 11 §Jump hosts): SSH
