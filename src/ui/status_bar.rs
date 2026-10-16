@@ -3,7 +3,6 @@
 //! only renders it. Which tab drives it is the window's business.
 
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk4::glib;
@@ -116,18 +115,13 @@ pub fn format_elapsed(secs: u64) -> String {
     }
 }
 
-#[derive(Default)]
-struct TimerState {
-    id: Option<glib::SourceId>,
-    connected_at: Option<Instant>,
-}
-
 /// A coloured dot, the state text, and a per-second timer while connected.
 pub struct StatusBar {
     container: gtk4::Box,
     dot: gtk4::Label,
     label: gtk4::Label,
-    timer: Rc<RefCell<TimerState>>,
+    /// The tick updating the time connected, while connected.
+    timer: RefCell<Option<glib::SourceId>>,
 }
 
 impl StatusBar {
@@ -154,14 +148,9 @@ impl StatusBar {
             container,
             dot,
             label,
-            timer: Rc::new(RefCell::new(TimerState::default())),
+            timer: RefCell::default(),
         };
-        this.render(&status_view_from(
-            &TransportState::Disconnected,
-            "",
-            0,
-            None,
-        ));
+        this.set_state(&TransportState::Disconnected, "", 0);
         this
     }
 
@@ -171,53 +160,25 @@ impl StatusBar {
 
     /// Show `state`; Connected (re)starts the timer, anything else stops it.
     pub fn set_state(&self, state: &TransportState, host: &str, port: u16) {
-        match state {
-            TransportState::Connected => {
-                self.stop_timer();
-                self.start_timer(host, port);
-            }
-            _ => {
-                self.stop_timer();
-                self.render(&status_view_from(state, host, port, None));
-            }
+        self.stop_timer();
+        let connected = *state == TransportState::Connected;
+        self.render(&status_view_from(state, host, port, connected.then_some(0)));
+        if connected {
+            let (label, host, since) = (self.label.clone(), host.to_string(), Instant::now());
+            let tick = glib::timeout_add_local(Duration::from_secs(1), move || {
+                let elapsed = Some(since.elapsed().as_secs());
+                let view = status_view_from(&TransportState::Connected, &host, port, elapsed);
+                label.set_text(&view.text());
+                glib::ControlFlow::Continue
+            });
+            self.timer.replace(Some(tick));
         }
-    }
-
-    fn start_timer(&self, host: &str, port: u16) {
-        let timer = Rc::clone(&self.timer);
-        *timer.borrow_mut() = TimerState {
-            id: None,
-            connected_at: Some(Instant::now()),
-        };
-
-        self.render(&status_view_from(
-            &TransportState::Connected,
-            host,
-            port,
-            Some(0),
-        ));
-
-        let label = self.label.clone();
-        let host = host.to_string();
-        let timer_for_tick = Rc::clone(&timer);
-        let source = glib::timeout_add_local(Duration::from_secs(1), move || {
-            let elapsed = timer_for_tick
-                .borrow()
-                .connected_at
-                .map(|start| start.elapsed().as_secs());
-            let view = status_view_from(&TransportState::Connected, &host, port, elapsed);
-            label.set_text(&view.text());
-            glib::ControlFlow::Continue
-        });
-
-        timer.borrow_mut().id = Some(source);
     }
 
     fn stop_timer(&self) {
-        if let Some(id) = self.timer.borrow_mut().id.take() {
-            id.remove();
+        if let Some(tick) = self.timer.take() {
+            tick.remove();
         }
-        self.timer.borrow_mut().connected_at = None;
     }
 
     fn render(&self, view: &StatusView) {
