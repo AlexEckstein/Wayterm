@@ -291,6 +291,12 @@ fn round_trip_is_stable_a_second_time() {
     assert_eq!(once, twice);
 }
 
+/// The accelerator a captured chord binds as: capture stores the UI
+/// format, and binding converts it like any other stored key.
+fn accel_of(chord: KeyChord) -> Option<String> {
+    ui_key_to_accel(&chord.to_ui_key()?)
+}
+
 /// Capture side: a `gdk::Key` + modifier mask, i.e. what the settings
 /// UI reads off a `gdk::EventKey`.
 #[test]
@@ -308,19 +314,14 @@ fn chord_renders_accel() {
         Key::t,
         ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK,
     );
-    assert_eq!(chord.to_accel().as_deref(), Some("<Control><Shift>t"));
-    assert_eq!(
-        ui_key_to_accel(&chord.to_ui_key().unwrap()).as_deref(),
-        chord.to_accel().as_deref(),
-        "capture and persistence must derive the same accelerator"
-    );
+    assert_eq!(accel_of(chord).as_deref(), Some("<Control><Shift>t"));
 }
 
 #[test]
 fn chord_without_modifiers() {
     let chord = KeyChord::new(Key::F11, ModifierType::empty());
     assert_eq!(chord.to_ui_key().as_deref(), Some("F11"));
-    assert_eq!(chord.to_accel().as_deref(), Some("F11"));
+    assert_eq!(accel_of(chord).as_deref(), Some("F11"));
 }
 
 #[test]
@@ -348,7 +349,7 @@ fn chord_every_modifier() {
         Some("Ctrl+Shift+Alt+Super+Meta+k")
     );
     assert_eq!(
-        chord.to_accel().as_deref(),
+        accel_of(chord).as_deref(),
         Some("<Control><Shift><Alt><Super><Meta>k")
     );
 }
@@ -377,10 +378,10 @@ fn chord_round_trips_through_ui_key() {
         let chord = KeyChord::from_ui_key(ui_key)
             .unwrap_or_else(|| panic!("{ui_key:?} must build a chord from its gdk key"));
         assert_eq!(chord.to_ui_key().as_deref(), Some(expected));
-        assert_eq!(chord.to_accel(), ui_key_to_accel(ui_key));
+        assert_eq!(accel_of(chord), ui_key_to_accel(ui_key));
         assert_eq!(
-            KeyChord::from_ui_key(expected).unwrap().to_accel(),
-            chord.to_accel()
+            accel_of(KeyChord::from_ui_key(expected).unwrap()),
+            accel_of(chord)
         );
     }
 }
