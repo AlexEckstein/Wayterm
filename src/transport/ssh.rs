@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use russh::{client::Msg, ChannelMsg, ChannelWriteHalf};
+use russh::{client::Msg, Channel, ChannelMsg, ChannelWriteHalf};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -47,28 +47,9 @@ impl SSHTransport {
             tmux_session: None,
         }
     }
-}
 
-/// Quote one argument for the remote `/bin/sh -c` (tmux session names may
-/// contain `;` and other metacharacters).
-pub(crate) fn shell_quote(s: &str) -> String {
-    if !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_alphanumeric() || "_-./@+".contains(c))
-    {
-        return s.into();
-    }
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-#[async_trait]
-impl Transport for SSHTransport {
-    async fn connect(&mut self) -> Result<(), TransportError> {
-        if self.state.get() == TransportState::Connected {
-            return Err(TransportError::ChannelError("already connected".into()));
-        }
-        self.state.set(TransportState::Connecting);
-
+    /// A session channel with its PTY, running the shell (or tmux).
+    async fn open_terminal(&self) -> Result<Channel<Msg>, TransportError> {
         let channel = self.connection.open_session_channel().await?;
         channel
             .request_pty(
@@ -92,10 +73,44 @@ impl Transport for SSHTransport {
             None => channel.request_shell(false).await,
         };
         started.map_err(TransportError::from_russh)?;
+        Ok(channel)
+    }
+}
+
+/// Quote one argument for the remote `/bin/sh -c` (tmux session names may
+/// contain `;` and other metacharacters).
+pub(crate) fn shell_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || "_-./@+".contains(c))
+    {
+        return s.into();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[async_trait]
+impl Transport for SSHTransport {
+    async fn connect(&mut self) -> Result<(), TransportError> {
+        if self.state.get() == TransportState::Connected {
+            return Err(TransportError::ChannelError("already connected".into()));
+        }
+        self.state.set(TransportState::Connecting);
+        let channel = match self.open_terminal().await {
+            Ok(channel) => channel,
+            Err(err) => {
+                self.state.set(TransportState::Disconnected);
+                return Err(err);
+            }
+        };
 
         // The reader task owns the read half: the only path bytes take in.
         let (mut read_half, write_half) = channel.split();
-        let event_tx = self.event_tx.clone();
+        self.channel_write = Some(write_half);
+        // Connected before the reader starts, so an end it reports at once
+        // is never overwritten.
+        self.state.set(TransportState::Connected);
+        let (event_tx, state) = (self.event_tx.clone(), self.state.clone());
         // A fresh token per connect: a reconnect must not inherit a cancel.
         self.cancel_token = CancellationToken::new();
         let cancel = self.cancel_token.clone();
@@ -124,6 +139,9 @@ impl Transport for SSHTransport {
                     // OpenSSH sends EOF *before* the exit status, so EOF
                     // alone ends nothing: wait for the close.
                     Some(ChannelMsg::Close) | None => {
+                        // Recorded before it is reported, so `state()`
+                        // agrees with the event.
+                        state.set(TransportState::Disconnected);
                         let event = if exited {
                             TransportEvent::SessionEnded
                         } else {
@@ -136,8 +154,6 @@ impl Transport for SSHTransport {
                 }
             }
         }));
-        self.channel_write = Some(write_half);
-        self.state.set(TransportState::Connected);
         Ok(())
     }
 

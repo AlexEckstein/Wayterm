@@ -259,6 +259,10 @@ impl Transport for SerialTransport {
 
         // A fresh token per connect: a reconnect must not inherit a cancel.
         self.cancel_token = CancellationToken::new();
+        self.port = Some(Arc::new(Mutex::new(port)));
+        // Connected before the reader starts, so an end it reports at once
+        // is never overwritten.
+        self.state.set(TransportState::Connected);
         let (state, event_tx, cancel) = (
             self.state.clone(),
             self.event_tx.clone(),
@@ -267,8 +271,6 @@ impl Transport for SerialTransport {
         self.reader_task = Some(tokio::task::spawn_blocking(move || {
             read_loop(reader, state, event_tx, cancel)
         }));
-        self.port = Some(Arc::new(Mutex::new(port)));
-        self.state.set(TransportState::Connected);
         Ok(())
     }
 

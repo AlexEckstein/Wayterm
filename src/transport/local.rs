@@ -386,6 +386,9 @@ impl Transport for LocalTransport {
         };
 
         self.cancel_token = CancellationToken::new();
+        // Connected before the reader starts, so an end it reports at once
+        // is never overwritten.
+        self.state.set(TransportState::Connected);
         self.reader_task = Some(tokio::spawn(read_loop(
             master.clone(),
             self.child_pid.clone(),
@@ -394,7 +397,6 @@ impl Transport for LocalTransport {
             self.cancel_token.clone(),
         )));
         self.master = Some(master);
-        self.state.set(TransportState::Connected);
         Ok(())
     }
 
