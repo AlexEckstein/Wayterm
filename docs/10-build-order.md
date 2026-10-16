@@ -108,7 +108,7 @@ Gaps, each small:
 - `vnc_options.quality` and `vnc_color_depth` are stored but not
   applied (the crate has no quality knob; the client requests BGRA32).
 - Clipboard is receive-only; the remote cursor shape is not drawn;
-  Bell is status-bar-only.
+  Bell only rings GTK's error bell.
 - Nothing saves a `vnc_password` yet (only SSH passwords are saved, from
   the session dialog), so VNC prompts every connect unless the keyring
   already holds one or Bitwarden is enabled (app-wide follow-up, not

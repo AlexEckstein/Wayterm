@@ -207,8 +207,9 @@ fn map_connect_error(error: ::vnc::VncError, auth_attempted: bool) -> VncError {
     }
 }
 
-/// What the engine tells the UI. Everything but `Dirtied`/`Bell` is
-/// delivered reliably; `Dirtied` is coalesced (one pending is enough).
+/// What the engine tells the UI. Everything but `Dirtied` is delivered
+/// reliably; `Dirtied` is dropped when the channel is full, since one
+/// pending is enough.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VncUiEvent {
     /// Pixels changed; read them from [`VncEngine::pixels`].
