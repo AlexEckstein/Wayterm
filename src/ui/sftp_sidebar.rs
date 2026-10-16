@@ -545,7 +545,7 @@ impl SidebarInner {
     /// Separate from `render`, which must not re-enter from the selection
     /// callback that replacing the model emits.
     fn render_toolbar(&self) {
-        let toolbar = self.state.borrow().toolbar;
+        let toolbar = self.state.borrow().toolbar();
         self.buttons.upload.set_sensitive(toolbar.upload);
         self.buttons.download.set_sensitive(toolbar.download);
         self.buttons.delete.set_sensitive(toolbar.delete);
@@ -668,7 +668,7 @@ impl SidebarInner {
         glib::MainContext::default().spawn_local(async move {
             match reply_rx.await {
                 Ok(Ok(entries)) => sidebar.state.borrow_mut().set_listing(&path, &entries),
-                Ok(Err(err)) => sidebar.state.borrow_mut().set_listing_failed(&err),
+                Ok(Err(err)) => sidebar.state.borrow_mut().set_error(&err),
                 // The task dropped the sender without answering.
                 Err(_) => sidebar.state.borrow_mut().set_error(SESSION_ENDED),
             }

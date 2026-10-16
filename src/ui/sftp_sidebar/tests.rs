@@ -125,11 +125,7 @@ fn navigating_into_a_row_and_back_is_a_round_trip() {
 
 #[test]
 fn toolbar_is_fully_disabled_without_a_connection() {
-    let selection = Selection {
-        name: "notes.txt".to_string(),
-        is_dir: false,
-        is_parent: false,
-    };
+    let selection = row_from_entry(&entry("notes.txt", false, 1));
     assert_eq!(
         toolbar_state(Some(&selection), false, true),
         ToolbarState::DISABLED,
@@ -139,17 +135,9 @@ fn toolbar_is_fully_disabled_without_a_connection() {
 
 #[test]
 fn toolbar_needs_a_selected_file_to_download() {
-    let file = Selection {
-        name: "notes.txt".to_string(),
-        is_dir: false,
-        is_parent: false,
-    };
-    let dir = Selection {
-        name: "docs".to_string(),
-        is_dir: true,
-        is_parent: false,
-    };
-    let parent = parent_selection();
+    let file = row_from_entry(&entry("notes.txt", false, 1));
+    let dir = row_from_entry(&entry("docs", true, 0));
+    let parent = parent_row();
 
     let with_file = toolbar_state(Some(&file), true, false);
     assert!(with_file.download && with_file.delete && with_file.rename);
@@ -176,25 +164,6 @@ fn toolbar_cancel_follows_the_transfer_state() {
     assert!(!idle.cancel);
     let busy = toolbar_state(None, true, true);
     assert!(busy.cancel);
-}
-
-#[test]
-fn selection_of_describes_the_row() {
-    let rows = listing_rows("/home/user", &listing());
-    let parent = selection_of(rows.first()).expect("parent row selected");
-    assert!(parent.is_parent);
-    assert_eq!(parent.name, PARENT_ROW);
-    let file = selection_of(rows.get(2)).expect("file row selected");
-    assert!(!file.is_dir && !file.is_parent && file.name == "notes.txt");
-    assert!(selection_of(None).is_none());
-}
-
-fn parent_selection() -> Selection {
-    Selection {
-        name: PARENT_ROW.to_string(),
-        is_dir: true,
-        is_parent: true,
-    }
 }
 
 // --- uri-list fallback -----------------------------------------------------
@@ -425,7 +394,7 @@ fn detached_view_is_empty_disabled_and_starts_at_the_home_path() {
     assert!(view.rows.is_empty());
     assert_eq!(view.path, "");
     assert_eq!(view.current_path(), START_PATH);
-    assert_eq!(view.toolbar, ToolbarState::DISABLED);
+    assert_eq!(view.toolbar(), ToolbarState::DISABLED);
     assert!(view.shown, "doc 09 starts with the sidebar shown");
 }
 
@@ -443,7 +412,7 @@ fn listing_updates_path_rows_and_clears_the_error() {
     assert_eq!(view.rows.len(), 3);
     assert!(view.error.is_none());
     assert!(
-        view.toolbar.upload,
+        view.toolbar().upload,
         "an attached client enables the toolbar"
     );
 }
@@ -455,7 +424,7 @@ fn a_failed_cd_shows_the_error_without_moving_the_sidebar() {
     view.set_listing("/home/user", &listing());
     let rows_before = view.rows.clone();
 
-    view.set_listing_failed("permission denied");
+    view.set_error("permission denied");
 
     assert_eq!(view.error.as_deref(), Some("permission denied"));
     assert_eq!(view.path, "/home/user", "the path bar stays put");
@@ -471,7 +440,7 @@ fn select_picks_the_row_the_toolbar_rules_need() {
 
     let file = view.rows[2].clone();
     view.select(Some(&file));
-    assert!(view.toolbar.download);
+    assert!(view.toolbar().download);
     assert_eq!(
         view.selected_path(),
         Some("/home/user/notes.txt".to_string())
@@ -480,13 +449,13 @@ fn select_picks_the_row_the_toolbar_rules_need() {
     let parent = view.rows[0].clone();
     view.select(Some(&parent));
     assert!(
-        !view.toolbar.delete,
+        !view.toolbar().delete,
         "the parent row is not an operation target"
     );
     assert_eq!(view.selected_path(), None);
 
     view.select(None);
-    assert!(!view.toolbar.download);
+    assert!(!view.toolbar().download);
     assert_eq!(view.selected_path(), None);
 }
 
@@ -497,9 +466,9 @@ fn selecting_a_directory_enables_delete_but_not_download() {
     view.set_listing("/home/user", &listing());
     let dir = view.rows[1].clone();
     view.select(Some(&dir));
-    assert!(!view.toolbar.download);
-    assert!(view.toolbar.delete);
-    assert!(view.toolbar.rename);
+    assert!(!view.toolbar().download);
+    assert!(view.toolbar().delete);
+    assert!(view.toolbar().rename);
 }
 
 #[test]
@@ -509,7 +478,7 @@ fn transfer_progress_moves_the_bar_and_the_status_line() {
     view.begin_transfer(7, "Upload notes.txt".to_string());
 
     assert_eq!(view.fraction, 0.0);
-    assert!(view.toolbar.cancel, "a running transfer enables Cancel");
+    assert!(view.toolbar().cancel, "a running transfer enables Cancel");
     assert_eq!(view.status, "Upload notes.txt — starting…");
 
     view.on_progress(7, 512, 1024);
@@ -520,7 +489,7 @@ fn transfer_progress_moves_the_bar_and_the_status_line() {
     view.end_transfer(7, &Ok(1024));
     assert_eq!(view.fraction, 1.0, "a finished transfer shows 100%");
     assert_eq!(view.status, "Upload notes.txt — done — 1024 bytes");
-    assert!(!view.toolbar.cancel, "no transfer, no Cancel");
+    assert!(!view.toolbar().cancel, "no transfer, no Cancel");
     assert!(view.transfers.is_empty());
 }
 
@@ -551,7 +520,7 @@ fn concurrent_transfers_show_the_last_started_one_and_cancel_targets_it() {
 
     view.end_transfer(2, &Ok(1024));
     assert_eq!(view.cancel_target(), Some(1), "the older one is still live");
-    assert!(view.toolbar.cancel);
+    assert!(view.toolbar().cancel);
 }
 
 #[test]
@@ -633,7 +602,7 @@ fn jumped_sessions_show_the_limitation_instead_of_attaching() {
     view.mark_jump_unsupported();
     assert!(!view.connected);
     assert_eq!(view.error.as_deref(), Some(JUMPED_UNAVAILABLE));
-    assert_eq!(view.toolbar, ToolbarState::DISABLED);
+    assert_eq!(view.toolbar(), ToolbarState::DISABLED);
 
     // Even an attached view falls back to the notice, never a listing.
     let mut view = SftpView::detached();
@@ -642,5 +611,5 @@ fn jumped_sessions_show_the_limitation_instead_of_attaching() {
     view.mark_jump_unsupported();
     assert!(!view.connected);
     assert_eq!(view.error.as_deref(), Some(JUMPED_UNAVAILABLE));
-    assert_eq!(view.toolbar, ToolbarState::DISABLED);
+    assert_eq!(view.toolbar(), ToolbarState::DISABLED);
 }
