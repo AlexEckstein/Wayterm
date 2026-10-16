@@ -294,8 +294,7 @@ impl SessionStore {
     /// it is always read and written whole. `[]` is stored, not deleted, so
     /// "no tabs open" is remembered too. Tab identity only, no credentials.
     pub fn save_open_tabs(&self, tabs: &[TabState]) -> rusqlite::Result<()> {
-        let json = tab_state::tabs_to_json(tabs)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let json = tab_state::tabs_to_json(tabs).map_err(to_sql_error)?;
         self.set_setting(tab_state::OPEN_TABS_SETTING_KEY, &json)
     }
 
@@ -458,12 +457,16 @@ fn json<T: Serialize>(value: Option<&T>) -> rusqlite::Result<Value> {
         .map(serde_json::to_string)
         .transpose()
         .map(Value::from)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        .map_err(to_sql_error)
 }
 
 /// The `macros.steps` column for `m`.
 fn macro_steps(m: &Macro) -> rusqlite::Result<String> {
-    steps_to_json(&m.steps).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    steps_to_json(&m.steps).map_err(to_sql_error)
+}
+
+fn to_sql_error(e: serde_json::Error) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(e))
 }
 
 fn from_sql_error(e: serde_json::Error) -> rusqlite::Error {
@@ -612,12 +615,7 @@ CREATE TABLE IF NOT EXISTS rdp_trust (
 /// leaves an existing table alone, and `ADD COLUMN` has no `IF NOT
 /// EXISTS`, so the column is added only where it is missing.
 fn migrate_003(conn: &Connection) -> rusqlite::Result<()> {
-    let has_icon: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'icon')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_icon {
+    if !has_column(conn, "sessions", "icon")? {
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN icon TEXT;")?;
     }
     Ok(())
@@ -626,15 +624,18 @@ fn migrate_003(conn: &Connection) -> rusqlite::Result<()> {
 /// Schema v4 — drop `sessions.notes` (doc 06). A database created before
 /// v4 still has the column; one created since never did.
 fn migrate_004(conn: &Connection) -> rusqlite::Result<()> {
-    let has_notes: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'notes')",
-        [],
-        |row| row.get(0),
-    )?;
-    if has_notes {
+    if has_column(conn, "sessions", "notes")? {
         conn.execute_batch("ALTER TABLE sessions DROP COLUMN notes;")?;
     }
     Ok(())
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        [table, column],
+        |row| row.get(0),
+    )
 }
 
 /// Schema v5 — keystroke macros (doc 12): `steps` is a JSON array of

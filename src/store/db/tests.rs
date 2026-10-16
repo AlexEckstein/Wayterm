@@ -338,14 +338,10 @@ fn open_adds_session_icon_to_an_older_database() {
             "",
         ))
         .unwrap();
-        let has_icon: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'icon')",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(!has_icon, "the fixture must predate the column");
+        assert!(
+            !has_column(&conn, "sessions", "icon").unwrap(),
+            "the fixture must predate the column"
+        );
         conn.execute(
             "INSERT INTO sessions (name, type) VALUES ('old', '\"ssh\"')",
             [],
@@ -372,14 +368,6 @@ fn open_adds_session_icon_to_an_older_database() {
 /// open and keeps its rows.
 #[test]
 fn open_drops_session_notes_from_an_older_database() {
-    let has_notes = |conn: &Connection| -> bool {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'notes')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap()
-    };
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("old.sqlite3");
     {
@@ -395,7 +383,7 @@ fn open_drops_session_notes_from_an_older_database() {
     }
 
     let store = SessionStore::open(&path).unwrap();
-    assert!(!has_notes(&store.conn));
+    assert!(!has_column(&store.conn, "sessions", "notes").unwrap());
     let old = store.list_sessions(None).unwrap().remove(0);
     assert_eq!(old.name, "old");
     store.update_session(&old).unwrap();
