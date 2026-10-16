@@ -17,6 +17,7 @@
 //! Remote/Dynamic rows render with a v2 note and never arm an engine
 //! control (doc 11 §Limitations); only Local rows start listeners.
 
+pub mod editor;
 pub mod model;
 pub mod status_source;
 
@@ -25,69 +26,25 @@ mod tests;
 
 pub use status_source::{EngineStatusBridge, FakeStatusSource, ForwardStatusSource};
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::store::model::{ForwardRule, SessionConfig};
-use crate::ui::widgets::{button_row, set_margins, Modal};
+use crate::ui::widgets::{button_row, dim_label, error_label, set_margins, Modal};
 
-use status_source::ForwardEvent;
-
-use model::{
-    drafts_from_rules, lookup_status, rules_from_drafts, status_text, ForwardRuleDraft,
-    FORWARD_KIND_LABELS, HELP_ENTRIES, KIND_INDEX_LOCAL, V2_NOTE,
-};
+use editor::{Live, RuleEditor};
+use model::{drafts_from_rules, lookup_status, ForwardRuleDraft, HELP_ENTRIES, V2_NOTE};
 
 /// The window action id, registered in `main_window.rs` like the other
 /// `win.*` actions.
 pub const TUNNELS_ACTION: &str = "tunnels";
 
-/// One dialog row. Positions never shift: removing hides the `ListBoxRow`
-/// and marks it, so a status update's `rule_index` always finds its row.
-/// (`list_row` itself needs no handle past construction: the `ListBox` owns
-/// it and the remove button holds its own clone.)
-struct RuleRow {
-    kind: gtk4::DropDown,
-    bind: gtk4::Entry,
-    bind_port: gtk4::Entry,
-    remote: gtk4::Entry,
-    remote_port: gtk4::Entry,
-    enabled: gtk4::CheckButton,
-    status: gtk4::Label,
-    removed: Rc<Cell<bool>>,
-}
-
-impl RuleRow {
-    fn draft(&self) -> Option<ForwardRuleDraft> {
-        if self.removed.get() {
-            return None;
-        }
-        Some(ForwardRuleDraft {
-            kind_index: self.kind.selected(),
-            bind_addr: self.bind.text().into(),
-            bind_port: self.bind_port.text().into(),
-            remote_host: self.remote.text().into(),
-            remote_port: self.remote_port.text().into(),
-            enabled: self.enabled.is_active(),
-        })
-    }
-}
-
-/// Add-row context: everything [`add_row`] needs beyond the draft.
-struct RowCtx {
-    online: bool,
-    source: Option<Arc<dyn ForwardStatusSource>>,
-    snapshot: Vec<ForwardEvent>,
-}
-
 /// The dialog. Build with [`Self::new`], then [`Self::run`] it.
 pub struct TunnelsDialog {
     modal: Modal<Vec<ForwardRule>>,
-    rows: Rc<RefCell<Vec<RuleRow>>>,
+    rules: RuleEditor,
     vbox: gtk4::Box,
     error: gtk4::Label,
 }
@@ -100,11 +57,8 @@ impl TunnelsDialog {
         session: &SessionConfig,
         source: Option<Arc<dyn ForwardStatusSource>>,
     ) -> Self {
-        let ctx = RowCtx {
-            online: source.is_some(),
-            snapshot: source.as_ref().map(|s| s.snapshot()).unwrap_or_default(),
-            source,
-        };
+        let online = source.is_some();
+        let snapshot = source.as_ref().map(|s| s.snapshot()).unwrap_or_default();
         let modal = Modal::new(&format!("Tunnels — {}", session.name), Some(parent));
         modal.window.set_default_size(640, 420);
 
@@ -121,62 +75,48 @@ impl TunnelsDialog {
             .label("No active connection — editing rules only; live status unavailable.")
             .halign(gtk4::Align::Start)
             .wrap(true)
-            .visible(!ctx.online)
+            .visible(!online)
             .build();
         let v2 = dim_label(V2_NOTE);
 
-        let list = gtk4::ListBox::new();
-        list.set_selection_mode(gtk4::SelectionMode::None);
+        let rules = RuleEditor::new(Some(Live {
+            source: source.clone(),
+        }));
         let scroll = gtk4::ScrolledWindow::builder()
-            .child(&list)
+            .child(rules.widget())
             .vexpand(true)
             .hexpand(true)
             .has_frame(true)
             .min_content_height(220)
             .build();
 
-        let rows: Rc<RefCell<Vec<RuleRow>>> = Rc::default();
-        for draft in drafts_from_rules(session.forward_rules.as_ref()) {
-            add_row(&list, &rows, &draft, &ctx);
+        for (rule_id, draft) in drafts_from_rules(session.forward_rules.as_ref())
+            .iter()
+            .enumerate()
+        {
+            rules.add(draft, lookup_status(&snapshot, rule_id));
         }
-
-        let error = gtk4::Label::builder()
-            .halign(gtk4::Align::Start)
-            .wrap(true)
-            .build();
-        error.add_css_class("error");
+        let error = error_label();
 
         // Live updates (the tab.rs pattern): the source broadcasts into
         // this drain, which paints the row's status cell on the GTK thread.
         // `recv().await` never blocks the UI; the drain ends with the dialog.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        if let Some(source) = &ctx.source {
+        if let Some(source) = &source {
             source.subscribe(tx);
         }
-        let for_status = rows.clone();
+        let for_status = rules.clone();
         glib::MainContext::default().spawn_local(async move {
             while let Some(update) = rx.recv().await {
-                if let Some(row) = for_status.borrow().get(update.rule_id) {
-                    if !row.removed.get() {
-                        row.status.set_text(&status_text(Some(&update.state), true));
-                    }
+                if let Some(row) = for_status.rows().get(update.rule_id) {
+                    row.show_status(&update.state);
                 }
             }
         });
 
         let add = gtk4::Button::with_label("Add rule");
-        {
-            let (list, rows, online, source) =
-                (list.clone(), rows.clone(), ctx.online, ctx.source.clone());
-            add.connect_clicked(move |_| {
-                let ctx = RowCtx {
-                    online,
-                    source: source.clone(),
-                    snapshot: Vec::new(),
-                };
-                add_row(&list, &rows, &ForwardRuleDraft::default(), &ctx);
-            });
-        }
+        let for_add = rules.clone();
+        add.connect_clicked(move |_| for_add.add(&ForwardRuleDraft::default(), None));
 
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         set_margins(&vbox, 12);
@@ -190,7 +130,7 @@ impl TunnelsDialog {
 
         Self {
             modal,
-            rows,
+            rules,
             vbox,
             error,
         }
@@ -203,130 +143,24 @@ impl TunnelsDialog {
         let ok = gtk4::Button::with_label("OK");
         let cancel = self.modal.button("Cancel", || None);
         {
-            let (window, result, rows, error) = (
+            let (window, result, rules, error) = (
                 self.modal.window.clone(),
                 self.modal.result.clone(),
-                self.rows.clone(),
+                self.rules.clone(),
                 self.error.clone(),
             );
-            ok.connect_clicked(move |_| {
-                let drafts: Vec<ForwardRuleDraft> =
-                    rows.borrow().iter().filter_map(RuleRow::draft).collect();
-                match rules_from_drafts(&drafts) {
-                    Ok(rules) => {
-                        *result.borrow_mut() = Some(rules);
-                        window.close();
-                    }
-                    Err(errors) => {
-                        error.set_text(&format_errors(&errors));
-                    }
+            ok.connect_clicked(move |_| match rules.rules() {
+                Ok(rules) => {
+                    *result.borrow_mut() = Some(rules);
+                    window.close();
                 }
+                Err(message) => error.set_text(&message),
             });
             self.modal.window.set_default_widget(Some(&ok));
         }
         self.vbox.append(&button_row(&[&cancel, &ok]));
         self.modal.run()
     }
-}
-
-/// The dialog-level error line: each failing row's message, prefixed by its
-/// 1-based row number.
-fn format_errors(errors: &[Option<String>]) -> String {
-    errors
-        .iter()
-        .enumerate()
-        .filter_map(|(index, error)| error.as_ref().map(|e| format!("Row {}: {e}", index + 1)))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn add_row(
-    list: &gtk4::ListBox,
-    rows: &Rc<RefCell<Vec<RuleRow>>>,
-    draft: &ForwardRuleDraft,
-    ctx: &RowCtx,
-) {
-    let rule_index = rows.borrow().len();
-    let online = ctx.online;
-    let kind = gtk4::DropDown::builder()
-        .model(&gtk4::StringList::new(&FORWARD_KIND_LABELS))
-        .tooltip_text(V2_NOTE)
-        .width_request(130)
-        .build();
-    kind.set_selected(draft.kind_index);
-    let bind = row_entry(&draft.bind_addr, "bind addr", 130);
-    let bind_port = row_entry(&draft.bind_port, "bind port", 80);
-    let remote = row_entry(&draft.remote_host, "remote host", 150);
-    let remote_port = row_entry(&draft.remote_port, "remote port", 80);
-    let enabled = gtk4::CheckButton::with_label("Enabled");
-    enabled.set_active(draft.enabled);
-    let status = gtk4::Label::new(Some(&status_text(
-        lookup_status(&ctx.snapshot, rule_index),
-        online,
-    )));
-    status.set_width_request(150);
-    status.set_xalign(0.0);
-    let v2_note = dim_label("v2 — never starts");
-    v2_note.set_tooltip_text(Some(V2_NOTE));
-
-    let is_local = kind.selected() == KIND_INDEX_LOCAL;
-    v2_note.set_visible(!is_local);
-    enabled.set_sensitive(online && is_local);
-    if !online {
-        kind.set_sensitive(false);
-    }
-
-    // A kind change re-arms the v2 note and the engine control: only Local
-    // rows can drive a listener (doc 11).
-    let (v2_for_kind, enabled_for_kind) = (v2_note.clone(), enabled.clone());
-    kind.connect_notify_local(Some("selected"), move |kind, _| {
-        let is_local = kind.selected() == KIND_INDEX_LOCAL;
-        v2_for_kind.set_visible(!is_local);
-        enabled_for_kind.set_sensitive(online && is_local);
-    });
-
-    // Live application: flipping Enabled starts/stops that rule's listener
-    // through the source; the resulting state paints via the subscription.
-    if let Some(source) = ctx.source.clone() {
-        enabled.connect_toggled(move |button| {
-            source.set_rule_enabled(rule_index, button.is_active());
-        });
-    }
-
-    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-    set_margins(&hbox, 6);
-    hbox.append(&kind);
-    hbox.append(&bind);
-    hbox.append(&bind_port);
-    hbox.append(&remote);
-    hbox.append(&remote_port);
-    hbox.append(&enabled);
-    hbox.append(&status);
-    hbox.append(&v2_note);
-    let remove = gtk4::Button::with_label("Remove");
-    hbox.append(&remove);
-    let list_row = gtk4::ListBoxRow::builder().child(&hbox).build();
-    list.append(&list_row);
-
-    let removed = Rc::new(Cell::new(false));
-    {
-        let (list_row, removed) = (list_row.clone(), removed.clone());
-        remove.connect_clicked(move |_| {
-            removed.set(true);
-            list_row.set_visible(false);
-        });
-    }
-
-    rows.borrow_mut().push(RuleRow {
-        kind,
-        bind,
-        bind_port,
-        remote,
-        remote_port,
-        enabled,
-        status,
-        removed,
-    });
 }
 
 /// The top-right help icon: a popover explaining each row control
@@ -365,31 +199,13 @@ fn help_button() -> gtk4::MenuButton {
     button
 }
 
-fn row_entry(text: &str, placeholder: &str, width: i32) -> gtk4::Entry {
-    gtk4::Entry::builder()
-        .text(text)
-        .placeholder_text(placeholder)
-        .width_request(width)
-        .build()
-}
-
-fn dim_label(text: &str) -> gtk4::Label {
-    let label = gtk4::Label::builder()
-        .label(text)
-        .halign(gtk4::Align::Start)
-        .wrap(true)
-        .build();
-    label.add_css_class("dim-label");
-    label
-}
-
 /// Widget checks; they need a display and run from `ui::gtk_tests`.
 #[cfg(test)]
 pub(super) mod gtk_tests {
     use super::*;
     use crate::store::model::ForwardKind;
     use model::KIND_INDEX_REMOTE;
-    use status_source::ForwardState;
+    use status_source::{ForwardEvent, ForwardState};
 
     fn session_with_rules() -> SessionConfig {
         SessionConfig {
@@ -424,7 +240,7 @@ pub(super) mod gtk_tests {
         // Offline: every status cell is the fallback and engine controls
         // are insensitive, but the rules still render.
         let dialog = TunnelsDialog::new(&parent, &session, None);
-        assert_eq!(dialog.rows.borrow().len(), 2);
+        assert_eq!(dialog.rules.rows().len(), 2);
         // The help icon carries a popover explaining every row control.
         let help = dialog
             .vbox
@@ -437,11 +253,11 @@ pub(super) mod gtk_tests {
         let grid = help.child().and_downcast::<gtk4::Grid>().expect("grid");
         let first = grid.child_at(0, 0).and_downcast::<gtk4::Label>();
         assert_eq!(first.map(|l| l.text()).as_deref(), Some("Kind"));
-        for row in dialog.rows.borrow().iter() {
-            assert_eq!(row.status.text(), model::OFFLINE_STATUS);
+        for row in dialog.rules.rows().iter() {
+            assert_eq!(row.status.as_ref().unwrap().text(), model::OFFLINE_STATUS);
             assert!(!row.enabled.is_sensitive(), "offline: no engine control");
         }
-        assert!(!dialog.rows.borrow()[0].kind.is_sensitive());
+        assert!(!dialog.rules.rows()[0].kind.is_sensitive());
         dialog.modal.window.close();
 
         // Online through the fake: the snapshot paints, the toggle reaches
@@ -451,26 +267,38 @@ pub(super) mod gtk_tests {
             ForwardState::Stopped,
         ]));
         let dialog = TunnelsDialog::new(&parent, &session, Some(source.clone()));
-        assert_eq!(dialog.rows.borrow()[0].status.text(), "Listening");
-        assert_eq!(dialog.rows.borrow()[1].status.text(), "Stopped");
+        assert_eq!(
+            dialog.rules.rows()[0].status.as_ref().unwrap().text(),
+            "Listening"
+        );
+        assert_eq!(
+            dialog.rules.rows()[1].status.as_ref().unwrap().text(),
+            "Stopped"
+        );
         // The Remote row never arms an engine control, even online; its
         // kind still reads Remote. The Local row does arm one.
-        assert!(!dialog.rows.borrow()[1].enabled.is_sensitive());
-        assert_eq!(dialog.rows.borrow()[1].kind.selected(), KIND_INDEX_REMOTE);
-        assert!(dialog.rows.borrow()[0].enabled.is_sensitive());
+        assert!(!dialog.rules.rows()[1].enabled.is_sensitive());
+        assert_eq!(dialog.rules.rows()[1].kind.selected(), KIND_INDEX_REMOTE);
+        assert!(dialog.rules.rows()[0].enabled.is_sensitive());
 
-        dialog.rows.borrow()[0].enabled.set_active(false);
+        dialog.rules.rows()[0].enabled.set_active(false);
         assert_eq!(source.toggles(), vec![(0, false)]);
         // The toggle's echo arrives on the drain; spin the main loop once.
         while glib::MainContext::default().iteration(false) {}
-        assert_eq!(dialog.rows.borrow()[0].status.text(), "Stopped");
+        assert_eq!(
+            dialog.rules.rows()[0].status.as_ref().unwrap().text(),
+            "Stopped"
+        );
 
         source.emit(ForwardEvent {
             rule_id: 0,
             state: ForwardState::Active { conns: 2 },
         });
         while glib::MainContext::default().iteration(false) {}
-        assert_eq!(dialog.rows.borrow()[0].status.text(), "2 connections");
+        assert_eq!(
+            dialog.rules.rows()[0].status.as_ref().unwrap().text(),
+            "2 connections"
+        );
         dialog.modal.window.close();
     }
 }

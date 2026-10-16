@@ -14,7 +14,7 @@
 //! is what `tmux list-sessions` prints; the row stores the bare suffix.
 //! The entry follows the Name field until the user edits it.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
@@ -28,10 +28,9 @@ use crate::store::model::{
 };
 use crate::transport::credentials::CredentialError;
 use crate::ui::icons::{session_type_icon, IconPicker};
-use crate::ui::tunnels_dialog::model::{
-    drafts_from_rules, rules_from_drafts, ForwardRuleDraft, FORWARD_KIND_LABELS, V2_NOTE,
-};
-use crate::ui::widgets::{button_row, set_margins, Modal};
+use crate::ui::tunnels_dialog::editor::RuleEditor;
+use crate::ui::tunnels_dialog::model::{drafts_from_rules, ForwardRuleDraft, V2_NOTE};
+use crate::ui::widgets::{button_row, dim_label, error_label, set_margins, Modal};
 
 mod model;
 pub use model::*;
@@ -212,7 +211,7 @@ struct Widgets {
     tmux_name: gtk4::Entry,
     jump: gtk4::DropDown,
     jump_ids: Vec<Option<i64>>,
-    forward_rows: Rc<RefCell<Vec<ForwardRow>>>,
+    forward_rules: RuleEditor,
     forward_error: gtk4::Label,
     serial_device: gtk4::Entry,
     serial_baud: gtk4::SpinButton,
@@ -246,12 +245,7 @@ impl Widgets {
                 .get(self.jump.selected() as usize)
                 .copied()
                 .flatten(),
-            forward_drafts: self
-                .forward_rows
-                .borrow()
-                .iter()
-                .filter_map(ForwardRow::draft)
-                .collect(),
+            forward_drafts: self.forward_rules.drafts(),
             serial_device: self.serial_device.text().into(),
             serial_baud: self.serial_baud.value() as u32,
             serial_data_bits_index: self.serial_data_bits.selected(),
@@ -360,117 +354,6 @@ impl Widgets {
     }
 }
 
-/// One forward-rule row in the session dialog's SSH editor. Positions
-/// never shift (see the Tunnels dialog): removing hides the row and marks
-/// it.
-struct ForwardRow {
-    kind: gtk4::DropDown,
-    bind: gtk4::Entry,
-    bind_port: gtk4::Entry,
-    remote: gtk4::Entry,
-    remote_port: gtk4::Entry,
-    enabled: gtk4::CheckButton,
-    removed: Rc<Cell<bool>>,
-}
-
-impl ForwardRow {
-    fn draft(&self) -> Option<ForwardRuleDraft> {
-        if self.removed.get() {
-            return None;
-        }
-        Some(ForwardRuleDraft {
-            kind_index: self.kind.selected(),
-            bind_addr: self.bind.text().into(),
-            bind_port: self.bind_port.text().into(),
-            remote_host: self.remote.text().into(),
-            remote_port: self.remote_port.text().into(),
-            enabled: self.enabled.is_active(),
-        })
-    }
-}
-
-/// Append one editable row for `draft`. Only Local converts on save;
-/// Remote/Dynamic stay selectable so the v2 refusal is visible, and are
-/// refused with [`V2_NOTE`] by the shared validator.
-fn add_forward_row(
-    list: &gtk4::ListBox,
-    rows: &Rc<RefCell<Vec<ForwardRow>>>,
-    draft: &ForwardRuleDraft,
-) {
-    let kind = gtk4::DropDown::builder()
-        .model(&gtk4::StringList::new(&FORWARD_KIND_LABELS))
-        .tooltip_text(V2_NOTE)
-        .width_request(130)
-        .build();
-    kind.set_selected(draft.kind_index);
-    let bind = forward_entry(&draft.bind_addr, "bind addr", 120);
-    let bind_port = forward_entry(&draft.bind_port, "bind port", 70);
-    let remote = forward_entry(&draft.remote_host, "remote host", 130);
-    let remote_port = forward_entry(&draft.remote_port, "remote port", 70);
-    let enabled = gtk4::CheckButton::with_label("On");
-    enabled.set_active(draft.enabled);
-    enabled.set_tooltip_text(Some("Enabled rules start at connect (Local only)"));
-
-    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
-    set_margins(&hbox, 4);
-    hbox.append(&kind);
-    hbox.append(&bind);
-    hbox.append(&bind_port);
-    hbox.append(&remote);
-    hbox.append(&remote_port);
-    hbox.append(&enabled);
-    let remove = gtk4::Button::with_label("Remove");
-    hbox.append(&remove);
-    let list_row = gtk4::ListBoxRow::builder().child(&hbox).build();
-    list.append(&list_row);
-
-    let removed = Rc::new(Cell::new(false));
-    {
-        let (list_row, removed) = (list_row.clone(), removed.clone());
-        remove.connect_clicked(move |_| {
-            removed.set(true);
-            list_row.set_visible(false);
-        });
-    }
-
-    rows.borrow_mut().push(ForwardRow {
-        kind,
-        bind,
-        bind_port,
-        remote,
-        remote_port,
-        enabled,
-        removed,
-    });
-}
-
-fn forward_entry(text: &str, placeholder: &str, width: i32) -> gtk4::Entry {
-    gtk4::Entry::builder()
-        .text(text)
-        .placeholder_text(placeholder)
-        .width_request(width)
-        .build()
-}
-
-fn note_label(text: &str) -> gtk4::Label {
-    let label = gtk4::Label::builder()
-        .label(text)
-        .halign(gtk4::Align::Start)
-        .wrap(true)
-        .build();
-    label.add_css_class("dim-label");
-    label
-}
-
-fn error_label() -> gtk4::Label {
-    let label = gtk4::Label::builder()
-        .halign(gtk4::Align::Start)
-        .wrap(true)
-        .build();
-    label.add_css_class("error");
-    label
-}
-
 /// The dialog. Build with [`Self::new_session`] or [`Self::edit`], then
 /// [`Self::run`] it.
 pub struct SessionDialog {
@@ -542,14 +425,13 @@ impl SessionDialog {
         self.vbox.append(&password_error);
         let saved = Rc::new(Cell::new(false));
         {
-            let (window, result, widgets, base, folders, peers, forward_error) = (
+            let (window, result, widgets, base, folders, peers) = (
                 self.modal.window.clone(),
                 self.modal.result.clone(),
                 self.widgets.clone(),
                 self.base.clone(),
                 self.folders.clone(),
                 self.peers.clone(),
-                self.widgets.forward_error.clone(),
             );
             let password_error = password_error.clone();
             ok.connect_clicked(move |ok| {
@@ -557,11 +439,11 @@ impl SessionDialog {
                     window.close();
                     return;
                 }
-                let fields = widgets.fields(&base);
-                if let Err(errors) = rules_from_drafts(&fields.forward_drafts) {
-                    forward_error.set_text(&forward_batch_error(&errors));
+                if let Err(message) = widgets.forward_rules.rules() {
+                    widgets.forward_error.set_text(&message);
                     return;
                 }
+                let fields = widgets.fields(&base);
                 let mut config = config_from_fields(&fields, &folders, &peers);
                 let secret = widgets.password_to_store();
                 let Some(id) = save(&config) else {
@@ -692,24 +574,18 @@ impl SessionDialog {
 
         // Forward rules (doc 11 §Port forwarding): the same drafts the
         // Tunnels dialog edits for a connected session.
-        ssh.span(&note_label(
+        ssh.span(&dim_label(
             "Port forwards (Local starts at connect; Remote/Dynamic are v2):",
         ));
-        ssh.span(&note_label(V2_NOTE));
-        let forward_list = gtk4::ListBox::new();
-        forward_list.set_selection_mode(gtk4::SelectionMode::None);
-        ssh.span(&forward_list);
-        let forward_rows: Rc<RefCell<Vec<ForwardRow>>> = Rc::default();
+        ssh.span(&dim_label(V2_NOTE));
+        let forward_rules = RuleEditor::new(None);
+        ssh.span(forward_rules.widget());
         for draft in initial_drafts {
-            add_forward_row(&forward_list, &forward_rows, draft);
+            forward_rules.add(draft, None);
         }
         let forward_add = gtk4::Button::with_label("Add forward");
-        {
-            let (list, rows) = (forward_list.clone(), forward_rows.clone());
-            forward_add.connect_clicked(move |_| {
-                add_forward_row(&list, &rows, &ForwardRuleDraft::default());
-            });
-        }
+        let for_add = forward_rules.clone();
+        forward_add.connect_clicked(move |_| for_add.add(&ForwardRuleDraft::default(), None));
         ssh.span(&forward_add);
         let forward_error = error_label();
         ssh.span(&forward_error);
@@ -765,7 +641,7 @@ impl SessionDialog {
             tmux_name,
             jump,
             jump_ids,
-            forward_rows,
+            forward_rules,
             forward_error,
             serial_device,
             serial_baud,
@@ -857,17 +733,6 @@ impl SessionDialog {
             vbox,
         }
     }
-}
-
-/// The OK-time error line for invalid forward drafts: each failing row's
-/// message with its 1-based row number.
-fn forward_batch_error(errors: &[Option<String>]) -> String {
-    errors
-        .iter()
-        .enumerate()
-        .filter_map(|(index, error)| error.as_ref().map(|e| format!("Row {}: {e}", index + 1)))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[cfg(test)]
@@ -1011,7 +876,7 @@ pub(super) mod gtk_tests {
             None,
             "saving a stale id clears it instead of violating the FK"
         );
-        assert_eq!(dialog.widgets.forward_rows.borrow().len(), 1);
+        assert_eq!(dialog.widgets.forward_rules.rows().len(), 1);
         let fields = dialog.widgets.fields(&dialog.base);
         assert_eq!(
             fields.forward_drafts.len(),
