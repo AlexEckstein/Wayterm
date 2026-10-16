@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 use crate::transport::auth::{authenticate_chain, AuthConfig, AuthOutcome, ChallengeResponder};
 use crate::transport::credentials::CredentialManager;
 use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
-use crate::transport::types::{TransportError, TransportState};
+use crate::transport::types::TransportError;
 
 /// The method a session prefers. Secrets are looked up through the
 /// [`CredentialManager`] at connect time; the chain still falls through to
@@ -200,51 +200,50 @@ fn key_needs_passphrase(path: &str) -> bool {
     )
 }
 
+/// Why a dial ended during key exchange, as the handler saw it.
+#[derive(Debug, thiserror::Error)]
+pub enum HandlerError {
+    #[error(transparent)]
+    Ssh(#[from] russh::Error),
+    /// The verifier refused the server's key (doc 11): its own outcome,
+    /// `TransportError::HostKeyRejected`, never a connect failure.
+    #[error("host key rejected for {0}")]
+    HostKeyRejected(String),
+    /// Host certificates are not supported yet (doc 11 §Limitations).
+    #[error("certificate-based host auth not supported yet")]
+    HostCertificate,
+}
+
 /// The russh client handler: host-key verification happens here, during
 /// key exchange and before authentication.
 pub struct AppClientHandler {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub host_key_verifier: HostKeyVerifier,
-    pub state_tx: Option<tokio::sync::mpsc::Sender<TransportState>>,
+    host: String,
+    port: u16,
+    verifier: HostKeyVerifier,
 }
 
 impl AppClientHandler {
-    pub fn new(
-        host: String,
-        port: u16,
-        username: String,
-        host_key_verifier: HostKeyVerifier,
-        state_tx: Option<tokio::sync::mpsc::Sender<TransportState>>,
-    ) -> Self {
+    /// The handler for a dial to `host:port`, checking its key with
+    /// `verifier`.
+    pub fn new(host: String, port: u16, verifier: HostKeyVerifier) -> Self {
         Self {
             host,
             port,
-            username,
-            host_key_verifier,
-            state_tx,
+            verifier,
         }
     }
 }
 
 impl client::Handler for AppClientHandler {
-    type Error = russh::Error;
+    type Error = HandlerError;
 
     async fn check_server_key(
         &mut self,
         server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        if let Some(tx) = &self.state_tx {
-            let _ = tx.try_send(TransportState::VerifyingHostKey);
-        }
         let key = match server_public_key {
             PublicKeyOrCertificate::PublicKey { key, .. } => key,
-            PublicKeyOrCertificate::Certificate(_) => {
-                return Err(
-                    std::io::Error::other("certificate-based host auth not supported yet").into(),
-                );
-            }
+            PublicKeyOrCertificate::Certificate(_) => return Err(HandlerError::HostCertificate),
         };
         let facts = HostKeyFacts {
             host: self.host.clone(),
@@ -252,12 +251,9 @@ impl client::Handler for AppClientHandler {
             key_type: key.algorithm().to_string(),
             fingerprint_sha256: key.fingerprint(HashAlg::Sha256).to_string(),
         };
-        match self.host_key_verifier.verify(&facts, key) {
+        match self.verifier.verify(&facts, key) {
             HostKeyDecision::Accept | HostKeyDecision::AcceptAndSave => Ok(true),
-            // The supervisor recognises this message as HostKeyRejected.
-            HostKeyDecision::Reject => {
-                Err(std::io::Error::other(format!("host key rejected for {}", self.host)).into())
-            }
+            HostKeyDecision::Reject => Err(HandlerError::HostKeyRejected(self.host.clone())),
         }
     }
 

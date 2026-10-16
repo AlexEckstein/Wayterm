@@ -167,13 +167,7 @@ async fn connect_inner<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let handler = AppClientHandler::new(
-        target.host.clone(),
-        target.port,
-        target.username.clone(),
-        auth.verifier.clone(),
-        None,
-    );
+    let handler = AppClientHandler::new(target.host.clone(), target.port, auth.verifier.clone());
     let handle = client::connect_stream(Arc::new(Config::default()), stream, handler)
         .await
         .map_err(|err| connect_error(&target.host, err))?;

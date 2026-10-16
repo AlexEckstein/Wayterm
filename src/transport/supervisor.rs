@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use russh::client::{self, Config, Handle};
 
 use crate::transport::auth::ChallengeResponder;
-use crate::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
+use crate::transport::connection::{AppClientHandler, AuthMethod, HandlerError, SshConnection};
 use crate::transport::credentials::CredentialManager;
 use crate::transport::hostkey::HostKeyVerifier;
 use crate::transport::types::TransportError;
@@ -135,13 +135,8 @@ impl ConnectionSupervisor<SshConnection> {
         auth: &HopAuth,
     ) -> Result<Arc<SshConnection>, TransportError> {
         self.get_or_connect_with(params.clone(), || async {
-            let handler = AppClientHandler::new(
-                params.host.clone(),
-                params.port,
-                params.username.clone(),
-                auth.verifier.clone(),
-                None,
-            );
+            let handler =
+                AppClientHandler::new(params.host.clone(), params.port, auth.verifier.clone());
             let handle = client::connect(
                 Arc::new(Config::default()),
                 (params.host.as_str(), params.port),
@@ -181,12 +176,12 @@ pub(crate) async fn authenticated(
 }
 
 /// A rejected host key is its own outcome (doc 11), not a connect failure.
-pub(crate) fn connect_error(host: &str, err: russh::Error) -> TransportError {
-    if matches!(err, russh::Error::UnknownKey) || err.to_string().contains("host key rejected for")
-    {
-        TransportError::HostKeyRejected(host.to_string())
-    } else {
-        TransportError::ConnectionFailed(err.to_string())
+pub(crate) fn connect_error(host: &str, err: HandlerError) -> TransportError {
+    match err {
+        HandlerError::HostKeyRejected(_) | HandlerError::Ssh(russh::Error::UnknownKey) => {
+            TransportError::HostKeyRejected(host.to_string())
+        }
+        other => TransportError::ConnectionFailed(other.to_string()),
     }
 }
 

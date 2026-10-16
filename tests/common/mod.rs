@@ -121,20 +121,19 @@ pub fn answer_all(answer: &str) -> ChallengeResponder {
 }
 
 /// A raw, unauthenticated session that accepts any host key.
-pub async fn connect_raw_to(host: &str, port: u16, user: &str) -> Handle<AppClientHandler> {
+pub async fn connect_raw_to(host: &str, port: u16) -> Handle<AppClientHandler> {
     let addr = SocketAddr::new(
         host.parse().unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         port,
     );
-    let handler =
-        AppClientHandler::new(host.into(), port, user.into(), accept_all_verifier(), None);
+    let handler = AppClientHandler::new(host.into(), port, accept_all_verifier());
     client::connect(Arc::new(Config::default()), addr, handler)
         .await
         .expect("raw sshd connection failed")
 }
 
 pub async fn connect_raw(f: &Fixture) -> Handle<AppClientHandler> {
-    connect_raw_to(&f.host, f.port, &f.user).await
+    connect_raw_to(&f.host, f.port).await
 }
 
 /// An authenticated connection using `method`.
