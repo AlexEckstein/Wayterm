@@ -62,13 +62,13 @@ graphics, reflow, …) queried once per tab; the UI hides what is false.
 ## Backpressure
 
 The VTE `commit` signal (keystrokes, pastes) and the resize signals fire on
-the main thread, which must never block. Every backend sends events with
-`try_send`; whatever the channel refuses is parked in a `PendingQueue`
-(`src/backpressure.rs`) and offered again from an idle callback, in order,
-until the queue drains — then the idle source removes itself. Nothing is
-dropped unless the pump is gone. Keystrokes take the fast path; large
-pastes exercise the queue. The SFTP sidebar uses the same queue for its
-commands.
+the main thread, which must never block. Every backend sends events
+through an `IdleSender` (`src/backpressure.rs`): it `try_send`s, parks
+whatever the channel refuses, and offers it again from an idle callback,
+in order, until the queue drains — then the idle source removes itself. A
+new event always queues behind parked ones. Nothing is dropped unless the
+pump is gone. Keystrokes take the fast path; large pastes exercise the
+queue. The SFTP sidebar sends its commands the same way.
 
 Output flows the other way through a bounded channel drained on the main
 context, so a stalled UI backs up into the transport and, ultimately, SSH

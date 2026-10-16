@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use russh_sftp::client::SftpSession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc::error::{SendError, TrySendError};
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -46,9 +46,10 @@ impl SftpClient {
         self.tx.send(cmd).await
     }
 
-    /// Non-blocking send for the GTK side's try-send + idle-flush pattern.
-    pub fn try_request(&self, cmd: SftpCommand) -> Result<(), TrySendError<SftpCommand>> {
-        self.tx.try_send(cmd)
+    /// The task's command channel, for the GTK side's never-blocking
+    /// sender (doc 02 §Backpressure).
+    pub fn sender(&self) -> mpsc::Sender<SftpCommand> {
+        self.tx.clone()
     }
 }
 

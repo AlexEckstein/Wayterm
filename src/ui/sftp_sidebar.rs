@@ -20,10 +20,9 @@ use std::sync::Arc;
 
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::backpressure::PendingQueue;
+use crate::backpressure::IdleSender;
 use crate::sftp::{Progress, SftpClient, SftpCommand, ShellCwdProbe};
 use crate::store::model::SessionType;
 use crate::transport::connection::SshConnection;
@@ -61,19 +60,31 @@ struct SidebarInner {
     follow_check: gtk4::CheckButton,
     buttons: Buttons,
     state: RefCell<SftpView>,
-    /// The live client, once [`SftpSidebar::attach`] has been called.
-    client: RefCell<Option<SftpClient>>,
+    /// The live SFTP task, once [`SftpSidebar::attach`] has been called.
+    attached: RefCell<Option<Attached>>,
     /// A connection waiting for the first show (`sftp_on_connect` off).
     deferred: RefCell<Option<Arc<SshConnection>>>,
-    /// Commands waiting for room in the bounded channel.
-    pending: RefCell<PendingQueue<SftpCommand>>,
-    /// The idle flush of `pending`, while scheduled.
-    flush_source: RefCell<Option<glib::SourceId>>,
     /// Asks the remote where the current shell is.
     probe: RefCell<Option<ShellCwdProbe>>,
     /// A probe is running; another request waits for it (`probe_again`).
     probing: Cell<bool>,
     probe_again: Cell<bool>,
+}
+
+/// One attached SFTP task: its client, and the never-blocking sender its
+/// commands go through, in order (doc 02 §Backpressure).
+#[derive(Clone)]
+struct Attached {
+    client: SftpClient,
+    commands: IdleSender<SftpCommand>,
+}
+
+impl Attached {
+    fn new(connection: Arc<SshConnection>) -> Self {
+        let client = SftpClient::new(connection);
+        let commands = IdleSender::new(client.sender());
+        Self { client, commands }
+    }
 }
 
 /// The SFTP sidebar (doc 09). Clones share everything; dropping the last
@@ -97,7 +108,7 @@ impl SftpSidebar {
     /// replaces (and ends) the previous task.
     pub fn attach(&self, connection: Arc<SshConnection>) {
         self.inner.deferred.borrow_mut().take();
-        *self.inner.client.borrow_mut() = Some(SftpClient::new(connection));
+        *self.inner.attached.borrow_mut() = Some(Attached::new(connection));
         self.inner.state.borrow_mut().attach();
         self.inner.render();
         let start = self.inner.state.borrow().current_path().to_string();
@@ -128,7 +139,7 @@ impl SftpSidebar {
     /// by the limitation notice.
     pub fn show_jump_placeholder(&self) {
         self.inner.deferred.borrow_mut().take();
-        *self.inner.client.borrow_mut() = None;
+        *self.inner.attached.borrow_mut() = None;
         self.inner.state.borrow_mut().mark_jump_unsupported();
         self.inner.render();
     }
@@ -370,10 +381,8 @@ fn build_sidebar() -> Rc<SidebarInner> {
         follow_check,
         buttons,
         state: RefCell::new(SftpView::detached()),
-        client: RefCell::new(None),
+        attached: RefCell::new(None),
         deferred: RefCell::new(None),
-        pending: RefCell::default(),
-        flush_source: RefCell::new(None),
         probe: RefCell::new(None),
         probing: Cell::new(false),
         probe_again: Cell::new(false),
@@ -553,7 +562,7 @@ impl SidebarInner {
     }
 
     fn client(&self) -> Option<SftpClient> {
-        self.client.borrow().clone()
+        Some(self.attached.borrow().as_ref()?.client.clone())
     }
 
     fn set_error(&self, err: &str) {
@@ -561,60 +570,19 @@ impl SidebarInner {
         self.render();
     }
 
-    /// Send a command, parking it for an idle flush if the channel is full.
-    /// `false` when it cannot be delivered at all.
+    /// Send a command behind any parked ones; `false` when it cannot be
+    /// delivered at all.
     fn send(self: &Rc<Self>, cmd: SftpCommand) -> bool {
-        let Some(client) = self.client() else {
+        let commands = self.attached.borrow().as_ref().map(|a| a.commands.clone());
+        let Some(commands) = commands else {
             self.set_error(NOT_CONNECTED);
             return false;
         };
-        match client.try_request(cmd) {
-            Ok(()) => true,
-            Err(TrySendError::Full(cmd)) => {
-                self.pending.borrow_mut().push(cmd);
-                self.schedule_flush();
-                true
-            }
-            Err(TrySendError::Closed(_)) => {
-                self.pending.borrow_mut().clear();
-                self.set_error(COMMAND_FAILED);
-                false
-            }
-        }
-    }
-
-    /// One idle callback flushes `pending` until it is empty.
-    fn schedule_flush(self: &Rc<Self>) {
-        if self.flush_source.borrow().is_some() {
-            return;
-        }
-        let sidebar = Rc::clone(self);
-        let source = glib::idle_add_local(move || {
-            if sidebar.flush_pending() {
-                sidebar.flush_source.borrow_mut().take();
-                glib::ControlFlow::Break
-            } else {
-                glib::ControlFlow::Continue
-            }
-        });
-        *self.flush_source.borrow_mut() = Some(source);
-    }
-
-    /// `true` when nothing is left waiting.
-    fn flush_pending(&self) -> bool {
-        let Some(client) = self.client() else {
-            self.pending.borrow_mut().clear();
-            return true;
-        };
-        let report = self
-            .pending
-            .borrow_mut()
-            .drain_with(|cmd| client.try_request(cmd));
-        if report.closed {
+        if !commands.send(cmd) {
             self.set_error(COMMAND_FAILED);
-            return true;
+            return false;
         }
-        report.remaining == 0
+        true
     }
 
     /// The shell is in `path` (`reported` over OSC 7, or probed): go there

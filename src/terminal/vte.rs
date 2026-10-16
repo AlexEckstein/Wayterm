@@ -1,14 +1,12 @@
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::cell::Cell;
 
-use gtk4::glib;
 use gtk4::{pango, Widget};
 use tokio::sync::mpsc;
 use vte4::prelude::*;
 use vte4::Terminal as VteTerminal;
 
 use super::backend::{TerminalBackend, TerminalEvent, TerminalFeatures};
-use crate::backpressure::PendingQueue;
+use crate::backpressure::IdleSender;
 
 /// The built-in backend: the GTK4 VTE widget (doc 02). Main thread only.
 pub struct VteBackend {
@@ -57,51 +55,9 @@ impl VteBackend {
     }
 }
 
-/// Sends terminal events without ever blocking the GTK main thread
-/// (doc 02 §Backpressure): events the channel refuses are parked and
-/// flushed, in order, from an idle callback. Nothing is dropped unless the
-/// pump is gone. Shared with the other GTK backends.
-#[derive(Clone)]
-pub(super) struct EventSender {
-    tx: mpsc::Sender<TerminalEvent>,
-    pending: Rc<RefCell<PendingQueue<TerminalEvent>>>,
-    flush_scheduled: Rc<Cell<bool>>,
-}
-
-impl EventSender {
-    pub(super) fn new(tx: mpsc::Sender<TerminalEvent>) -> Self {
-        Self {
-            tx,
-            pending: Rc::default(),
-            flush_scheduled: Rc::default(),
-        }
-    }
-
-    pub(super) fn send(&self, event: TerminalEvent) {
-        // Queue behind anything already parked so events stay in order.
-        self.pending.borrow_mut().push(event);
-        if !self.flush() && !self.flush_scheduled.replace(true) {
-            let this = self.clone();
-            glib::idle_add_local(move || {
-                if this.flush() {
-                    this.flush_scheduled.set(false);
-                    glib::ControlFlow::Break
-                } else {
-                    glib::ControlFlow::Continue
-                }
-            });
-        }
-    }
-
-    /// Offer parked events to the channel; `true` once nothing is left.
-    fn flush(&self) -> bool {
-        let report = self
-            .pending
-            .borrow_mut()
-            .drain_with(|event| self.tx.try_send(event));
-        report.remaining == 0
-    }
-}
+/// How every GTK backend sends its events: never blocking the main
+/// thread, never dropping one while the pump lives (doc 02 §Backpressure).
+pub(super) type EventSender = IdleSender<TerminalEvent>;
 
 /// VTE reports signed cell counts; never emit a zero or negative grid.
 fn grid_from_counts(rows: i64, cols: i64) -> (u32, u32) {
@@ -279,27 +235,5 @@ mod tests {
         assert_eq!(grid_from_counts(0, 0), (1, 1));
         assert_eq!(grid_from_counts(-5, -5), (1, 1));
         assert_eq!(grid_from_counts(i64::MAX, 80), (u32::MAX, 80));
-    }
-
-    /// The sender's display-free path: a full channel parks events, and a
-    /// later flush delivers them in order once there is room.
-    #[test]
-    fn a_full_channel_parks_events_until_a_flush_finds_room() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let sender = EventSender::new(tx);
-        sender.pending.borrow_mut().push(TerminalEvent::Bell);
-        assert!(sender.flush(), "room for one event");
-        sender
-            .pending
-            .borrow_mut()
-            .push(TerminalEvent::DataOut(b"a".to_vec()));
-        assert!(!sender.flush(), "the channel is full");
-
-        assert_eq!(rx.try_recv().unwrap(), TerminalEvent::Bell);
-        assert!(sender.flush());
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            TerminalEvent::DataOut(b"a".to_vec())
-        );
     }
 }

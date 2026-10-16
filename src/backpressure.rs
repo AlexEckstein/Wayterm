@@ -1,77 +1,98 @@
 //! The GTK half of the try_send + idle-flush pattern (doc 02 §Backpressure).
 //!
 //! GTK-side producers (VTE keystrokes, SFTP sidebar commands) feed bounded
-//! tokio channels and must never block the main thread. They `try_send`
-//! first; whatever the channel refuses is parked in a [`PendingQueue`] and
-//! re-offered from an idle callback until it drains.
+//! tokio channels and must never block the main thread. They send through
+//! an [`IdleSender`]: it `try_send`s, parks whatever the channel refuses,
+//! and re-offers it from an idle callback until the queue drains.
 
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
+use std::rc::Rc;
 
-use tokio::sync::mpsc::error::TrySendError;
+use gtk4::glib;
+use tokio::sync::mpsc::{self, error::TrySendError};
 
-/// Outcome of one [`PendingQueue::drain_with`] pass.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct DrainReport {
-    /// Items still parked because the channel filled up again.
-    pub remaining: usize,
-    /// The receiver is gone; everything still parked was dropped.
-    pub closed: bool,
+/// A never-blocking sender into a bounded channel, for the GTK main thread.
+/// Items the channel refuses are parked and flushed, oldest first, from an
+/// idle callback that removes itself once the queue drains; a new item
+/// always queues behind the parked ones, so order holds. Nothing is
+/// dropped unless the receiver is gone. Clones share the queue.
+pub struct IdleSender<T> {
+    tx: mpsc::Sender<T>,
+    parked: Rc<RefCell<VecDeque<T>>>,
+    flush_scheduled: Rc<Cell<bool>>,
 }
 
-/// Items waiting for room in a bounded channel, in send order.
-#[derive(Debug)]
-pub struct PendingQueue<T> {
-    queue: VecDeque<T>,
+/// What one flush left behind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Flush {
+    /// Everything parked was sent.
+    Drained,
+    /// The channel filled up again; the rest stays parked.
+    Full,
+    /// The receiver is gone; everything parked was dropped.
+    Closed,
 }
 
-impl<T> Default for PendingQueue<T> {
-    fn default() -> Self {
+impl<T> Clone for IdleSender<T> {
+    fn clone(&self) -> Self {
         Self {
-            queue: VecDeque::new(),
+            tx: self.tx.clone(),
+            parked: Rc::clone(&self.parked),
+            flush_scheduled: Rc::clone(&self.flush_scheduled),
         }
     }
 }
 
-impl<T> PendingQueue<T> {
-    pub fn push(&mut self, item: T) {
-        self.queue.push_back(item);
+impl<T: 'static> IdleSender<T> {
+    pub fn new(tx: mpsc::Sender<T>) -> Self {
+        Self {
+            tx,
+            parked: Rc::default(),
+            flush_scheduled: Rc::default(),
+        }
     }
 
-    pub fn clear(&mut self) {
-        self.queue.clear();
+    /// Send `item` behind anything parked, parking what does not fit.
+    /// `false` once the receiver is gone, which drops the item.
+    pub fn send(&self, item: T) -> bool {
+        self.parked.borrow_mut().push_back(item);
+        match self.flush() {
+            Flush::Drained => true,
+            Flush::Closed => false,
+            Flush::Full => {
+                if !self.flush_scheduled.replace(true) {
+                    let this = self.clone();
+                    glib::idle_add_local(move || match this.flush() {
+                        Flush::Full => glib::ControlFlow::Continue,
+                        Flush::Drained | Flush::Closed => {
+                            this.flush_scheduled.set(false);
+                            glib::ControlFlow::Break
+                        }
+                    });
+                }
+                true
+            }
+        }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-
-    /// Offer every parked item to `send`, oldest first. Stops at the first
-    /// item the channel refuses and keeps it (and everything behind it);
-    /// a closed channel drops the rest.
-    pub fn drain_with(
-        &mut self,
-        mut send: impl FnMut(T) -> Result<(), TrySendError<T>>,
-    ) -> DrainReport {
-        while let Some(item) = self.queue.pop_front() {
-            match send(item) {
+    /// Offer the parked items, oldest first, until the channel refuses one.
+    fn flush(&self) -> Flush {
+        let mut parked = self.parked.borrow_mut();
+        while let Some(item) = parked.pop_front() {
+            match self.tx.try_send(item) {
                 Ok(()) => {}
                 Err(TrySendError::Full(item)) => {
-                    self.queue.push_front(item);
-                    break;
+                    parked.push_front(item);
+                    return Flush::Full;
                 }
                 Err(TrySendError::Closed(_)) => {
-                    self.queue.clear();
-                    return DrainReport {
-                        remaining: 0,
-                        closed: true,
-                    };
+                    parked.clear();
+                    return Flush::Closed;
                 }
             }
         }
-        DrainReport {
-            remaining: self.queue.len(),
-            closed: false,
-        }
+        Flush::Drained
     }
 }
 
@@ -79,58 +100,47 @@ impl<T> PendingQueue<T> {
 mod tests {
     use super::*;
 
-    fn queue(items: &[u32]) -> PendingQueue<u32> {
-        let mut queue = PendingQueue::default();
-        items.iter().for_each(|&item| queue.push(item));
-        queue
+    /// Park `items` as a refused send would (no idle callback in tests).
+    fn parked(capacity: usize, items: &[u32]) -> (IdleSender<u32>, mpsc::Receiver<u32>) {
+        let (tx, rx) = mpsc::channel(capacity);
+        let sender = IdleSender::new(tx);
+        sender.parked.borrow_mut().extend(items);
+        (sender, rx)
+    }
+
+    fn received(rx: &mut mpsc::Receiver<u32>) -> Vec<u32> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
 
     #[test]
-    fn drains_in_order() {
-        let mut sent = Vec::new();
-        let report = queue(&[1, 2]).drain_with(|item| {
-            sent.push(item);
-            Ok(())
-        });
-        assert_eq!(sent, [1, 2]);
-        assert_eq!(report, DrainReport::default());
+    fn a_send_with_room_goes_straight_through() {
+        let (sender, mut rx) = parked(4, &[]);
+        assert!(sender.send(1));
+        assert!(sender.send(2));
+        assert_eq!(received(&mut rx), [1, 2]);
     }
 
     #[test]
-    fn stops_at_a_full_channel_and_keeps_the_rest_in_order() {
-        let mut queue = queue(&[1, 2, 3]);
-        let mut offered = Vec::new();
-        let report = queue.drain_with(|item| {
-            offered.push(item);
-            if item == 1 {
-                Ok(())
-            } else {
-                Err(TrySendError::Full(item))
-            }
-        });
-        assert_eq!(offered, [1, 2], "3 is never offered after 2 is refused");
-        assert_eq!(report.remaining, 2);
-
-        let mut sent = Vec::new();
-        queue.drain_with(|item| {
-            sent.push(item);
-            Ok(())
-        });
-        assert_eq!(sent, [2, 3], "a later pass finishes in order");
-        assert!(queue.is_empty());
-    }
-
-    #[test]
-    fn a_closed_channel_drops_everything() {
-        let mut queue = queue(&[1, 2]);
-        let report = queue.drain_with(|item| Err(TrySendError::Closed(item)));
+    fn a_full_channel_parks_the_rest_until_a_flush_finds_room() {
+        let (sender, mut rx) = parked(1, &[1, 2, 3]);
+        assert_eq!(sender.flush(), Flush::Full);
         assert_eq!(
-            report,
-            DrainReport {
-                remaining: 0,
-                closed: true
-            }
+            received(&mut rx),
+            [1],
+            "2 is refused, so 3 is never offered"
         );
-        assert!(queue.is_empty());
+        assert_eq!(sender.flush(), Flush::Full);
+        assert_eq!(received(&mut rx), [2]);
+        assert_eq!(sender.flush(), Flush::Drained);
+        assert_eq!(received(&mut rx), [3], "a later pass finishes in order");
+    }
+
+    #[test]
+    fn a_closed_channel_drops_everything_parked() {
+        let (sender, rx) = parked(4, &[1, 2]);
+        drop(rx);
+        assert_eq!(sender.flush(), Flush::Closed);
+        assert!(sender.parked.borrow().is_empty());
+        assert!(!sender.send(3), "the receiver is gone");
     }
 }
