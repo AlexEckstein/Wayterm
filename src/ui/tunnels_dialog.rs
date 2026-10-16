@@ -23,9 +23,7 @@ pub mod status_source;
 #[cfg(test)]
 mod tests;
 
-pub use status_source::{
-    EngineStatusBridge, FakeStatusSource, ForwardState, ForwardStatus, ForwardStatusSource,
-};
+pub use status_source::{EngineStatusBridge, FakeStatusSource, ForwardStatusSource};
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -36,6 +34,8 @@ use gtk4::prelude::*;
 
 use crate::store::model::{ForwardRule, SessionConfig};
 use crate::ui::widgets::{button_row, set_margins, Modal};
+
+use status_source::ForwardEvent;
 
 use model::{
     drafts_from_rules, lookup_status, rules_from_drafts, status_text, ForwardRuleDraft,
@@ -81,7 +81,7 @@ impl RuleRow {
 struct RowCtx {
     online: bool,
     source: Option<Arc<dyn ForwardStatusSource>>,
-    snapshot: Vec<ForwardStatus>,
+    snapshot: Vec<ForwardEvent>,
 }
 
 /// The dialog. Build with [`Self::new`], then [`Self::run`] it.
@@ -156,7 +156,7 @@ impl TunnelsDialog {
         let for_status = rows.clone();
         glib::MainContext::default().spawn_local(async move {
             while let Some(update) = rx.recv().await {
-                if let Some(row) = for_status.borrow().get(update.rule_index) {
+                if let Some(row) = for_status.borrow().get(update.rule_id) {
                     if !row.removed.get() {
                         row.status.set_text(&status_text(Some(&update.state), true));
                     }
@@ -389,6 +389,7 @@ pub(super) mod gtk_tests {
     use super::*;
     use crate::store::model::ForwardKind;
     use model::KIND_INDEX_REMOTE;
+    use status_source::ForwardState;
 
     fn session_with_rules() -> SessionConfig {
         SessionConfig {
@@ -464,8 +465,8 @@ pub(super) mod gtk_tests {
         while glib::MainContext::default().iteration(false) {}
         assert_eq!(dialog.rows.borrow()[0].status.text(), "Stopped");
 
-        source.emit(ForwardStatus {
-            rule_index: 0,
+        source.emit(ForwardEvent {
+            rule_id: 0,
             state: ForwardState::Active { conns: 2 },
         });
         while glib::MainContext::default().iteration(false) {}

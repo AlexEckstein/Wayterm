@@ -1,20 +1,17 @@
 //! Display-free tests: the store roundtrip through drafts, the validation
-//! the dialogs share, the status summaries the rows render, and the fake
+//! the dialogs share, the status cells the rows render, and the fake
 //! source that stands in for [`super::status_source::EngineStatusBridge`].
 
 use super::model::{
-    apply_status, draft_from_rule, drafts_from_rules, kind_from_index, kind_index_for,
-    lookup_status, rules_from_drafts, status_text, summarize_rules, validate_draft,
-    ForwardRuleDraft, KIND_INDEX_DYNAMIC, KIND_INDEX_LOCAL, KIND_INDEX_REMOTE, OFFLINE_STATUS,
-    V2_NOTE,
+    draft_from_rule, drafts_from_rules, kind_from_index, kind_index_for, lookup_status,
+    rules_from_drafts, status_text, validate_draft, ForwardRuleDraft, KIND_INDEX_DYNAMIC,
+    KIND_INDEX_LOCAL, KIND_INDEX_REMOTE, OFFLINE_STATUS, V2_NOTE,
 };
 use super::status_source::{
-    EngineStatusBridge, FakeStatusSource, ForwardState, ForwardStatus, ForwardStatusSource,
+    EngineStatusBridge, FakeStatusSource, ForwardEvent, ForwardState, ForwardStatusSource,
 };
 use crate::store::model::{ForwardKind, ForwardRule};
-use crate::transport::forward::{
-    ForwardEngine, ForwardEvent, ForwardState as EngineState, OpenerFuture,
-};
+use crate::transport::forward::{ForwardEngine, OpenerFuture};
 use crate::transport::types::TransportError;
 
 fn sample_rule() -> ForwardRule {
@@ -148,7 +145,7 @@ fn status_cells() {
     );
     assert_eq!(
         status_text(
-            Some(&ForwardState::Failed {
+            Some(&ForwardState::LastFailed {
                 error: "refused".to_string()
             }),
             true
@@ -166,76 +163,14 @@ fn status_cells() {
 }
 
 #[test]
-fn summaries_overlay_status_and_gate_engine_controls() {
-    let rules = vec![
-        sample_rule(),
-        ForwardRule {
-            kind: ForwardKind::Remote,
-            enabled: false,
-            ..sample_rule()
-        },
-    ];
-    let statuses = vec![ForwardStatus {
-        rule_index: 0,
-        state: ForwardState::Active { conns: 2 },
-    }];
-
-    let rows = summarize_rules(&rules, &statuses, true);
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].bind, "127.0.0.1:8080");
-    assert_eq!(rows[0].remote, "web1.lan:80");
-    assert_eq!(rows[0].status, "2 connections");
-    assert!(rows[0].engine_control, "local rows drive the engine");
-    assert_eq!(rows[1].kind_label, "Remote (v2)");
-    assert_eq!(rows[1].status, "Stopped", "unreported rules read stopped");
-    assert!(!rows[1].engine_control, "v2 rows never arm a control");
-
-    let rows = summarize_rules(&rules, &statuses, false);
-    assert!(rows.iter().all(|row| row.status == OFFLINE_STATUS));
-    assert!(rows.iter().all(|row| !row.engine_control));
-}
-
-#[test]
-fn apply_status_folds_updates_into_the_snapshot() {
-    let mut statuses = vec![ForwardStatus {
-        rule_index: 0,
-        state: ForwardState::Listening,
-    }];
-    apply_status(
-        &mut statuses,
-        ForwardStatus {
-            rule_index: 0,
-            state: ForwardState::Active { conns: 1 },
-        },
-    );
-    assert_eq!(statuses.len(), 1);
-    assert_eq!(
-        lookup_status(&statuses, 0),
-        Some(&ForwardState::Active { conns: 1 })
-    );
-    // A rule the dialog did not know yet grows the snapshot.
-    apply_status(
-        &mut statuses,
-        ForwardStatus {
-            rule_index: 2,
-            state: ForwardState::Failed {
-                error: "down".to_string(),
-            },
-        },
-    );
-    assert_eq!(statuses.len(), 2);
-    assert!(lookup_status(&statuses, 1).is_none());
-}
-
-#[test]
 fn fake_source_snapshot_emit_and_toggles() {
     let source = FakeStatusSource::new(vec![ForwardState::Listening, ForwardState::Stopped]);
     let snapshot = source.snapshot();
     assert_eq!(snapshot.len(), 2);
     assert_eq!(snapshot[0].state, ForwardState::Listening);
 
-    source.emit(ForwardStatus {
-        rule_index: 0,
+    source.emit(ForwardEvent {
+        rule_id: 0,
         state: ForwardState::Active { conns: 4 },
     });
     assert_eq!(
@@ -267,8 +202,8 @@ fn fake_source_broadcasts_to_subscribers() {
     let source = FakeStatusSource::new(vec![ForwardState::Listening]);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     source.subscribe(tx);
-    let update = ForwardStatus {
-        rule_index: 0,
+    let update = ForwardEvent {
+        rule_id: 0,
         state: ForwardState::Active { conns: 2 },
     };
     source.emit(update.clone());
@@ -303,7 +238,7 @@ fn remote_rule() -> ForwardRule {
 }
 
 #[test]
-fn bridge_maps_engine_states_and_rule_ids() {
+fn bridge_snapshots_engine_states_by_rule_id() {
     let (engine, _rx) = closed_engine();
     let bridge = EngineStatusBridge::new(engine);
     assert!(bridge.snapshot().is_empty(), "nothing reported yet");
@@ -311,42 +246,41 @@ fn bridge_maps_engine_states_and_rule_ids() {
     // Out of order on purpose: the snapshot sorts by rule index.
     bridge.handle_event(ForwardEvent {
         rule_id: 2,
-        state: EngineState::Active { conns: 3 },
+        state: ForwardState::Active { conns: 3 },
     });
     bridge.handle_event(ForwardEvent {
         rule_id: 0,
-        state: EngineState::LastFailed {
+        state: ForwardState::LastFailed {
             error: "refused".to_string(),
         },
     });
     bridge.handle_event(ForwardEvent {
         rule_id: 1,
-        state: EngineState::Listening,
+        state: ForwardState::Listening,
     });
     bridge.handle_event(ForwardEvent {
         rule_id: 3,
-        state: EngineState::Stopped,
+        state: ForwardState::Stopped,
     });
     assert_eq!(
         bridge.snapshot(),
         vec![
-            ForwardStatus {
-                // LastFailed is the engine's name for the dialog's Failed.
-                rule_index: 0,
-                state: ForwardState::Failed {
+            ForwardEvent {
+                rule_id: 0,
+                state: ForwardState::LastFailed {
                     error: "refused".to_string(),
                 },
             },
-            ForwardStatus {
-                rule_index: 1,
+            ForwardEvent {
+                rule_id: 1,
                 state: ForwardState::Listening,
             },
-            ForwardStatus {
-                rule_index: 2,
+            ForwardEvent {
+                rule_id: 2,
                 state: ForwardState::Active { conns: 3 },
             },
-            ForwardStatus {
-                rule_index: 3,
+            ForwardEvent {
+                rule_id: 3,
                 state: ForwardState::Stopped,
             },
         ]
@@ -355,7 +289,7 @@ fn bridge_maps_engine_states_and_rule_ids() {
     // A repeated event moves the cached entry, it does not duplicate it.
     bridge.handle_event(ForwardEvent {
         rule_id: 2,
-        state: EngineState::Stopped,
+        state: ForwardState::Stopped,
     });
     let snapshot = bridge.snapshot();
     assert_eq!(snapshot.len(), 4);
@@ -368,7 +302,7 @@ fn bridge_snapshot_leaves_unreported_rules_to_the_stopped_fallback() {
     let bridge = EngineStatusBridge::new(engine);
     bridge.handle_event(ForwardEvent {
         rule_id: 0,
-        state: EngineState::Listening,
+        state: ForwardState::Listening,
     });
     let snapshot = bridge.snapshot();
     assert_eq!(snapshot.len(), 1);
@@ -387,25 +321,25 @@ fn bridge_fans_out_and_prunes_dead_subscribers() {
     bridge.subscribe(tx2);
     drop(rx2);
 
-    let first = ForwardStatus {
-        rule_index: 0,
+    let first = ForwardEvent {
+        rule_id: 0,
         state: ForwardState::Listening,
     };
     bridge.handle_event(ForwardEvent {
-        rule_id: first.rule_index,
-        state: EngineState::Listening,
+        rule_id: first.rule_id,
+        state: ForwardState::Listening,
     });
     assert_eq!(rx1.try_recv(), Ok(first));
 
     // The dead sender was pruned on that send: later updates still reach
     // the live subscriber instead of accumulating dead entries.
-    let second = ForwardStatus {
-        rule_index: 0,
+    let second = ForwardEvent {
+        rule_id: 0,
         state: ForwardState::Stopped,
     };
     bridge.handle_event(ForwardEvent {
-        rule_id: second.rule_index,
-        state: EngineState::Stopped,
+        rule_id: second.rule_id,
+        state: ForwardState::Stopped,
     });
     assert_eq!(rx1.try_recv(), Ok(second));
     assert!(rx1.try_recv().is_err(), "no duplicate deliveries");
@@ -419,7 +353,7 @@ async fn bridge_set_rule_enabled_is_queued_and_reaches_the_engine() {
     engine.start(vec![remote_rule()]);
     assert!(matches!(
         timeout_recv(&mut rx).await.state,
-        EngineState::Stopped
+        ForwardState::Stopped
     ));
     let bridge = EngineStatusBridge::new(engine);
 
@@ -431,7 +365,7 @@ async fn bridge_set_rule_enabled_is_queued_and_reaches_the_engine() {
         timeout_recv(&mut rx).await,
         ForwardEvent {
             rule_id: 0,
-            state: EngineState::Stopped,
+            state: ForwardState::Stopped,
         },
         "re-enabling a skipped Remote rule must report Stopped again"
     );

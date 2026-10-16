@@ -1,12 +1,12 @@
 //! The forward-status seam: how the Tunnels dialog learns a forward rule's
 //! live state and how its enable toggle reaches the forward engine.
 //!
-//! The forward engine (`src/transport/forward.rs`) publishes per-rule
-//! status through its own channel of `ForwardEvent`s. This trait is the
-//! dialog-side shape of that feed: a snapshot for the initial paint, a
+//! The forward engine (`src/transport/forward.rs`) publishes one
+//! [`ForwardEvent`] per rule transition on its own channel. This trait is
+//! the dialog-side shape of that feed: a snapshot for the initial paint, a
 //! broadcast subscription for live updates, and one control hook.
-//! [`EngineStatusBridge`] joins the two by wrapping the engine's event
-//! receiver in this trait; the dialog never imports transport types.
+//! [`EngineStatusBridge`] serves it from a live engine, [`FakeStatusSource`]
+//! from tests.
 //!
 //! GTK discipline follows `tab.rs`: status travels on a
 //! `tokio::sync::mpsc` unbounded channel whose receiver is drained by a
@@ -20,27 +20,8 @@ use std::sync::Mutex;
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::transport::forward::{ForwardEngine, ForwardEvent, ForwardState as EngineState};
-
-/// One rule's live state, by position in the session's `forward_rules`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ForwardStatus {
-    pub rule_index: usize,
-    pub state: ForwardState,
-}
-
-/// The per-rule states the dialog renders (doc 11 §Port forwarding).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ForwardState {
-    /// The listener is up and idle.
-    Listening,
-    /// The listener is up with `conns` open channels.
-    Active { conns: u32 },
-    /// The listener failed; the engine keeps the last error for display.
-    Failed { error: String },
-    /// The rule is disabled or its listener was stopped.
-    Stopped,
-}
+use crate::transport::forward::ForwardEngine;
+pub use crate::transport::forward::{ForwardEvent, ForwardState, RuleId};
 
 /// What the Tunnels dialog needs from a forward engine. Object-safe and
 /// `Send + Sync` so the dialog can hold `Arc<dyn ForwardStatusSource>`
@@ -48,14 +29,14 @@ pub enum ForwardState {
 pub trait ForwardStatusSource: Send + Sync {
     /// The current state of every rule, in rule order. Rules without an
     /// entry render as [`ForwardState::Stopped`].
-    fn snapshot(&self) -> Vec<ForwardStatus>;
+    fn snapshot(&self) -> Vec<ForwardEvent>;
     /// Start (`true`) or stop (`false`) one rule's listener. Queued, never
-    /// blocking; the resulting state arrives as a [`ForwardStatus`] update.
-    fn set_rule_enabled(&self, rule_index: usize, enabled: bool);
-    /// Send every future [`ForwardStatus`] to `sender` as well. The dialog
+    /// blocking; the resulting state arrives as a [`ForwardEvent`] update.
+    fn set_rule_enabled(&self, rule_id: RuleId, enabled: bool);
+    /// Send every future [`ForwardEvent`] to `sender` as well. The dialog
     /// calls this once with its drain's sender; [`EngineStatusBridge`]
     /// forwards engine events into all registered senders.
-    fn subscribe(&self, sender: UnboundedSender<ForwardStatus>);
+    fn subscribe(&self, sender: UnboundedSender<ForwardEvent>);
 }
 
 /// An in-process [`ForwardStatusSource`] for tests and for the dialog's
@@ -67,8 +48,8 @@ pub struct FakeStatusSource {
 
 struct FakeInner {
     states: Vec<ForwardState>,
-    senders: Vec<UnboundedSender<ForwardStatus>>,
-    toggles: Vec<(usize, bool)>,
+    senders: Vec<UnboundedSender<ForwardEvent>>,
+    toggles: Vec<(RuleId, bool)>,
 }
 
 impl FakeStatusSource {
@@ -83,61 +64,57 @@ impl FakeStatusSource {
         }
     }
 
-    /// Publish `status`: the snapshot moves and every subscriber is told.
+    /// Publish `event`: the snapshot moves and every subscriber is told.
     /// Senders whose receiver is gone are dropped.
-    pub fn emit(&self, status: ForwardStatus) {
+    pub fn emit(&self, event: ForwardEvent) {
         let mut inner = self.inner.lock().expect("fake source lock");
-        if inner.states.len() <= status.rule_index {
+        if inner.states.len() <= event.rule_id {
             inner
                 .states
-                .resize(status.rule_index + 1, ForwardState::Stopped);
+                .resize(event.rule_id + 1, ForwardState::Stopped);
         }
-        inner.states[status.rule_index] = status.state.clone();
+        inner.states[event.rule_id] = event.state.clone();
         inner
             .senders
-            .retain(|sender| sender.send(status.clone()).is_ok());
+            .retain(|sender| sender.send(event.clone()).is_ok());
     }
 
-    /// Every `(rule_index, enabled)` the dialog requested, in order.
-    pub fn toggles(&self) -> Vec<(usize, bool)> {
+    /// Every `(rule_id, enabled)` the dialog requested, in order.
+    pub fn toggles(&self) -> Vec<(RuleId, bool)> {
         self.inner.lock().expect("fake source lock").toggles.clone()
     }
 }
 
 impl ForwardStatusSource for FakeStatusSource {
-    fn snapshot(&self) -> Vec<ForwardStatus> {
+    fn snapshot(&self) -> Vec<ForwardEvent> {
         self.inner
             .lock()
             .expect("fake source lock")
             .states
             .iter()
             .enumerate()
-            .map(|(rule_index, state)| ForwardStatus {
-                rule_index,
+            .map(|(rule_id, state)| ForwardEvent {
+                rule_id,
                 state: state.clone(),
             })
             .collect()
     }
 
-    fn set_rule_enabled(&self, rule_index: usize, enabled: bool) {
-        let mut inner = self.inner.lock().expect("fake source lock");
-        inner.toggles.push((rule_index, enabled));
+    fn set_rule_enabled(&self, rule_id: RuleId, enabled: bool) {
+        self.inner
+            .lock()
+            .expect("fake source lock")
+            .toggles
+            .push((rule_id, enabled));
         let state = if enabled {
             ForwardState::Listening
         } else {
             ForwardState::Stopped
         };
-        if inner.states.len() <= rule_index {
-            inner.states.resize(rule_index + 1, ForwardState::Stopped);
-        }
-        inner.states[rule_index] = state.clone();
-        let status = ForwardStatus { rule_index, state };
-        inner
-            .senders
-            .retain(|sender| sender.send(status.clone()).is_ok());
+        self.emit(ForwardEvent { rule_id, state });
     }
 
-    fn subscribe(&self, sender: UnboundedSender<ForwardStatus>) {
+    fn subscribe(&self, sender: UnboundedSender<ForwardEvent>) {
         self.inner
             .lock()
             .expect("fake source lock")
@@ -159,23 +136,8 @@ impl ForwardStatusSource for FakeStatusSource {
 /// engine's controls never block).
 pub struct EngineStatusBridge {
     engine: ForwardEngine,
-    states: Mutex<HashMap<usize, ForwardState>>,
-    senders: Mutex<Vec<UnboundedSender<ForwardStatus>>>,
-}
-
-/// The transport's per-rule state in the dialog's shape:
-/// `LastFailed` is the engine's name for what the dialog renders as
-/// `Failed`; every other variant (and the transport `rule_id` → dialog
-/// `rule_index` position) lines up one-to-one.
-fn map_engine_state(state: &EngineState) -> ForwardState {
-    match state {
-        EngineState::Listening => ForwardState::Listening,
-        EngineState::Active { conns } => ForwardState::Active { conns: *conns },
-        EngineState::LastFailed { error } => ForwardState::Failed {
-            error: error.clone(),
-        },
-        EngineState::Stopped => ForwardState::Stopped,
-    }
+    states: Mutex<HashMap<RuleId, ForwardState>>,
+    senders: Mutex<Vec<UnboundedSender<ForwardEvent>>>,
 }
 
 impl EngineStatusBridge {
@@ -199,46 +161,42 @@ impl EngineStatusBridge {
     /// subscriber. Senders whose receiver is gone are pruned, like
     /// [`FakeStatusSource::emit`]. Never blocks.
     pub fn handle_event(&self, event: ForwardEvent) {
-        let status = ForwardStatus {
-            rule_index: event.rule_id,
-            state: map_engine_state(&event.state),
-        };
         self.states
             .lock()
             .expect("bridge states lock")
-            .insert(status.rule_index, status.state.clone());
+            .insert(event.rule_id, event.state.clone());
         self.senders
             .lock()
             .expect("bridge senders lock")
-            .retain(|sender| sender.send(status.clone()).is_ok());
+            .retain(|sender| sender.send(event.clone()).is_ok());
     }
 }
 
 impl ForwardStatusSource for EngineStatusBridge {
-    fn snapshot(&self) -> Vec<ForwardStatus> {
+    fn snapshot(&self) -> Vec<ForwardEvent> {
         // Rules the engine never reported have no entry: per the trait
         // docs they render as `Stopped` at the dialog layer.
-        let mut snapshot: Vec<ForwardStatus> = self
+        let mut snapshot: Vec<ForwardEvent> = self
             .states
             .lock()
             .expect("bridge states lock")
             .iter()
-            .map(|(&rule_index, state)| ForwardStatus {
-                rule_index,
+            .map(|(&rule_id, state)| ForwardEvent {
+                rule_id,
                 state: state.clone(),
             })
             .collect();
-        snapshot.sort_by_key(|status| status.rule_index);
+        snapshot.sort_by_key(|event| event.rule_id);
         snapshot
     }
 
-    fn set_rule_enabled(&self, rule_index: usize, enabled: bool) {
+    fn set_rule_enabled(&self, rule_id: RuleId, enabled: bool) {
         // Never blocks; the resulting state arrives back through the event
         // drain.
-        self.engine.set_enabled(rule_index, enabled);
+        self.engine.set_enabled(rule_id, enabled);
     }
 
-    fn subscribe(&self, sender: UnboundedSender<ForwardStatus>) {
+    fn subscribe(&self, sender: UnboundedSender<ForwardEvent>) {
         self.senders
             .lock()
             .expect("bridge senders lock")
