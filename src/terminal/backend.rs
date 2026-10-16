@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use gtk4::{pango, Widget};
@@ -79,13 +80,125 @@ pub struct TerminalHandle {
     pub events: mpsc::Receiver<TerminalEvent>,
 }
 
-/// Build the terminal backend and its event channel. VTE is the only
-/// built-in backend (doc 05); main thread only.
+/// The global settings row naming the backend for new tabs (doc 06
+/// §Default Data, doc 05): `vte` or `ghostty`.
+pub const DEFAULT_BACKEND_SETTING: &str = "default_backend";
+
+/// Whether this build has the experimental Ghostty backend
+/// (`backend-ghostty`, doc 05).
+pub const GHOSTTY_COMPILED: bool = cfg!(feature = "backend-ghostty");
+
+/// A terminal backend [`create_terminal`] can build.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BackendKind {
+    #[default]
+    Vte,
+    Ghostty,
+}
+
+impl BackendKind {
+    /// Parse a `default_backend` value; missing or unknown is VTE.
+    pub fn from_setting(raw: Option<&str>) -> Self {
+        match raw
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("ghostty") => Self::Ghostty,
+            _ => Self::Vte,
+        }
+    }
+
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            Self::Vte => "vte",
+            Self::Ghostty => "ghostty",
+        }
+    }
+
+    /// The backend actually built: Ghostty falls back to VTE in a build
+    /// without `backend-ghostty`.
+    pub fn effective(self) -> Self {
+        if GHOSTTY_COMPILED {
+            self
+        } else {
+            Self::Vte
+        }
+    }
+}
+
+static PREFER_GHOSTTY: AtomicBool = AtomicBool::new(false);
+
+/// Record the stored `default_backend` preference; tabs created afterwards
+/// use it, open tabs keep their backend.
+pub fn install_backend_preference(kind: BackendKind) {
+    PREFER_GHOSTTY.store(kind == BackendKind::Ghostty, Ordering::SeqCst);
+}
+
+/// The installed preference (VTE until one is installed).
+pub fn backend_preference() -> BackendKind {
+    if PREFER_GHOSTTY.load(Ordering::SeqCst) {
+        BackendKind::Ghostty
+    } else {
+        BackendKind::Vte
+    }
+}
+
+/// Build the terminal backend and its event channel: the installed
+/// [`backend_preference`] when this build has it, VTE otherwise (doc 05);
+/// main thread only.
 pub fn create_terminal() -> TerminalHandle {
     let (tx, events) = mpsc::channel(256);
+    #[cfg(feature = "backend-ghostty")]
+    if backend_preference().effective() == BackendKind::Ghostty {
+        match crate::terminal::GhosttyBackend::new(tx.clone()) {
+            Some(backend) => {
+                // !Send by design, like VteBackend; the Arc shares the trait
+                // object between main-thread closures.
+                let backend: Box<dyn TerminalBackend> = Box::new(backend);
+                return TerminalHandle {
+                    backend: Arc::from(backend),
+                    events,
+                };
+            }
+            None => eprintln!("Wayterm: libghostty-vt terminal unavailable; using VTE"),
+        }
+    }
     // VteBackend is !Send by design; Arc is still the right owner for the
     // main-thread closures that share it.
     #[allow(clippy::arc_with_non_send_sync)]
     let backend = Arc::new(crate::terminal::VteBackend::new(tx));
     TerminalHandle { backend, events }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_backend_values_parse_with_vte_as_fallback() {
+        assert_eq!(BackendKind::from_setting(None), BackendKind::Vte);
+        assert_eq!(BackendKind::from_setting(Some("vte")), BackendKind::Vte);
+        assert_eq!(
+            BackendKind::from_setting(Some(" Ghostty ")),
+            BackendKind::Ghostty
+        );
+        assert_eq!(
+            BackendKind::from_setting(Some("alacritty")),
+            BackendKind::Vte
+        );
+        for kind in [BackendKind::Vte, BackendKind::Ghostty] {
+            assert_eq!(BackendKind::from_setting(Some(kind.as_setting())), kind);
+        }
+    }
+
+    #[test]
+    fn ghostty_is_built_only_when_compiled_in() {
+        assert_eq!(BackendKind::Vte.effective(), BackendKind::Vte);
+        let expected = if GHOSTTY_COMPILED {
+            BackendKind::Ghostty
+        } else {
+            BackendKind::Vte
+        };
+        assert_eq!(BackendKind::Ghostty.effective(), expected);
+    }
 }

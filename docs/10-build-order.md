@@ -14,7 +14,7 @@ the last. Phase numbers are referenced from code and other docs.
 | 7 | RDP tabs | done |
 | 8 | tmux persistence | done |
 | 9 | Import/export, packaging | done, with gaps below |
-| 10 | libghostty-vt backend | when its C API stabilizes |
+| 10 | libghostty-vt backend | experimental, opt-in, with gaps below |
 | 11 | Jump hosts and port forwarding | done, with v1 limits below |
 | 12 | Testing hardening | continuous |
 | 13 | Keystroke macros | done |
@@ -166,10 +166,40 @@ Gaps, each small:
   sources). The Flatpak is not built by the release workflow, and its
   sandbox access to SSH keys, the keyring and files is not yet verified.
 
-## Phase 10: libghostty-vt backend
+## Phase 10: libghostty-vt backend — experimental, opt-in, with gaps
 
-FFI bindings, a custom render widget, the `backend-ghostty` feature,
-benchmarks against VTE (docs 03, 05).
+libghostty-vt has no stable C API yet, so this is an opt-in second
+backend; VTE stays the default and the default build has none of it.
+The `backend-ghostty` Cargo feature (doc 05) links libghostty-vt from one
+pinned upstream commit, built locally with Zig and not committed
+(`docs/plans/phase10-pin.md`: commit, Zig version, build and install
+steps). `build.rs` compiles `src/terminal/ghostty/shim.c` — a narrow C
+layer over the sized structs of the C API — and links the static
+library. `src/terminal/ghostty/`: `engine::Engine` (safe, display-free
+owner of one terminal), `view::GhosttyView` (the GTK4 render widget), and
+`GhosttyBackend` behind the unchanged `TerminalBackend` trait (doc 02
+§GhosttyBackend). `create_terminal()` builds the backend the global
+`default_backend` row names (`vte`/`ghostty`, doc 06), Ghostty only when
+compiled in; the Settings window's General page sets it with an
+"Experimental Ghostty terminal" check box, disabled with a "rebuild with
+the backend-ghostty feature to enable" tooltip in a default build.
+`benches/terminal_parse.rs` compares parse throughput with VTE (doc 03
+§Benchmark). **Verify:** with the library installed, `cargo clippy
+--all-targets --features backend-ghostty -- -D warnings` and `cargo test
+--features backend-ghostty` (the engine suite drives the FFI end to end);
+the widget under xvfb with `-- --ignored ghostty_display`; `cargo bench
+--features backend-ghostty`.
+
+Gaps:
+
+- CI builds and tests the default feature set only; nothing builds
+  libghostty-vt there yet.
+- `GhosttyBackend` has no search, color schemes, opacity, URL detection,
+  or image drawing (`features()` says so); no input method or compose
+  support (keys go through libghostty-vt's key encoder directly); only a
+  grapheme's base codepoint is drawn.
+- The per-session `terminal_backend` override (doc 05) is not read:
+  `create_terminal()` follows the global row only.
 
 ## Phase 11: Jump hosts and port forwarding — done, with v1 limits
 

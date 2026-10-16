@@ -48,7 +48,9 @@ main thread. Bytes come in through `write`; everything going out is a
 `TerminalEvent` on a bounded channel. `send_input` is input that was not
 typed — macro playback (doc 12) — and leaves as `DataOut` through the
 same queue as keystrokes. `create_terminal()` builds the backend
-and that channel together and returns a `TerminalHandle { backend, events }`;
+and that channel together and returns a `TerminalHandle { backend, events }`
+— VTE, or [GhosttyBackend](#ghosttybackend) when the global
+`default_backend` row says `ghostty` and the build has it;
 the receiver goes to the transport pump (doc 04 §Wiring). Backends are held
 as `Arc<dyn TerminalBackend>` because the tab, the output drain, and the
 terminal actions share them.
@@ -109,10 +111,47 @@ An in-memory backend with no widget that records every `write`,
 `send_input`, and interaction call, so the pump, the bridge, and the
 terminal-action routing are tested without a display.
 
-## Engine backends (future)
+## GhosttyBackend
 
-A `GhosttyBackend` would pair a custom render widget (drawing ghostty state
-via Cairo or GL) with the same trait and the same backpressure pattern. No
-trait change is needed; see docs 03 and 05. Its `send_input` queues
-`DataOut` the way its own key handler does, so macros (doc 12) work
-unchanged.
+An engine backend, experimental and opt-in: built only with the
+`backend-ghostty` Cargo feature (doc 05), against libghostty-vt from one
+pinned upstream commit (`docs/plans/phase10-pin.md`). The trait did not
+change. `src/terminal/ghostty/`:
+
+- **FFI:** `shim.c` wraps the C API, whose sized structs and tagged
+  unions stay on the C side; `ffi.rs` declares only the shim's plain
+  functions and two flat structs (a cell, a frame), size-checked against
+  the C compiler by a unit test.
+- **`Engine`:** the safe owner of one terminal, with no display: VT
+  parsing, resize with reflow, scrollback limit, viewport scrolling,
+  selection, plain-text export, key and paste encoding, and a viewport
+  snapshot with colors resolved to RGB. Effects raised while parsing —
+  replies to queries (device attributes, status reports), BEL, OSC 0/2
+  titles — come back from the `write` that raised them and leave as
+  `DataOut`, `Bell`, and `TitleChanged`.
+- **`GhosttyView`:** the GTK4 widget. Each frame snapshots the engine and
+  paints it with `GtkSnapshot`: background rectangles per run of equal
+  color, Pango text per run of equal style (bold, italic, underline,
+  strikethrough, faint; inverse, the selection, and the block cursor swap
+  colors). ASCII runs share a layout; any other character is placed at
+  its own column, so wide glyphs keep the grid aligned. A changed
+  allocation resizes the grid and sends `SizeChange` once per new grid.
+  Keys go through libghostty-vt's key encoder, so cursor-key and Kitty
+  keyboard modes apply; a primary-button drag selects; the wheel scrolls
+  three rows per notch.
+- **Backend:** events go through the same never-blocking sender as
+  VteBackend's (§Backpressure). `send_input` and `paste` queue `DataOut`
+  like a key press, so macros (doc 12) work unchanged; `paste` is
+  bracketed when the program enabled mode 2004. `clear` and `reset` both
+  fully reset, as VTE's `clear` does. `set_size` resizes the grid and
+  makes it the widget's natural size.
+- **Not implemented:** search, color schemes, opacity, URL detection, and
+  image drawing — `features()` reports them false, so the UI hides them;
+  input methods and compose; graphemes beyond their base codepoint.
+
+`create_terminal()` falls back to VTE when the feature is off or
+libghostty-vt cannot allocate a terminal. The engine tests run in
+`cargo test --features backend-ghostty`; the widget check needs a display
+and runs on its own, since GTK binds to the first thread that initializes
+it: `xvfb-run -a cargo test --features backend-ghostty -- --ignored
+ghostty_display`.

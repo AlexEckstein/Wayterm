@@ -60,16 +60,16 @@ impl VteBackend {
 /// Sends terminal events without ever blocking the GTK main thread
 /// (doc 02 §Backpressure): events the channel refuses are parked and
 /// flushed, in order, from an idle callback. Nothing is dropped unless the
-/// pump is gone.
+/// pump is gone. Shared with the other GTK backends.
 #[derive(Clone)]
-struct EventSender {
+pub(super) struct EventSender {
     tx: mpsc::Sender<TerminalEvent>,
     pending: Rc<RefCell<PendingQueue<TerminalEvent>>>,
     flush_scheduled: Rc<Cell<bool>>,
 }
 
 impl EventSender {
-    fn new(tx: mpsc::Sender<TerminalEvent>) -> Self {
+    pub(super) fn new(tx: mpsc::Sender<TerminalEvent>) -> Self {
         Self {
             tx,
             pending: Rc::default(),
@@ -77,7 +77,7 @@ impl EventSender {
         }
     }
 
-    fn send(&self, event: TerminalEvent) {
+    pub(super) fn send(&self, event: TerminalEvent) {
         // Queue behind anything already parked so events stay in order.
         self.pending.borrow_mut().push(event);
         if !self.flush() && !self.flush_scheduled.replace(true) {

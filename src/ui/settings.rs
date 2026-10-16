@@ -92,15 +92,20 @@ fn pages(engine: Rc<RefCell<HotkeyEngine>>, store: Rc<SessionStore>) -> gtk4::St
 pub(super) mod gtk_tests {
     use super::*;
 
-    fn switches(widget: &gtk4::Widget, found: &mut Vec<gtk4::Switch>) {
-        if let Some(switch) = widget.downcast_ref::<gtk4::Switch>() {
-            found.push(switch.clone());
+    /// Every descendant of type `W`, in tree order.
+    fn descendants<W: IsA<gtk4::Widget>>(widget: &gtk4::Widget, found: &mut Vec<W>) {
+        if let Some(hit) = widget.downcast_ref::<W>() {
+            found.push(hit.clone());
         }
         let mut child = widget.first_child();
         while let Some(widget) = child {
-            switches(&widget, found);
+            descendants(&widget, found);
             child = widget.next_sibling();
         }
+    }
+
+    fn switches(widget: &gtk4::Widget, found: &mut Vec<gtk4::Switch>) {
+        descendants(widget, found);
     }
 
     /// The sidebar lists General, Credentials, then Keyboard Shortcuts, and opens on
@@ -154,5 +159,27 @@ pub(super) mod gtk_tests {
                 .as_deref(),
             Some("1")
         );
+
+        // The Ghostty check box: off (VTE) by default; usable only in a
+        // build with the backend, otherwise disabled with its tooltip.
+        let mut checks: Vec<gtk4::CheckButton> = Vec::new();
+        descendants(&general, &mut checks);
+        assert_eq!(checks.len(), 1);
+        let check = &checks[0];
+        assert!(!check.is_active());
+        assert_eq!(check.is_sensitive(), crate::terminal::GHOSTTY_COMPILED);
+        let tooltip = check.parent().and_then(|row| row.tooltip_text());
+        if crate::terminal::GHOSTTY_COMPILED {
+            assert_eq!(tooltip, None);
+            check.set_active(true);
+            assert_eq!(
+                general::backend(&store),
+                crate::terminal::BackendKind::Ghostty
+            );
+            check.set_active(false);
+            assert_eq!(general::backend(&store), crate::terminal::BackendKind::Vte);
+        } else {
+            assert_eq!(tooltip.as_deref(), Some(general::GHOSTTY_UNAVAILABLE));
+        }
     }
 }

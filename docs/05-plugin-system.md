@@ -1,7 +1,11 @@
 # Backend Plugins
 
-Terminal backends are chosen behind `create_terminal()` (doc 02). Today
-VTE is the only one, so there is nothing to select.
+Terminal backends are chosen behind `create_terminal()` (doc 02). VTE is
+the default and the fallback: the seeded `default_backend` preference
+(doc 06) is `vte`. With the `backend-ghostty` build feature, an
+"Experimental Ghostty terminal" check box on Settings' General page
+stores `ghostty` in `default_backend`; when the feature is not compiled
+in, the check box is disabled and the runtime falls back to VTE.
 
 ## Compile-time backends (when a second one exists)
 

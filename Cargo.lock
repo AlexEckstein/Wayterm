@@ -3253,6 +3253,7 @@ name = "wayterm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cc",
  "des",
  "gdk4-x11",
  "gtk4",
