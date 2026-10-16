@@ -681,9 +681,7 @@ fn spawn_state_drain(
     events: WeakUnboundedSender<TransportEvent>,
     mut rx: UnboundedReceiver<TransportEvent>,
 ) {
-    let alerts = window_of(page)
-        .and_then(|window| window.application())
-        .map(|app| tray::attach_disconnect_alerts(&app, session.name.clone()));
+    let app = window_of(page).and_then(|window| window.application());
     let (notebook, session, page) = (notebook.clone(), session.clone(), page.downgrade());
     glib::MainContext::default().spawn_local(async move {
         while let Some(event) = rx.recv().await {
@@ -704,8 +702,8 @@ fn spawn_state_drain(
                 }
                 TransportEvent::ConnectionLost => {
                     publish_status(&page, TransportState::Disconnected, &host, port);
-                    if let Some(alerts) = &alerts {
-                        let _ = alerts.send(TransportEvent::ConnectionLost);
+                    if let Some(app) = &app {
+                        tray::send_disconnect_notification(app, &session.name);
                     }
                     let Some(events) = events.upgrade() else {
                         break;

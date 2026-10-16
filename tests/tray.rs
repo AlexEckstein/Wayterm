@@ -1,9 +1,8 @@
-//! The tray's display-free core: menu, alerts, `ConnectionLost` triage,
-//! and the `minimize_to_tray` decision. The D-Bus service itself is checked
+//! The tray's display-free core: menu, alerts, and the
+//! `minimize_to_tray` decision. The D-Bus service itself is checked
 //! by hand (see `src/ui/tray.rs`).
 
 use wayterm::store::SessionStore;
-use wayterm::transport::types::{TransportEvent, TransportState};
 use wayterm::ui::tray;
 
 // --- menu action mapping ----------------------------------------------------
@@ -41,69 +40,6 @@ fn disconnect_notification_ids_are_stable_per_session() {
     let c = tray::disconnect_alert("db-01");
     assert_eq!(a.notification_id, b.notification_id);
     assert_ne!(a.notification_id, c.notification_id);
-}
-
-// --- transport event triage -------------------------------------------------
-
-#[test]
-fn only_connection_lost_produces_an_alert() {
-    let lost = tray::triage_transport_event("s", &TransportEvent::ConnectionLost);
-    assert_eq!(lost, Some(tray::disconnect_alert("s")));
-
-    for ignorable in [
-        TransportEvent::DataReceived(vec![1, 2, 3]),
-        TransportEvent::StateChanged(TransportState::Connected),
-        TransportEvent::StateChanged(TransportState::Error("x".into())),
-        TransportEvent::Error("boom".into()),
-        // The user typed `exit`: nothing was lost.
-        TransportEvent::SessionEnded,
-    ] {
-        assert_eq!(tray::triage_transport_event("s", &ignorable), None);
-    }
-}
-
-#[tokio::test]
-async fn forwarder_emits_one_alert_per_connection_lost() {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    tx.send(TransportEvent::DataReceived(vec![1])).unwrap();
-    tx.send(TransportEvent::ConnectionLost).unwrap();
-    tx.send(TransportEvent::StateChanged(TransportState::Disconnected))
-        .unwrap();
-    tx.send(TransportEvent::ConnectionLost).unwrap();
-    drop(tx);
-
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let seen_cb = seen.clone();
-    tray::forward_disconnect_alerts("edge-01".to_string(), rx, move |alert| {
-        seen_cb.lock().unwrap().push(alert);
-    })
-    .await;
-
-    let seen = seen.lock().unwrap();
-    assert_eq!(
-        seen.as_slice(),
-        &[
-            tray::disconnect_alert("edge-01"),
-            tray::disconnect_alert("edge-01"),
-        ]
-    );
-}
-
-#[tokio::test]
-async fn forwarder_is_silent_without_connection_lost() {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    tx.send(TransportEvent::StateChanged(TransportState::Connected))
-        .unwrap();
-    drop(tx);
-
-    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let count_cb = count.clone();
-    tray::forward_disconnect_alerts("quiet".to_string(), rx, move |_| {
-        count_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    })
-    .await;
-
-    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 // --- minimize-to-tray setting logic -----------------------------------------

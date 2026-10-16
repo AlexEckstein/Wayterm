@@ -67,7 +67,8 @@ Gaps, each a wiring task rather than new design:
   connect flow registers every streaming tab, and `ConnectionLost` drives
   reconnect (auto, or prompt via the `reconnect` action).
 - ~~The disconnect-notification forwarder is not attached to tabs~~ —
-  done in Phase 8 (`tray::attach_disconnect_alerts`, per tab).
+  done in Phase 8 (`tray::send_disconnect_notification`, from each tab's
+  state drain).
 - The keyring credential source is a stub; secrets are prompted for.
 
 ## Phase 5: Local shell and serial — done
