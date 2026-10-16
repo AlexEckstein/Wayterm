@@ -15,7 +15,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::store::SessionStore;
-use crate::ui::tab::{SessionTab, SESSION_ID_KEY};
+use crate::ui::tab::{session_id_of, SessionTab};
 use crate::ui::tab_label::build_tab_label;
 use crate::ui::tab_state::{self, PageInfo, TabState};
 use crate::ui::widgets::{centered_label, data, set_data};
@@ -189,7 +189,7 @@ impl TabPersistence {
 
     fn page_info(&self, page_num: u32) -> Option<PageInfo> {
         let content = self.notebook.nth_page(Some(page_num))?;
-        let session_id = data::<i64>(&content, SESSION_ID_KEY);
+        let session_id = session_id_of(&content);
         // An empty label would restore as a blank tab: fall back to the
         // session's stored name.
         let label = self

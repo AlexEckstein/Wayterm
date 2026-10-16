@@ -20,7 +20,7 @@
 //! the reconnect driver per policy. `SessionEnded` (the shell exited) never
 //! reconnects by itself: the terminal shows the `session_ended` prompt.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,25 +64,8 @@ use crate::ui::tunnels_dialog::{EngineStatusBridge, ForwardStatusSource};
 use crate::ui::vnc_tab;
 use crate::ui::widgets::{centered_label, data, data_or_default, set_data, set_margins, window_of};
 
-/// The session id on a tab's page (read back by tab persistence).
-pub const SESSION_ID_KEY: &str = "wayterm-session-tab-id";
-// Page data keys.
-const SIDEBAR_KEY: &str = "wayterm-sftp-sidebar";
-const TAB_LABEL_KEY: &str = "wayterm-tab-label";
-const PAGE_STATUS_KEY: &str = "wayterm-page-status";
-const TERM_TAB_KEY: &str = "wayterm-terminal-tab";
-const CONNECT_GEN_KEY: &str = "wayterm-connect-gen";
-const TERMINAL_BACKEND_KEY: &str = "wayterm-terminal-backend";
-const INPUT_TAP_KEY: &str = "wayterm-input-tap";
-const SESSION_KEY: &str = "wayterm-session-config";
-const PAGE_EVENTS_KEY: &str = "wayterm-page-events";
-const REDIAL_KEY: &str = "wayterm-redial-reply";
-const SIDEBAR_ATTACHED_KEY: &str = "wayterm-sftp-sidebar-attached";
-const FOCUS_ON_CONNECT_KEY: &str = "wayterm-focus-on-connect";
-/// The store the page resolves its jump host through (set by `open`).
-const STORE_KEY: &str = "wayterm-session-store";
-/// The page's live forward status source, when its engine is armed.
-const FORWARD_KEY: &str = "wayterm-forward-bridge";
+/// Page data key: the tab's [`PageState`].
+const PAGE_KEY: &str = "wayterm-session-page";
 /// Engine event channel capacity: status snapshots, never blocking.
 const FWD_EVENT_BUF: usize = 64;
 // Notebook data key.
@@ -97,18 +80,67 @@ const PROBE_QUIET: Duration = Duration::from_millis(300);
 
 /// The last state a page published, replayed into the status bar when the
 /// page becomes current.
+#[derive(Clone, Debug)]
 pub(crate) struct PageStatus {
     pub(crate) state: TransportState,
     pub(crate) host: String,
     pub(crate) port: u16,
 }
 
-pub(crate) type PageStatusCell = Rc<RefCell<PageStatus>>;
-type TerminalSlot = Rc<RefCell<Option<TerminalTab>>>;
-/// A driver-driven redial waiting for its attempt's verdict, tagged with
-/// that attempt's generation.
+impl Default for PageStatus {
+    fn default() -> Self {
+        Self {
+            state: TransportState::Disconnected,
+            host: String::new(),
+            port: 0,
+        }
+    }
+}
+
+/// A driver-driven redial waiting for its attempt's verdict.
 type RedialReply = oneshot::Sender<Result<(), TransportError>>;
-type RedialSlot = Rc<RefCell<Option<(u64, RedialReply)>>>;
+
+/// Everything a session tab keeps about itself, held once on its page
+/// widget ([`state`]). Main thread only.
+#[derive(Default)]
+struct PageState {
+    /// The session the tab shows ([`page_content`]).
+    session: OnceCell<Rc<SessionConfig>>,
+    /// Where the connect flow resolves the jump host and the credential
+    /// settings ([`SessionTab::open`]).
+    store: OnceCell<Rc<SessionStore>>,
+    /// The tab label, which follows the terminal's title.
+    label: OnceCell<gtk4::Widget>,
+    /// Bumped by every attempt, so a superseded one drops its result.
+    gen: Cell<u64>,
+    /// A driver-driven redial awaiting the verdict of the attempt tagged.
+    redial: RefCell<Option<(u64, RedialReply)>>,
+    /// The next connect was asked for by the user, so it takes focus.
+    focus_on_connect: Cell<bool>,
+    status: RefCell<PageStatus>,
+    /// The page's state channel, once its drain runs ([`page_events`]).
+    events: RefCell<Option<UnboundedSender<TransportEvent>>>,
+    /// The live transport wiring.
+    terminal_tab: RefCell<Option<TerminalTab>>,
+    /// The connected terminal and the tap on its input (doc 12).
+    terminal: RefCell<Option<Arc<dyn TerminalBackend>>>,
+    input_tap: RefCell<Option<InputTap>>,
+    /// SSH pages' sidebar, and whether it holds the connection.
+    sidebar: RefCell<Option<SftpSidebar>>,
+    sidebar_attached: Cell<bool>,
+    /// The live forward status source, while the engine is armed.
+    forward: RefCell<Option<Arc<EngineStatusBridge>>>,
+}
+
+/// `page`'s state, created on first use.
+fn state(page: &gtk4::Widget) -> Rc<PageState> {
+    data_or_default(page, PAGE_KEY)
+}
+
+/// `page`'s state, if it has any (not the home tab, say).
+fn existing_state(page: &gtk4::Widget) -> Option<Rc<PageState>> {
+    data(page, PAGE_KEY)
+}
 
 /// Opening and querying session tabs.
 pub struct SessionTab;
@@ -133,26 +165,27 @@ impl SessionTab {
         let tab_label = build_tab_label(notebook, &session);
         let page_num = notebook.append_page(&page, Some(&tab_label));
         notebook.set_current_page(Some(page_num));
-        set_data(&page, TAB_LABEL_KEY, tab_label);
-        set_data(&page, SESSION_KEY, session.clone());
-        set_data(&page, STORE_KEY, store.clone());
+        let state = state(&page);
+        let _ = state.label.set(tab_label);
+        let _ = state.store.set(store.clone());
         install_teardown_on_remove(notebook);
         start_connect(notebook, &page, &session);
         page
     }
 
     pub fn sidebar_for_page(page: &gtk4::Widget) -> Option<SftpSidebar> {
-        data(page, SIDEBAR_KEY)
+        existing_state(page)?.sidebar.borrow().clone()
     }
 
     /// Give `page` its sidebar; the side dock hosts it while the page is
     /// current.
     pub(in crate::ui) fn set_sidebar_for_page(page: &gtk4::Widget, sidebar: SftpSidebar) {
-        set_data(page, SIDEBAR_KEY, sidebar);
+        state(page).sidebar.replace(Some(sidebar));
     }
 
-    pub(crate) fn page_status(page: &gtk4::Widget) -> Option<PageStatusCell> {
-        data(page, PAGE_STATUS_KEY)
+    /// The last state `page` published, if it is a session tab.
+    pub(crate) fn page_status(page: &gtk4::Widget) -> Option<PageStatus> {
+        Some(existing_state(page)?.status.borrow().clone())
     }
 
     /// The current tab's live forward status source, while its engine is
@@ -161,21 +194,29 @@ impl SessionTab {
     pub(crate) fn current_forward_source(
         notebook: &gtk4::Notebook,
     ) -> Option<Arc<dyn ForwardStatusSource>> {
-        let page = current_page(notebook)?;
-        data::<Option<Arc<EngineStatusBridge>>>(&page, FORWARD_KEY)?
-            .map(|bridge| bridge as Arc<dyn ForwardStatusSource>)
+        let bridge = existing_state(&current_page(notebook)?)?
+            .forward
+            .borrow()
+            .clone()?;
+        Some(bridge)
     }
 
     /// The current tab's terminal, once connected (the terminal actions'
     /// target).
     pub fn active_terminal(notebook: &gtk4::Notebook) -> Option<Arc<dyn TerminalBackend>> {
-        data(&current_page(notebook)?, TERMINAL_BACKEND_KEY)
+        existing_state(&current_page(notebook)?)?
+            .terminal
+            .borrow()
+            .clone()
     }
 
     /// The current tab's input tap, once connected (the macro recorder's
     /// target, doc 12).
     pub fn active_input_tap(notebook: &gtk4::Notebook) -> Option<InputTap> {
-        data(&current_page(notebook)?, INPUT_TAP_KEY)
+        existing_state(&current_page(notebook)?)?
+            .input_tap
+            .borrow()
+            .clone()
     }
 
     /// Give `page` its connected terminal and the tap on its input.
@@ -184,8 +225,9 @@ impl SessionTab {
         backend: Arc<dyn TerminalBackend>,
         tap: InputTap,
     ) {
-        set_data(page, TERMINAL_BACKEND_KEY, backend);
-        set_data(page, INPUT_TAP_KEY, tap);
+        let state = state(page);
+        state.terminal.replace(Some(backend));
+        state.input_tap.replace(Some(tap));
     }
 }
 
@@ -195,13 +237,19 @@ pub(crate) fn current_page(notebook: &gtk4::Notebook) -> Option<gtk4::Widget> {
 
 /// The session id of the current page, if it is a session tab.
 pub(crate) fn current_session_id(notebook: &gtk4::Notebook) -> Option<i64> {
-    data(&current_page(notebook)?, SESSION_ID_KEY)
+    session_id_of(&current_page(notebook)?)
+}
+
+/// The id of the session `page` shows, if it is a session tab (read back
+/// by tab persistence).
+pub(crate) fn session_id_of(page: &gtk4::Widget) -> Option<i64> {
+    Some(existing_state(page)?.session.get()?.id)
 }
 
 fn find_tab(notebook: &gtk4::Notebook, session_id: i64) -> Option<(u32, gtk4::Widget)> {
     (0..notebook.n_pages()).find_map(|page_num| {
         let page = notebook.nth_page(Some(page_num))?;
-        (data::<i64>(&page, SESSION_ID_KEY) == Some(session_id)).then_some((page_num, page))
+        (session_id_of(&page) == Some(session_id)).then_some((page_num, page))
     })
 }
 
@@ -216,7 +264,7 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
     close_terminal(page);
     // Every caller but the reconnect driver is the user asking for this
     // tab; `redial` clears it again.
-    focus_on_connect(page).set(true);
+    state(page).focus_on_connect.set(true);
 
     // VNC has no byte stream: its own dial (with the password prompt) and
     // engine, no supervisor or terminal (doc 08 §VNC).
@@ -365,7 +413,7 @@ fn uses_jump_dial(session: &SessionConfig) -> bool {
 /// the credential settings.
 // used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn page_store(page: &gtk4::Widget) -> Option<Rc<SessionStore>> {
-    data(page, STORE_KEY)
+    state(page).store.get().cloned()
 }
 
 /// The jump host's config at dial time, through the page's store. A
@@ -417,7 +465,7 @@ fn arm_forward_engine(page: &gtk4::Widget, session: &Rc<SessionConfig>, conn: &A
     let (tx, rx) = mpsc::channel::<ForwardEvent>(FWD_EVENT_BUF);
     let engine = ForwardEngine::new(conn.clone(), tx);
     let bridge = Arc::new(EngineStatusBridge::new(engine.clone()));
-    set_data(page, FORWARD_KEY, Some(bridge.clone()));
+    state(page).forward.replace(Some(bridge.clone()));
     engine.start(forward_rules_for(session));
     tokio::spawn(async move {
         let mut rx = rx;
@@ -433,12 +481,9 @@ fn arm_forward_engine(page: &gtk4::Widget, session: &Rc<SessionConfig>, conn: &A
 /// disconnected tab falls back to the dialog's offline state until the
 /// next `finish_connect` arms a fresh engine.
 fn stop_forward_engine(page: &gtk4::Widget) {
-    let current: Option<Option<Arc<EngineStatusBridge>>> = data(page, FORWARD_KEY);
-    let Some(Some(bridge)) = current else {
-        return;
-    };
-    bridge.engine().stop();
-    set_data(page, FORWARD_KEY, None::<Arc<EngineStatusBridge>>);
+    if let Some(bridge) = state(page).forward.take() {
+        bridge.engine().stop();
+    }
 }
 
 /// Embed the terminal, measure its real grid, wire the transport, and
@@ -482,7 +527,7 @@ async fn finish_connect(
         Err(err) => return show_error_view(notebook, page, session, &err.to_string()),
     };
     let (host, port) = status_endpoint(session, terminal_tab.description());
-    terminal_slot(page).replace(Some(terminal_tab));
+    state(page).terminal_tab.replace(Some(terminal_tab));
     SessionTab::set_terminal_for_page(page, backend, input_tap);
     let cancel =
         tab_resilience::register_connected_tab(session.id, redial_fn(notebook, page, session.id));
@@ -506,11 +551,11 @@ async fn finish_connect(
         } else {
             sidebar.follow_new_shell(ShellCwdProbe::new(&conn, session.tmux_remote_name()));
             sidebar.attach_on_connect(conn);
-            sidebar_attached(page).set(true);
+            state(page).sidebar_attached.set(true);
             follow_terminal_directory(page, &widget);
             // Like the terminal's focus: only a connect the user started
             // brings the SFTP panel forward, never a reconnect.
-            if sftp_sidebar::open_on_connect() && focus_on_connect(page).get() {
+            if sftp_sidebar::open_on_connect() && state(page).focus_on_connect.get() {
                 side_dock::reveal_sftp(notebook, page);
             }
         }
@@ -524,7 +569,7 @@ async fn finish_connect(
 /// torn down with the connection — so it never pulls focus out of the SFTP
 /// sidebar or the session tree while the user is typing there.
 fn focus_after_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
-    let requested = focus_on_connect(page).replace(false);
+    let requested = state(page).focus_on_connect.replace(false);
     if requested || focus_unclaimed(page) {
         focus_terminal(notebook, page);
     }
@@ -547,7 +592,8 @@ fn focus_terminal(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     if current_page(notebook).as_ref() != Some(page) {
         return;
     }
-    if let Some(backend) = data::<Arc<dyn TerminalBackend>>(page, TERMINAL_BACKEND_KEY) {
+    let terminal = state(page).terminal.borrow().clone();
+    if let Some(backend) = terminal {
         backend.widget().grab_focus();
     }
 }
@@ -574,12 +620,13 @@ fn page_events(
     host: String,
     port: u16,
 ) -> UnboundedSender<TransportEvent> {
-    if let Some(events) = data(page, PAGE_EVENTS_KEY) {
+    let state = state(page);
+    if let Some(events) = state.events.borrow().clone() {
         return events;
     }
     let (events, rx) = mpsc::unbounded_channel();
     // The page holds the only lasting sender: the drain ends with the page.
-    set_data(page, PAGE_EVENTS_KEY, events.clone());
+    state.events.replace(Some(events.clone()));
     let downgraded = events.downgrade();
     spawn_state_drain(notebook, page, session, host, port, downgraded, rx);
     events
@@ -722,7 +769,8 @@ fn redial_fn(notebook: &gtk4::Notebook, page: &gtk4::Widget, session_id: i64) ->
 
 /// Main thread: rewire `page` for a driver attempt; `reply` gets the verdict.
 fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
-    let Some(session) = data::<Rc<SessionConfig>>(page, SESSION_KEY) else {
+    let state = state(page);
+    let Some(session) = state.session.get().cloned() else {
         return;
     };
     if notebook.page_num(page).is_none() {
@@ -730,9 +778,11 @@ fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
     }
     release_connection(notebook, page);
     // `start_connect` takes the next generation first thing.
-    redial_slot(page).replace(Some((current_gen(page).wrapping_add(1), reply)));
+    state
+        .redial
+        .replace(Some((state.gen.get().wrapping_add(1), reply)));
     start_connect(notebook, page, &session);
-    focus_on_connect(page).set(false);
+    state.focus_on_connect.set(false);
 }
 
 /// Let go of the page's hold on its connection — the transport and the
@@ -742,7 +792,7 @@ fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
 fn release_connection(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     stop_forward_engine(page);
     close_terminal(page);
-    if !sidebar_attached(page).replace(false) {
+    if !state(page).sidebar_attached.replace(false) {
         return;
     }
     let Some(old) = SessionTab::sidebar_for_page(page) else {
@@ -774,7 +824,7 @@ fn install_teardown_on_remove(notebook: &gtk4::Notebook) {
     }
     set_data(notebook, TEARDOWN_HOOK_KEY, true);
     notebook.connect_page_removed(|_, page, _| {
-        if let Some(session_id) = data::<i64>(page, SESSION_ID_KEY) {
+        if let Some(session_id) = session_id_of(page) {
             bump_gen(page);
             // Closing by any path stops the engine deterministically
             // (`close_tab` removes the page, so it lands here too).
@@ -788,7 +838,7 @@ fn install_teardown_on_remove(notebook: &gtk4::Notebook) {
 /// session name), unless the user has renamed the tab.
 fn follow_terminal_title(page: &gtk4::Widget, terminal: &gtk4::Widget, session_name: &str) {
     let (Some(label), Some(vte)) = (
-        data::<gtk4::Widget>(page, TAB_LABEL_KEY),
+        state(page).label.get().cloned(),
         terminal.downcast_ref::<vte4::Terminal>(),
     ) else {
         return;
@@ -1075,7 +1125,7 @@ pub(crate) fn show_error_view(
 /// the notice, and let `r` reconnect (as Retry does) or `q` close the tab.
 fn show_session_ended(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     close_terminal(page);
-    let Some(backend) = data::<Arc<dyn TerminalBackend>>(page, TERMINAL_BACKEND_KEY) else {
+    let Some(backend) = state(page).terminal.borrow().clone() else {
         return;
     };
     backend.write(session_ended::NOTICE.as_bytes());
@@ -1087,7 +1137,7 @@ fn show_session_ended(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
         };
         match choice {
             EndedChoice::Reconnect => {
-                if let Some(session) = data::<Rc<SessionConfig>>(&page, SESSION_KEY) {
+                if let Some(session) = state(&page).session.get().cloned() {
                     start_connect(&notebook, &page, &session);
                 }
             }
@@ -1108,20 +1158,11 @@ fn close_tab(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
 /// Record `state` on the page and show it if the page is current.
 // used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn publish_status(page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
-    let status = SessionTab::page_status(page).unwrap_or_else(|| {
-        let cell = Rc::new(RefCell::new(PageStatus {
-            state: TransportState::Disconnected,
-            host: String::new(),
-            port,
-        }));
-        set_data(page, PAGE_STATUS_KEY, cell.clone());
-        cell
-    });
-    *status.borrow_mut() = PageStatus {
+    self::state(page).status.replace(PageStatus {
         state: state.clone(),
         host: host.to_string(),
         port,
-    };
+    });
     if let Some(window) = window_of(page).and_then(|w| w.downcast().ok()) {
         route_status(&window, page, state, host, port);
     }
@@ -1129,22 +1170,13 @@ pub(crate) fn publish_status(page: &gtk4::Widget, state: TransportState, host: &
 
 /// [`publish_status`] with the endpoint the page last published.
 fn publish_page_state(page: &gtk4::Widget, state: TransportState) {
-    let (host, port) = SessionTab::page_status(page)
-        .map(|status| {
-            let status = status.borrow();
-            (status.host.clone(), status.port)
-        })
-        .unwrap_or_default();
+    let PageStatus { host, port, .. } = self::state(page).status.borrow().clone();
     publish_status(page, state, &host, port);
-}
-
-fn terminal_slot(page: &gtk4::Widget) -> TerminalSlot {
-    data_or_default(page, TERM_TAB_KEY)
 }
 
 /// Tear down the page's terminal, if any, in the background.
 fn close_terminal(page: &gtk4::Widget) {
-    if let Some(mut tab) = terminal_slot(page).take() {
+    if let Some(mut tab) = state(page).terminal_tab.take() {
         glib::MainContext::default().spawn_local(async move { tab.close().await });
     }
 }
@@ -1153,10 +1185,10 @@ fn close_terminal(page: &gtk4::Widget) {
 /// waiting on an older attempt was superseded (Cancel, Retry, close) and
 /// ends the driver's run.
 fn bump_gen(page: &gtk4::Widget) -> u64 {
-    let slot = gen_slot(page);
-    slot.set(slot.get().wrapping_add(1));
-    let gen = slot.get();
-    let stale = redial_slot(page).borrow_mut().take_if(|(g, _)| *g != gen);
+    let state = state(page);
+    let gen = state.gen.get().wrapping_add(1);
+    state.gen.set(gen);
+    let stale = state.redial.borrow_mut().take_if(|(g, _)| *g != gen);
     if let Some((_, reply)) = stale {
         let _ = reply.send(Err(TransportError::Cancelled));
     }
@@ -1165,55 +1197,42 @@ fn bump_gen(page: &gtk4::Widget) -> u64 {
 
 /// Answer a redial waiting on the current attempt, if any.
 fn settle_redial(page: &gtk4::Widget, result: Result<(), TransportError>) {
-    let gen = current_gen(page);
-    let pending = redial_slot(page).borrow_mut().take_if(|(g, _)| *g == gen);
+    let state = state(page);
+    let gen = state.gen.get();
+    let pending = state.redial.borrow_mut().take_if(|(g, _)| *g == gen);
     if let Some((_, reply)) = pending {
         let _ = reply.send(result);
     }
 }
 
-fn redial_slot(page: &gtk4::Widget) -> RedialSlot {
-    data_or_default(page, REDIAL_KEY)
-}
-
-fn sidebar_attached(page: &gtk4::Widget) -> Rc<Cell<bool>> {
-    data_or_default(page, SIDEBAR_ATTACHED_KEY)
-}
-
-fn focus_on_connect(page: &gtk4::Widget) -> Rc<Cell<bool>> {
-    data_or_default(page, FOCUS_ON_CONNECT_KEY)
-}
-
 // used by ui::vnc_tab and ui::rdp_tab
 pub(crate) fn current_gen(page: &gtk4::Widget) -> u64 {
-    gen_slot(page).get()
+    state(page).gen.get()
 }
 
-fn gen_slot(page: &gtk4::Widget) -> Rc<Cell<u64>> {
-    data_or_default(page, CONNECT_GEN_KEY)
-}
-
-/// The page: a box holding the session's area. SSH pages carry their SFTP
-/// sidebar as data for the side dock (hidden while `sftp_on_connect` is
-/// off). Tagged with the session id for dedup and persistence.
-fn page_content(session: &SessionConfig) -> gtk4::Widget {
+/// The page for `session`: a box holding the session's area, and its
+/// [`PageState`]. SSH pages carry their SFTP sidebar for the side dock
+/// (hidden while `sftp_on_connect` is off).
+fn page_content(session: &Rc<SessionConfig>) -> gtk4::Widget {
     let page = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     page.set_vexpand(true);
     page.set_hexpand(true);
+    let page: gtk4::Widget = page.upcast();
     set_terminal_area(
-        page.upcast_ref(),
+        &page,
         &centered_label(&format!("{}\nnot connected", session.name)),
     );
+    let state = state(&page);
+    let _ = state.session.set(session.clone());
     if supports_sftp(&session.session_type) {
         let sidebar = if sftp_sidebar::open_on_connect() {
             SftpSidebar::new()
         } else {
             SftpSidebar::hidden()
         };
-        SessionTab::set_sidebar_for_page(page.upcast_ref(), sidebar);
+        state.sidebar.replace(Some(sidebar));
     }
-    set_data(&page, SESSION_ID_KEY, session.id);
-    page.upcast()
+    page
 }
 
 /// The tab label; closing asks first when the transport is live (doc 04
@@ -1263,10 +1282,10 @@ pub(super) mod gtk_tests {
                     session_type: SessionType::LocalShell,
                     ..Default::default()
                 };
-                let page = page_content(&session);
+                let page = page_content(&Rc::new(session.clone()));
                 let backend = create_terminal().backend;
                 set_terminal_area(&page, &backend.widget());
-                set_data(&page, TERMINAL_BACKEND_KEY, backend.clone());
+                state(&page).terminal.replace(Some(backend.clone()));
                 notebook.append_page(&page, None::<&gtk4::Widget>);
                 (session, page, backend.widget())
             })
@@ -1316,11 +1335,11 @@ pub(super) mod gtk_tests {
             session_type: SessionType::LocalShell,
             ..Default::default()
         };
-        let page = page_content(&session);
+        let page = page_content(&Rc::new(session));
         let backend = create_terminal().backend;
         let terminal = backend.widget();
         set_terminal_area(&page, &terminal);
-        set_data(&page, TERMINAL_BACKEND_KEY, backend);
+        state(&page).terminal.replace(Some(backend));
         notebook.append_page(&page, None::<&gtk4::Widget>);
         window.present();
         for _ in 0..10 {
@@ -1333,7 +1352,7 @@ pub(super) mod gtk_tests {
             tree.upcast_ref(),
         ] {
             holder.grab_focus();
-            focus_on_connect(&page).set(false);
+            state(&page).focus_on_connect.set(false);
             focus_after_connect(&notebook, &page);
             assert!(focus_within(holder), "a reconnect stole focus");
         }
@@ -1345,10 +1364,13 @@ pub(super) mod gtk_tests {
 
         // A user-started connect takes focus from the tree.
         tree.grab_focus();
-        focus_on_connect(&page).set(true);
+        state(&page).focus_on_connect.set(true);
         focus_after_connect(&notebook, &page);
         assert!(focus_within(&terminal), "a user-started connect");
-        assert!(!focus_on_connect(&page).get(), "the request is one-shot");
+        assert!(
+            !state(&page).focus_on_connect.get(),
+            "the request is one-shot"
+        );
         window.destroy();
     }
 
@@ -1361,7 +1383,7 @@ pub(super) mod gtk_tests {
             session_type: SessionType::SSH,
             ..Default::default()
         };
-        let page = page_content(&session);
+        let page = page_content(&Rc::new(session));
         let backend = create_terminal().backend;
         let terminal = backend.widget();
         set_terminal_area(&page, &terminal);
@@ -1382,5 +1404,60 @@ pub(super) mod gtk_tests {
         assert_eq!(sidebar.path_text(), "/srv/my site", "another host");
         report("file://box/var/log");
         assert_eq!(sidebar.path_text(), "/var/log");
+    }
+
+    /// The connect flow end to end on a local shell: opening the tab wires
+    /// a terminal and its input tap, the page reports Connected, and
+    /// closing the tab lets the page go.
+    pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _entered = runtime.enter();
+        let notebook = gtk4::Notebook::new();
+        let window = gtk4::Window::new();
+        window.set_child(Some(&notebook));
+        window.present();
+        let session = SessionConfig {
+            id: 7_001,
+            name: "local".into(),
+            session_type: SessionType::LocalShell,
+            local_shell: Some("/bin/sh".into()),
+            ..Default::default()
+        };
+        let store = Rc::new(SessionStore::in_memory().expect("in-memory store"));
+
+        let page = SessionTab::open(&notebook, &session, &store);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while SessionTab::page_status(&page).map(|status| status.state)
+            != Some(TransportState::Connected)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the local shell never connected"
+            );
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(current_session_id(&notebook), Some(7_001));
+        assert!(SessionTab::active_terminal(&notebook).is_some());
+        assert!(SessionTab::active_input_tap(&notebook).is_some());
+        assert!(
+            SessionTab::sidebar_for_page(&page).is_none(),
+            "only SSH pages carry a sidebar"
+        );
+        assert_eq!(
+            SessionTab::open(&notebook, &session, &store),
+            page,
+            "a second open focuses the open tab"
+        );
+
+        let gone = page.downgrade();
+        close_tab(&notebook, &page);
+        drop(page);
+        for _ in 0..20 {
+            glib::MainContext::default().iteration(false);
+        }
+        assert_eq!(notebook.n_pages(), 0);
+        assert!(gone.upgrade().is_none(), "a closed tab's page is freed");
+        window.destroy();
     }
 }
