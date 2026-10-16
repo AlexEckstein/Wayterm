@@ -1533,6 +1533,17 @@ pub(super) mod gtk_tests {
             glib::MainContext::default().iteration(false);
             std::thread::sleep(Duration::from_millis(5));
         }
+        for _ in 0..50 {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            matches!(
+                SessionTab::page_status(&page).map(|status| status.state),
+                Some(TransportState::Error(ref message)) if message.contains("shell not found")
+            ),
+            "the status ends on the error, not on the transport's Disconnected"
+        );
         let gone = page.downgrade();
         close_tab(&notebook, &page);
         drop(page);
