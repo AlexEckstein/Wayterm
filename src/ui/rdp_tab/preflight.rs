@@ -174,7 +174,7 @@ fn fill_cert_modal<T: 'static>(
 
 /// The stored fingerprint for `(host, port)`, via a throwaway store handle
 /// (see the module docs). Errors surface so the caller can decide; the dial
-/// treats an unreadable store as first contact.
+/// fails closed on them, since an unreadable store is not first contact.
 pub fn rdp_trust_lookup(host: &str, port: u16) -> rusqlite::Result<Option<String>> {
     SessionStore::open(&default_db_path())?.rdp_trust(host, port)
 }

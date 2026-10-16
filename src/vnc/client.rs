@@ -81,6 +81,11 @@ const MAX_DRAIN: usize = 256;
 const INPUT_CAPACITY: usize = 256;
 const UI_CAPACITY: usize = 256;
 
+/// The [`VncUiEvent::Ended`] reason of an engine stopped by
+/// [`VncEngine::cancel`]: the clean end, which the tab shows as a
+/// disconnect rather than an error.
+pub const CANCELLED: &str = "cancelled";
+
 /// Encodings requested from the server, in preference order. Raw is always
 /// present (RFC 6143 §7.5.2).
 pub const DEFAULT_ENCODINGS: [VncEncoding; 6] = [
@@ -213,7 +218,7 @@ pub enum VncUiEvent {
     Bell,
     /// Server clipboard text (Latin-1 per RFC 6143 §7.6.4).
     Clipboard(String),
-    /// The engine stopped: error text, "server closed" or "cancelled".
+    /// The engine stopped: error text, "server closed" or [`CANCELLED`].
     /// Always the last event.
     Ended(String),
 }
@@ -354,7 +359,7 @@ async fn drive(
     tokio::pin!(poll);
     loop {
         tokio::select! {
-            _ = cancel.cancelled() => return "cancelled".into(),
+            _ = cancel.cancelled() => return CANCELLED.into(),
             event = input_rx.recv() => {
                 let Some(event) = event else { return "input closed".into() };
                 if let Err(e) = client.input(event).await {

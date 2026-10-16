@@ -319,12 +319,7 @@ fn first_contact(binary: &str, base: &RdpSpec, parent_xid: Option<u32>) -> Resul
     }
     let digest = probe.error_digest();
     let Some(seen) = parse_seen_fingerprint(&digest) else {
-        let tail: Vec<&str> = digest.iter().rev().take(3).map(String::as_str).collect();
-        let tail = if tail.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", tail.join(" | "))
-        };
+        let tail = digest_tail(&digest).map_or_else(String::new, |tail| format!(" ({tail})"));
         return Err(Dial::Failed(format!(
             "could not read the certificate fingerprint of {host}:{port}{tail}"
         )));
@@ -631,20 +626,25 @@ fn changed_cert(attempt: &Attempt, stored: &str, seen: &str) {
     }
 }
 
-/// The plain-ended message: exit code/signal plus the stderr tail (which
-/// never carries the password — it only travels on stdin).
+/// The plain-ended message: exit code/signal plus the stderr tail.
 fn ended_message(code: Option<i32>, signal: Option<i32>, digest: &[String]) -> String {
     let ending = match (code, signal) {
         (Some(code), _) => format!("exit code {code}"),
         (None, Some(signal)) => format!("signal {signal}"),
         (None, None) => "an unknown cause".to_string(),
     };
-    let tail: Vec<&str> = digest.iter().rev().take(3).map(String::as_str).collect();
-    if tail.is_empty() {
-        format!("The RDP session ended ({ending}).")
-    } else {
-        format!("The RDP session ended ({ending}): {}", tail.join(" | "))
+    match digest_tail(digest) {
+        Some(tail) => format!("The RDP session ended ({ending}): {tail}"),
+        None => format!("The RDP session ended ({ending})."),
     }
+}
+
+/// The last three stderr lines, newest first, for an error message (they
+/// never carry the password — it only travels on stdin); `None` when
+/// xfreerdp printed nothing.
+fn digest_tail(digest: &[String]) -> Option<String> {
+    let tail: Vec<&str> = digest.iter().rev().take(3).map(String::as_str).collect();
+    (!tail.is_empty()).then(|| tail.join(" | "))
 }
 
 /// Start child discovery, visibility, configure, and focus maintenance for

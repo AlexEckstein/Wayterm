@@ -52,9 +52,6 @@ use crate::vnc::{
 
 /// The RFB default (display :0).
 pub const DEFAULT_PORT: u16 = 5900;
-/// `Ended` reason the engine reports for an explicit cancel
-/// (`vnc::client` `drive`).
-const CANCELLED: &str = "cancelled";
 const ENGINE_KEY: &str = "wayterm-vnc-engine";
 
 /// RFB pointer button bits (RFC 6143 §7.5.5).
@@ -151,7 +148,9 @@ pub fn effective_options(session: &SessionConfig) -> (bool, bool) {
 /// clean disconnect; any other end is an error.
 pub fn state_for(event: &VncUiEvent) -> Option<TransportState> {
     match event {
-        VncUiEvent::Ended(reason) if reason == CANCELLED => Some(TransportState::Disconnected),
+        VncUiEvent::Ended(reason) if reason == crate::vnc::client::CANCELLED => {
+            Some(TransportState::Disconnected)
+        }
         VncUiEvent::Ended(reason) => Some(TransportState::Error(reason.clone())),
         _ => None,
     }
