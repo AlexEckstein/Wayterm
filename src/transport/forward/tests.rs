@@ -89,9 +89,7 @@ async fn write_and_echo(port: u16, payload: &[u8]) -> Vec<u8> {
 async fn local_forward_copies_both_directions() {
     let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
     let port = free_port().await;
-    engine
-        .start(vec![local_rule(port, "remote.test", 80, true)])
-        .await;
+    engine.start(vec![local_rule(port, "remote.test", 80, true)]);
     assert_eq!(
         next_event(&mut rx).await,
         ForwardEvent {
@@ -118,7 +116,7 @@ async fn local_forward_copies_both_directions() {
             state: ForwardState::Active { conns: 0 },
         }
     );
-    engine.stop().await;
+    engine.stop();
 }
 
 #[tokio::test]
@@ -126,9 +124,7 @@ async fn refused_remote_closes_one_conn_and_keeps_listening() {
     let fail_opens = Arc::new(AtomicU32::new(1));
     let (engine, mut rx) = engine_with(echo_opener(Arc::clone(&fail_opens)));
     let port = free_port().await;
-    engine
-        .start(vec![local_rule(port, "dead.test", 9, true)])
-        .await;
+    engine.start(vec![local_rule(port, "dead.test", 9, true)]);
     assert!(matches!(
         next_event(&mut rx).await.state,
         ForwardState::Listening
@@ -152,22 +148,20 @@ async fn refused_remote_closes_one_conn_and_keeps_listening() {
     fail_opens.store(0, Ordering::SeqCst);
     let payload = b"after-refusal";
     assert_eq!(write_and_echo(port, payload).await, payload);
-    engine.stop().await;
+    engine.stop();
 }
 
 #[tokio::test]
 async fn stop_closes_the_listener() {
     let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
     let port = free_port().await;
-    engine
-        .start(vec![local_rule(port, "remote.test", 80, true)])
-        .await;
+    engine.start(vec![local_rule(port, "remote.test", 80, true)]);
     assert!(matches!(
         next_event(&mut rx).await.state,
         ForwardState::Listening
     ));
 
-    engine.stop().await;
+    engine.stop();
     assert_eq!(
         next_event(&mut rx).await,
         ForwardEvent {
@@ -176,7 +170,7 @@ async fn stop_closes_the_listener() {
         }
     );
     // Second stop is idempotent: no new events, no panic.
-    engine.stop().await;
+    engine.stop();
     assert!(
         timeout(Duration::from_millis(200), rx.recv())
             .await
@@ -193,9 +187,7 @@ async fn stop_closes_the_listener() {
 async fn set_enabled_toggles_a_rule_live() {
     let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
     let port = free_port().await;
-    engine
-        .start(vec![local_rule(port, "remote.test", 80, false)])
-        .await;
+    engine.start(vec![local_rule(port, "remote.test", 80, false)]);
     assert_eq!(
         next_event(&mut rx).await,
         ForwardEvent {
@@ -208,7 +200,7 @@ async fn set_enabled_toggles_a_rule_live() {
         "disabled rule must not listen"
     );
 
-    engine.set_enabled(0, true).await;
+    engine.set_enabled(0, true);
     assert!(matches!(
         next_event(&mut rx).await.state,
         ForwardState::Listening
@@ -225,7 +217,7 @@ async fn set_enabled_toggles_a_rule_live() {
         ForwardState::Active { .. }
     ));
 
-    engine.set_enabled(0, false).await;
+    engine.set_enabled(0, false);
     assert_eq!(
         next_event(&mut rx).await,
         ForwardEvent {
@@ -239,8 +231,8 @@ async fn set_enabled_toggles_a_rule_live() {
     );
 
     // Unknown ids are ignored, never a panic.
-    engine.set_enabled(99, true).await;
-    engine.stop().await;
+    engine.set_enabled(99, true);
+    engine.stop();
 }
 
 #[tokio::test]
@@ -251,12 +243,10 @@ async fn remote_and_dynamic_kinds_are_skipped() {
         kind,
         ..local_rule(port, "remote.test", 80, true)
     };
-    engine
-        .start(vec![
-            skipped(ForwardKind::Remote),
-            skipped(ForwardKind::Dynamic),
-        ])
-        .await;
+    engine.start(vec![
+        skipped(ForwardKind::Remote),
+        skipped(ForwardKind::Dynamic),
+    ]);
     for id in 0..2 {
         assert_eq!(
             next_event(&mut rx).await,
@@ -270,7 +260,7 @@ async fn remote_and_dynamic_kinds_are_skipped() {
         TcpStream::connect(("127.0.0.1", port)).await.is_err(),
         "v2 kinds must bind nothing"
     );
-    engine.stop().await;
+    engine.stop();
 }
 
 #[tokio::test]
@@ -278,15 +268,13 @@ async fn bind_failure_reports_last_failed() {
     let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
     let port = free_port().await;
     let _squat = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
-    engine
-        .start(vec![local_rule(port, "remote.test", 80, true)])
-        .await;
+    engine.start(vec![local_rule(port, "remote.test", 80, true)]);
     let event = next_event(&mut rx).await;
     assert!(
         matches!(event.state, ForwardState::LastFailed { .. }),
         "taken port must report LastFailed, got: {event:?}"
     );
-    engine.stop().await;
+    engine.stop();
 }
 
 #[tokio::test]
@@ -297,12 +285,12 @@ async fn empty_bind_addr_means_loopback() {
         bind_addr: "   ".to_string(),
         ..local_rule(port, "remote.test", 80, true)
     };
-    engine.start(vec![rule]).await;
+    engine.start(vec![rule]);
     assert!(matches!(
         next_event(&mut rx).await.state,
         ForwardState::Listening
     ));
     let payload = b"loopback-bind";
     assert_eq!(write_and_echo(port, payload).await, payload);
-    engine.stop().await;
+    engine.stop();
 }

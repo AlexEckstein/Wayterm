@@ -80,9 +80,7 @@ async fn local_forward_roundtrip_through_the_tunnel() {
     let connection = connect_password(&f).await;
     let (tx, mut rx) = mpsc::channel(64);
     let engine = ForwardEngine::new(connection, tx);
-    engine
-        .start(vec![local_rule(bind, "127.0.0.1", service)])
-        .await;
+    engine.start(vec![local_rule(bind, "127.0.0.1", service)]);
     assert!(
         matches!(next_event(&mut rx).await.state, ForwardState::Listening),
         "engine must report Listening"
@@ -105,7 +103,7 @@ async fn local_forward_roundtrip_through_the_tunnel() {
         .expect("tunnel echo failed");
     assert_eq!(out, tag.as_bytes(), "bidirectional copy must round-trip");
 
-    engine.stop().await;
+    engine.stop();
 }
 
 #[tokio::test]
@@ -118,12 +116,10 @@ async fn refused_remote_closes_cleanly_and_stop_closes_the_listener() {
     let live = free_port().await;
     let dead_remote = free_port().await; // nothing listens here
     let service = echo_service().await;
-    engine
-        .start(vec![
-            local_rule(live, "127.0.0.1", service),
-            local_rule(dead_remote, "127.0.0.1", free_port().await),
-        ])
-        .await;
+    engine.start(vec![
+        local_rule(live, "127.0.0.1", service),
+        local_rule(dead_remote, "127.0.0.1", free_port().await),
+    ]);
     // Rule 0 listens; rule 1's bind is its own listener (the refusal
     // happens per-connection, when the channel open fails).
     assert_eq!(next_event(&mut rx).await.rule_id, 0);
@@ -145,7 +141,7 @@ async fn refused_remote_closes_cleanly_and_stop_closes_the_listener() {
         "refused remote must report LastFailed, got: {failed:?}"
     );
 
-    engine.stop().await;
+    engine.stop();
     assert!(
         TcpStream::connect(("127.0.0.1", live)).await.is_err(),
         "stop must close the listener"

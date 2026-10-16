@@ -408,8 +408,8 @@ fn forward_rules_for(session: &SessionConfig) -> Vec<ForwardRule> {
 }
 
 /// Arm the caller-owned forward engine for a fresh connection (doc 11
-/// §Port forwarding): start the session's rules on the runtime — never
-/// awaited on the GTK thread — and bridge the event stream into the
+/// §Port forwarding): start the session's rules — the engine spawns its
+/// listeners and never blocks — and bridge the event stream into the
 /// page's live status source for the Tunnels dialog. Replaces any engine
 /// still on the page, so a redial never stacks listeners.
 fn arm_forward_engine(page: &gtk4::Widget, session: &Rc<SessionConfig>, conn: &Arc<SshConnection>) {
@@ -418,10 +418,7 @@ fn arm_forward_engine(page: &gtk4::Widget, session: &Rc<SessionConfig>, conn: &A
     let engine = ForwardEngine::new(conn.clone(), tx);
     let bridge = Arc::new(EngineStatusBridge::new(engine.clone()));
     set_data(page, FORWARD_KEY, Some(bridge.clone()));
-    let rules = forward_rules_for(session);
-    tokio::spawn(async move {
-        engine.start(rules).await;
-    });
+    engine.start(forward_rules_for(session));
     tokio::spawn(async move {
         let mut rx = rx;
         while let Some(event) = rx.recv().await {
@@ -440,10 +437,7 @@ fn stop_forward_engine(page: &gtk4::Widget) {
     let Some(Some(bridge)) = current else {
         return;
     };
-    let engine = bridge.engine();
-    tokio::spawn(async move {
-        engine.stop().await;
-    });
+    bridge.engine().stop();
     set_data(page, FORWARD_KEY, None::<Arc<EngineStatusBridge>>);
 }
 

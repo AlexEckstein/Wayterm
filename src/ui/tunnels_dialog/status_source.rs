@@ -155,8 +155,8 @@ impl ForwardStatusSource for FakeStatusSource {
 /// The dialog only ever sees this trait — it never imports transport
 /// types. `Send + Sync` via the same lock discipline as
 /// [`FakeStatusSource`]: no lock is held across `.await` (nothing here
-/// awaits at all — fan-out uses `try_send`, control uses
-/// `tokio::spawn`).
+/// awaits at all — fan-out uses `send` on unbounded channels, and the
+/// engine's controls never block).
 pub struct EngineStatusBridge {
     engine: ForwardEngine,
     states: Mutex<HashMap<usize, ForwardState>>,
@@ -233,12 +233,9 @@ impl ForwardStatusSource for EngineStatusBridge {
     }
 
     fn set_rule_enabled(&self, rule_index: usize, enabled: bool) {
-        // Queued on the runtime, never awaited on the GTK thread; the
-        // resulting state arrives back through the event drain.
-        let engine = self.engine.clone();
-        tokio::spawn(async move {
-            engine.set_enabled(rule_index, enabled).await;
-        });
+        // Never blocks; the resulting state arrives back through the event
+        // drain.
+        self.engine.set_enabled(rule_index, enabled);
     }
 
     fn subscribe(&self, sender: UnboundedSender<ForwardStatus>) {
