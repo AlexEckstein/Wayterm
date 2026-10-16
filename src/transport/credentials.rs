@@ -383,18 +383,7 @@ impl CredentialSource for BitwardenSource {
         Some(Zeroizing::new(secret.as_bytes().to_vec()))
     }
 
-    fn store(
-        &self,
-        _session_id: &str,
-        _session_name: &str,
-        _secret_type: &str,
-        _secret: &Zeroizing<Vec<u8>>,
-    ) -> Result<(), CredentialError> {
-        Err(CredentialError::Unavailable(
-            "bitwarden is read-only".into(),
-        ))
-    }
-
+    // Read-only: the trait's default `store` answers `Unavailable`.
     fn source_name(&self) -> &str {
         "bitwarden"
     }
