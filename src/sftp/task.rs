@@ -314,14 +314,15 @@ async fn download_file(
     let mut local = tokio::fs::File::create(local_path)
         .await
         .map_err(|e| e.to_string())?;
-    let result = copy_with_progress(&mut remote, &mut local, total, progress, cancel).await;
-    let _ = local.flush().await;
-    result
+    let transferred = copy_with_progress(&mut remote, &mut local, total, progress, cancel).await?;
+    // tokio writes in the background: only the flush reports a failed last
+    // write (a full disk), which would leave the local file short.
+    local.flush().await.map_err(|e| e.to_string())?;
+    Ok(transferred)
 }
 
-/// Unlike a download, a failed flush or close here is an error: flushing
-/// drains the server's write acknowledgements, so the remote file may be
-/// incomplete.
+/// A failed flush or close fails the upload: flushing drains the server's
+/// write acknowledgements, so the remote file may be incomplete.
 async fn upload_file(
     sftp: &SftpSession,
     local_path: &str,
