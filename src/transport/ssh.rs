@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::store::model::TMUX_NAME_PREFIX;
 use crate::transport::connection::SshConnection;
 use crate::transport::types::{
-    Transport, TransportError, TransportEvent, TransportState, TransportType,
+    SharedState, Transport, TransportError, TransportEvent, TransportState, TransportType,
 };
 
 /// SSH byte-stream transport: one PTY channel on a shared, supervisor-owned
@@ -23,9 +23,9 @@ pub struct SSHTransport {
     /// The terminal's measured grid at connect time.
     initial_rows: u32,
     initial_cols: u32,
-    state: TransportState,
-    tmux_enabled: bool,
-    tmux_session_name: String,
+    state: SharedState,
+    /// The tmux session's bare name while persistence is on (doc 04).
+    tmux_session: Option<String>,
 }
 
 impl SSHTransport {
@@ -39,19 +39,13 @@ impl SSHTransport {
             connection,
             channel_write: None,
             reader_task: None,
+            state: SharedState::new(event_tx.clone()),
             event_tx,
             cancel_token: CancellationToken::new(),
             initial_rows,
             initial_cols,
-            state: TransportState::Disconnected,
-            tmux_enabled: false,
-            tmux_session_name: String::new(),
+            tmux_session: None,
         }
-    }
-
-    fn set_state(&mut self, state: TransportState) {
-        self.state = state;
-        self.state.emit(&self.event_tx);
     }
 }
 
@@ -70,10 +64,10 @@ pub(crate) fn shell_quote(s: &str) -> String {
 #[async_trait]
 impl Transport for SSHTransport {
     async fn connect(&mut self) -> Result<(), TransportError> {
-        if self.state == TransportState::Connected {
+        if self.state.get() == TransportState::Connected {
             return Err(TransportError::ChannelError("already connected".into()));
         }
-        self.set_state(TransportState::Connecting);
+        self.state.set(TransportState::Connecting);
 
         let channel = self.connection.open_session_channel().await?;
         channel
@@ -88,19 +82,22 @@ impl Transport for SSHTransport {
             )
             .await
             .map_err(TransportError::from_russh)?;
-        let started = if self.tmux_enabled {
-            // `-A` attaches to the session if it already exists.
-            let name = format!("{TMUX_NAME_PREFIX}{}", self.tmux_session_name);
-            let command = format!("tmux new -A -s {}", shell_quote(&name));
-            channel.exec(false, command.as_bytes()).await
-        } else {
-            channel.request_shell(false).await
+        let started = match &self.tmux_session {
+            Some(suffix) => {
+                // `-A` attaches to the session if it already exists.
+                let name = format!("{TMUX_NAME_PREFIX}{suffix}");
+                let command = format!("tmux new -A -s {}", shell_quote(&name));
+                channel.exec(false, command.as_bytes()).await
+            }
+            None => channel.request_shell(false).await,
         };
         started.map_err(TransportError::from_russh)?;
 
         // The reader task owns the read half: the only path bytes take in.
         let (mut read_half, write_half) = channel.split();
         let event_tx = self.event_tx.clone();
+        // A fresh token per connect: a reconnect must not inherit a cancel.
+        self.cancel_token = CancellationToken::new();
         let cancel = self.cancel_token.clone();
         self.reader_task = Some(tokio::spawn(async move {
             // An exit status (or signal) means the remote process ended, so
@@ -140,7 +137,7 @@ impl Transport for SSHTransport {
             }
         }));
         self.channel_write = Some(write_half);
-        self.set_state(TransportState::Connected);
+        self.state.set(TransportState::Connected);
         Ok(())
     }
 
@@ -152,12 +149,12 @@ impl Transport for SSHTransport {
         // Dropping the write half closes our side; the shared connection
         // stays up for other consumers.
         self.channel_write = None;
-        self.set_state(TransportState::Disconnected);
+        self.state.set(TransportState::Disconnected);
         Ok(())
     }
 
     fn state(&self) -> TransportState {
-        self.state.clone()
+        self.state.get()
     }
 
     async fn write(&mut self, data: &[u8]) -> Result<(), TransportError> {
@@ -183,8 +180,7 @@ impl Transport for SSHTransport {
     }
 
     fn set_tmux_enabled(&mut self, enabled: bool, session_name: String) {
-        self.tmux_enabled = enabled;
-        self.tmux_session_name = session_name;
+        self.tmux_session = enabled.then_some(session_name);
     }
 
     fn transport_type(&self) -> TransportType {

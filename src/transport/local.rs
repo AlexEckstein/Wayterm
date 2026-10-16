@@ -7,7 +7,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::store::model::SessionConfig;
 use crate::transport::types::{
-    Transport, TransportError, TransportEvent, TransportState, TransportType,
+    SharedState, Transport, TransportError, TransportEvent, TransportState, TransportType,
 };
 
 /// Fallback when neither the session nor `$SHELL` names a shell.
@@ -49,7 +49,7 @@ pub struct LocalTransport {
     initial_rows: u32,
     initial_cols: u32,
     /// Shared with the reader task, which ends the connection on `EIO`.
-    state: Arc<Mutex<TransportState>>,
+    state: SharedState,
 }
 
 impl LocalTransport {
@@ -71,33 +71,16 @@ impl LocalTransport {
             master: None,
             child_pid: Arc::new(AtomicI32::new(0)),
             reader_task: None,
-            event_tx,
             cancel_token: CancellationToken::new(),
             initial_rows,
             initial_cols,
-            state: Arc::new(Mutex::new(TransportState::Disconnected)),
+            state: SharedState::new(event_tx.clone()),
+            event_tx,
         }
-    }
-
-    fn set_state(&self, state: TransportState) {
-        set_shared_state(&self.state, &self.event_tx, state);
     }
 
     fn master(&self) -> Result<Arc<AsyncFd<OwnedFd>>, TransportError> {
         self.master.clone().ok_or(TransportError::Disconnected)
-    }
-}
-
-/// Record `state` and notify, unless nothing changed.
-fn set_shared_state(
-    shared: &Mutex<TransportState>,
-    tx: &mpsc::Sender<TransportEvent>,
-    state: TransportState,
-) {
-    let mut current = shared.lock().unwrap_or_else(|e| e.into_inner());
-    if *current != state {
-        *current = state;
-        current.emit(tx);
     }
 }
 
@@ -302,10 +285,11 @@ async fn reap(pid: libc::pid_t) {
 /// The only read path: push every chunk from the master as `DataReceived`
 /// until the child's side closes (`EIO`), then reap the child and report:
 /// `SessionEnded` when the shell exited, `ConnectionLost` after a read error.
+/// The state is `Disconnected` by the time either arrives.
 async fn read_loop(
     master: Arc<AsyncFd<OwnedFd>>,
     child_pid: Arc<AtomicI32>,
-    state: Arc<Mutex<TransportState>>,
+    state: SharedState,
     event_tx: mpsc::Sender<TransportEvent>,
     cancel: CancellationToken,
 ) {
@@ -355,13 +339,13 @@ async fn read_loop(
     if let Some(pid) = take_pid(&child_pid) {
         let _ = tokio::spawn(reap(pid)).await;
     }
+    state.set(TransportState::Disconnected);
     let event = if exited {
         TransportEvent::SessionEnded
     } else {
         TransportEvent::ConnectionLost
     };
     let _ = event_tx.send(event).await;
-    set_shared_state(&state, &event_tx, TransportState::Disconnected);
 }
 
 #[async_trait]
@@ -370,7 +354,7 @@ impl Transport for LocalTransport {
         if self.master.is_some() {
             return Err(TransportError::ChannelError("already connected".into()));
         }
-        self.set_state(TransportState::Connecting);
+        self.state.set(TransportState::Connecting);
 
         let spawned = resolve_shell(&self.shell).and_then(|shell| {
             if let Some(dir) = self.working_dir.as_deref().filter(|dir| !dir.is_dir()) {
@@ -385,7 +369,7 @@ impl Transport for LocalTransport {
         let (master, pid) = match spawned {
             Ok(spawned) => spawned,
             Err(e) => {
-                self.set_state(TransportState::Disconnected);
+                self.state.set(TransportState::Disconnected);
                 return Err(e);
             }
         };
@@ -396,7 +380,7 @@ impl Transport for LocalTransport {
                 if let Some(pid) = take_pid(&self.child_pid) {
                     tokio::spawn(reap(pid));
                 }
-                self.set_state(TransportState::Disconnected);
+                self.state.set(TransportState::Disconnected);
                 return Err(e.into());
             }
         };
@@ -410,7 +394,7 @@ impl Transport for LocalTransport {
             self.cancel_token.clone(),
         )));
         self.master = Some(master);
-        self.set_state(TransportState::Connected);
+        self.state.set(TransportState::Connected);
         Ok(())
     }
 
@@ -426,12 +410,12 @@ impl Transport for LocalTransport {
         if let Some(pid) = take_pid(&self.child_pid) {
             tokio::spawn(reap(pid));
         }
-        self.set_state(TransportState::Disconnected);
+        self.state.set(TransportState::Disconnected);
         Ok(())
     }
 
     fn state(&self) -> TransportState {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.state.get()
     }
 
     async fn write(&mut self, data: &[u8]) -> Result<(), TransportError> {

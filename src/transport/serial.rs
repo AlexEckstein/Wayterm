@@ -13,7 +13,7 @@ use crate::store::model::{
     SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS_DEFAULT,
 };
 use crate::transport::types::{
-    Transport, TransportError, TransportEvent, TransportState, TransportType,
+    SharedState, Transport, TransportError, TransportEvent, TransportState, TransportType,
 };
 
 /// How long one blocking read waits before the reader re-checks its cancel
@@ -128,7 +128,7 @@ pub struct SerialTransport {
     cancel_token: CancellationToken,
     /// Shared with the reader, which ends the connection when the device
     /// goes away.
-    state: Arc<Mutex<TransportState>>,
+    state: SharedState,
 }
 
 impl SerialTransport {
@@ -147,20 +147,14 @@ impl SerialTransport {
             description,
             port: None,
             reader_task: None,
+            state: SharedState::new(event_tx.clone()),
             event_tx,
             cancel_token: CancellationToken::new(),
-            state: Arc::new(Mutex::new(TransportState::Disconnected)),
         }
     }
 
-    fn set_state(&self, state: TransportState) {
-        let mut current = lock(&self.state);
-        *current = state;
-        current.emit(&self.event_tx);
-    }
-
     fn fail(&self, err: TransportError) -> TransportError {
-        self.set_state(TransportState::Error(err.to_string()));
+        self.state.set(TransportState::Error(err.to_string()));
         err
     }
 
@@ -176,17 +170,13 @@ impl SerialTransport {
     }
 }
 
-fn lock(state: &Mutex<TransportState>) -> std::sync::MutexGuard<'_, TransportState> {
-    state.lock().unwrap_or_else(|e| e.into_inner())
-}
-
 /// The blocking read loop: every chunk becomes `DataReceived`; a read error
 /// (device unplugged, permission revoked) is `ConnectionLost`, and the
 /// transport is no longer connected — a later `connect` must not be
 /// refused as "already connected".
 fn read_loop(
     mut port: Box<dyn SerialPort>,
-    state: Arc<Mutex<TransportState>>,
+    state: SharedState,
     event_tx: mpsc::Sender<TransportEvent>,
     cancel: CancellationToken,
 ) {
@@ -210,19 +200,9 @@ fn read_loop(
             Err(_) => {
                 if !cancel.is_cancelled() {
                     // Recorded before it is reported, so `state()` agrees
-                    // with the event; notified after, as LocalTransport does.
-                    let lost = {
-                        let mut current = lock(&state);
-                        let lost = *current == TransportState::Connected;
-                        if lost {
-                            *current = TransportState::Disconnected;
-                        }
-                        lost
-                    };
+                    // with the event.
+                    state.set(TransportState::Disconnected);
                     let _ = event_tx.blocking_send(TransportEvent::ConnectionLost);
-                    if lost {
-                        TransportState::Disconnected.emit(&event_tx);
-                    }
                 }
                 return;
             }
@@ -252,7 +232,7 @@ impl Transport for SerialTransport {
         if self.state() == TransportState::Connected {
             return Err(TransportError::ChannelError("already connected".into()));
         }
-        self.set_state(TransportState::Connecting);
+        self.state.set(TransportState::Connecting);
 
         let settings = match &self.settings {
             Ok(settings) => settings.clone(),
@@ -288,7 +268,7 @@ impl Transport for SerialTransport {
             read_loop(reader, state, event_tx, cancel)
         }));
         self.port = Some(Arc::new(Mutex::new(port)));
-        self.set_state(TransportState::Connected);
+        self.state.set(TransportState::Connected);
         Ok(())
     }
 
@@ -300,14 +280,12 @@ impl Transport for SerialTransport {
             let _ = tokio::time::timeout(READER_JOIN_TIMEOUT, task).await;
         }
         self.port = None;
-        if self.state() != TransportState::Disconnected {
-            self.set_state(TransportState::Disconnected);
-        }
+        self.state.set(TransportState::Disconnected);
         Ok(())
     }
 
     fn state(&self) -> TransportState {
-        lock(&self.state).clone()
+        self.state.get()
     }
 
     async fn write(&mut self, data: &[u8]) -> Result<(), TransportError> {
