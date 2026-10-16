@@ -60,10 +60,10 @@ pub struct DialogFields {
     /// Editable forward rules (ports as text); only stored for SSH, and
     /// only when every draft validates.
     pub forward_drafts: Vec<ForwardRuleDraft>,
-    // Carried through from the edited row.
-    pub id: i64,
-    pub last_connected: Option<String>,
-    pub connect_count: u32,
+    /// The edited row (the default for a new session): its id and
+    /// metadata, and the columns the dialog has no widget for, carry
+    /// through [`config_from_fields`].
+    pub base: SessionConfig,
 }
 
 impl Default for DialogFields {
@@ -95,9 +95,7 @@ impl Default for DialogFields {
             local_working_dir: String::new(),
             jump_session_id: None,
             forward_drafts: Vec::new(),
-            id: 0,
-            last_connected: None,
-            connect_count: 0,
+            base: SessionConfig::default(),
         }
     }
 }
@@ -293,12 +291,19 @@ pub fn collect_peer_sessions(store: &SessionStore) -> Vec<SessionConfig> {
 /// forward rules are SSH-owned the same way: they store only for SSH, and
 /// invalid drafts (which the dialog's OK validation never lets through)
 /// defensively store as no rules rather than partial ones.
+///
+/// Columns without a widget — the appearance overrides, and per type the
+/// key path, host-key policy and SSH, RDP or VNC options — keep the edited
+/// row's values, the per-type ones only while its type is unchanged: a
+/// save must never wipe what the dialog cannot show.
 pub fn config_from_fields(
     fields: &DialogFields,
     folders: &[Folder],
     peers: &[SessionConfig],
 ) -> SessionConfig {
+    let base = &fields.base;
     let session_type = session_type_from_index(fields.type_index);
+    let kept = (base.session_type == session_type).then_some(base);
     let folder_id = (fields.folder_index as usize)
         .checked_sub(1)
         .and_then(|i| folders.get(i))
@@ -316,7 +321,7 @@ pub fn config_from_fields(
         .filter(|name| !name.is_empty());
 
     let mut config = SessionConfig {
-        id: fields.id,
+        id: base.id,
         name: fields.name.trim().to_string(),
         session_type: session_type.clone(),
         folder_id,
@@ -325,12 +330,17 @@ pub fn config_from_fields(
         username: trimmed_opt(&fields.username),
         auth_method: Some(auth_method_from_index(fields.auth_index)),
         // Doc 06 defaults `rdp_compression` on; there is no widget for it.
-        rdp_compression: session_type == SessionType::RDP,
+        rdp_compression: kept.map_or(session_type == SessionType::RDP, |b| b.rdp_compression),
         tmux_enabled: fields.tmux_enabled,
         tmux_session_name,
         icon: trimmed_opt(&fields.icon),
-        last_connected: fields.last_connected.clone(),
-        connect_count: fields.connect_count,
+        preferred_backend: base.preferred_backend.clone(),
+        color_scheme: base.color_scheme.clone(),
+        font_family: base.font_family.clone(),
+        font_size: base.font_size,
+        opacity: base.opacity,
+        last_connected: base.last_connected.clone(),
+        connect_count: base.connect_count,
         ..Default::default()
     };
 
@@ -378,20 +388,31 @@ pub fn config_from_fields(
                 fields.rdp_color_depth_index,
                 RDP_COLOR_DEPTH_DEFAULT,
             ));
+            config.rdp_options = kept.and_then(|b| b.rdp_options.clone());
         }
         SessionType::LocalShell => {
             config.local_shell = trimmed_opt(&fields.local_shell);
             config.local_working_dir = trimmed_opt(&fields.local_working_dir);
         }
         // VNC's only secret is keyring-only (doc 06).
-        SessionType::SSH | SessionType::VNC => {}
-    }
-    if session_type == SessionType::SSH {
-        config.jump_session_id = resolve_jump(peers, fields.id, fields.jump_session_id);
-        config.forward_rules = match rules_from_drafts(&fields.forward_drafts) {
-            Ok(rules) if !rules.is_empty() => Some(rules),
-            _ => None,
-        };
+        SessionType::VNC => {
+            if let Some(kept) = kept {
+                config.vnc_color_depth = kept.vnc_color_depth;
+                config.vnc_options = kept.vnc_options.clone();
+            }
+        }
+        SessionType::SSH => {
+            if let Some(kept) = kept {
+                config.key_path = kept.key_path.clone();
+                config.host_key_policy = kept.host_key_policy.clone();
+                config.ssh_options = kept.ssh_options.clone();
+            }
+            config.jump_session_id = resolve_jump(peers, base.id, fields.jump_session_id);
+            config.forward_rules = match rules_from_drafts(&fields.forward_drafts) {
+                Ok(rules) if !rules.is_empty() => Some(rules),
+                _ => None,
+            };
+        }
     }
     config
 }

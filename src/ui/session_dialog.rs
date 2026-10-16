@@ -228,8 +228,8 @@ struct Widgets {
 }
 
 impl Widgets {
-    /// The current values; `base` carries the edited row's identity.
-    fn fields(&self, base: &DialogFields) -> DialogFields {
+    /// The current values over `base`, the edited row.
+    fn fields(&self, base: &SessionConfig) -> DialogFields {
         DialogFields {
             name: self.name.text().into(),
             type_index: self.session_type.selected(),
@@ -263,7 +263,7 @@ impl Widgets {
             rdp_color_depth_index: self.rdp_color_depth.selected(),
             local_shell: self.local_shell.text().into(),
             local_working_dir: self.local_working_dir.text().into(),
-            ..base.clone()
+            base: base.clone(),
         }
     }
 
@@ -478,7 +478,8 @@ pub struct SessionDialog {
     widgets: Widgets,
     groups: TypeGroups,
     tmux_follow: TmuxNameFollow,
-    base: Rc<RefCell<DialogFields>>,
+    /// The edited row; a new session's is the default.
+    base: SessionConfig,
     folders: Vec<Folder>,
     peers: Vec<SessionConfig>,
     vbox: gtk4::Box,
@@ -495,7 +496,7 @@ impl SessionDialog {
         folders: &[Folder],
         peers: &[SessionConfig],
     ) -> Self {
-        let dialog = Self::build(
+        let mut dialog = Self::build(
             parent,
             folders,
             peers,
@@ -513,12 +514,7 @@ impl SessionDialog {
         if config.tmux_session_name.is_some() {
             dialog.tmux_follow.overridden.set(true);
         }
-        *dialog.base.borrow_mut() = DialogFields {
-            id: config.id,
-            last_connected: config.last_connected.clone(),
-            connect_count: config.connect_count,
-            ..DialogFields::default()
-        };
+        dialog.base = config.clone();
         // `set_selected` only notifies on change, so apply SSH explicitly.
         dialog.groups.apply(type_index_for(&config.session_type));
         dialog.widgets.apply_auth();
@@ -561,7 +557,7 @@ impl SessionDialog {
                     window.close();
                     return;
                 }
-                let fields = widgets.fields(&base.borrow());
+                let fields = widgets.fields(&base);
                 if let Err(errors) = rules_from_drafts(&fields.forward_drafts) {
                     forward_error.set_text(&forward_batch_error(&errors));
                     return;
@@ -839,8 +835,6 @@ impl SessionDialog {
         });
         tmux_follow.fill(&widgets.tmux_name, &default_tmux_session_name(""));
 
-        let base = Rc::new(RefCell::new(DialogFields::default()));
-
         let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         vbox.append(&form.grid);
         for group in &groups.0 {
@@ -857,7 +851,7 @@ impl SessionDialog {
             widgets,
             groups,
             tmux_follow,
-            base,
+            base: SessionConfig::default(),
             folders: folders.to_vec(),
             peers: peers.to_vec(),
             vbox,
@@ -977,13 +971,13 @@ pub(super) mod gtk_tests {
         // direct (the message text itself is covered display-free).
         dialog.widgets.jump.set_selected(2);
         assert_eq!(dialog.widgets.jump.selected(), 0, "depth>1 reverts");
-        let fields = dialog.widgets.fields(&dialog.base.borrow());
+        let fields = dialog.widgets.fields(&dialog.base);
         assert_eq!(fields.jump_session_id, None);
 
         // Picking the clean bastion sticks.
         dialog.widgets.jump.set_selected(1);
         assert_eq!(dialog.widgets.jump.selected(), 1);
-        let fields = dialog.widgets.fields(&dialog.base.borrow());
+        let fields = dialog.widgets.fields(&dialog.base);
         assert_eq!(fields.jump_session_id, Some(1));
         dialog.modal.window.close();
 
@@ -1006,7 +1000,7 @@ pub(super) mod gtk_tests {
         let dialog = SessionDialog::edit(&parent, &stale, &[], &peers);
         let selected = dialog.widgets.jump.selected() as usize;
         assert_eq!(dialog.widgets.jump_ids[selected], Some(77));
-        let fields = dialog.widgets.fields(&dialog.base.borrow());
+        let fields = dialog.widgets.fields(&dialog.base);
         assert_eq!(
             fields.jump_session_id,
             Some(77),
@@ -1018,7 +1012,7 @@ pub(super) mod gtk_tests {
             "saving a stale id clears it instead of violating the FK"
         );
         assert_eq!(dialog.widgets.forward_rows.borrow().len(), 1);
-        let fields = dialog.widgets.fields(&dialog.base.borrow());
+        let fields = dialog.widgets.fields(&dialog.base);
         assert_eq!(
             fields.forward_drafts.len(),
             1,
