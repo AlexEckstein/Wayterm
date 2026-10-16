@@ -444,7 +444,7 @@ impl SessionTree {
                         move || {
                             let deleted = tree.store.delete_session(id);
                             if deleted.is_ok() {
-                                delete_keyring_entries(id, &delete_keyring_entry);
+                                forget_secrets(id);
                             }
                             tree.finish("delete the session", deleted);
                         },
@@ -564,15 +564,17 @@ fn delete_keyring_entries(
         .count()
 }
 
-/// One keyring entry's deletion. An unreachable keyring has nothing to
-/// delete (same semantics as a lookup miss, doc 11 §CredentialManager):
-/// the session delete flow is best-effort cleanup, never a blocker.
-fn delete_keyring_entry(session_id: &str, secret_type: &str) -> Result<(), CredentialError> {
-    let source = KeyringSource::new(session_id, "");
+/// [`delete_keyring_entries`] against the OS keyring, probed once rather
+/// than per secret type. An unreachable keyring has nothing to delete
+/// (same semantics as a lookup miss, doc 11 §CredentialManager).
+fn forget_secrets(session_id: i64) -> usize {
+    let source = KeyringSource::new(&session_id.to_string(), "");
     if !source.available() {
-        return Ok(());
+        return 0;
     }
-    source.delete_entry(session_id, secret_type)
+    delete_keyring_entries(session_id, &|id, secret_type| {
+        source.delete_entry(id, secret_type)
+    })
 }
 
 /// The node shown by a row widget's list item.
@@ -747,7 +749,7 @@ mod keyring_cleanup_tests {
 
     #[test]
     fn the_main_fallback_deleter_never_fails() {
-        assert_eq!(delete_keyring_entries(1, &delete_keyring_entry), 0);
+        assert_eq!(forget_secrets(1), 0);
     }
 }
 
