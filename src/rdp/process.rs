@@ -67,6 +67,8 @@
 use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::io;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -145,29 +147,15 @@ pub fn build_args(spec: &RdpSpec, parent_xid: Option<u32>) -> Vec<String> {
     // Never negotiate down to Standard RDP Security: it skips TLS, and with
     // it the fingerprint pin (module docs).
     args.push(SEC_RDP_OFF.to_string());
-    args.push(
-        if spec.clipboard {
-            "+clipboard"
-        } else {
-            "-clipboard"
-        }
-        .to_string(),
-    );
-    args.push(if spec.fonts { "+fonts" } else { "-fonts" }.to_string());
+    args.push(toggle(spec.clipboard, "clipboard"));
+    args.push(toggle(spec.fonts, "fonts"));
     if spec.printer {
         args.push("/printer".to_string());
     }
     if spec.audio {
         args.push("/audio".to_string());
     }
-    args.push(
-        if spec.compression {
-            "+compression"
-        } else {
-            "-compression"
-        }
-        .to_string(),
-    );
+    args.push(toggle(spec.compression, "compression"));
     if let Some(xid) = parent_xid {
         args.push(format!("/parent-window:{xid}"));
     }
@@ -180,6 +168,11 @@ pub fn build_args(spec: &RdpSpec, parent_xid: Option<u32>) -> Vec<String> {
         }
     }
     args
+}
+
+/// A bool option spelled out either way: `+name` or `-name`.
+fn toggle(on: bool, name: &str) -> String {
+    format!("{}{name}", if on { '+' } else { '-' })
 }
 
 /// The oldest FreeRDP major version the argv contract speaks (module docs).
@@ -269,17 +262,9 @@ pub fn find_binary_in(path_env: Option<&OsStr>) -> Option<String> {
     None
 }
 
-#[cfg(unix)]
 fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
     path.metadata()
-        .map(|m| m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(_path: &std::path::Path) -> bool {
-    true
+        .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
 }
 
 /// Probe `xfreerdp3`, then `xfreerdp`, on `PATH`; run `<bin> --version` and
@@ -322,20 +307,9 @@ pub enum RdpProcessEvent {
 /// Map a wait status to the terminal [`RdpProcessEvent::Ended`]. Pure so
 /// the exit mapping is testable without spawning anything.
 pub fn exit_event(status: &std::process::ExitStatus) -> RdpProcessEvent {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        RdpProcessEvent::Ended {
-            code: status.code(),
-            signal: status.signal(),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        RdpProcessEvent::Ended {
-            code: status.code(),
-            signal: None,
-        }
+    RdpProcessEvent::Ended {
+        code: status.code(),
+        signal: status.signal(),
     }
 }
 
@@ -455,42 +429,27 @@ impl RdpProcess {
             .stderr(Stdio::piped())
             .env_clear()
             .envs(minimal_env())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
+            .kill_on_drop(true)
             // New process group: terminate() signals the group, so orphaned
             // grandchildren of our child die with it — and we can never
             // signal anything outside our own session.
-            cmd.as_std_mut().process_group(0);
-        }
+            .process_group(0);
         // Exec can transiently fail with ETXTBSY while the binary is being
         // replaced on disk (a package update swapping xfreerdp mid-connect
         // — or a freshly-written helper racing concurrent forks). Retry a
         // few times; a persistent failure still surfaces as an error.
-        let mut child: Option<Child> = None;
-        for attempt in 0..SPAWN_RETRIES {
+        let mut attempts = 1;
+        let mut child = loop {
             match cmd.spawn() {
-                Ok(c) => {
-                    child = Some(c);
-                    break;
-                }
+                Ok(child) => break child,
                 Err(e)
                     if e.kind() == io::ErrorKind::ExecutableFileBusy
-                        && attempt + 1 < SPAWN_RETRIES =>
+                        && attempts < SPAWN_RETRIES =>
                 {
+                    attempts += 1;
                     tokio::time::sleep(SPAWN_RETRY_DELAY).await;
                 }
                 Err(e) => return Err(e),
-            }
-        }
-        let mut child = match child {
-            Some(c) => c,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::ExecutableFileBusy,
-                    "xfreerdp binary busy (ETXTBSY): still being replaced?",
-                ));
             }
         };
         let stdin = child
@@ -596,43 +555,27 @@ impl RdpProcess {
             Ok(None) => {}
             _ => return,
         }
-        signal_group(child, Signal::Term);
+        signal_group(child, libc::SIGTERM);
         if tokio::time::timeout(self.terminate_grace, child.wait())
             .await
             .is_err()
         {
-            signal_group(child, Signal::Kill);
+            signal_group(child, libc::SIGKILL);
             let _ = child.wait().await;
         }
         self.stdin.take();
     }
 }
 
-#[derive(Clone, Copy)]
-enum Signal {
-    Term,
-    Kill,
-}
-
 /// Signal the child's whole process group (created at spawn, so this can
 /// never reach anything outside our own session). A reaped child has no
 /// pid and is left alone.
-fn signal_group(child: &mut Child, signal: Signal) {
-    #[cfg(unix)]
+fn signal_group(child: &Child, signal: libc::c_int) {
     if let Some(pid) = child.id() {
-        let signal = match signal {
-            Signal::Term => libc::SIGTERM,
-            Signal::Kill => libc::SIGKILL,
-        };
         // SAFETY: plain kill(2); the negative pid names the group we made.
         unsafe {
             libc::kill(-(pid as libc::pid_t), signal);
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = signal;
-        let _ = child.start_kill();
     }
 }
 

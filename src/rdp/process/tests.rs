@@ -251,11 +251,7 @@ fn find_binary_prefers_xfreerdp3_and_skips_nonexec() {
     let path = std::env::join_paths([dir.path()]).unwrap();
     assert_eq!(find_binary_in(Some(path.as_os_str())), None);
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&legacy);
     let path = std::env::join_paths([dir.path()]).unwrap();
     assert_eq!(
         find_binary_in(Some(path.as_os_str())),
@@ -264,11 +260,7 @@ fn find_binary_prefers_xfreerdp3_and_skips_nonexec() {
 
     let modern = dir.path().join("xfreerdp3");
     std::fs::write(&modern, "#!/bin/sh\necho hi\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&modern, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&modern);
     assert_eq!(
         find_binary_in(Some(path.as_os_str())),
         Some("xfreerdp3".to_string())
@@ -285,15 +277,16 @@ fn probe_binary_reports_a_sane_shape_when_present() {
     }
 }
 
+fn make_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// Write an executable sh script; returns its path.
 fn fake_binary(dir: &tempfile::TempDir, body: &str) -> String {
     let path = dir.path().join("fake-xfreerdp");
     std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    make_executable(&path);
     path.to_str().unwrap().to_string()
 }
 
