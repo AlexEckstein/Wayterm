@@ -16,10 +16,8 @@ use gtk4::prelude::*;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::transport::reconnect::{
-    ConfirmFn, ConnectFn, ConnectFuture, ReconnectDriver, ReconnectEvent, ReconnectPolicy,
-};
-use crate::transport::types::{TransportError, TransportEvent, TransportState};
+use crate::transport::reconnect::{ConfirmFn, ConnectFn, ReconnectDriver, ReconnectPolicy};
+use crate::transport::types::{TransportEvent, TransportState};
 use crate::ui::widgets::confirm;
 
 /// Doc 07 action ids (the hotkey engine owns their chords).
@@ -61,11 +59,6 @@ static RECONNECT_ON_DROP: AtomicBool = AtomicBool::new(true);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// A connect closure that always fails.
-pub fn never_connect() -> ConnectFn {
-    Arc::new(|| Box::pin(async { Err(TransportError::Disconnected) }) as ConnectFuture)
 }
 
 /// The two settings, read once at startup.
@@ -188,19 +181,19 @@ pub fn activate_reconnect(
         }
         _ => tab.cancel,
     };
-    let (events, mut event_rx) = mpsc::unbounded_channel::<ReconnectEvent>();
-    // The driver's own events are not shown (the state channel carries what
-    // the UI needs); draining them also tells us when the run ended.
-    tokio::spawn(async move {
-        while event_rx.recv().await.is_some() {}
-        lock(&RUNNING).remove(&id);
-    });
-    ReconnectDriver::with_cancel_token(policy(), cancel).spawn(
+    // The driver's own progress events go unwatched: the state channel
+    // carries what the UI shows.
+    let (events, _) = mpsc::unbounded_channel();
+    let run = ReconnectDriver::with_cancel_token(policy(), cancel).spawn(
         tab.connect,
         events,
         confirm,
         state_tx,
     );
+    tokio::spawn(async move {
+        let _ = run.await;
+        lock(&RUNNING).remove(&id);
+    });
     ReconnectAction::Started { session_id: id }
 }
 
