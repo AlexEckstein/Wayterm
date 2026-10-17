@@ -1,7 +1,8 @@
-//! The Import / Export window (doc 06 §Import and export): one row per
-//! import source with a file picker, and an Export button. The work is
-//! `crate::transfer`'s; this window picks files, confirms, and reports.
-//! It is also offered once on first run ([`offer_on_first_run`]).
+//! The Backup / Restore settings page (doc 06 §Import and export): one
+//! row per import source with a file picker, and an Export button. The
+//! work is `crate::transfer`'s; this page picks files, confirms, and
+//! reports. The page is also offered once on first run
+//! ([`take_first_run_offer`]).
 
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -11,13 +12,13 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 
+use super::{boxed_list, described, heading, row, scrolling_page};
 use crate::store::SessionStore;
 use crate::transfer::{
     apply_import, export_json, parse_source, read_source, ImportError, ImportReport, ImportSource,
     Parsed,
 };
-use crate::ui::session_tree::SessionTree;
-use crate::ui::widgets::{confirm, set_margins};
+use crate::ui::widgets::confirm;
 
 /// Settings row: set once the first-run import offer has been shown.
 pub const IMPORT_OFFERED_KEY: &str = "import_offered";
@@ -25,7 +26,7 @@ pub const IMPORT_OFFERED_KEY: &str = "import_offered";
 /// Warnings listed in the status line before the rest become "…".
 const SHOWN_WARNINGS: usize = 3;
 
-/// The sources, in the order the window lists them (doc 06 priority).
+/// The sources, in the order the page lists them (doc 06 priority).
 const SOURCES: [(ImportSource, &str); 5] = [
     (ImportSource::SshConfig, "OpenSSH config"),
     (ImportSource::Remmina, "Remmina (.remmina)"),
@@ -104,125 +105,108 @@ fn first_run_offer_due(store: &SessionStore) -> rusqlite::Result<bool> {
 }
 
 /// On first run (empty store, never offered), mark the offer made and
-/// show the window. Call after the main window is presented.
-pub fn offer_on_first_run(store: Rc<SessionStore>, tree: &SessionTree, parent: &gtk4::Window) {
-    match first_run_offer_due(&store) {
-        Ok(false) => {}
+/// return `true`: the caller then opens this page. Call after the main
+/// window is presented.
+pub fn take_first_run_offer(store: &SessionStore) -> bool {
+    match first_run_offer_due(store) {
+        Ok(false) => false,
         Ok(true) => {
             // Offered = shown, whatever the user does next: never nag.
             if let Err(err) = store.set_setting(IMPORT_OFFERED_KEY, "1") {
                 eprintln!("Wayterm: failed to record the import offer: {err}");
             }
-            show_import_dialog(store, tree, parent);
+            true
         }
-        Err(err) => eprintln!("Wayterm: failed to check for a first run: {err}"),
+        Err(err) => {
+            eprintln!("Wayterm: failed to check for a first run: {err}");
+            false
+        }
     }
 }
 
-/// Build and present the Import / Export window.
-pub fn show_import_dialog(store: Rc<SessionStore>, tree: &SessionTree, parent: &gtk4::Window) {
-    present(create_import_window(store, tree).0, parent);
-}
-
-/// The same window with Export focused.
-pub fn show_export_dialog(store: Rc<SessionStore>, tree: &SessionTree, parent: &gtk4::Window) {
-    let (window, export_button) = create_import_window(store, tree);
-    gtk4::prelude::GtkWindowExt::set_focus(&window, Some(&export_button));
-    present(window, parent);
-}
-
-fn present(window: gtk4::Window, parent: &gtk4::Window) {
-    window.set_transient_for(Some(parent));
-    window.set_destroy_with_parent(true);
-    window.present();
-}
-
-/// The window (unpresented) and its Export button.
-fn create_import_window(
-    store: Rc<SessionStore>,
-    tree: &SessionTree,
-) -> (gtk4::Window, gtk4::Button) {
-    let window = gtk4::Window::builder()
-        .title("Import / Export Sessions")
-        .default_width(520)
-        .modal(true)
-        .build();
-
-    let header = gtk4::HeaderBar::new();
-    let close_button = gtk4::Button::with_label("Close");
-    {
-        let window = window.clone();
-        close_button.connect_clicked(move |_| window.close());
-    }
-    header.pack_end(&close_button);
-    window.set_titlebar(Some(&header));
-
+/// The page. `on_import` runs after each import is written (the main
+/// window refreshes its session tree).
+pub fn page(store: Rc<SessionStore>, on_import: Rc<dyn Fn()>) -> gtk4::Widget {
     let status = gtk4::Label::new(None);
     status.set_wrap(true);
     status.set_xalign(0.0);
     status.set_selectable(true);
 
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    set_margins(&root, 12);
-    let heading = gtk4::Label::new(Some("Import sessions from:"));
-    heading.set_xalign(0.0);
-    root.append(&heading);
-
+    // The column the page is built in; its window is the dialogs' parent.
+    let anchor = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     let ctx = Ctx {
         store,
-        tree: tree.clone(),
-        window: window.clone(),
+        on_import,
+        anchor: anchor.clone().upcast(),
         status: status.clone(),
     };
-    let rows = gtk4::Grid::new();
-    rows.set_row_spacing(6);
-    rows.set_column_spacing(12);
-    for (row, (source, label)) in (0..).zip(SOURCES) {
-        let name = gtk4::Label::new(Some(label));
-        name.set_xalign(0.0);
-        name.set_hexpand(true);
-        rows.attach(&name, 0, row, 1, 1);
+
+    let sources = boxed_list();
+    for (source, label) in SOURCES {
+        let choose = gtk4::Button::with_label("Choose File…");
+        let for_choose = ctx.clone();
+        choose.connect_clicked(move |_| for_choose.choose_and_import(source, label));
+        let text = described(label, None, &choose);
+        let mut children: Vec<gtk4::Widget> = vec![text.upcast()];
         if source == ImportSource::SshConfig {
             if let Some(path) = ssh_dir().map(|dir| dir.join("config")) {
                 let default = gtk4::Button::with_label("Use ~/.ssh/config");
                 let ctx = ctx.clone();
                 default.connect_clicked(move |_| ctx.import(source, &path));
-                rows.attach(&default, 1, row, 1, 1);
+                children.push(default.upcast());
             }
         }
-        let choose = gtk4::Button::with_label("Choose File…");
-        let ctx_for_choose = ctx.clone();
-        choose.connect_clicked(move |_| ctx_for_choose.choose_and_import(source, label));
-        rows.attach(&choose, 2, row, 1, 1);
+        children.push(choose.upcast());
+        let children: Vec<&gtk4::Widget> = children.iter().collect();
+        sources.append(&row(&children));
     }
-    root.append(&rows);
 
-    root.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
-    let export_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    let export_label = gtk4::Label::new(Some("Export all sessions as JSON (no credentials)"));
-    export_label.set_xalign(0.0);
-    export_label.set_hexpand(true);
     let export_button = gtk4::Button::with_label("Export…");
     export_button.connect_clicked(move |_| ctx.export());
-    export_row.append(&export_label);
-    export_row.append(&export_button);
-    root.append(&export_row);
+    let export_text = described(
+        "Export all sessions as JSON",
+        Some("Folders and sessions, without credentials."),
+        &export_button,
+    );
+    let backup = boxed_list();
+    backup.append(&row(&[
+        export_text.upcast_ref(),
+        export_button.upcast_ref(),
+    ]));
 
-    root.append(&status);
-    window.set_child(Some(&root));
-    (window, export_button)
+    let restore_heading = heading("Restore");
+    let restore_hint = gtk4::Label::new(Some("Import sessions from another client or a backup."));
+    restore_hint.set_xalign(0.0);
+    restore_hint.add_css_class("dim-label");
+    for child in [
+        heading("Backup").upcast_ref::<gtk4::Widget>(),
+        backup.upcast_ref(),
+        restore_heading.upcast_ref(),
+        restore_hint.upcast_ref(),
+        sources.upcast_ref(),
+        status.upcast_ref(),
+    ] {
+        anchor.append(child);
+    }
+    anchor.set_spacing(6);
+    scrolling_page(&[anchor.upcast_ref()])
 }
 
-/// What the window's buttons act on.
+/// What the page's buttons act on.
 #[derive(Clone)]
 struct Ctx {
     store: Rc<SessionStore>,
-    tree: SessionTree,
-    window: gtk4::Window,
+    on_import: Rc<dyn Fn()>,
+    anchor: gtk4::Widget,
     status: gtk4::Label,
 }
 
 impl Ctx {
+    /// The settings window the page is in, the dialogs' parent.
+    fn window(&self) -> Option<gtk4::Window> {
+        self.anchor.root().and_downcast()
+    }
+
     fn choose_and_import(&self, source: ImportSource, label: &str) {
         let dialog = gtk4::FileDialog::builder()
             .title(format!("Import from {label}"))
@@ -234,11 +218,15 @@ impl Ctx {
             }
         }
         let ctx = self.clone();
-        dialog.open(Some(&self.window), gio::Cancellable::NONE, move |file| {
-            if let Some(path) = picked_path(file) {
-                ctx.import(source, &path);
-            }
-        });
+        dialog.open(
+            self.window().as_ref(),
+            gio::Cancellable::NONE,
+            move |file| {
+                if let Some(path) = picked_path(file) {
+                    ctx.import(source, &path);
+                }
+            },
+        );
     }
 
     /// Parse, confirm, then write and report.
@@ -257,13 +245,13 @@ impl Ctx {
         let detail = parsed_summary(sessions.len(), &report);
         let ctx = self.clone();
         confirm(
-            Some(&self.window),
+            self.window().as_ref(),
             &format!("Import from {}?", path.display()),
             &detail,
             "Import",
             move || match apply_import(&ctx.store, folders, sessions, report) {
                 Ok(report) => {
-                    ctx.tree.refresh();
+                    (ctx.on_import)();
                     ctx.status.set_text(&final_summary(&report));
                 }
                 Err(err) => ctx.status.set_text(&format!("Import failed: {err}")),
@@ -282,15 +270,21 @@ impl Ctx {
             .modal(true)
             .build();
         let status = self.status.clone();
-        dialog.save(Some(&self.window), gio::Cancellable::NONE, move |file| {
-            let Some(path) = picked_path(file) else {
-                return;
-            };
-            match write_private(&path, json.as_bytes()) {
-                Ok(()) => status.set_text(&format!("Exported to {}.", path.display())),
-                Err(err) => status.set_text(&format!("Export to {} failed: {err}", path.display())),
-            }
-        });
+        dialog.save(
+            self.window().as_ref(),
+            gio::Cancellable::NONE,
+            move |file| {
+                let Some(path) = picked_path(file) else {
+                    return;
+                };
+                match write_private(&path, json.as_bytes()) {
+                    Ok(()) => status.set_text(&format!("Exported to {}.", path.display())),
+                    Err(err) => {
+                        status.set_text(&format!("Export to {} failed: {err}", path.display()))
+                    }
+                }
+            },
+        );
     }
 }
 

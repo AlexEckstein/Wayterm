@@ -1,8 +1,10 @@
 //! The Settings window: a sidebar of pages beside the selected one —
-//! [`general`], [`credentials`] (doc 11), and Keyboard Shortcuts
-//! ([`hotkeys`], doc 07). Every page
-//! saves each change at once and applies it live; there is no Apply button.
+//! [`general`], [`credentials`] (doc 11), Keyboard Shortcuts
+//! ([`hotkeys`], doc 07), and Backup / Restore ([`backup`], doc 06). Every
+//! page saves each change at once and applies it live; there is no Apply
+//! button.
 
+pub mod backup;
 pub mod credentials;
 pub mod general;
 pub mod hotkeys;
@@ -20,11 +22,16 @@ use crate::ui::widgets::set_margins;
 pub const GENERAL_PAGE: &str = "general";
 pub const CREDENTIALS_PAGE: &str = "credentials";
 pub const SHORTCUTS_PAGE: &str = "keyboard-shortcuts";
+pub const BACKUP_PAGE: &str = "backup-restore";
 
-/// The settings window (unpresented), opened on General.
+/// The settings window (unpresented), opened on the page named `page` (a
+/// `*_PAGE`). `on_import` runs after the Backup / Restore page writes an
+/// import.
 pub fn create_settings_window(
     engine: Rc<RefCell<HotkeyEngine>>,
     store: Rc<SessionStore>,
+    on_import: Rc<dyn Fn()>,
+    page: &str,
 ) -> gtk4::Window {
     let window = gtk4::Window::builder()
         .title("Settings")
@@ -44,7 +51,8 @@ pub fn create_settings_window(
     header.pack_end(&close_button);
     window.set_titlebar(Some(&header));
 
-    let stack = pages(engine, store);
+    let stack = pages(engine, store, on_import);
+    stack.set_visible_child_name(page);
     let sidebar = gtk4::StackSidebar::new();
     sidebar.set_stack(&stack);
 
@@ -57,13 +65,15 @@ pub fn create_settings_window(
     window
 }
 
-/// Build and present the settings window.
+/// Build and present the settings window (see [`create_settings_window`]).
 pub fn show_settings(
     engine: Rc<RefCell<HotkeyEngine>>,
     store: Rc<SessionStore>,
+    on_import: Rc<dyn Fn()>,
+    page: &str,
     parent: Option<&gtk4::Window>,
 ) {
-    let window = create_settings_window(engine, store);
+    let window = create_settings_window(engine, store, on_import, page);
     if let Some(parent) = parent {
         window.set_transient_for(Some(parent));
     }
@@ -71,7 +81,11 @@ pub fn show_settings(
 }
 
 /// One stack page per sidebar entry; the first added is shown.
-fn pages(engine: Rc<RefCell<HotkeyEngine>>, store: Rc<SessionStore>) -> gtk4::Stack {
+fn pages(
+    engine: Rc<RefCell<HotkeyEngine>>,
+    store: Rc<SessionStore>,
+    on_import: Rc<dyn Fn()>,
+) -> gtk4::Stack {
     let stack = gtk4::Stack::new();
     stack.set_hexpand(true);
     stack.add_titled(&general::page(store.clone()), Some(GENERAL_PAGE), "General");
@@ -81,9 +95,14 @@ fn pages(engine: Rc<RefCell<HotkeyEngine>>, store: Rc<SessionStore>) -> gtk4::St
         "Credentials",
     );
     stack.add_titled(
-        &hotkeys::page(engine, store),
+        &hotkeys::page(engine, store.clone()),
         Some(SHORTCUTS_PAGE),
         "Keyboard Shortcuts",
+    );
+    stack.add_titled(
+        &backup::page(store, on_import),
+        Some(BACKUP_PAGE),
+        "Backup / Restore",
     );
     stack
 }
@@ -184,7 +203,8 @@ pub(super) mod gtk_tests {
         descendants(widget, found);
     }
 
-    /// The sidebar lists General, Credentials, then Keyboard Shortcuts, and opens on
+    /// The sidebar lists General, Credentials, Keyboard Shortcuts, then
+    /// Backup / Restore, and opens on
     /// General; each General switch shows and saves its own row.
     pub(in crate::ui) fn pages_and_general_switches() {
         let store = Rc::new(SessionStore::in_memory().unwrap());
@@ -192,7 +212,7 @@ pub(super) mod gtk_tests {
             .set_setting(crate::ui::tray::MINIMIZE_TO_TRAY_KEY, "0")
             .unwrap();
         let engine = Rc::new(RefCell::new(HotkeyEngine::new()));
-        let stack = pages(engine, store.clone());
+        let stack = pages(engine, store.clone(), Rc::new(|| {}));
 
         let model = stack.pages();
         let listed: Vec<(String, String)> = (0..model.n_items())
@@ -210,6 +230,7 @@ pub(super) mod gtk_tests {
                 (GENERAL_PAGE.to_string(), "General".to_string()),
                 (CREDENTIALS_PAGE.to_string(), "Credentials".to_string()),
                 (SHORTCUTS_PAGE.to_string(), "Keyboard Shortcuts".to_string()),
+                (BACKUP_PAGE.to_string(), "Backup / Restore".to_string()),
             ]
         );
         assert_eq!(stack.visible_child_name().as_deref(), Some(GENERAL_PAGE));

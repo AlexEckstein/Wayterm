@@ -290,7 +290,7 @@ whether the keyring and the CLI answer.
 
 ## Import and export (Phase 9)
 
-Code: `src/transfer/` (engines), `src/ui/import_dialog.rs` (windows).
+Code: `src/transfer/` (engines), `src/ui/settings/backup.rs` (Settings page).
 
 - **Import**, in priority order: `~/.ssh/config`, then Remmina `.remmina`
   files, MobaXterm `.ini`/`.mxtsessions` exports, Asbru-CM YAML — plus
@@ -318,7 +318,6 @@ Code: `src/transfer/` (engines), `src/ui/import_dialog.rs` (windows).
 - **Icons** (§Icons) travel as names in Wayterm's JSON export, folders
   and sessions alike; the SVG files do not. On a machine without the
   same custom SVG, the item draws its default icon.
-- **UI:** when the store is empty on first start, Wayterm offers the
-  import once (recorded in the `import_offered` setting). Import and
-  Export are on the session-tree menu and are window actions
-  (`win.import-sessions` / `win.export-sessions`).
+- **UI:** Import and Export are the Settings window's Backup / Restore
+  page. When the store is empty on first start, Wayterm opens that page
+  once (recorded in the `import_offered` setting).

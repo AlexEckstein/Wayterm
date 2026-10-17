@@ -147,10 +147,9 @@ Import/export (`src/transfer/`, doc 06 §Import and export): importers for
 `~/.ssh/config` (Wayterm's own block scanner, `Include` followed),
 Remmina, MobaXterm, Asbru-CM, and Wayterm JSON — pure readers, with
 `apply_import` the single store writer; JSON export
-(`{"version":1,"folders":[…]}`, no secrets). The Import/Export windows
-(`src/ui/import_dialog.rs`) open from the session-tree menu and the
-`win.import-sessions` / `win.export-sessions` actions, and the import is
-offered once on first run when the store is empty. Packaging
+(`{"version":1,"folders":[…]}`, no secrets). Import and export are the
+Settings window's Backup / Restore page (`src/ui/settings/backup.rs`),
+which opens once on first run when the store is empty. Packaging
 (`packaging/`): a `.deb` via `cargo deb` (metadata in `Cargo.toml`), a
 Flatpak manifest, a pkg2appimage AppImage recipe built from the `.deb`,
 the Wayterm icon (SVG + 64/128/256 PNG) with the desktop entry and
