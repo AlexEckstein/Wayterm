@@ -684,6 +684,15 @@ impl SessionDialog {
                 icon.set_default(session_type_icon(&session_type));
             });
         groups.apply(widgets.session_type.selected());
+        // The handler above only runs on a change, so a new session would
+        // otherwise start at the spin's minimum (1); `fill` overrides this
+        // when editing.
+        let initial_type = session_type_from_index(widgets.session_type.selected());
+        widgets.port.set_value(
+            default_port_for(&initial_type)
+                .unwrap_or(PORT_SPIN_PLACEHOLDER)
+                .into(),
+        );
 
         let for_auth = widgets.clone();
         widgets
