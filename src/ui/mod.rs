@@ -4,7 +4,6 @@ pub mod auth_dialog;
 pub mod folder_dialog;
 pub mod hostkey_dialog;
 pub mod icons;
-pub mod import_dialog;
 pub mod macro_editor;
 pub mod macros_panel;
 pub mod main_window;

@@ -23,7 +23,7 @@ use crate::ui::status_bar::StatusBar;
 use crate::ui::tab::SessionTab;
 use crate::ui::tab_restore::TabPersistence;
 use crate::ui::widgets::{data, set_data};
-use crate::ui::{import_dialog, settings, tab_resilience, terminal_actions, tunnels_dialog};
+use crate::ui::{settings, tab_resilience, terminal_actions, tunnels_dialog};
 
 /// Window data keys.
 pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
@@ -189,17 +189,26 @@ impl MainWindow {
             ],
         );
 
+        // Settings on one of its pages; an import there refreshes the tree.
+        let show_settings = {
+            let (store, parent) = (store.clone(), window.clone());
+            let tree = session_tree.clone();
+            let on_import: Rc<dyn Fn()> = Rc::new(move || tree.refresh());
+            move |page: &str| {
+                settings::show_settings(
+                    hotkeys.clone(),
+                    store.clone(),
+                    on_import.clone(),
+                    page,
+                    Some(parent.upcast_ref()),
+                );
+            }
+        };
+        let show_settings = Rc::new(show_settings);
         let open_settings = gio::SimpleAction::new("settings", None);
-        let (for_settings, parent) = (store.clone(), window.clone());
-        open_settings.connect_activate(move |_, _| {
-            settings::show_settings(
-                hotkeys.clone(),
-                for_settings.clone(),
-                Some(parent.upcast_ref()),
-            );
-        });
+        let for_action = show_settings.clone();
+        open_settings.connect_activate(move |_, _| for_action(settings::GENERAL_PAGE));
         window.add_action(&open_settings);
-        install_transfer_actions(&window, &store, &session_tree);
 
         // Restore before watching, so the restored tabs are not re-saved as
         // a burst of user actions. The close handler keeps the watcher alive
@@ -214,7 +223,9 @@ impl MainWindow {
 
         window.present();
         // After presenting, so the offer opens over a visible window.
-        import_dialog::offer_on_first_run(store, &session_tree, window.upcast_ref());
+        if settings::backup::take_first_run_offer(&store) {
+            show_settings(settings::BACKUP_PAGE);
+        }
         Self { window }
     }
 
@@ -246,28 +257,6 @@ fn auto_hide_home(notebook: &gtk4::Notebook, home: &gtk4::Label) {
         }
     });
     notebook.connect_page_removed(move |notebook, _, _| sync(notebook));
-}
-
-/// `import-sessions` / `export-sessions` (doc 06): the Import / Export
-/// window, opened on its import or export side.
-fn install_transfer_actions(
-    window: &gtk4::ApplicationWindow,
-    store: &Rc<SessionStore>,
-    tree: &SessionTree,
-) {
-    let open = [
-        (
-            "import-sessions",
-            import_dialog::show_import_dialog as fn(_, &_, &_),
-        ),
-        ("export-sessions", import_dialog::show_export_dialog),
-    ];
-    for (name, show) in open {
-        let action = gio::SimpleAction::new(name, None);
-        let (store, tree, parent) = (store.clone(), tree.clone(), window.clone());
-        action.connect_activate(move |_, _| show(store.clone(), &tree, parent.upcast_ref()));
-        window.add_action(&action);
-    }
 }
 
 /// `win.tunnels` (Phase 11): the current tab's Tunnels dialog. It always
