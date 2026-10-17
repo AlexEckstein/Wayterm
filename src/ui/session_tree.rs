@@ -13,7 +13,7 @@ use crate::store::SessionStore;
 use crate::transport::credentials::{CredentialError, KeyringSource};
 use crate::ui::folder_dialog::FolderDialog;
 use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
-use crate::ui::session_dialog::{collect_peer_sessions, SessionDialog};
+use crate::ui::session_dialog::{collect_folders, collect_peer_sessions, SessionDialog};
 use crate::ui::tab::credential_manager;
 use crate::ui::widgets::{confirm, data, prompt_text, set_data, window_of};
 
@@ -498,7 +498,7 @@ impl SessionTree {
         let Some(parent) = self.parent() else {
             return;
         };
-        let folders = match self.store.list_folders(None) {
+        let folders = match collect_folders(&self.store) {
             Ok(folders) => folders,
             Err(err) => return eprintln!("Wayterm: failed to list folders: {err}"),
         };

@@ -485,8 +485,8 @@ impl SessionDialog {
         let mut form = FormGrid::new(12);
         let name = form.entry("Name:", "");
         let session_type = form.dropdown("Type:", &TYPE_LABELS);
-        let folder_names: Vec<&str> = std::iter::once("None (root)")
-            .chain(folders.iter().map(|f| f.name.as_str()))
+        let folder_names: Vec<String> = std::iter::once("None (root)".to_string())
+            .chain(folder_labels(folders))
             .collect();
         let folder = form.dropdown("Folder:", &folder_names);
         let host = form.entry("Host:", "");
