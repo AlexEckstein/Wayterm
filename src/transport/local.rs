@@ -374,14 +374,16 @@ impl Transport for LocalTransport {
             }
         };
         self.child_pid.store(pid, Ordering::SeqCst);
-        let master = match AsyncFd::new(master) {
+        // SAFETY: the OwnedFd owns the open master fd and always reports
+        // that same fd, so it stays valid for the AsyncFd's whole life.
+        let master = match unsafe { AsyncFd::register(master) } {
             Ok(master) => Arc::new(master),
             Err(e) => {
                 if let Some(pid) = take_pid(&self.child_pid) {
                     tokio::spawn(reap(pid));
                 }
                 self.state.set(TransportState::Disconnected);
-                return Err(e.into());
+                return Err(std::io::Error::from(e).into());
             }
         };
 
