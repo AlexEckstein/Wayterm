@@ -1,8 +1,8 @@
 //! Unit tests for the display-free tab-persistence model
 //! ([`super`], doc 10 Phase 4).
 //!
-//! No GTK here: these lock the wire format, the placement rules, and
-//! the debounce policy, which is why they can run headless in CI.
+//! No GTK here: these lock the wire format and the placement rules,
+//! which is why they can run headless in CI.
 
 use super::*;
 
@@ -339,127 +339,6 @@ fn a_scanned_list_survives_the_wire_format() {
         "already in tab-bar order"
     );
     assert_eq!(reloaded.len(), 3, "home is not part of the saved list");
-}
-
-// ---------------------------------------------------------------------------
-// Debounce
-// ---------------------------------------------------------------------------
-
-#[test]
-fn fresh_debouncer_is_clean() {
-    let debounce = DebouncedSave::new();
-    assert_eq!(debounce.due_at_ms(), None);
-    assert!(!debounce.is_due(0));
-    assert!(!debounce.is_due(i64::MAX));
-    assert_eq!(debounce.interval_ms(), SAVE_DEBOUNCE_MS);
-}
-
-#[test]
-fn debouncer_is_not_due_before_the_quiet_period() {
-    let mut debounce = DebouncedSave::new();
-    debounce.mark_dirty(1_000);
-
-    assert!(debounce.due_at_ms().is_some());
-    assert_eq!(debounce.due_at_ms(), Some(1_000 + SAVE_DEBOUNCE_MS));
-    assert!(!debounce.is_due(1_000 + SAVE_DEBOUNCE_MS - 1));
-}
-
-#[test]
-fn debouncer_is_due_exactly_at_the_deadline() {
-    let mut debounce = DebouncedSave::new();
-    debounce.mark_dirty(1_000);
-    assert!(debounce.is_due(1_000 + SAVE_DEBOUNCE_MS));
-}
-
-#[test]
-fn debouncer_is_due_after_the_deadline() {
-    let mut debounce = DebouncedSave::new();
-    debounce.mark_dirty(0);
-    assert!(debounce.is_due(SAVE_DEBOUNCE_MS + 10_000));
-}
-
-#[test]
-fn every_event_pushes_the_deadline_out() {
-    // Trailing, not leading: a rename keeps the save at the end of the
-    // typing, not at the start of it.
-    let mut debounce = DebouncedSave::with_interval(100);
-    debounce.mark_dirty(0);
-    debounce.mark_dirty(50);
-    debounce.mark_dirty(90);
-
-    assert!(!debounce.is_due(100));
-    assert!(debounce.is_due(190));
-}
-
-#[test]
-fn a_burst_of_events_is_one_save() {
-    let mut debounce = DebouncedSave::with_interval(100);
-    for tick in 0..100 {
-        debounce.mark_dirty(tick * 10);
-    }
-
-    // Only the final event's deadline is live...
-    assert!(debounce.is_due(1_090));
-    // ...and taking it clears the dirty flag, so the timer cannot fire
-    // a second write for the same burst.
-    assert!(debounce.take_due(1_090));
-    assert_eq!(debounce.due_at_ms(), None);
-    assert!(!debounce.take_due(9_999));
-}
-
-#[test]
-fn take_due_ignores_an_event_that_is_still_settling() {
-    let mut debounce = DebouncedSave::with_interval(100);
-    debounce.mark_dirty(0);
-
-    assert!(!debounce.take_due(50));
-    assert!(
-        debounce.due_at_ms().is_some(),
-        "an early timer tick must not clear the flag"
-    );
-    assert!(debounce.take_due(100));
-}
-
-#[test]
-fn take_due_on_a_clean_debouncer_owes_nothing() {
-    let mut debounce = DebouncedSave::new();
-    assert!(!debounce.take_due(i64::MAX));
-}
-
-#[test]
-fn cancel_drops_the_pending_change() {
-    let mut debounce = DebouncedSave::new();
-    debounce.mark_dirty(0);
-    debounce.cancel();
-
-    assert_eq!(debounce.due_at_ms(), None);
-    assert!(!debounce.is_due(i64::MAX));
-}
-
-#[test]
-fn a_change_after_cancel_is_saved_again() {
-    // Cancel is the exit path writing synchronously; a later change must
-    // still schedule a save of its own.
-    let mut debounce = DebouncedSave::with_interval(100);
-    debounce.mark_dirty(0);
-    debounce.cancel();
-    debounce.mark_dirty(10);
-
-    assert!(!debounce.is_due(105));
-    assert!(debounce.is_due(110));
-}
-
-#[test]
-fn extreme_clock_values_do_not_overflow() {
-    // A broken or pre-epoch system clock must not panic in debug builds.
-    let mut debounce = DebouncedSave::new();
-    debounce.mark_dirty(i64::MAX);
-    assert_eq!(debounce.due_at_ms(), Some(i64::MAX));
-    assert!(debounce.is_due(i64::MAX));
-
-    let mut early = DebouncedSave::with_interval(-1);
-    early.mark_dirty(i64::MIN);
-    assert_eq!(early.due_at_ms(), Some(i64::MIN));
 }
 
 #[test]

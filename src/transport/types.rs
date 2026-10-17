@@ -1,6 +1,7 @@
 //! The byte-stream [`Transport`] trait and its vocabulary (doc 04).
 
 use std::io;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -17,10 +18,42 @@ pub enum TransportState {
     Error(String),
 }
 
-impl TransportState {
-    /// Best-effort `StateChanged` notification; a full channel drops it.
-    pub(crate) fn emit(&self, tx: &mpsc::Sender<TransportEvent>) {
-        let _ = tx.try_send(TransportEvent::StateChanged(self.clone()));
+/// A transport's state, shared with its reader task (which may end the
+/// connection on its own) and announced as `StateChanged` on each change.
+/// Clones share the state.
+#[derive(Clone)]
+pub(crate) struct SharedState {
+    current: Arc<Mutex<TransportState>>,
+    events: mpsc::Sender<TransportEvent>,
+}
+
+impl SharedState {
+    /// `Disconnected`, announcing changes on `events`.
+    pub(crate) fn new(events: mpsc::Sender<TransportEvent>) -> Self {
+        Self {
+            current: Arc::new(Mutex::new(TransportState::Disconnected)),
+            events,
+        }
+    }
+
+    pub(crate) fn get(&self) -> TransportState {
+        self.lock().clone()
+    }
+
+    /// Record `state` and announce it, unless nothing changed. The
+    /// announcement is best effort: a full channel drops it.
+    pub(crate) fn set(&self, state: TransportState) {
+        let mut current = self.lock();
+        if *current != state {
+            *current = state;
+            let _ = self
+                .events
+                .try_send(TransportEvent::StateChanged(current.clone()));
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, TransportState> {
+        self.current.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

@@ -77,6 +77,8 @@ pub(crate) type ChannelOpener = Arc<dyn Fn(String, u16) -> OpenerFuture + Send +
 
 /// Caller-owned engine handle: cheap to clone, all clones drive the same
 /// listeners. `start` replaces any running rules; `stop` is idempotent.
+/// Its methods only spawn and abort tasks, so they never block, but they
+/// need a tokio runtime.
 #[derive(Clone)]
 pub struct ForwardEngine {
     inner: Arc<EngineInner>,
@@ -89,9 +91,25 @@ struct EngineInner {
     tasks: Mutex<HashMap<RuleId, RuleTasks>>,
 }
 
+impl EngineInner {
+    /// Best-effort, never blocking: events are a status snapshot, and a
+    /// full dialog channel must not stall forwarding or shutdown.
+    fn emit(&self, rule_id: RuleId, state: ForwardState) {
+        let _ = self.events.try_send(ForwardEvent { rule_id, state });
+    }
+}
+
+/// One serving rule: its listener and the connections it accepted.
 struct RuleTasks {
     listener: JoinHandle<()>,
     conns: Vec<JoinHandle<()>>,
+}
+
+impl RuleTasks {
+    fn abort(self) {
+        self.listener.abort();
+        self.conns.iter().for_each(JoinHandle::abort);
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -131,18 +149,19 @@ impl ForwardEngine {
     /// `Local` rule. Disabled rules and skipped (`Remote`/`Dynamic`) kinds
     /// each report one [`ForwardState::Stopped`] so the dialog can render
     /// the full set.
-    pub async fn start(&self, rules: Vec<ForwardRule>) {
-        self.stop_inner(true).await;
+    pub fn start(&self, rules: Vec<ForwardRule>) {
+        // Quietly: every rule reports its fresh state right after.
+        self.stop_all(false);
         lock(&self.inner.rules).clone_from(&rules);
         for (id, rule) in rules.iter().enumerate() {
-            self.start_rule_inner(id, rule).await;
+            self.start_rule(id, rule);
         }
     }
 
     /// Live enable toggle for the Tunnels dialog: starts or stops one
     /// rule's listener without touching the others. Unknown ids are
     /// ignored; disabling aborts that rule's live connections.
-    pub async fn set_enabled(&self, rule_id: RuleId, enabled: bool) {
+    pub fn set_enabled(&self, rule_id: RuleId, enabled: bool) {
         let rule = {
             let mut rules = lock(&self.inner.rules);
             let Some(rule) = rules.get_mut(rule_id) else {
@@ -152,9 +171,9 @@ impl ForwardEngine {
             rule.clone()
         };
         if enabled {
-            self.start_rule_inner(rule_id, &rule).await;
+            self.start_rule(rule_id, &rule);
         } else {
-            self.stop_rule_inner(rule_id).await;
+            self.stop_rule(rule_id, true);
         }
     }
 
@@ -162,32 +181,29 @@ impl ForwardEngine {
     /// `Stopped` for every rule that was running. Idempotent. After `stop`,
     /// either drop the engine or `start` it again (on a fresh connection
     /// `Arc`, build a fresh engine instead — see the module docs).
-    pub async fn stop(&self) {
-        self.stop_inner(false).await;
+    pub fn stop(&self) {
+        self.stop_all(true);
     }
 
-    async fn start_rule_inner(&self, id: RuleId, rule: &ForwardRule) {
+    fn start_rule(&self, id: RuleId, rule: &ForwardRule) {
         if !rule.enabled {
-            self.emit(id, ForwardState::Stopped);
-            return;
+            return self.inner.emit(id, ForwardState::Stopped);
         }
         if !matches!(rule.kind, ForwardKind::Local) {
             eprintln!(
                 "Wayterm: forward rule {id}: {:?} forwards are v2 (doc 11) — skipped",
                 rule.kind,
             );
-            self.emit(id, ForwardState::Stopped);
+            return self.inner.emit(id, ForwardState::Stopped);
+        }
+        // Checked and claimed under one lock: two starts of a rule never
+        // both bind.
+        let mut tasks = lock(&self.inner.tasks);
+        if tasks.contains_key(&id) {
             return;
         }
-        if lock(&self.inner.tasks).contains_key(&id) {
-            return;
-        }
-        let engine = Arc::clone(&self.inner);
-        let rule = rule.clone();
-        let listener = tokio::spawn(async move {
-            serve_rule(engine, id, rule, Arc::new(AtomicU32::new(0))).await;
-        });
-        lock(&self.inner.tasks).insert(
+        let listener = tokio::spawn(serve_rule(Arc::clone(&self.inner), id, rule.clone()));
+        tasks.insert(
             id,
             RuleTasks {
                 listener,
@@ -196,37 +212,22 @@ impl ForwardEngine {
         );
     }
 
-    async fn stop_rule_inner(&self, id: RuleId) {
+    /// Stop rule `id` if it is serving, `announce`-ing `Stopped`.
+    fn stop_rule(&self, id: RuleId, announce: bool) {
         let tasks = lock(&self.inner.tasks).remove(&id);
-        let Some(tasks) = tasks else { return };
-        tasks.listener.abort();
-        for conn in tasks.conns {
-            conn.abort();
+        if let Some(tasks) = tasks {
+            tasks.abort();
+            if announce {
+                self.inner.emit(id, ForwardState::Stopped);
+            }
         }
-        self.emit(id, ForwardState::Stopped);
     }
 
-    /// `quiet`: skip `Stopped` events (used by `start`, which emits fresh
-    /// state per rule right after).
-    async fn stop_inner(&self, quiet: bool) {
+    fn stop_all(&self, announce: bool) {
         let ids: Vec<RuleId> = lock(&self.inner.tasks).keys().copied().collect();
         for id in ids {
-            let tasks = lock(&self.inner.tasks).remove(&id);
-            let Some(tasks) = tasks else { continue };
-            tasks.listener.abort();
-            for conn in tasks.conns {
-                conn.abort();
-            }
-            if !quiet {
-                self.emit(id, ForwardState::Stopped);
-            }
+            self.stop_rule(id, announce);
         }
-    }
-
-    /// Best-effort, never blocking: events are a status snapshot, and a
-    /// full dialog channel must not stall forwarding or shutdown.
-    fn emit(&self, rule_id: RuleId, state: ForwardState) {
-        let _ = self.inner.events.try_send(ForwardEvent { rule_id, state });
     }
 }
 
@@ -235,45 +236,34 @@ impl ForwardEngine {
 /// connection surfaces here as `LastFailed` on the next accepted socket —
 /// the listener itself is a local socket and stays up; the reconnect
 /// driver replaces the whole engine on a fresh connection `Arc`.
-async fn serve_rule(
-    inner: Arc<EngineInner>,
-    id: RuleId,
-    rule: ForwardRule,
-    active: Arc<AtomicU32>,
-) {
-    let emit = |state: ForwardState| {
-        let _ = inner.events.try_send(ForwardEvent { rule_id: id, state });
-    };
+async fn serve_rule(inner: Arc<EngineInner>, id: RuleId, rule: ForwardRule) {
     // An empty bind means loopback, never 0.0.0.0: doc 06's example binds
     // 127.0.0.1, and a tunnel that silently listens on every interface
     // would be a safety hole, not a convenience.
-    let bind_addr = rule.bind_addr.trim();
-    let bind_addr = if bind_addr.is_empty() {
-        "127.0.0.1"
-    } else {
-        bind_addr
+    let bind_addr = match rule.bind_addr.trim() {
+        "" => "127.0.0.1",
+        addr => addr,
     };
     let listener = match TcpListener::bind((bind_addr, rule.bind_port)).await {
         Ok(listener) => listener,
         Err(err) => {
-            emit(ForwardState::LastFailed {
-                error: format!("bind {}:{} failed: {err}", rule.bind_addr, rule.bind_port),
-            });
-            return;
+            let error = format!("bind {bind_addr}:{} failed: {err}", rule.bind_port);
+            return inner.emit(id, ForwardState::LastFailed { error });
         }
     };
-    emit(ForwardState::Listening);
+    inner.emit(id, ForwardState::Listening);
+    let active = Arc::new(AtomicU32::new(0));
     loop {
-        let (socket, _) = match listener.accept().await {
-            Ok(accepted) => accepted,
-            Err(_) => continue,
+        let Ok((socket, _)) = listener.accept().await else {
+            continue;
         };
-        let task_inner = Arc::clone(&inner);
-        let task_rule = rule.clone();
-        let task_active = Arc::clone(&active);
-        let conn = tokio::spawn(async move {
-            handle_one(task_inner, id, task_rule, task_active, socket).await;
-        });
+        let conn = tokio::spawn(handle_one(
+            Arc::clone(&inner),
+            id,
+            rule.clone(),
+            Arc::clone(&active),
+            socket,
+        ));
         let mut tasks = lock(&inner.tasks);
         if let Some(entry) = tasks.get_mut(&id) {
             entry.conns.retain(|h| !h.is_finished());
@@ -294,26 +284,22 @@ async fn handle_one(
     active: Arc<AtomicU32>,
     mut socket: TcpStream,
 ) {
-    let emit = |state: ForwardState| {
-        let _ = inner.events.try_send(ForwardEvent { rule_id: id, state });
-    };
-    let mut remote = match (inner.opener)(rule.remote_host.clone(), rule.remote_port).await {
+    let opened = (inner.opener)(rule.remote_host.clone(), rule.remote_port).await;
+    let mut remote = match opened {
         Ok(stream) => stream,
         Err(err) => {
-            emit(ForwardState::LastFailed {
-                error: format!(
-                    "channel to {}:{} failed: {err}",
-                    rule.remote_host, rule.remote_port
-                ),
-            });
-            return;
+            let error = format!(
+                "channel to {}:{} failed: {err}",
+                rule.remote_host, rule.remote_port
+            );
+            return inner.emit(id, ForwardState::LastFailed { error });
         }
     };
     let conns = active.fetch_add(1, Ordering::SeqCst) + 1;
-    emit(ForwardState::Active { conns });
+    inner.emit(id, ForwardState::Active { conns });
     let _ = tokio::io::copy_bidirectional(&mut socket, &mut remote).await;
     let conns = active.fetch_sub(1, Ordering::SeqCst) - 1;
-    emit(ForwardState::Active { conns });
+    inner.emit(id, ForwardState::Active { conns });
 }
 
 #[cfg(test)]

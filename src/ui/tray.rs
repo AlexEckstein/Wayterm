@@ -18,10 +18,8 @@ use std::sync::mpsc as std_mpsc;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use ksni::TrayMethods as _;
-use tokio::sync::mpsc;
 
 use crate::store::SessionStore;
-use crate::transport::types::TransportEvent;
 
 /// Settings row; a missing row means on (not seeded).
 pub const MINIMIZE_TO_TRAY_KEY: &str = "minimize_to_tray";
@@ -90,47 +88,6 @@ pub fn disconnect_alert(session_name: &str) -> DisconnectAlert {
         body: format!("{session_name} connection lost"),
         notification_id: format!("wayterm-disconnect-{session_name}"),
     }
-}
-
-/// Only `ConnectionLost` alerts; everything else belongs to the status bar.
-pub fn triage_transport_event(
-    session_name: &str,
-    event: &TransportEvent,
-) -> Option<DisconnectAlert> {
-    matches!(event, TransportEvent::ConnectionLost).then(|| disconnect_alert(session_name))
-}
-
-/// Call `on_alert` for each `ConnectionLost` on a tab's state channel,
-/// until the channel closes. `on_alert` must hop to the main thread before
-/// calling [`send_disconnect_notification`].
-pub async fn forward_disconnect_alerts(
-    session_name: String,
-    mut state_rx: mpsc::UnboundedReceiver<TransportEvent>,
-    on_alert: impl Fn(DisconnectAlert),
-) {
-    while let Some(event) = state_rx.recv().await {
-        if let Some(alert) = triage_transport_event(&session_name, &event) {
-            on_alert(alert);
-        }
-    }
-}
-
-/// A tab's alert channel: every `ConnectionLost` sent on it posts the
-/// disconnect notification, until the last sender is dropped. The
-/// forwarder runs on the main context, so posting needs no hop. Call on
-/// the main thread.
-pub fn attach_disconnect_alerts(
-    app: &gtk4::Application,
-    session_name: String,
-) -> mpsc::UnboundedSender<TransportEvent> {
-    let (alert_tx, alert_rx) = mpsc::unbounded_channel();
-    let app = app.clone();
-    glib::MainContext::default().spawn_local(forward_disconnect_alerts(
-        session_name,
-        alert_rx,
-        move |alert| post_disconnect_alert(&app, &alert),
-    ));
-    alert_tx
 }
 
 /// Never fatal: the caller falls back to quit-on-close.
@@ -261,12 +218,10 @@ pub fn install_close_handler(
     });
 }
 
-/// Post the disconnect notification. Main thread only.
+/// Post the disconnect notification for `session_name` (its tab's state
+/// drain calls this on `ConnectionLost` only). Main thread only.
 pub fn send_disconnect_notification(app: &gtk4::Application, session_name: &str) {
-    post_disconnect_alert(app, &disconnect_alert(session_name));
-}
-
-fn post_disconnect_alert(app: &gtk4::Application, alert: &DisconnectAlert) {
+    let alert = disconnect_alert(session_name);
     let notification = gio::Notification::new(&alert.title);
     notification.set_body(Some(&alert.body));
     app.send_notification(Some(&alert.notification_id), &notification);

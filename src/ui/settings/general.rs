@@ -18,7 +18,6 @@ use gtk4::prelude::*;
 
 use crate::store::SessionStore;
 use crate::terminal::{BackendKind, DEFAULT_BACKEND_SETTING, GHOSTTY_COMPILED};
-use crate::ui::widgets::set_margins;
 use crate::ui::{sftp_sidebar, tab_resilience, tray};
 
 // ---------------------------------------------------------------------------
@@ -83,13 +82,7 @@ pub const GHOSTTY_UNAVAILABLE: &str = "rebuild with the backend-ghostty feature 
 
 /// The stored `default_backend`; missing or unreadable is VTE.
 pub fn backend(store: &SessionStore) -> BackendKind {
-    let raw = store
-        .get_setting(DEFAULT_BACKEND_SETTING)
-        .unwrap_or_else(|err| {
-            eprintln!("Wayterm: failed to read setting '{DEFAULT_BACKEND_SETTING}': {err}");
-            None
-        });
-    BackendKind::from_setting(raw.as_deref())
+    BackendKind::from_setting(store.setting(DEFAULT_BACKEND_SETTING).as_deref())
 }
 
 /// Store the backend for new tabs; [`apply`] makes it take effect.
@@ -113,68 +106,31 @@ pub fn apply(store: &SessionStore) {
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// The page widget: a heading over one row per toggle.
+/// The page widget: a heading over one row per toggle, then the backend.
 pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
-    let heading = gtk4::Label::new(Some("Behavior"));
-    heading.add_css_class("heading");
-    heading.set_xalign(0.0);
-
-    let list = gtk4::ListBox::builder()
-        .selection_mode(gtk4::SelectionMode::None)
-        .build();
-    list.add_css_class("boxed-list");
+    let behavior = super::boxed_list();
     for (toggle, on) in values(&store) {
-        list.append(&build_row(toggle, on, &store));
+        behavior.append(&toggle_row(toggle, on, &store));
     }
-
-    let terminal_heading = gtk4::Label::new(Some("Terminal"));
-    terminal_heading.add_css_class("heading");
-    terminal_heading.set_xalign(0.0);
+    let terminal_heading = super::heading("Terminal");
     terminal_heading.set_margin_top(12);
-    let terminal_list = gtk4::ListBox::builder()
-        .selection_mode(gtk4::SelectionMode::None)
-        .build();
-    terminal_list.add_css_class("boxed-list");
-    terminal_list.append(&build_backend_row(&store));
-
-    let column = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-    set_margins(&column, 18);
-    column.append(&heading);
-    column.append(&list);
-    column.append(&terminal_heading);
-    column.append(&terminal_list);
-
-    let scrolled = gtk4::ScrolledWindow::builder()
-        .child(&column)
-        .vexpand(true)
-        .hexpand(true)
-        .build();
-    scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-    scrolled.upcast()
+    let terminal = super::boxed_list();
+    terminal.append(&backend_row(&store));
+    super::scrolling_page(&[
+        super::heading("Behavior").upcast_ref(),
+        behavior.upcast_ref(),
+        terminal_heading.upcast_ref(),
+        terminal.upcast_ref(),
+    ])
 }
 
 /// title over subtitle | switch.
-fn build_row(toggle: Toggle, on: bool, store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
-    let title = gtk4::Label::new(Some(toggle.title));
-    title.set_xalign(0.0);
-    let subtitle = gtk4::Label::new(Some(toggle.subtitle));
-    subtitle.set_xalign(0.0);
-    subtitle.set_wrap(true);
-    subtitle.add_css_class("dim-label");
-
-    let text = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-    text.set_hexpand(true);
-    text.append(&title);
-    text.append(&subtitle);
-
+fn toggle_row(toggle: Toggle, on: bool, store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
     let switch = gtk4::Switch::builder()
         .active(on)
         .valign(gtk4::Align::Center)
         .build();
-    switch.update_relation(&[
-        gtk4::accessible::Relation::LabelledBy(&[title.upcast_ref()]),
-        gtk4::accessible::Relation::DescribedBy(&[subtitle.upcast_ref()]),
-    ]);
+    let text = super::described(toggle.title, Some(toggle.subtitle), &switch);
     let store = Rc::clone(store);
     switch.connect_active_notify(move |switch| {
         if let Err(err) = save(&store, toggle.key, switch.is_active()) {
@@ -183,42 +139,18 @@ fn build_row(toggle: Toggle, on: bool, store: &Rc<SessionStore>) -> gtk4::ListBo
         }
         apply(&store);
     });
-
-    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    set_margins(&hbox, 12);
-    hbox.append(&text);
-    hbox.append(&switch);
-
-    gtk4::ListBoxRow::builder()
-        .child(&hbox)
-        .activatable(false)
-        .build()
+    super::row(&[text.upcast_ref(), switch.upcast_ref()])
 }
 
 /// check box | title over subtitle. Disabled, with a tooltip, in a build
 /// without the backend; then it shows VTE, the backend actually used.
-fn build_backend_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
-    let title = gtk4::Label::new(Some(GHOSTTY_TITLE));
-    title.set_xalign(0.0);
-    let subtitle = gtk4::Label::new(Some(GHOSTTY_SUBTITLE));
-    subtitle.set_xalign(0.0);
-    subtitle.set_wrap(true);
-    subtitle.add_css_class("dim-label");
-
-    let text = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-    text.set_hexpand(true);
-    text.append(&title);
-    text.append(&subtitle);
-
+fn backend_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
     let check = gtk4::CheckButton::builder()
         .active(backend(store).effective() == BackendKind::Ghostty)
         .valign(gtk4::Align::Center)
         .sensitive(GHOSTTY_COMPILED)
         .build();
-    check.update_relation(&[
-        gtk4::accessible::Relation::LabelledBy(&[title.upcast_ref()]),
-        gtk4::accessible::Relation::DescribedBy(&[subtitle.upcast_ref()]),
-    ]);
+    let text = super::described(GHOSTTY_TITLE, Some(GHOSTTY_SUBTITLE), &check);
     let store = Rc::clone(store);
     check.connect_toggled(move |check| {
         let kind = if check.is_active() {
@@ -232,19 +164,13 @@ fn build_backend_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
         }
         apply(&store);
     });
-
-    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    set_margins(&hbox, 12);
-    hbox.append(&check);
-    hbox.append(&text);
+    let row = super::row(&[check.upcast_ref(), text.upcast_ref()]);
     if !GHOSTTY_COMPILED {
-        hbox.set_tooltip_text(Some(GHOSTTY_UNAVAILABLE));
+        if let Some(line) = row.child() {
+            line.set_tooltip_text(Some(GHOSTTY_UNAVAILABLE));
+        }
     }
-
-    gtk4::ListBoxRow::builder()
-        .child(&hbox)
-        .activatable(false)
-        .build()
+    row
 }
 
 #[cfg(test)]

@@ -67,8 +67,11 @@ Gaps, each a wiring task rather than new design:
   connect flow registers every streaming tab, and `ConnectionLost` drives
   reconnect (auto, or prompt via the `reconnect` action).
 - ~~The disconnect-notification forwarder is not attached to tabs~~ —
-  done in Phase 8 (`tray::attach_disconnect_alerts`, per tab).
-- The keyring credential source is a stub; secrets are prompted for.
+  done in Phase 8 (`tray::send_disconnect_notification`, from each tab's
+  state drain).
+- ~~The keyring credential source is a stub~~ — done: the Secret Service
+  keyring and, when enabled, the read-only Bitwarden source answer ahead
+  of the prompt (doc 11 §CredentialManager).
 
 ## Phase 5: Local shell and serial — done
 
@@ -105,9 +108,11 @@ Gaps, each small:
 - `vnc_options.quality` and `vnc_color_depth` are stored but not
   applied (the crate has no quality knob; the client requests BGRA32).
 - Clipboard is receive-only; the remote cursor shape is not drawn;
-  Bell is status-bar-only.
-- The keyring source is the documented Phase 4 stub — VNC prompts every
-  connect (app-wide follow-up, not VNC-specific).
+  Bell only rings GTK's error bell.
+- Nothing saves a `vnc_password` yet (only SSH passwords are saved, from
+  the session dialog), so VNC prompts every connect unless the keyring
+  already holds one or Bitwarden is enabled (app-wide follow-up, not
+  VNC-specific).
 - Non-ASCII passwords don't authenticate (the crate uses the first 8
   bytes; doc 08 has the note).
 - Tight/ZRLE decode through the mock server is not pinned (Raw/CopyRect

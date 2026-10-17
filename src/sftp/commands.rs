@@ -66,18 +66,17 @@ pub enum SftpCommand {
 }
 
 impl SftpCommand {
-    /// Answer with `err`, whatever the command (`Cancel` has no reply).
+    /// Answer with `err`, whatever the command (`Cancel` has no reply). A
+    /// requester that stopped waiting needs no answer.
     pub(crate) fn fail(self, err: &str) {
         let err = err.to_string();
-        let _ = match self {
-            Self::Cd { reply, .. } => reply.send(Err(err)).is_ok(),
-            Self::Download { reply, .. } | Self::Upload { reply, .. } => {
-                reply.send(Err(err)).is_ok()
-            }
+        match self {
+            Self::Cd { reply, .. } => _ = reply.send(Err(err)),
+            Self::Download { reply, .. } | Self::Upload { reply, .. } => _ = reply.send(Err(err)),
             Self::Delete { reply, .. } | Self::Rename { reply, .. } | Self::Mkdir { reply, .. } => {
-                reply.send(Err(err)).is_ok()
+                _ = reply.send(Err(err))
             }
-            Self::Cancel { .. } => true,
-        };
+            Self::Cancel { .. } => {}
+        }
     }
 }

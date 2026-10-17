@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use russh_sftp::client::SftpSession;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc::error::{SendError, TrySendError};
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -46,9 +46,10 @@ impl SftpClient {
         self.tx.send(cmd).await
     }
 
-    /// Non-blocking send for the GTK side's try-send + idle-flush pattern.
-    pub fn try_request(&self, cmd: SftpCommand) -> Result<(), TrySendError<SftpCommand>> {
-        self.tx.try_send(cmd)
+    /// The task's command channel, for the GTK side's never-blocking
+    /// sender (doc 02 §Backpressure).
+    pub fn sender(&self) -> mpsc::Sender<SftpCommand> {
+        self.tx.clone()
     }
 }
 
@@ -314,14 +315,15 @@ async fn download_file(
     let mut local = tokio::fs::File::create(local_path)
         .await
         .map_err(|e| e.to_string())?;
-    let result = copy_with_progress(&mut remote, &mut local, total, progress, cancel).await;
-    let _ = local.flush().await;
-    result
+    let transferred = copy_with_progress(&mut remote, &mut local, total, progress, cancel).await?;
+    // tokio writes in the background: only the flush reports a failed last
+    // write (a full disk), which would leave the local file short.
+    local.flush().await.map_err(|e| e.to_string())?;
+    Ok(transferred)
 }
 
-/// Unlike a download, a failed flush or close here is an error: flushing
-/// drains the server's write acknowledgements, so the remote file may be
-/// incomplete.
+/// A failed flush or close fails the upload: flushing drains the server's
+/// write acknowledgements, so the remote file may be incomplete.
 async fn upload_file(
     sftp: &SftpSession,
     local_path: &str,

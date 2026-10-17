@@ -123,9 +123,12 @@ fn auth_index_maps_to_auth_method() {
 fn edit_mode_preserves_identity_fields() {
     let folders = sample_folders();
     let fields = DialogFields {
-        id: 42,
-        last_connected: Some("2026-10-02T12:34:56Z".to_string()),
-        connect_count: 7,
+        base: SessionConfig {
+            id: 42,
+            last_connected: Some("2026-10-02T12:34:56Z".to_string()),
+            connect_count: 7,
+            ..Default::default()
+        },
         name: "updated".to_string(),
         host: "host.example".to_string(),
         port: 2222,
@@ -145,6 +148,104 @@ fn edit_mode_preserves_identity_fields() {
     );
     assert_eq!(config.connect_count, 7);
     assert_eq!(config.folder_id, Some(1));
+}
+
+/// A row as an import leaves it: columns the dialog has no widget for.
+fn row_with_hidden_columns(session_type: SessionType) -> SessionConfig {
+    use crate::store::model::{HostKeyPolicy, RdpOptions, SshOptions, VncOptions};
+    SessionConfig {
+        id: 9,
+        session_type,
+        key_path: Some("/home/u/.ssh/id_ed25519".to_string()),
+        host_key_policy: Some(HostKeyPolicy::AcceptNew),
+        ssh_options: Some(SshOptions {
+            compression: true,
+            keepalive_interval: Some(30),
+            keepalive_count: None,
+            ssh_w_fallback: true,
+        }),
+        rdp_compression: false,
+        rdp_options: Some(RdpOptions {
+            audio: true,
+            clipboard: false,
+            fonts: true,
+            printer: false,
+        }),
+        vnc_color_depth: Some(16),
+        vnc_options: Some(VncOptions {
+            quality: 3,
+            scaling: false,
+            view_only: true,
+        }),
+        preferred_backend: Some("vte".to_string()),
+        color_scheme: Some("Solarized".to_string()),
+        font_family: Some("Fira Code".to_string()),
+        font_size: Some(13.0),
+        opacity: Some(0.9),
+        ..Default::default()
+    }
+}
+
+/// Saving an edit keeps what the dialog cannot show: the appearance
+/// overrides always, the per-type columns while the type stays.
+#[test]
+fn editing_keeps_the_columns_the_dialog_does_not_show() {
+    for (session_type, type_index) in [
+        (SessionType::SSH, TYPE_INDEX_SSH),
+        (SessionType::RDP, TYPE_INDEX_RDP),
+        (SessionType::VNC, TYPE_INDEX_VNC),
+    ] {
+        let base = row_with_hidden_columns(session_type.clone());
+        let fields = DialogFields {
+            type_index,
+            base: base.clone(),
+            ..Default::default()
+        };
+        let config = config_from_fields(&fields, &[], &[]);
+        assert_eq!(config.id, 9);
+        assert_eq!(config.font_family, base.font_family, "{session_type:?}");
+        assert_eq!(config.font_size, base.font_size);
+        assert_eq!(config.opacity, base.opacity);
+        assert_eq!(config.color_scheme, base.color_scheme);
+        assert_eq!(config.preferred_backend, base.preferred_backend);
+        let ssh = session_type == SessionType::SSH;
+        assert_eq!(config.key_path.is_some(), ssh, "{session_type:?}");
+        assert_eq!(config.host_key_policy.is_some(), ssh);
+        assert_eq!(config.ssh_options.is_some(), ssh);
+        let rdp = session_type == SessionType::RDP;
+        assert_eq!(config.rdp_options.is_some(), rdp, "{session_type:?}");
+        let vnc = session_type == SessionType::VNC;
+        assert_eq!(config.vnc_options.is_some(), vnc, "{session_type:?}");
+        assert_eq!(config.vnc_color_depth.is_some(), vnc);
+    }
+    let rdp = DialogFields {
+        type_index: TYPE_INDEX_RDP,
+        base: row_with_hidden_columns(SessionType::RDP),
+        ..Default::default()
+    };
+    assert!(
+        !config_from_fields(&rdp, &[], &[]).rdp_compression,
+        "a stored compression choice survives"
+    );
+}
+
+/// A type change starts the new type's hidden columns fresh: the old
+/// type's never leak into it.
+#[test]
+fn a_type_change_drops_the_old_types_hidden_columns() {
+    let fields = DialogFields {
+        type_index: TYPE_INDEX_RDP,
+        base: row_with_hidden_columns(SessionType::SSH),
+        ..Default::default()
+    };
+    let config = config_from_fields(&fields, &[], &[]);
+    assert_eq!(config.session_type, SessionType::RDP);
+    assert_eq!(config.key_path, None);
+    assert_eq!(config.host_key_policy, None);
+    assert_eq!(config.ssh_options, None);
+    assert_eq!(config.rdp_options, None);
+    assert!(config.rdp_compression, "a new RDP row compresses (doc 06)");
+    assert_eq!(config.font_family.as_deref(), Some("Fira Code"));
 }
 
 #[test]

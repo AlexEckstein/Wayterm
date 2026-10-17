@@ -85,11 +85,11 @@ the next connect.
   A refusal is shown inline; the session save is not undone.
 - **Delete on session delete.** Deleting a session deletes its keyring
   entries for every secret type; failures are logged, never blocking.
-- **Fallback identity.** The SSH auth chain currently looks secrets up
-  under the placeholder session id `_live_connect`, not the session's
-  real id, so keyring entries keyed by id are only reached once the real
-  id is threaded through. The Bitwarden source is unaffected: it is
-  built per session and keys on the session name.
+- **Session identity.** Each chain is built for the saved session's row
+  id, and the SSH auth chain looks secrets up under that id. A manager
+  with no saved session uses the placeholder id `_live_connect`, which
+  the keyring never stores or serves, so id-less connects cannot share
+  one entry. The Bitwarden source keys on the session name instead.
 
 ### Credential sources
 

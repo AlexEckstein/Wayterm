@@ -196,13 +196,22 @@ async fn dial_errors_propagate_and_leave_no_entry() {
 fn connect_error_classifies_host_key_rejection() {
     let rejected = connect_error(
         "example.test",
-        russh::Error::from(std::io::Error::other("host key rejected for example.test")),
+        HandlerError::HostKeyRejected("example.test".into()),
     );
     assert!(matches!(rejected, TransportError::HostKeyRejected(h) if h == "example.test"));
 
-    let unknown = connect_error("example.test", russh::Error::UnknownKey);
+    let unknown = connect_error("example.test", russh::Error::UnknownKey.into());
     assert!(matches!(unknown, TransportError::HostKeyRejected(_)));
 
-    let failed = connect_error("example.test", russh::Error::SendError);
+    // A message that merely reads like a rejection is still a failure.
+    let lookalike = russh::Error::from(std::io::Error::other("host key rejected for x"));
+    let lookalike = connect_error("example.test", lookalike.into());
+    assert!(matches!(lookalike, TransportError::ConnectionFailed(_)));
+
+    let failed = connect_error("example.test", russh::Error::SendError.into());
     assert!(matches!(failed, TransportError::ConnectionFailed(_)));
+    let certificate = connect_error("example.test", HandlerError::HostCertificate);
+    assert!(
+        matches!(certificate, TransportError::ConnectionFailed(m) if m.contains("certificate"))
+    );
 }

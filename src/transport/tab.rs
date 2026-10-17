@@ -92,12 +92,23 @@ impl TerminalTab {
         initial_cols: u32,
     ) -> Result<(Self, mpsc::UnboundedReceiver<TransportEvent>), TransportError> {
         let (event_tx, event_rx) = mpsc::channel(256);
-        let transport = create_transport(config, connection, event_tx, initial_rows, initial_cols)?;
-        Ok(Self::wire(transport, event_rx, terminal, main_ctx))
+        let transport = create_transport(
+            config,
+            connection,
+            event_tx.clone(),
+            initial_rows,
+            initial_cols,
+        )?;
+        Ok(Self::wire(
+            transport, event_tx, event_rx, terminal, main_ctx,
+        ))
     }
 
+    /// `events` is the transport's own event channel, which the pump
+    /// reports a failed connect on.
     fn wire(
         mut transport: Box<dyn Transport>,
+        events: mpsc::Sender<TransportEvent>,
         mut event_rx: mpsc::Receiver<TransportEvent>,
         terminal: TerminalHandle,
         main_ctx: &glib::MainContext,
@@ -120,7 +131,6 @@ impl TerminalTab {
 
         // State events are rare and must never block the bridge.
         let (state_tx, state_rx) = mpsc::unbounded_channel();
-        let pump_state_tx = state_tx.clone();
 
         let bridge_cancel = cancel.clone();
         let bridge_task = tokio::spawn(async move {
@@ -153,10 +163,18 @@ impl TerminalTab {
         let pump_cancel = cancel.clone();
         let pump_task = tokio::spawn(async move {
             if let Err(err) = transport.connect().await {
-                let _ = pump_state_tx.send(TransportEvent::Error(err.to_string()));
+                // Behind whatever the transport announced while failing, so
+                // the bridge delivers the error last: the tab ends on it.
+                tokio::select! {
+                    biased;
+                    _ = pump_cancel.cancelled() => {}
+                    _ = events.send(TransportEvent::Error(err.to_string())) => {}
+                }
                 transport.disconnect().await.ok();
                 return;
             }
+            // From here on only the transport's reader sends.
+            drop(events);
             loop {
                 let event = tokio::select! {
                     biased;

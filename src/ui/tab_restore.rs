@@ -15,13 +15,17 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::store::SessionStore;
-use crate::ui::tab::{SessionTab, SESSION_ID_KEY};
+use crate::ui::tab::{session_id_of, SessionTab};
 use crate::ui::tab_label::build_tab_label;
-use crate::ui::tab_state::{self, DebouncedSave, PageInfo, TabState};
+use crate::ui::tab_state::{self, PageInfo, TabState};
 use crate::ui::widgets::{centered_label, data, set_data};
 
 /// A page's creation time (unix millis), so restored tabs keep their age.
 const TAB_CREATED_AT_KEY: &str = "wayterm-tab-created-at";
+
+/// Quiet time before a save, so a rename (one signal per keystroke) is a
+/// single write.
+const SAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 
 /// Mirrors a notebook's tabs into the store. Owned by the window's close
 /// handler; the notebook's handlers only hold weak references.
@@ -31,8 +35,7 @@ pub struct TabPersistence {
     /// identity, so reordering cannot mistake another tab for it.
     home: gtk4::Widget,
     store: Rc<SessionStore>,
-    debounce: RefCell<DebouncedSave>,
-    /// The single pending save timer.
+    /// The pending save, re-armed by every change.
     timer: RefCell<Option<glib::SourceId>>,
 }
 
@@ -42,7 +45,6 @@ impl TabPersistence {
             notebook,
             home,
             store,
-            debounce: RefCell::new(DebouncedSave::new()),
             timer: RefCell::new(None),
         })
     }
@@ -91,33 +93,31 @@ impl TabPersistence {
         });
     }
 
-    /// Note a change and (re)arm the single trailing-edge save timer.
+    /// Note a change: the save runs once [`SAVE_DEBOUNCE`] has passed
+    /// without another. The trailing-edge timer is the debounce, on the
+    /// main loop's monotonic clock, so a wall-clock step cannot lose it.
     pub fn schedule_save(self: &Rc<Self>) {
-        self.debounce.borrow_mut().mark_dirty(tab_state::now_ms());
-        if let Some(id) = self.timer.borrow_mut().take() {
-            id.remove();
-        }
-        let interval = self.debounce.borrow().interval_ms().max(0) as u64;
+        self.cancel_timer();
         let this = self.clone();
-        let id = glib::timeout_add_local(Duration::from_millis(interval), move || {
-            // Breaking consumes the source; removing it again would be a
-            // GLib error, so just forget the id.
-            *this.timer.borrow_mut() = None;
-            if this.debounce.borrow_mut().take_due(tab_state::now_ms()) {
-                this.save_now();
-            }
-            glib::ControlFlow::Break
+        let id = glib::timeout_add_local_once(SAVE_DEBOUNCE, move || {
+            // A fired source is gone; removing it again would be a GLib
+            // error, so just forget the id.
+            this.timer.take();
+            this.save_now();
         });
-        *self.timer.borrow_mut() = Some(id);
+        self.timer.replace(Some(id));
     }
 
-    /// Write now, dropping any pending debounce (the exit path).
+    /// Write now, dropping any pending save (the exit path).
     pub fn flush(self: &Rc<Self>) {
-        if let Some(id) = self.timer.borrow_mut().take() {
+        self.cancel_timer();
+        self.save_now();
+    }
+
+    fn cancel_timer(&self) {
+        if let Some(id) = self.timer.take() {
             id.remove();
         }
-        self.debounce.borrow_mut().cancel();
-        self.save_now();
     }
 
     /// The tabs to persist, in tab-bar order.
@@ -189,7 +189,7 @@ impl TabPersistence {
 
     fn page_info(&self, page_num: u32) -> Option<PageInfo> {
         let content = self.notebook.nth_page(Some(page_num))?;
-        let session_id = data::<i64>(&content, SESSION_ID_KEY);
+        let session_id = session_id_of(&content);
         // An empty label would restore as a blank tab: fall back to the
         // session's stored name.
         let label = self

@@ -58,16 +58,6 @@ impl SessionStore {
         self.conn.query_row(sql, [], |row| row.get(0)).unwrap()
     }
 
-    fn setting(&self, key: &str) -> Option<String> {
-        self.conn
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-                row.get(0)
-            })
-            .optional()
-            .unwrap()
-            .flatten()
-    }
-
     /// Raw `folder_id` of a session, bypassing the typed API to pin the
     /// schema's ON DELETE behavior.
     fn session_folder_id(&self, id: i64) -> Option<i64> {
@@ -348,14 +338,10 @@ fn open_adds_session_icon_to_an_older_database() {
             "",
         ))
         .unwrap();
-        let has_icon: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'icon')",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(!has_icon, "the fixture must predate the column");
+        assert!(
+            !has_column(&conn, "sessions", "icon").unwrap(),
+            "the fixture must predate the column"
+        );
         conn.execute(
             "INSERT INTO sessions (name, type) VALUES ('old', '\"ssh\"')",
             [],
@@ -382,14 +368,6 @@ fn open_adds_session_icon_to_an_older_database() {
 /// open and keeps its rows.
 #[test]
 fn open_drops_session_notes_from_an_older_database() {
-    let has_notes = |conn: &Connection| -> bool {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'notes')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap()
-    };
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("old.sqlite3");
     {
@@ -405,7 +383,7 @@ fn open_drops_session_notes_from_an_older_database() {
     }
 
     let store = SessionStore::open(&path).unwrap();
-    assert!(!has_notes(&store.conn));
+    assert!(!has_column(&store.conn, "sessions", "notes").unwrap());
     let old = store.list_sessions(None).unwrap().remove(0);
     assert_eq!(old.name, "old");
     store.update_session(&old).unwrap();
@@ -711,6 +689,25 @@ fn flags_are_on_unless_explicitly_off() {
     }
     for off in ["0", "false", "False", "no", "off", " 0 ", "OFF"] {
         assert!(!flag_enabled(Some(off)), "{off:?}");
+    }
+}
+
+/// The seeded global host-key policy is strict; a stored one is followed,
+/// and anything unknown stays strict rather than loosening verification.
+#[test]
+fn the_global_host_key_policy_defaults_to_strict() {
+    use crate::store::model::HostKeyPolicy;
+    let store = SessionStore::in_memory().unwrap();
+    assert_eq!(store.host_key_policy(), HostKeyPolicy::Strict);
+    for (raw, policy) in [
+        ("accept-new", HostKeyPolicy::AcceptNew),
+        (" off ", HostKeyPolicy::Off),
+        ("strict", HostKeyPolicy::Strict),
+        ("lenient", HostKeyPolicy::Strict),
+        ("", HostKeyPolicy::Strict),
+    ] {
+        store.set_setting(HOST_KEY_POLICY_SETTING, raw).unwrap();
+        assert_eq!(store.host_key_policy(), policy, "{raw:?}");
     }
 }
 

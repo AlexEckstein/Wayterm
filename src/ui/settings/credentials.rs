@@ -15,7 +15,6 @@ use gtk4::prelude::*;
 
 use crate::store::SessionStore;
 use crate::transport::credentials::{bitwarden_status, BitwardenStatus, KeyringSource};
-use crate::ui::widgets::set_margins;
 
 // ---------------------------------------------------------------------------
 // Display-free data layer
@@ -46,15 +45,9 @@ impl Default for CredentialSettings {
 impl CredentialSettings {
     /// The stored rows; an unreadable row counts as missing.
     pub fn load(store: &SessionStore) -> Self {
-        let read = |key: &str| {
-            store.get_setting(key).unwrap_or_else(|err| {
-                eprintln!("Wayterm: failed to read setting '{key}': {err}");
-                None
-            })
-        };
         Self {
-            bitwarden_enabled: bitwarden_enabled(read(BITWARDEN_ENABLED_KEY).as_deref()),
-            bitwarden_bin: bitwarden_bin(read(BITWARDEN_BIN_KEY).as_deref()),
+            bitwarden_enabled: bitwarden_enabled(store.setting(BITWARDEN_ENABLED_KEY).as_deref()),
+            bitwarden_bin: bitwarden_bin(store.setting(BITWARDEN_BIN_KEY).as_deref()),
         }
     }
 }
@@ -118,9 +111,6 @@ pub fn bitwarden_status_text(status: &BitwardenStatus) -> String {
 pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     let settings = CredentialSettings::load(&store);
 
-    let heading = gtk4::Label::new(Some("Credential sources"));
-    heading.add_css_class("heading");
-    heading.set_xalign(0.0);
     let intro = gtk4::Label::new(Some(
         "Secrets come from the OS keyring first, then Bitwarden (when on), then a prompt. \
          Bitwarden items are named wayterm/<session name>; unlock the vault and export \
@@ -130,17 +120,10 @@ pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     intro.set_wrap(true);
     intro.add_css_class("dim-label");
 
-    let list = gtk4::ListBox::builder()
-        .selection_mode(gtk4::SelectionMode::None)
-        .build();
-    list.add_css_class("boxed-list");
-
     let switch = gtk4::Switch::builder()
         .active(settings.bitwarden_enabled)
         .valign(gtk4::Align::Center)
         .build();
-    list.append(&row("Use Bitwarden", &switch));
-
     let bin = gtk4::Entry::builder()
         .placeholder_text(DEFAULT_BITWARDEN_BIN)
         .hexpand(true)
@@ -148,24 +131,27 @@ pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     if settings.bitwarden_bin != DEFAULT_BITWARDEN_BIN {
         bin.set_text(&settings.bitwarden_bin);
     }
-    list.append(&row("Bitwarden CLI path", &bin));
-
     let keyring_status = status_label(keyring_status_text(false));
-    list.append(&row_of(&keyring_status));
-    let bitwarden_row = row_of_label();
-    bitwarden_row.0.set_visible(settings.bitwarden_enabled);
-    list.append(&bitwarden_row.0);
+    let bitwarden_status = status_label("Bitwarden: checking…");
+    let bitwarden_row = super::row(&[bitwarden_status.upcast_ref()]);
+    bitwarden_row.set_visible(settings.bitwarden_enabled);
+
+    let list = super::boxed_list();
+    list.append(&labelled_row("Use Bitwarden", &switch));
+    list.append(&labelled_row("Bitwarden CLI path", &bin));
+    list.append(&super::row(&[keyring_status.upcast_ref()]));
+    list.append(&bitwarden_row);
 
     probe_keyring_into(&keyring_status);
     if settings.bitwarden_enabled {
-        probe_bitwarden_into(&bitwarden_row.1, settings.bitwarden_bin.clone());
+        probe_bitwarden_into(&bitwarden_status, settings.bitwarden_bin.clone());
     }
 
     {
         let (store, row, label, bin) = (
             store.clone(),
-            bitwarden_row.0.clone(),
-            bitwarden_row.1.clone(),
+            bitwarden_row.clone(),
+            bitwarden_status.clone(),
             bin.clone(),
         );
         switch.connect_active_notify(move |switch| {
@@ -188,7 +174,7 @@ pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
         });
     }
     {
-        let (switch, label) = (switch.clone(), bitwarden_row.1.clone());
+        let (switch, label) = (switch.clone(), bitwarden_status.clone());
         bin.connect_activate(move |entry| {
             if switch.is_active() {
                 probe_bitwarden_into(&label, bitwarden_bin(Some(&entry.text())));
@@ -196,56 +182,23 @@ pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
         });
     }
 
-    let column = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-    set_margins(&column, 18);
-    column.append(&heading);
-    column.append(&intro);
-    column.append(&list);
-
-    let scrolled = gtk4::ScrolledWindow::builder()
-        .child(&column)
-        .vexpand(true)
-        .hexpand(true)
-        .build();
-    scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-    scrolled.upcast()
+    super::scrolling_page(&[
+        super::heading("Credential sources").upcast_ref(),
+        intro.upcast_ref(),
+        list.upcast_ref(),
+    ])
 }
 
 /// title | control.
-fn row(title: &str, control: &impl IsA<gtk4::Widget>) -> gtk4::ListBoxRow {
-    let label = gtk4::Label::new(Some(title));
-    label.set_xalign(0.0);
-    label.set_hexpand(true);
-    control.upcast_ref::<gtk4::Widget>().update_relation(&[
-        gtk4::accessible::Relation::LabelledBy(&[label.upcast_ref()]),
-    ]);
-    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
-    set_margins(&hbox, 12);
-    hbox.append(&label);
-    hbox.append(control);
-    gtk4::ListBoxRow::builder()
-        .child(&hbox)
-        .activatable(false)
-        .build()
+fn labelled_row(title: &str, control: &impl IsA<gtk4::Widget>) -> gtk4::ListBoxRow {
+    let text = super::described(title, None, control);
+    super::row(&[text.upcast_ref(), control.upcast_ref()])
 }
 
 fn status_label(text: &str) -> gtk4::Label {
     let label = gtk4::Label::new(Some(text));
     label.set_xalign(0.0);
     label
-}
-
-fn row_of(label: &gtk4::Label) -> gtk4::ListBoxRow {
-    set_margins(label, 12);
-    gtk4::ListBoxRow::builder()
-        .child(label)
-        .activatable(false)
-        .build()
-}
-
-fn row_of_label() -> (gtk4::ListBoxRow, gtk4::Label) {
-    let label = status_label("Bitwarden: checking…");
-    (row_of(&label), label)
 }
 
 /// Probe off the UI thread; a failed probe reads as unavailable.

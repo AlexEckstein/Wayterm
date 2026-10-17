@@ -4,13 +4,16 @@
 //! accelerator syntax (`"<Control><Shift>t"`) for binding, and rendered
 //! back for display. Only single characters are lowercased — `Tab`, `F11`
 //! and `Delete` are case-sensitive key names. Everything here is
-//! display-free except [`parse_trigger`] and [`KeyChord::to_trigger`].
+//! display-free except [`parse_trigger`].
 
 use gtk4::gdk::{Key, ModifierType};
 
-/// UI name, accelerator token, and GDK mask of each modifier, in the
-/// order every direction emits them (so round trips are stable).
-const MODS: &[(&str, &str, ModifierType)] = &[
+/// A modifier's UI name, accelerator token, and GDK mask.
+type Modifier = (&'static str, &'static str, ModifierType);
+
+/// Every modifier, in the order bindings render them (so round trips are
+/// stable).
+const MODS: &[Modifier] = &[
     ("Ctrl", "<Control>", ModifierType::CONTROL_MASK),
     ("Shift", "<Shift>", ModifierType::SHIFT_MASK),
     ("Alt", "<Alt>", ModifierType::ALT_MASK),
@@ -18,54 +21,31 @@ const MODS: &[(&str, &str, ModifierType)] = &[
     ("Meta", "<Meta>", ModifierType::META_MASK),
 ];
 
-/// `"Ctrl+Shift+T"` → `"<Control><Shift>t"`; `None` for an unknown
-/// modifier or an empty key (a trailing `'+'`). A literal `+` key cannot be
-/// written in this format — bind it through capture.
+/// `"Ctrl+Shift+T"` → `"<Control><Shift>t"`, modifiers in the order
+/// written; `None` for an unknown modifier or an empty key (a trailing
+/// `'+'`). A literal `+` key cannot be written in this format — bind it
+/// through capture.
 pub fn ui_key_to_accel(key: &str) -> Option<String> {
-    let tokens: Vec<&str> = key.split('+').collect();
-    let key_name = tokens.last()?;
-    if key_name.is_empty() {
-        return None; // trailing '+'
-    }
-    let mut out = String::new();
-    for t in &tokens[..tokens.len() - 1] {
-        let m = MODS.iter().find(|(ui, _, _)| *ui == *t)?; // unknown modifier → None
-        out.push_str(m.1);
-    }
-    // Key names keep their case; single letters normalize to lowercase:
-    let key_name = if key_name.chars().count() == 1 {
-        key_name.to_lowercase()
-    } else {
-        key_name.to_string()
-    };
-    out.push_str(&key_name);
-    Some(out)
+    let (mods, name) = split_ui_key(key)?;
+    let mut accel: String = mods.iter().map(|(_, accel, _)| *accel).collect();
+    accel.push_str(&normalize_key_name(name));
+    Some(accel)
 }
 
 /// `"<Control><Shift>t"` → `"Ctrl+Shift+t"`, the reverse of
 /// [`ui_key_to_accel`]. Chord-preserving rather than string-identical
-/// (modifiers come back in `MODS` order). `None` for anything
+/// (modifiers come back in [`MODS`] order). `None` for anything
 /// [`parse_trigger`] would reject.
 pub fn accel_to_ui_key(accel: &str) -> Option<String> {
     let mut rest = accel;
-    let mut mods: Vec<ModifierType> = Vec::new();
+    let mut mods = ModifierType::empty();
     while let Some(stripped) = rest.strip_prefix('<') {
         let end = stripped.find('>')?; // unterminated '<' → None
         let token = &rest[..=end + 1]; // "<Control>" — brackets included
-        let (_, _, mask) = MODS.iter().find(|(_, accel, _)| *accel == token)?;
-        if !mods.contains(mask) {
-            mods.push(*mask);
-        }
+        mods |= MODS.iter().find(|(_, accel, _)| *accel == token)?.2;
         rest = &stripped[end + 1..];
     }
-    if rest.is_empty() || !key_token_is_bindable(rest) {
-        return None;
-    }
-    Some(format!(
-        "{}{}",
-        modifier_prefix(&mods, |ui, _| ui, "+"),
-        normalize_key_name(rest)
-    ))
+    key_token_is_bindable(rest).then(|| ui_format(mods, rest))
 }
 
 /// The key part of a UI-format binding (after the last `'+'`).
@@ -100,57 +80,44 @@ impl KeyChord {
 
     /// The inverse of [`KeyChord::to_ui_key`].
     pub fn from_ui_key(key: &str) -> Option<Self> {
-        let tokens: Vec<&str> = key.split('+').collect();
-        let key_token = *tokens.last()?;
-        let mut modifiers = ModifierType::empty();
-        for t in &tokens[..tokens.len() - 1] {
-            let (_, _, mask) = MODS.iter().find(|(ui, _, _)| *ui == *t)?;
-            modifiers |= *mask;
-        }
-        Some(Self {
-            key: Key::from_name(key_token)?,
-            modifiers,
-        })
+        let (mods, name) = split_ui_key(key)?;
+        let modifiers = mods
+            .iter()
+            .fold(ModifierType::empty(), |all, (_, _, mask)| all | *mask);
+        Some(Self::new(Key::from_name(name)?, modifiers))
     }
 
     /// The chord in UI format (`"Ctrl+Shift+t"`); `None` when GDK has no
     /// name for the key.
     pub fn to_ui_key(self) -> Option<String> {
-        let name = self.key.name()?;
-        let mods = self.active_modifiers();
-        Some(format!(
-            "{}{}",
-            modifier_prefix(&mods, |ui, _| ui, "+"),
-            normalize_key_name(&name)
-        ))
+        Some(ui_format(self.modifiers, &self.key.name()?))
     }
+}
 
-    /// The chord as a GTK accelerator string (`"<Control><Shift>t"`).
-    pub fn to_accel(self) -> Option<String> {
-        let name = self.key.name()?;
-        let mods = self.active_modifiers();
-        Some(format!(
-            "{}{}",
-            modifier_prefix(&mods, |_, accel| accel, ""),
-            normalize_key_name(&name)
-        ))
-    }
+/// A UI-format binding's modifiers, as written, and its key token; `None`
+/// for an unknown modifier or an empty key.
+fn split_ui_key(key: &str) -> Option<(Vec<&'static Modifier>, &str)> {
+    let mut tokens: Vec<&str> = key.split('+').collect();
+    let name = tokens.pop().filter(|name| !name.is_empty())?;
+    let mods = tokens
+        .into_iter()
+        .map(|token| MODS.iter().find(|(ui, _, _)| *ui == token))
+        .collect::<Option<_>>()?;
+    Some((mods, name))
+}
 
-    /// The modifiers Wayterm renders, in [`MODS`] order; button and lock
-    /// masks are ignored.
-    fn active_modifiers(self) -> Vec<ModifierType> {
-        MODS.iter()
-            .filter(|(_, _, mask)| self.modifiers.contains(*mask))
-            .map(|(_, _, mask)| *mask)
-            .collect()
+/// `mods` and `name` in UI format, modifiers in [`MODS`] order; lock and
+/// button masks are ignored.
+fn ui_format(mods: ModifierType, name: &str) -> String {
+    let mut out = String::new();
+    for (ui, _, mask) in MODS {
+        if mods.contains(*mask) {
+            out.push_str(ui);
+            out.push('+');
+        }
     }
-
-    /// The GTK trigger for this chord. gtk4-rs exposes no key+modifiers
-    /// constructor below GTK 4.24, so this goes through the accelerator
-    /// string. Requires GTK to be initialized.
-    pub fn to_trigger(self) -> Option<gtk4::ShortcutTrigger> {
-        parse_trigger(&self.to_ui_key()?)
-    }
+    out.push_str(&normalize_key_name(name));
+    out
 }
 
 /// Single characters lowercase; key names keep their case.
@@ -160,23 +127,6 @@ fn normalize_key_name(name: &str) -> String {
     } else {
         name.to_string()
     }
-}
-
-/// The modifier prefix in either format: `pick` selects the [`MODS`]
-/// column, `sep` the joiner.
-fn modifier_prefix(
-    mods: &[ModifierType],
-    pick: impl Fn(&'static str, &'static str) -> &'static str,
-    sep: &str,
-) -> String {
-    let mut out = String::new();
-    for (ui, accel, mask) in MODS {
-        if mods.contains(mask) {
-            out.push_str(pick(ui, accel));
-            out.push_str(sep);
-        }
-    }
-    out
 }
 
 /// `"Ctrl+Shift+T"` → a `gtk4::ShortcutTrigger`; `None` when the format

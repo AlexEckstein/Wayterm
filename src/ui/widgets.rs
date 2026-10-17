@@ -66,6 +66,28 @@ pub fn wrapped_label(text: &str) -> gtk4::Label {
         .build()
 }
 
+/// A start-aligned, wrapping note, dimmed.
+pub fn dim_label(text: &str) -> gtk4::Label {
+    let label = gtk4::Label::builder()
+        .label(text)
+        .halign(gtk4::Align::Start)
+        .wrap(true)
+        .build();
+    label.add_css_class("dim-label");
+    label
+}
+
+/// An empty start-aligned, wrapping label styled as an error, for inline
+/// validation messages.
+pub fn error_label() -> gtk4::Label {
+    let label = gtk4::Label::builder()
+        .halign(gtk4::Align::Start)
+        .wrap(true)
+        .build();
+    label.add_css_class("error");
+    label
+}
+
 /// `buttons` in a right-aligned row, in the given order.
 pub fn button_row(buttons: &[&gtk4::Button]) -> gtk4::Box {
     let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);

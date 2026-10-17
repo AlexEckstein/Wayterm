@@ -36,6 +36,9 @@ struct MockTransport {
     calls: Calls,
     fail_connect: bool,
     connected: bool,
+    /// Its event channel: a failing connect announces `Disconnected`
+    /// there first, as the local and serial transports do.
+    events: mpsc::Sender<TransportEvent>,
 }
 
 #[async_trait]
@@ -43,6 +46,9 @@ impl Transport for MockTransport {
     async fn connect(&mut self) -> Result<(), TransportError> {
         self.calls.connects.fetch_add(1, Ordering::SeqCst);
         if self.fail_connect {
+            let _ = self
+                .events
+                .try_send(TransportEvent::StateChanged(TransportState::Disconnected));
             return Err(TransportError::ConnectionFailed("connect refused".into()));
         }
         self.connected = true;
@@ -105,13 +111,20 @@ fn harness(fail_connect: bool) -> Harness {
         calls: calls.clone(),
         fail_connect,
         connected: false,
+        events: transport_tx.clone(),
     };
     let backend = FakeBackend::new();
     let terminal = TerminalHandle {
         backend: Arc::new(backend.clone()),
         events,
     };
-    let (tab, state_rx) = TerminalTab::wire(Box::new(transport), event_rx, terminal, &ctx);
+    let (tab, state_rx) = TerminalTab::wire(
+        Box::new(transport),
+        transport_tx.clone(),
+        event_rx,
+        terminal,
+        &ctx,
+    );
     Harness {
         tab,
         state_rx,
@@ -216,9 +229,15 @@ async fn non_output_events_reach_the_state_channel_in_order() {
     h.tab.close().await;
 }
 
+/// The error comes after whatever the transport announced while failing,
+/// so the tab's status ends on it, never on `Disconnected`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_connect_failure_is_reported_and_tears_down_once() {
+async fn a_connect_failure_is_reported_last_and_tears_down_once() {
     let mut h = harness(true);
+    assert!(matches!(
+        next_state(&mut h.state_rx).await,
+        TransportEvent::StateChanged(TransportState::Disconnected)
+    ));
     let event = next_state(&mut h.state_rx).await;
     assert!(
         matches!(event, TransportEvent::Error(ref m) if m.contains("connect refused")),

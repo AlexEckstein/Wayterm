@@ -9,7 +9,7 @@
 //! for its own forward-rules editor, so both editors accept exactly the
 //! same input.
 
-use super::status_source::{ForwardState, ForwardStatus};
+use super::status_source::{ForwardEvent, ForwardState, RuleId};
 use crate::store::model::{ForwardKind, ForwardRule};
 
 /// `DropDown` positions for the kind selector, in [`ForwardKind`] order.
@@ -200,25 +200,13 @@ pub fn rules_from_drafts(
     }
 }
 
-/// The state of one rule by index; missing means the engine never reported
+/// The state of one rule by id; missing means the engine never reported
 /// it, which renders as [`ForwardState::Stopped`].
-pub fn lookup_status(statuses: &[ForwardStatus], rule_index: usize) -> Option<&ForwardState> {
+pub fn lookup_status(statuses: &[ForwardEvent], rule_id: RuleId) -> Option<&ForwardState> {
     statuses
         .iter()
-        .find(|status| status.rule_index == rule_index)
+        .find(|status| status.rule_id == rule_id)
         .map(|status| &status.state)
-}
-
-/// Fold one update into a snapshot vector, growing it for rules the engine
-/// reports before the dialog knew them.
-pub fn apply_status(statuses: &mut Vec<ForwardStatus>, update: ForwardStatus) {
-    match statuses
-        .iter_mut()
-        .find(|status| status.rule_index == update.rule_index)
-    {
-        Some(slot) => slot.state = update.state,
-        None => statuses.push(update),
-    }
 }
 
 /// The live-status cell. `online == false` is the offline fallback: the
@@ -238,48 +226,6 @@ pub fn status_text(state: Option<&ForwardState>, online: bool) -> String {
                 format!("{conns} connections")
             }
         }
-        Some(ForwardState::Failed { error }) => format!("Error: {error}"),
+        Some(ForwardState::LastFailed { error }) => format!("Error: {error}"),
     }
-}
-
-/// One rendered row: the rule's text plus its live cell.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RowSummary {
-    pub rule_index: usize,
-    pub kind_label: String,
-    pub bind: String,
-    pub remote: String,
-    pub enabled: bool,
-    pub status: String,
-    /// Remote/Dynamic rows never start an engine control in v1.
-    pub engine_control: bool,
-}
-
-/// The dialog's rows for `rules` with `statuses` overlaid.
-pub fn summarize_rules(
-    rules: &[ForwardRule],
-    statuses: &[ForwardStatus],
-    online: bool,
-) -> Vec<RowSummary> {
-    rules
-        .iter()
-        .enumerate()
-        .map(|(rule_index, rule)| {
-            let kind_label = match rule.kind {
-                ForwardKind::Local => "Local".to_string(),
-                ForwardKind::Remote => "Remote (v2)".to_string(),
-                ForwardKind::Dynamic => "Dynamic (v2)".to_string(),
-            };
-            let engine_control = online && rule.kind == ForwardKind::Local;
-            RowSummary {
-                rule_index,
-                kind_label,
-                bind: format!("{}:{}", rule.bind_addr, rule.bind_port),
-                remote: format!("{}:{}", rule.remote_host, rule.remote_port),
-                enabled: rule.enabled,
-                status: status_text(lookup_status(statuses, rule_index), online),
-                engine_control,
-            }
-        })
-        .collect()
 }

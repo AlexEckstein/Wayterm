@@ -559,6 +559,9 @@ async fn cancel_closes_the_session_and_ends_with_cancelled() {
     .await;
     engine.cancel();
     let ended = wait_event(&mut engine.events, |e| matches!(e, VncUiEvent::Ended(_))).await;
-    assert_eq!(ended, VncUiEvent::Ended("cancelled".into()));
+    assert_eq!(
+        ended,
+        VncUiEvent::Ended(wayterm::vnc::client::CANCELLED.into())
+    );
     engine.shutdown().await;
 }

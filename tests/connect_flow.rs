@@ -13,9 +13,9 @@ use tokio::sync::mpsc;
 use common::*;
 use wayterm::sftp::{commands::DirEntry, SftpClient, SftpCommand};
 use wayterm::store::model::{HostKeyPolicy, SessionConfig, SessionType};
-use wayterm::transport::connection::{AuthMethod, SshConnection};
+use wayterm::transport::connection::SshConnection;
 use wayterm::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
-use wayterm::transport::supervisor::{ConnectParams, ConnectionSupervisor};
+use wayterm::transport::supervisor::{ConnectParams, ConnectionSupervisor, HopAuth};
 use wayterm::transport::tab::create_transport;
 use wayterm::transport::types::TransportError;
 
@@ -59,26 +59,13 @@ async fn supervisor_reuses_dial_and_releases_when_idle() {
 
     let supervisor = ConnectionSupervisor::new();
     let params = connect_params(&f);
-    let method = AuthMethod::Password(f.password.clone());
 
     let first = supervisor
-        .get_or_connect(
-            &params,
-            &method,
-            &password_creds(&f.password),
-            accept_all_verifier(),
-            Some(password_responder(&f.password)),
-        )
+        .get_or_connect(&params, &password_auth(&f.password))
         .await
         .expect("first connect failed");
     let second = supervisor
-        .get_or_connect(
-            &params,
-            &method,
-            &password_creds(&f.password),
-            accept_all_verifier(),
-            Some(password_responder(&f.password)),
-        )
+        .get_or_connect(&params, &password_auth(&f.password))
         .await
         .expect("second connect failed");
     assert!(
@@ -94,13 +81,7 @@ async fn supervisor_reuses_dial_and_releases_when_idle() {
 
     // The pool entry is gone, so this must dial a brand-new session.
     let fresh = supervisor
-        .get_or_connect(
-            &params,
-            &method,
-            &password_creds(&f.password),
-            accept_all_verifier(),
-            None,
-        )
+        .get_or_connect(&params, &password_auth(&f.password))
         .await
         .expect("re-connect after release failed");
     let fresh_weak = Arc::downgrade(&fresh);
@@ -119,13 +100,7 @@ async fn shared_connection_survives_tab_close_for_sftp() {
     let supervisor = ConnectionSupervisor::new();
     let params = connect_params(&f);
     let conn = supervisor
-        .get_or_connect(
-            &params,
-            &AuthMethod::Password(f.password.clone()),
-            &password_creds(&f.password),
-            accept_all_verifier(),
-            Some(password_responder(&f.password)),
-        )
+        .get_or_connect(&params, &password_auth(&f.password))
         .await
         .expect("supervisor connect failed");
 
@@ -178,21 +153,17 @@ async fn strict_policy_reject_surfaces_host_key_rejected() {
     // deterministic regardless of the host machine's `~/.ssh/known_hosts`.
     let dir = tempfile::tempdir().expect("tempdir for known_hosts");
     let known_hosts: Arc<Path> = Arc::from(dir.path().join("known_hosts").as_path());
-    let reject_verifier = HostKeyVerifier::new(
-        HostKeyPolicy::Strict,
-        Arc::new(|_: &HostKeyFacts| HostKeyDecision::Reject),
-        Some(known_hosts),
-    );
+    let auth = HopAuth {
+        verifier: HostKeyVerifier::new(
+            HostKeyPolicy::Strict,
+            Arc::new(|_: &HostKeyFacts| HostKeyDecision::Reject),
+            Some(known_hosts),
+        ),
+        responder: None,
+        ..password_auth(&f.password)
+    };
 
-    let result = supervisor
-        .get_or_connect(
-            &params,
-            &AuthMethod::Password(f.password.clone()),
-            &password_creds(&f.password),
-            reject_verifier,
-            None,
-        )
-        .await;
+    let result = supervisor.get_or_connect(&params, &auth).await;
 
     match result {
         Err(TransportError::HostKeyRejected(host)) => assert_eq!(host, f.host),

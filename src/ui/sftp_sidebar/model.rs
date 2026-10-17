@@ -193,14 +193,6 @@ pub fn failed_status(label: &str, err: &str) -> String {
     format!("{label} — failed: {err}")
 }
 
-/// What the toolbar rules need to know about the selection.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Selection {
-    pub name: String,
-    pub is_dir: bool,
-    pub is_parent: bool,
-}
-
 /// Button sensitivity: doc 09's six toolbar buttons plus Cancel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToolbarState {
@@ -230,7 +222,7 @@ impl ToolbarState {
 /// recursive transfers); Delete and Rename need any row but `..`; Cancel
 /// needs a running transfer.
 pub fn toolbar_state(
-    selected: Option<&Selection>,
+    selected: Option<&RowView>,
     connected: bool,
     transferring: bool,
 ) -> ToolbarState {
@@ -247,15 +239,6 @@ pub fn toolbar_state(
         mkdir: true,
         cancel: transferring,
     }
-}
-
-/// The [`Selection`] a listing row describes.
-pub fn selection_of(row: Option<&RowView>) -> Option<Selection> {
-    row.map(|row| Selection {
-        name: row.name.clone(),
-        is_dir: row.is_dir,
-        is_parent: row.is_parent,
-    })
 }
 
 /// Local paths from a `text/uri-list` drop: comments and blanks skipped,
@@ -385,9 +368,7 @@ pub struct SftpView {
     shell_reports: bool,
     /// Running transfers, oldest first; the bar shows whichever updated last.
     pub transfers: Vec<TransferState>,
-    /// Derived button sensitivity.
-    pub toolbar: ToolbarState,
-    /// The selected row, so toolbar rules can be recomputed.
+    /// The selected listing row, if any.
     selected: Option<RowView>,
 }
 
@@ -409,7 +390,6 @@ impl SftpView {
             shell_dir: None,
             shell_reports: false,
             transfers: Vec::new(),
-            toolbar: ToolbarState::DISABLED,
             selected: None,
         }
     }
@@ -418,7 +398,6 @@ impl SftpView {
     pub fn attach(&mut self) {
         self.connected = true;
         self.error = None;
-        self.recompute_toolbar();
     }
 
     /// A jumped connection (doc 11 v1): no SFTP task is ever started over
@@ -427,7 +406,6 @@ impl SftpView {
     pub fn mark_jump_unsupported(&mut self) {
         self.connected = false;
         self.error = Some(JUMPED_UNAVAILABLE.to_string());
-        self.recompute_toolbar();
     }
 
     /// Directory the sidebar browses — the start path until the first
@@ -489,15 +467,10 @@ impl SftpView {
         self.path = path.to_string();
         self.path_text = path.to_string();
         self.error = None;
-        self.recompute_toolbar();
     }
 
-    /// A failed `Cd` leaves the listing and path bar where they were.
-    pub fn set_listing_failed(&mut self, err: &str) {
-        self.set_error(err);
-    }
-
-    /// Show an inline error without touching the listing.
+    /// Show an inline error without touching the listing or the path bar
+    /// (a failed `Cd` leaves both where they were).
     pub fn set_error(&mut self, err: &str) {
         self.error = Some(err.to_string());
     }
@@ -510,7 +483,6 @@ impl SftpView {
     /// Record the selected listing row (or the lack of one).
     pub fn select(&mut self, row: Option<&RowView>) {
         self.selected = row.cloned();
-        self.recompute_toolbar();
     }
 
     /// Remote path of the selected row (never `..`).
@@ -527,7 +499,6 @@ impl SftpView {
         self.status = started_status(&label);
         self.transfers.push(TransferState { id, label });
         self.fraction = 0.0;
-        self.recompute_toolbar();
     }
 
     /// One progress sample from a running transfer.
@@ -558,7 +529,6 @@ impl SftpView {
                 self.status = failed_status(&label, err);
             }
         }
-        self.recompute_toolbar();
     }
 
     /// Cancel targets the most recently started transfer.
@@ -578,12 +548,12 @@ impl SftpView {
             .map(|transfer| transfer.label.clone())
     }
 
-    fn recompute_toolbar(&mut self) {
-        let selection = selection_of(self.selected.as_ref());
-        self.toolbar = toolbar_state(
-            selection.as_ref(),
+    /// The toolbar's button sensitivity for the current state.
+    pub fn toolbar(&self) -> ToolbarState {
+        toolbar_state(
+            self.selected.as_ref(),
             self.connected,
             !self.transfers.is_empty(),
-        );
+        )
     }
 }

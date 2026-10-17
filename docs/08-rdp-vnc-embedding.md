@@ -144,8 +144,10 @@ rest reach the remote desktop (doc 07).
   stored, not applied — the client always requests BGRA32;
   clipboard is receive-only (server → GTK; `CopyText` out is a
   follow-up); the remote cursor shape is not drawn (CursorPseudo is
-  requested, the engine ignores the shape); Bell logs to the status
-  bar only; the keyring source is the documented Phase 4 stub, so VNC
-  prompts for the password on every connect (save-to-keyring is the
-  app-wide follow-up, not VNC-specific); non-ASCII passwords do not
-  authenticate (see the vnc-rs notes above).
+  requested, the engine ignores the shape); Bell only rings GTK's
+  error bell on the view; nothing saves a `vnc_password` yet (only SSH
+  passwords are saved, from the session dialog), so VNC prompts for the
+  password on every connect unless the keyring already holds one or
+  Bitwarden is enabled (save-to-keyring is the app-wide follow-up, not
+  VNC-specific); non-ASCII passwords do not authenticate (see the vnc-rs
+  notes above).

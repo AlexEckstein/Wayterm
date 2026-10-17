@@ -127,14 +127,10 @@ impl MainWindow {
         }));
         let for_switch = router.clone();
         notebook.connect_switch_page(move |_, page, _| {
-            let (state, host, port) = match SessionTab::page_status(page) {
-                Some(status) => {
-                    let status = status.borrow();
-                    (status.state.clone(), status.host.clone(), status.port)
-                }
-                None => (TransportState::Disconnected, String::new(), 0),
-            };
-            for_switch.borrow_mut().push(page, state, &host, port);
+            let status = SessionTab::page_status(page).unwrap_or_default();
+            for_switch
+                .borrow_mut()
+                .push(page, status.state, &status.host, status.port);
         });
 
         let tunnels_button = gtk4::Button::with_label("Tunnels…");

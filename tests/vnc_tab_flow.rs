@@ -8,6 +8,7 @@ use wayterm::ui::vnc_tab::{
     apply_button, blit_rows, button_bit, effective_options, placement, state_for, to_framebuffer,
     wheel_bit, Placement,
 };
+use wayterm::vnc::client::CANCELLED;
 use wayterm::vnc::VncUiEvent;
 
 #[test]
@@ -97,7 +98,7 @@ fn options_default_to_scaled_and_interactive() {
 #[test]
 fn engine_events_map_to_page_state() {
     assert_eq!(
-        state_for(&VncUiEvent::Ended("cancelled".into())),
+        state_for(&VncUiEvent::Ended(CANCELLED.into())),
         Some(TransportState::Disconnected)
     );
     assert_eq!(

@@ -12,8 +12,11 @@ use rusqlite::{
 use serde::Serialize;
 
 use crate::macros::model::{steps_from_json, steps_to_json, Macro};
-use crate::store::model::{Folder, SessionConfig};
+use crate::store::model::{Folder, HostKeyPolicy, SessionConfig};
 use crate::ui::tab_state::{self, TabState};
+
+/// The settings row holding the global host-key policy (doc 06).
+pub const HOST_KEY_POLICY_SETTING: &str = "host_key_policy";
 
 /// A SQLite-backed store of session folders and saved sessions. Not
 /// `Send`: the UI shares one through an `Rc` on the main thread.
@@ -248,14 +251,33 @@ impl SessionStore {
             .optional()
     }
 
+    /// One `settings` row; `None` when absent or unreadable (logged), for
+    /// the readers whose default covers both.
+    pub fn setting(&self, key: &str) -> Option<String> {
+        self.get_setting(key).unwrap_or_else(|err| {
+            eprintln!("Wayterm: failed to read setting '{key}': {err}");
+            None
+        })
+    }
+
     /// A boolean settings row (see [`flag_enabled`]). A row that cannot be
     /// read counts as missing, i.e. on.
     pub fn flag(&self, key: &str) -> bool {
-        let value = self.get_setting(key).unwrap_or_else(|err| {
-            eprintln!("Wayterm: failed to read setting '{key}': {err}");
-            None
-        });
-        flag_enabled(value.as_deref())
+        flag_enabled(self.setting(key).as_deref())
+    }
+
+    /// The global host-key policy (doc 11), which a session without its
+    /// own follows. A missing, unreadable or unknown row is strict.
+    pub fn host_key_policy(&self) -> HostKeyPolicy {
+        match self
+            .setting(HOST_KEY_POLICY_SETTING)
+            .as_deref()
+            .map(str::trim)
+        {
+            Some("accept-new") => HostKeyPolicy::AcceptNew,
+            Some("off") => HostKeyPolicy::Off,
+            _ => HostKeyPolicy::Strict,
+        }
     }
 
     /// Upsert one `settings` row.
@@ -272,8 +294,7 @@ impl SessionStore {
     /// it is always read and written whole. `[]` is stored, not deleted, so
     /// "no tabs open" is remembered too. Tab identity only, no credentials.
     pub fn save_open_tabs(&self, tabs: &[TabState]) -> rusqlite::Result<()> {
-        let json = tab_state::tabs_to_json(tabs)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let json = tab_state::tabs_to_json(tabs).map_err(to_sql_error)?;
         self.set_setting(tab_state::OPEN_TABS_SETTING_KEY, &json)
     }
 
@@ -436,12 +457,16 @@ fn json<T: Serialize>(value: Option<&T>) -> rusqlite::Result<Value> {
         .map(serde_json::to_string)
         .transpose()
         .map(Value::from)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        .map_err(to_sql_error)
 }
 
 /// The `macros.steps` column for `m`.
 fn macro_steps(m: &Macro) -> rusqlite::Result<String> {
-    steps_to_json(&m.steps).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+    steps_to_json(&m.steps).map_err(to_sql_error)
+}
+
+fn to_sql_error(e: serde_json::Error) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(e))
 }
 
 fn from_sql_error(e: serde_json::Error) -> rusqlite::Error {
@@ -590,12 +615,7 @@ CREATE TABLE IF NOT EXISTS rdp_trust (
 /// leaves an existing table alone, and `ADD COLUMN` has no `IF NOT
 /// EXISTS`, so the column is added only where it is missing.
 fn migrate_003(conn: &Connection) -> rusqlite::Result<()> {
-    let has_icon: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'icon')",
-        [],
-        |row| row.get(0),
-    )?;
-    if !has_icon {
+    if !has_column(conn, "sessions", "icon")? {
         conn.execute_batch("ALTER TABLE sessions ADD COLUMN icon TEXT;")?;
     }
     Ok(())
@@ -604,15 +624,18 @@ fn migrate_003(conn: &Connection) -> rusqlite::Result<()> {
 /// Schema v4 — drop `sessions.notes` (doc 06). A database created before
 /// v4 still has the column; one created since never did.
 fn migrate_004(conn: &Connection) -> rusqlite::Result<()> {
-    let has_notes: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'notes')",
-        [],
-        |row| row.get(0),
-    )?;
-    if has_notes {
+    if has_column(conn, "sessions", "notes")? {
         conn.execute_batch("ALTER TABLE sessions DROP COLUMN notes;")?;
     }
     Ok(())
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        [table, column],
+        |row| row.get(0),
+    )
 }
 
 /// Schema v5 — keystroke macros (doc 12): `steps` is a JSON array of
