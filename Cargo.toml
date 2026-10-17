@@ -39,7 +39,7 @@ gdk4-x11 = "0.11"
 serde_yaml_ng = "0.10"
 # Secret Service / Flatpak portal keyring (doc 06 §Credential Storage).
 oo7 = "0.6"
-pollster = "0.4"
+pollster = "1.0"
 
 [build-dependencies]
 # Compiles the libghostty-vt shim (src/terminal/ghostty/shim.c); only with
