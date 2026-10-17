@@ -265,6 +265,52 @@ pub fn jump_picker_model(
     (labels, ids, selected)
 }
 
+/// Every folder in the store, nested ones included, in tree order (each
+/// folder directly followed by its subfolders): the folder picker's source.
+pub fn collect_folders(store: &SessionStore) -> rusqlite::Result<Vec<Folder>> {
+    fn walk(
+        store: &SessionStore,
+        parent: Option<i64>,
+        out: &mut Vec<Folder>,
+    ) -> rusqlite::Result<()> {
+        for folder in store.list_folders(parent)? {
+            let id = folder.id;
+            out.push(folder);
+            walk(store, Some(id), out)?;
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(store, None, &mut out)?;
+    Ok(out)
+}
+
+/// The folder picker's labels for `folders` (in tree order): a root folder
+/// is its bare name, a nested one hangs off its parent with a `└──`
+/// branch indented one step per extra level.
+pub fn folder_labels(folders: &[Folder]) -> Vec<String> {
+    let depth = |folder: &Folder| {
+        let mut depth = 0;
+        let mut parent = folder.parent_id;
+        // Bounded by the list length so a corrupt cycle cannot hang.
+        while let Some(id) = parent.filter(|_| depth < folders.len()) {
+            depth += 1;
+            parent = folders
+                .iter()
+                .find(|f| f.id == id)
+                .and_then(|f| f.parent_id);
+        }
+        depth
+    };
+    folders
+        .iter()
+        .map(|folder| match depth(folder) {
+            0 => folder.name.clone(),
+            d => format!("{}└── {}", "    ".repeat(d - 1), folder.name),
+        })
+        .collect()
+}
+
 /// Every session in the store, across folders, in tree order: the jump
 /// picker's source. (The store only lists one folder at a time, so this
 /// walks the way the session tree does.)

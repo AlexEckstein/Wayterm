@@ -9,11 +9,11 @@ use crate::store::SessionStore;
 use crate::ui::tunnels_dialog::model::ForwardRuleDraft;
 
 use super::{
-    collect_peer_sessions, config_from_fields, default_port_for, default_tmux_session_name,
-    format_resolution, jump_candidates, jump_error, jump_missing_label, jump_picker_model,
-    parse_resolution, resolve_jump, session_type_from_index, type_index_for, DialogFields,
-    DEFAULT_SERIAL_BAUD, JUMP_NONE_LABEL, TYPE_INDEX_LOCAL, TYPE_INDEX_RDP, TYPE_INDEX_SERIAL,
-    TYPE_INDEX_SSH, TYPE_INDEX_VNC,
+    collect_folders, collect_peer_sessions, config_from_fields, default_port_for,
+    default_tmux_session_name, folder_labels, format_resolution, jump_candidates, jump_error,
+    jump_missing_label, jump_picker_model, parse_resolution, resolve_jump, session_type_from_index,
+    type_index_for, DialogFields, DEFAULT_SERIAL_BAUD, JUMP_NONE_LABEL, TYPE_INDEX_LOCAL,
+    TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_SSH, TYPE_INDEX_VNC,
 };
 
 fn sample_folders() -> Vec<Folder> {
@@ -1110,6 +1110,33 @@ fn collect_peer_sessions_walks_every_folder() {
     let names: Vec<&str> = peers.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"root-box"), "root sessions: {names:?}");
     assert!(names.contains(&"nested-box"), "nested sessions: {names:?}");
+}
+
+#[test]
+fn nested_folders_are_pickable_and_marked_by_depth() {
+    let store = SessionStore::in_memory().expect("in-memory store");
+    let one = store.insert_folder("Folder 1", None).expect("folder 1");
+    let two = store
+        .insert_folder("Folder 2", Some(one))
+        .expect("folder 2");
+    let three = store
+        .insert_folder("Folder 3", Some(two))
+        .expect("folder 3");
+    store.insert_folder("Other", None).expect("other");
+    let folders = collect_folders(&store).expect("folders");
+    assert_eq!(
+        folder_labels(&folders),
+        ["Folder 1", "└── Folder 2", "    └── Folder 3", "Other"]
+    );
+    // Picking the nested folder (index 0 is "None (root)") files the
+    // session under it.
+    let fields = DialogFields {
+        name: "deep".into(),
+        folder_index: 3,
+        ..DialogFields::default()
+    };
+    let config = config_from_fields(&fields, &folders, &[]);
+    assert_eq!(config.folder_id, Some(three));
 }
 
 // --- Save password to keyring ----------------------------------------------
