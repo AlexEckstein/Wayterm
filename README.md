@@ -32,7 +32,10 @@ scripts/run-sshd-tests.sh        # suites against a throwaway local sshd (needs 
 # tests that need a display; force X11 so a Wayland session can't capture them
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored
 ```
-
+### Build with Ghostty
+```sh
+cargo build --release --features backend-ghostty
+```
 ## Packages
 
 - `.deb`: `cargo deb` (metadata in `Cargo.toml`, output in `target/debian/`).
