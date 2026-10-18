@@ -172,7 +172,7 @@ impl MainWindow {
         terminal_actions::install(&window, &notebook);
         let for_actions = notebook.clone();
         tab_resilience::install_connection_actions(&window, move || {
-            crate::ui::tab::current_session_id(&for_actions)
+            crate::ui::tab::current_tab_id(&for_actions)
         });
         // Every chord, `toggle_sftp`'s included, comes from the engine
         // (doc 07). Terminal shortcuts sit on the notebook but fire only

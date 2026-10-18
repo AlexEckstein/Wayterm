@@ -2,8 +2,9 @@
 //! `disconnect` window actions (doc 04 §Lifecycle & Cancellation, doc 07).
 //!
 //! The policy lives in [`crate::transport::reconnect`]; this is its GTK
-//! side. The actions act on a registry of [`LiveTab`]s keyed by session id,
-//! which the connect flow (`ui::tab`) fills for every streaming tab; with
+//! side. The actions act on a registry of [`LiveTab`]s keyed by tab id (one
+//! session can have several tabs open), which the connect flow (`ui::tab`)
+//! fills for every streaming tab; with
 //! nothing registered they are no-ops. Disconnect cancels the tab's token: the pump's last act is
 //! `transport.disconnect()`, and any reconnect loop sharing the token stops.
 
@@ -80,60 +81,57 @@ pub fn policy() -> ReconnectPolicy {
     ReconnectPolicy::for_setting(reconnect_on_drop_setting())
 }
 
-pub fn register_live_tab(session_id: i64, tab: LiveTab) {
-    lock(&LIVE_TABS).insert(session_id, tab);
+pub fn register_live_tab(tab_id: i64, tab: LiveTab) {
+    lock(&LIVE_TABS).insert(tab_id, tab);
 }
 
 /// Register a tab whose transport was just wired (its first connect or a
 /// redial), as `Connecting`. An uncancelled token is kept, so a running
 /// reconnect loop and the tab keep sharing one; a cancelled one (after
 /// Disconnect) is replaced. Returns the tab's token.
-pub fn register_connected_tab(session_id: i64, connect: ConnectFn) -> CancellationToken {
+pub fn register_connected_tab(tab_id: i64, connect: ConnectFn) -> CancellationToken {
     let mut tabs = lock(&LIVE_TABS);
     let cancel = tabs
-        .get(&session_id)
+        .get(&tab_id)
         .map(|tab| tab.cancel.clone())
         .filter(|cancel| !cancel.is_cancelled())
         .unwrap_or_default();
     tabs.insert(
-        session_id,
+        tab_id,
         LiveTab::new(connect, cancel.clone(), TransportState::Connecting),
     );
     cancel
 }
 
-pub fn unregister_live_tab(session_id: i64) {
-    lock(&LIVE_TABS).remove(&session_id);
+pub fn unregister_live_tab(tab_id: i64) {
+    lock(&LIVE_TABS).remove(&tab_id);
 }
 
-pub fn live_tab(session_id: i64) -> Option<LiveTab> {
-    lock(&LIVE_TABS).get(&session_id).cloned()
+pub fn live_tab(tab_id: i64) -> Option<LiveTab> {
+    lock(&LIVE_TABS).get(&tab_id).cloned()
 }
 
 /// `Disconnected` for a tab that never registered.
-pub fn tab_state(session_id: i64) -> TransportState {
-    live_tab(session_id).map_or(TransportState::Disconnected, |t| t.state)
+pub fn tab_state(tab_id: i64) -> TransportState {
+    live_tab(tab_id).map_or(TransportState::Disconnected, |t| t.state)
 }
 
 /// Ignored for a tab that is not registered (it may have just closed).
-pub fn set_tab_state(session_id: i64, state: TransportState) {
-    if let Some(tab) = lock(&LIVE_TABS).get_mut(&session_id) {
+pub fn set_tab_state(tab_id: i64, state: TransportState) {
+    if let Some(tab) = lock(&LIVE_TABS).get_mut(&tab_id) {
         tab.state = state;
     }
 }
 
-pub fn should_confirm_close_for_tab(session_id: i64) -> bool {
-    crate::transport::reconnect::should_confirm_close(
-        &tab_state(session_id),
-        confirm_close_setting(),
-    )
+pub fn should_confirm_close_for_tab(tab_id: i64) -> bool {
+    crate::transport::reconnect::should_confirm_close(&tab_state(tab_id), confirm_close_setting())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconnectAction {
-    Started { session_id: i64 },
-    AlreadyRunning { session_id: i64 },
-    NoLiveTab { session_id: Option<i64> },
+    Started { tab_id: i64 },
+    AlreadyRunning { tab_id: i64 },
+    NoLiveTab { tab_id: Option<i64> },
 }
 
 impl ReconnectAction {
@@ -144,8 +142,8 @@ impl ReconnectAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisconnectAction {
-    Cancelled { session_id: i64 },
-    NoLiveTab { session_id: Option<i64> },
+    Cancelled { tab_id: i64 },
+    NoLiveTab { tab_id: Option<i64> },
 }
 
 impl DisconnectAction {
@@ -158,20 +156,18 @@ impl DisconnectAction {
 /// `state_tx` (the tab's state channel) sees `Reconnecting { attempt }`;
 /// `confirm` answers prompt mode.
 pub fn activate_reconnect(
-    session_id: Option<i64>,
+    tab_id: Option<i64>,
     state_tx: Option<mpsc::UnboundedSender<TransportEvent>>,
     confirm: Option<ConfirmFn>,
 ) -> ReconnectAction {
-    let Some(id) = session_id else {
-        return ReconnectAction::NoLiveTab { session_id: None };
+    let Some(id) = tab_id else {
+        return ReconnectAction::NoLiveTab { tab_id: None };
     };
     let Some(tab) = live_tab(id) else {
-        return ReconnectAction::NoLiveTab {
-            session_id: Some(id),
-        };
+        return ReconnectAction::NoLiveTab { tab_id: Some(id) };
     };
     if !lock(&RUNNING).insert(id) {
-        return ReconnectAction::AlreadyRunning { session_id: id };
+        return ReconnectAction::AlreadyRunning { tab_id: id };
     }
     // After Disconnect the token is spent; reconnecting gets a fresh one.
     let cancel = match lock(&LIVE_TABS).get_mut(&id) {
@@ -194,33 +190,31 @@ pub fn activate_reconnect(
         let _ = run.await;
         lock(&RUNNING).remove(&id);
     });
-    ReconnectAction::Started { session_id: id }
+    ReconnectAction::Started { tab_id: id }
 }
 
 /// A tab's state channel reported `ConnectionLost` (doc 04 §Lifecycle):
 /// the tab reads as disconnected and, with `reconnect_on_drop` on, a driver
 /// starts on `state_tx`. Prompt mode leaves it to the `reconnect` action.
 pub fn on_connection_lost(
-    session_id: i64,
+    tab_id: i64,
     state_tx: mpsc::UnboundedSender<TransportEvent>,
 ) -> Option<ReconnectAction> {
-    set_tab_state(session_id, TransportState::Disconnected);
-    reconnect_on_drop_setting().then(|| activate_reconnect(Some(session_id), Some(state_tx), None))
+    set_tab_state(tab_id, TransportState::Disconnected);
+    reconnect_on_drop_setting().then(|| activate_reconnect(Some(tab_id), Some(state_tx), None))
 }
 
 /// `disconnect`: cancel the tab's token; the tab stays open.
-pub fn activate_disconnect(session_id: Option<i64>) -> DisconnectAction {
-    let Some(id) = session_id else {
-        return DisconnectAction::NoLiveTab { session_id: None };
+pub fn activate_disconnect(tab_id: Option<i64>) -> DisconnectAction {
+    let Some(id) = tab_id else {
+        return DisconnectAction::NoLiveTab { tab_id: None };
     };
     let Some(tab) = live_tab(id) else {
-        return DisconnectAction::NoLiveTab {
-            session_id: Some(id),
-        };
+        return DisconnectAction::NoLiveTab { tab_id: Some(id) };
     };
     tab.cancel.cancel();
     set_tab_state(id, TransportState::Disconnected);
-    DisconnectAction::Cancelled { session_id: id }
+    DisconnectAction::Cancelled { tab_id: id }
 }
 
 /// Forget everything and restore the default settings (tests).
@@ -231,26 +225,22 @@ pub fn reset_registry() {
 }
 
 /// Cancel and forget a closing tab, so no reconnect loop outlives it.
-pub fn teardown_tab(session_id: i64) {
-    if let Some(tab) = live_tab(session_id) {
+pub fn teardown_tab(tab_id: i64) {
+    if let Some(tab) = live_tab(tab_id) {
         tab.cancel.cancel();
     }
-    unregister_live_tab(session_id);
-    lock(&RUNNING).remove(&session_id);
+    unregister_live_tab(tab_id);
+    lock(&RUNNING).remove(&tab_id);
 }
 
 /// Close a tab, asking first when its transport is live; `close` removes
 /// the page.
-pub fn request_close(
-    session_id: i64,
-    parent: Option<&gtk4::Window>,
-    close: impl FnOnce() + 'static,
-) {
+pub fn request_close(tab_id: i64, parent: Option<&gtk4::Window>, close: impl FnOnce() + 'static) {
     let close = move || {
-        teardown_tab(session_id);
+        teardown_tab(tab_id);
         close();
     };
-    if should_confirm_close_for_tab(session_id) {
+    if should_confirm_close_for_tab(tab_id) {
         confirm(
             parent,
             "Close this session?",
@@ -287,14 +277,14 @@ pub fn reconnect_prompt(host: String) -> ConfirmFn {
 }
 
 /// Add `win.reconnect` and `win.disconnect`, acting on the tab that
-/// `current_session_id` names. They are added to the window itself: a
+/// `current_tab_id` names. They are added to the window itself: a
 /// separate "win" action group would hide every other `win.*` action.
-pub fn install_connection_actions<F>(window: &gtk4::ApplicationWindow, current_session_id: F)
+pub fn install_connection_actions<F>(window: &gtk4::ApplicationWindow, current_tab_id: F)
 where
     F: Fn() -> Option<i64> + Clone + 'static,
 {
     let reconnect = gio::SimpleAction::new(RECONNECT_ACTION, None);
-    let current = current_session_id.clone();
+    let current = current_tab_id.clone();
     reconnect.connect_activate(move |_, _| {
         let prompt = (!reconnect_on_drop_setting()).then(|| reconnect_prompt("the session".into()));
         if let ReconnectAction::NoLiveTab { .. } = activate_reconnect(current(), None, prompt) {
@@ -305,7 +295,7 @@ where
 
     let disconnect = gio::SimpleAction::new(DISCONNECT_ACTION, None);
     disconnect.connect_activate(move |_, _| {
-        if let DisconnectAction::NoLiveTab { .. } = activate_disconnect(current_session_id()) {
+        if let DisconnectAction::NoLiveTab { .. } = activate_disconnect(current_tab_id()) {
             eprintln!("Wayterm: disconnect: this tab has no live transport");
         }
     });

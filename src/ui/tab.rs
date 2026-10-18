@@ -22,6 +22,7 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,6 +71,8 @@ const PAGE_KEY: &str = "wayterm-session-page";
 const FWD_EVENT_BUF: usize = 64;
 // Notebook data key.
 const TEARDOWN_HOOK_KEY: &str = "wayterm-teardown-hook";
+/// The next page's tab id ([`PageState::tab_id`]).
+static NEXT_TAB_ID: AtomicI64 = AtomicI64::new(1);
 
 /// An unallocated VTE reports 24×80, so measuring waits (≈2 s at most)
 /// for the widget to get a size.
@@ -106,6 +109,9 @@ type RedialReply = oneshot::Sender<Result<(), TransportError>>;
 struct PageState {
     /// The session the tab shows ([`page_content`]).
     session: OnceCell<Rc<SessionConfig>>,
+    /// Unique per page, unlike the session id: one session can have
+    /// several tabs open. The resilience registry's key.
+    tab_id: Cell<i64>,
     /// Where the connect flow resolves the jump host and the credential
     /// settings ([`SessionTab::open`]).
     store: OnceCell<Rc<SessionStore>>,
@@ -146,23 +152,48 @@ fn existing_state(page: &gtk4::Widget) -> Option<Rc<PageState>> {
 pub struct SessionTab;
 
 impl SessionTab {
-    /// Open a tab for `session`, or focus the one already open; a new tab
-    /// starts connecting. Returns the page widget. `store` is kept on the
-    /// page so the connect flow can resolve the session's jump host at dial
-    /// time (doc 11 §Jump hosts).
+    /// Open a new tab for `session`, even when one is already open, and
+    /// start connecting. A duplicate drops tmux (doc 04 §Tmux Session
+    /// Persistence) and tells the user so, unless they opted out. Returns
+    /// the page widget. `store` is kept on the page so the connect flow can
+    /// resolve the session's jump host at dial time (doc 11 §Jump hosts).
     pub fn open(
         notebook: &gtk4::Notebook,
         session: &SessionConfig,
         store: &Rc<SessionStore>,
     ) -> gtk4::Widget {
-        if let Some((page_num, page)) = find_tab(notebook, session.id) {
-            notebook.set_current_page(Some(page_num));
-            focus_terminal(notebook, &page);
-            return page;
+        let (page, dropped_tmux) = Self::open_page(notebook, session, store);
+        if dropped_tmux && duplicate::notice_enabled(store) {
+            duplicate::show_tmux_notice(window_of(notebook).as_ref(), store);
         }
-        let session = Rc::new(session.clone());
+        page
+    }
+
+    /// [`open`](Self::open) without the notice, for tabs restored at
+    /// startup.
+    pub fn restore(
+        notebook: &gtk4::Notebook,
+        session: &SessionConfig,
+        store: &Rc<SessionStore>,
+    ) -> gtk4::Widget {
+        Self::open_page(notebook, session, store).0
+    }
+
+    /// Open the page; `true` when it is a duplicate that dropped tmux.
+    fn open_page(
+        notebook: &gtk4::Notebook,
+        session: &SessionConfig,
+        store: &Rc<SessionStore>,
+    ) -> (gtk4::Widget, bool) {
+        let already_open = (0..notebook.n_pages()).any(|page_num| {
+            notebook
+                .nth_page(Some(page_num))
+                .is_some_and(|page| session_id_of(&page) == Some(session.id))
+        });
+        let (session, dropped_tmux) = duplicate::tab_config(session, already_open);
+        let session = Rc::new(session);
         let page = page_content(&session);
-        let tab_label = build_tab_label(notebook, &session);
+        let tab_label = build_tab_label(notebook, &page, &session);
         let page_num = notebook.append_page(&page, Some(&tab_label));
         notebook.set_current_page(Some(page_num));
         let state = state(&page);
@@ -170,7 +201,7 @@ impl SessionTab {
         let _ = state.store.set(store.clone());
         install_teardown_on_remove(notebook);
         start_connect(notebook, &page, &session);
-        page
+        (page, dropped_tmux)
     }
 
     pub fn sidebar_for_page(page: &gtk4::Widget) -> Option<SftpSidebar> {
@@ -246,11 +277,17 @@ pub(crate) fn session_id_of(page: &gtk4::Widget) -> Option<i64> {
     Some(existing_state(page)?.session.get()?.id)
 }
 
-fn find_tab(notebook: &gtk4::Notebook, session_id: i64) -> Option<(u32, gtk4::Widget)> {
-    (0..notebook.n_pages()).find_map(|page_num| {
-        let page = notebook.nth_page(Some(page_num))?;
-        (session_id_of(&page) == Some(session_id)).then_some((page_num, page))
-    })
+/// The current page's tab id, if it is a session tab (the `reconnect` and
+/// `disconnect` actions' target).
+pub(crate) fn current_tab_id(notebook: &gtk4::Notebook) -> Option<i64> {
+    tab_id_of(&current_page(notebook)?)
+}
+
+/// `page`'s tab id ([`PageState::tab_id`]), if it is a session tab.
+fn tab_id_of(page: &gtk4::Widget) -> Option<i64> {
+    let state = existing_state(page)?;
+    state.session.get()?;
+    Some(state.tab_id.get())
 }
 
 // ---------------------------------------------------------------------------
@@ -529,8 +566,8 @@ async fn finish_connect(
     let (host, port) = status_endpoint(session, terminal_tab.description());
     state(page).terminal_tab.replace(Some(terminal_tab));
     SessionTab::set_terminal_for_page(page, backend, input_tap);
-    let cancel =
-        tab_resilience::register_connected_tab(session.id, redial_fn(notebook, page, session.id));
+    let tab_id = state(page).tab_id.get();
+    let cancel = tab_resilience::register_connected_tab(tab_id, redial_fn(notebook, page, tab_id));
     let events = page_events(notebook, page, session, host, port);
     spawn_state_forward(page.clone(), gen, cancel, state_rx, events);
 
@@ -682,6 +719,7 @@ fn spawn_state_drain(
     mut rx: UnboundedReceiver<TransportEvent>,
 ) {
     let app = window_of(page).and_then(|window| window.application());
+    let tab_id = state(page).tab_id.get();
     let (notebook, session, page) = (notebook.clone(), session.clone(), page.downgrade());
     glib::MainContext::default().spawn_local(async move {
         while let Some(event) = rx.recv().await {
@@ -691,12 +729,12 @@ fn spawn_state_drain(
                     if state == TransportState::Connected {
                         settle_redial(&page, Ok(()));
                     }
-                    tab_resilience::set_tab_state(session.id, state.clone());
+                    tab_resilience::set_tab_state(tab_id, state.clone());
                     publish_status(&page, state, &host, port);
                 }
                 TransportEvent::Error(message) => {
                     let state = TransportState::Error(message.clone());
-                    tab_resilience::set_tab_state(session.id, state.clone());
+                    tab_resilience::set_tab_state(tab_id, state.clone());
                     show_error_view(&notebook, &page, &session, &message);
                     publish_status(&page, state, &host, port);
                 }
@@ -708,13 +746,13 @@ fn spawn_state_drain(
                     let Some(events) = events.upgrade() else {
                         break;
                     };
-                    if tab_resilience::on_connection_lost(session.id, events).is_some() {
+                    if tab_resilience::on_connection_lost(tab_id, events).is_some() {
                         // Free the dead session during the first backoff.
                         release_connection(&notebook, &page);
                     }
                 }
                 TransportEvent::SessionEnded => {
-                    tab_resilience::set_tab_state(session.id, TransportState::Disconnected);
+                    tab_resilience::set_tab_state(tab_id, TransportState::Disconnected);
                     publish_status(&page, TransportState::Disconnected, &host, port);
                     show_session_ended(&notebook, &page);
                 }
@@ -730,7 +768,7 @@ fn spawn_state_drain(
 /// is rewired through [`start_connect`] with a new generation, and awaits
 /// that attempt's verdict. Weak refs only: the registry must not keep a
 /// closed page alive.
-fn redial_fn(notebook: &gtk4::Notebook, page: &gtk4::Widget, session_id: i64) -> ConnectFn {
+fn redial_fn(notebook: &gtk4::Notebook, page: &gtk4::Widget, tab_id: i64) -> ConnectFn {
     // Shared, never cloned off the main thread: cloning a weak ref upgrades it.
     let notebook = Arc::new(glib::SendWeakRef::from(notebook.downgrade()));
     let page = Arc::new(glib::SendWeakRef::from(page.downgrade()));
@@ -742,7 +780,7 @@ fn redial_fn(notebook: &gtk4::Notebook, page: &gtk4::Widget, session_id: i64) ->
                 redial(&notebook, &page, reply);
             }
         });
-        let cancel = tab_resilience::live_tab(session_id).map(|tab| tab.cancel);
+        let cancel = tab_resilience::live_tab(tab_id).map(|tab| tab.cancel);
         let page = page.clone();
         Box::pin(async move {
             let Some(cancel) = cancel else {
@@ -822,12 +860,12 @@ fn install_teardown_on_remove(notebook: &gtk4::Notebook) {
     }
     set_data(notebook, TEARDOWN_HOOK_KEY, true);
     notebook.connect_page_removed(|_, page, _| {
-        if let Some(session_id) = session_id_of(page) {
+        if let Some(tab_id) = tab_id_of(page) {
             bump_gen(page);
             // Closing by any path stops the engine deterministically
             // (`close_tab` removes the page, so it lands here too).
             stop_forward_engine(page);
-            tab_resilience::teardown_tab(session_id);
+            tab_resilience::teardown_tab(tab_id);
         }
     });
 }
@@ -1275,6 +1313,9 @@ fn page_content(session: &Rc<SessionConfig>) -> gtk4::Widget {
     );
     let state = state(&page);
     let _ = state.session.set(session.clone());
+    state
+        .tab_id
+        .set(NEXT_TAB_ID.fetch_add(1, Ordering::Relaxed));
     if supports_sftp(&session.session_type) {
         let sidebar = if sftp_sidebar::open_on_connect() {
             SftpSidebar::new()
@@ -1288,20 +1329,28 @@ fn page_content(session: &Rc<SessionConfig>) -> gtk4::Widget {
 
 /// The tab label; closing asks first when the transport is live (doc 04
 /// §Lifecycle, `confirm_close`).
-fn build_tab_label(notebook: &gtk4::Notebook, session: &SessionConfig) -> gtk4::Widget {
+fn build_tab_label(
+    notebook: &gtk4::Notebook,
+    page: &gtk4::Widget,
+    session: &SessionConfig,
+) -> gtk4::Widget {
     let notebook = notebook.clone();
-    let session_id = session.id;
+    let tab_id = tab_id_of(page).unwrap_or_default();
+    // Weak: the label belongs to the notebook, which owns the page.
+    let page = page.downgrade();
     let (label, _) = tab_label::build_tab_label(&session.name, move || {
-        let notebook = notebook.clone();
+        let (notebook, page) = (notebook.clone(), page.clone());
         let parent = window_of(&notebook);
-        crate::ui::tab_resilience::request_close(session_id, parent.as_ref(), move || {
-            if let Some((page_num, _)) = find_tab(&notebook, session_id) {
+        crate::ui::tab_resilience::request_close(tab_id, parent.as_ref(), move || {
+            if let Some(page_num) = page.upgrade().and_then(|page| notebook.page_num(&page)) {
                 notebook.remove_page(Some(page_num));
             }
         });
     });
     label
 }
+
+mod duplicate;
 
 #[cfg(test)]
 mod tests;
@@ -1312,9 +1361,9 @@ pub(super) mod gtk_tests {
     use super::*;
     use crate::hotkeys::engine::focus_within;
 
-    /// Opening a session's tab hands keyboard focus from the session tree
-    /// to that tab's terminal; a tab in the background never takes it.
-    pub(in crate::ui) fn opening_a_tab_focuses_its_terminal() {
+    /// Focusing the current tab hands keyboard focus from the session tree
+    /// to its terminal; a tab in the background never takes it.
+    pub(in crate::ui) fn focusing_a_tab_moves_focus_to_its_terminal() {
         let notebook = gtk4::Notebook::new();
         // Stands in for the session tree, which holds focus after a
         // double-click.
@@ -1346,7 +1395,7 @@ pub(super) mod gtk_tests {
             glib::MainContext::default().iteration(false);
         }
 
-        let [(first, first_page, first_terminal), (_, _, second_terminal)] = &tabs[..] else {
+        let [(_, first_page, first_terminal), (_, _, second_terminal)] = &tabs[..] else {
             unreachable!();
         };
         notebook.set_current_page(Some(1));
@@ -1354,12 +1403,8 @@ pub(super) mod gtk_tests {
         focus_terminal(&notebook, first_page);
         assert!(focus_within(&tree), "a background tab took focus");
 
-        SessionTab::open(
-            &notebook,
-            first,
-            &Rc::new(SessionStore::in_memory().expect("in-memory store")),
-        );
-        assert_eq!(notebook.current_page(), Some(0));
+        notebook.set_current_page(Some(0));
+        focus_terminal(&notebook, first_page);
         assert!(focus_within(first_terminal), "the opened tab's terminal");
         assert!(!focus_within(second_terminal));
         window.destroy();
@@ -1495,11 +1540,12 @@ pub(super) mod gtk_tests {
             SessionTab::sidebar_for_page(&page).is_none(),
             "only SSH pages carry a sidebar"
         );
-        assert_eq!(
-            SessionTab::open(&notebook, &session, &store),
-            page,
-            "a second open focuses the open tab"
-        );
+        let duplicate = SessionTab::open(&notebook, &session, &store);
+        assert_ne!(duplicate, page, "a second open adds a tab");
+        assert_eq!(notebook.n_pages(), 2);
+        assert_ne!(tab_id_of(&duplicate), tab_id_of(&page));
+        close_tab(&notebook, &duplicate);
+        drop(duplicate);
 
         let gone = page.downgrade();
         close_tab(&notebook, &page);

@@ -206,7 +206,7 @@ fn reconnect_without_an_active_tab_reports_the_seam() {
     let _guard = fresh();
     assert_eq!(
         activate_reconnect(None, None, None),
-        ReconnectAction::NoLiveTab { session_id: None }
+        ReconnectAction::NoLiveTab { tab_id: None }
     );
     assert!(!activate_reconnect(None, None, None).started());
 }
@@ -217,7 +217,7 @@ fn reconnect_on_a_tab_with_no_transport_reports_the_seam() {
     assert_eq!(
         activate_reconnect(Some(SESSION), None, None),
         ReconnectAction::NoLiveTab {
-            session_id: Some(SESSION)
+            tab_id: Some(SESSION)
         }
     );
 }
@@ -237,9 +237,7 @@ async fn a_second_reconnect_does_not_stack_drivers() {
     assert!(activate_reconnect(Some(SESSION), None, None).started());
     assert_eq!(
         activate_reconnect(Some(SESSION), None, None),
-        ReconnectAction::AlreadyRunning {
-            session_id: SESSION
-        }
+        ReconnectAction::AlreadyRunning { tab_id: SESSION }
     );
 }
 
@@ -368,9 +366,7 @@ fn disconnect_fires_the_tabs_cancellation_token() {
 
     assert_eq!(
         activate_disconnect(Some(SESSION)),
-        DisconnectAction::Cancelled {
-            session_id: SESSION
-        }
+        DisconnectAction::Cancelled { tab_id: SESSION }
     );
     assert!(cancel.is_cancelled());
 }
@@ -391,7 +387,7 @@ fn disconnect_without_an_active_tab_reports_the_seam() {
     let _guard = fresh();
     assert_eq!(
         activate_disconnect(None),
-        DisconnectAction::NoLiveTab { session_id: None }
+        DisconnectAction::NoLiveTab { tab_id: None }
     );
     assert!(!activate_disconnect(None).cancelled());
 }
@@ -402,7 +398,7 @@ fn disconnect_on_a_tab_with_no_transport_reports_the_seam() {
     assert_eq!(
         activate_disconnect(Some(SESSION)),
         DisconnectAction::NoLiveTab {
-            session_id: Some(SESSION)
+            tab_id: Some(SESSION)
         }
     );
 }
@@ -604,12 +600,7 @@ async fn connection_lost_auto_reconnects_on_the_tabs_state_channel() {
     let (state_tx, mut state_rx) = mpsc::unbounded_channel();
 
     let action = on_connection_lost(SESSION, state_tx);
-    assert_eq!(
-        action,
-        Some(ReconnectAction::Started {
-            session_id: SESSION
-        })
-    );
+    assert_eq!(action, Some(ReconnectAction::Started { tab_id: SESSION }));
     assert_eq!(tab_state(SESSION), TransportState::Disconnected);
 
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -660,7 +651,7 @@ async fn connection_lost_after_close_starts_nothing() {
     assert_eq!(
         on_connection_lost(SESSION, state_tx),
         Some(ReconnectAction::NoLiveTab {
-            session_id: Some(SESSION)
+            tab_id: Some(SESSION)
         })
     );
 }
@@ -673,8 +664,6 @@ async fn a_second_connection_lost_does_not_stack_drivers() {
     assert!(on_connection_lost(SESSION, state_tx.clone()).is_some_and(ReconnectAction::started));
     assert_eq!(
         on_connection_lost(SESSION, state_tx),
-        Some(ReconnectAction::AlreadyRunning {
-            session_id: SESSION
-        })
+        Some(ReconnectAction::AlreadyRunning { tab_id: SESSION })
     );
 }
