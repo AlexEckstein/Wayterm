@@ -439,7 +439,12 @@ impl SessionTree {
                         .store
                         .get_session(id)
                         .and_then(|config| tree.store.insert_session(&cloned_session(&config)));
+                    let clone_id = cloned.as_ref().ok().copied();
                     tree.finish("clone the session", cloned);
+                    // Straight into the copy's editor; Cancel keeps the copy.
+                    if let Some(clone_id) = clone_id {
+                        tree.edit_session(Some(clone_id));
+                    }
                 }),
             );
             item(
