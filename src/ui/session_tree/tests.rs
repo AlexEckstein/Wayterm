@@ -3,7 +3,7 @@
 use crate::store::model::{SessionConfig, SessionType};
 use crate::store::SessionStore;
 
-use super::{collect_rows, SessionRow};
+use super::{cloned_session, collect_rows, SessionRow};
 
 #[test]
 fn collect_rows_empty_store() {
@@ -151,4 +151,36 @@ fn session_persists_across_fresh_connection() {
         loaded.auth_method,
         Some(crate::store::model::AuthMethod::Key)
     );
+}
+
+#[test]
+fn cloned_session_is_a_new_copy_in_the_same_folder() {
+    let store = SessionStore::in_memory().unwrap();
+    let folder = store.insert_folder("F", None).unwrap();
+    let original = SessionConfig {
+        name: "web".to_string(),
+        session_type: SessionType::SSH,
+        folder_id: Some(folder),
+        host: Some("example.test".to_string()),
+        port: Some(2222),
+        username: Some("admin".to_string()),
+        ..Default::default()
+    };
+    let original_id = store.insert_session(&original).unwrap();
+    store.touch_connected(original_id).unwrap();
+
+    let source = store.get_session(original_id).unwrap();
+    let clone_id = store.insert_session(&cloned_session(&source)).unwrap();
+    assert_ne!(clone_id, original_id);
+
+    let clone = store.get_session(clone_id).unwrap();
+    assert_eq!(clone.name, "web (copy)");
+    assert_eq!(clone.folder_id, Some(folder));
+    assert_eq!(clone.host.as_deref(), Some("example.test"));
+    assert_eq!(clone.port, Some(2222));
+    assert_eq!(clone.username.as_deref(), Some("admin"));
+    assert_eq!(clone.connect_count, 0);
+    assert_eq!(clone.last_connected, None);
+    // The original is untouched.
+    assert_eq!(store.get_session(original_id).unwrap().name, "web");
 }
