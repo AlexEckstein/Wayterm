@@ -1,5 +1,5 @@
 //! The session tree sidebar: folders and saved sessions with a right-click
-//! CRUD menu; sessions and folders drag onto folders to move (docs 01, 06). Rows draw their icon by name from the icon
+//! CRUD menu (sessions can also be cloned); sessions and folders drag onto folders to move (docs 01, 06). Rows draw their icon by name from the icon
 //! theme (`ui::icons`). [`collect_rows`] is the display-free part.
 
 use std::collections::{HashMap, HashSet};
@@ -432,6 +432,17 @@ impl SessionTree {
                 Box::new(move |tree| tree.edit_session(Some(id))),
             );
             item(
+                "Clone Session",
+                "clone-session",
+                Box::new(move |tree| {
+                    let cloned = tree
+                        .store
+                        .get_session(id)
+                        .and_then(|config| tree.store.insert_session(&cloned_session(&config)));
+                    tree.finish("clone the session", cloned);
+                }),
+            );
+            item(
                 "Delete Session",
                 "delete-session",
                 Box::new(move |tree| {
@@ -527,6 +538,19 @@ impl SessionTree {
 
     fn parent(&self) -> Option<gtk4::Window> {
         window_of(&self.list_view)
+    }
+}
+
+/// A copy of `config` to insert as a new session: same folder and
+/// settings, named "<name> (copy)", without the id or connection history.
+/// Keyring secrets are keyed on the session id and stay with the original.
+pub fn cloned_session(config: &SessionConfig) -> SessionConfig {
+    SessionConfig {
+        id: 0,
+        name: format!("{} (copy)", config.name),
+        last_connected: None,
+        connect_count: 0,
+        ..config.clone()
     }
 }
 
