@@ -53,7 +53,7 @@ mod gtk_tests {
         super::icons::gtk_tests::custom_svg_resolves_and_picker_round_trips();
         super::folder_dialog::gtk_tests::edit_folder_prefills_name_and_icon();
         super::settings::gtk_tests::pages_and_general_switches();
-        super::tab::gtk_tests::opening_a_tab_focuses_its_terminal();
+        super::tab::gtk_tests::focusing_a_tab_moves_focus_to_its_terminal();
         super::tab::gtk_tests::reconnect_does_not_steal_focus();
         super::tab::gtk_tests::sftp_sidebar_follows_the_shell_directory();
         super::tab::gtk_tests::a_local_shell_tab_connects_and_closes();

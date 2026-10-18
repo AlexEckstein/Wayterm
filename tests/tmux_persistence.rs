@@ -582,7 +582,7 @@ async fn auto_reconnect_after_a_dropped_connection_keeps_the_program_running() {
     let (state_tx, mut state_rx) = mpsc::unbounded_channel();
     assert_eq!(
         tab_resilience::on_connection_lost(TAB, state_tx),
-        Some(ReconnectAction::Started { session_id: TAB })
+        Some(ReconnectAction::Started { tab_id: TAB })
     );
     assert_eq!(tab_resilience::tab_state(TAB), TransportState::Disconnected);
 

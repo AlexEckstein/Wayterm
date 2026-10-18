@@ -160,7 +160,7 @@ impl TabPersistence {
     fn open_restored(&self, tab: &TabState) {
         let config = tab.session_id.map(|id| (id, self.store.get_session(id)));
         let content = match config {
-            Some((_, Ok(config))) => SessionTab::open(&self.notebook, &config, &self.store),
+            Some((_, Ok(config))) => SessionTab::restore(&self.notebook, &config, &self.store),
             Some((id, Err(err))) => {
                 eprintln!(
                     "Wayterm: tab '{}' points at session {id}, which no longer exists ({err}); restoring it unconnected",
