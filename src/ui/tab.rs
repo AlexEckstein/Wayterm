@@ -1351,6 +1351,7 @@ fn build_tab_label(
 }
 
 mod duplicate;
+pub(crate) use duplicate::TMUX_NOTICE_SETTING;
 
 #[cfg(test)]
 mod tests;

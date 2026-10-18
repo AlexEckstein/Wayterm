@@ -7,6 +7,9 @@
 //! ([`flag_enabled`](crate::store::db::flag_enabled)), so the page shows what
 //! the app does even for a row that was never written.
 //!
+//! "Clear all reminders" turns back on every notice the user silenced with
+//! "Do not show me again" ([`REMINDERS`]).
+//!
 //! The "Experimental Ghostty terminal" check box writes `default_backend`
 //! (`ghostty`/`vte`, doc 06) for tabs opened afterwards. In a build without
 //! the `backend-ghostty` feature it is shown disabled, and VTE is used
@@ -18,7 +21,7 @@ use gtk4::prelude::*;
 
 use crate::store::SessionStore;
 use crate::terminal::{BackendKind, DEFAULT_BACKEND_SETTING, GHOSTTY_COMPILED};
-use crate::ui::{sftp_sidebar, tab_resilience, tray};
+use crate::ui::{sftp_sidebar, tab, tab_resilience, tray};
 
 // ---------------------------------------------------------------------------
 // Display-free data layer
@@ -72,6 +75,24 @@ pub fn save(store: &SessionStore, key: &str, on: bool) -> rusqlite::Result<()> {
     store.set_setting(key, if on { "1" } else { "0" })
 }
 
+/// The settings rows behind every "Do not show me again" check box; a new
+/// notice adds its row here so "Clear all reminders" covers it.
+pub const REMINDERS: [&str; 1] = [tab::TMUX_NOTICE_SETTING];
+
+pub const CLEAR_REMINDERS_TITLE: &str = "Clear all reminders";
+pub const CLEAR_REMINDERS_SUBTITLE: &str =
+    "Show again every notice you turned off with \"Do not show me again\".";
+
+/// Whether any reminder is silenced (the Clear button has work to do).
+pub fn any_reminder_silenced(store: &SessionStore) -> bool {
+    REMINDERS.iter().any(|key| !store.flag(key))
+}
+
+/// Turn every reminder back on.
+pub fn clear_reminders(store: &SessionStore) -> rusqlite::Result<()> {
+    REMINDERS.iter().try_for_each(|key| save(store, key, true))
+}
+
 /// The check box's text.
 pub const GHOSTTY_TITLE: &str = "Experimental Ghostty terminal";
 pub const GHOSTTY_SUBTITLE: &str = "Draw new tabs with libghostty-vt instead of VTE. \
@@ -106,12 +127,14 @@ pub fn apply(store: &SessionStore) {
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// The page widget: a heading over one row per toggle, then the backend.
+/// The page widget: a heading over one row per toggle and the reminders
+/// reset, then the backend.
 pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     let behavior = super::boxed_list();
     for (toggle, on) in values(&store) {
         behavior.append(&toggle_row(toggle, on, &store));
     }
+    behavior.append(&clear_reminders_row(&store));
     let terminal_heading = super::heading("Terminal");
     terminal_heading.set_margin_top(12);
     let terminal = super::boxed_list();
@@ -140,6 +163,29 @@ fn toggle_row(toggle: Toggle, on: bool, store: &Rc<SessionStore>) -> gtk4::ListB
         apply(&store);
     });
     super::row(&[text.upcast_ref(), switch.upcast_ref()])
+}
+
+/// title over subtitle | Clear. Insensitive while no reminder is silenced.
+fn clear_reminders_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
+    let button = gtk4::Button::builder()
+        .label("Clear")
+        .valign(gtk4::Align::Center)
+        .sensitive(any_reminder_silenced(store))
+        .build();
+    let text = super::described(
+        CLEAR_REMINDERS_TITLE,
+        Some(CLEAR_REMINDERS_SUBTITLE),
+        &button,
+    );
+    let store = Rc::clone(store);
+    button.connect_clicked(move |button| {
+        if let Err(err) = clear_reminders(&store) {
+            eprintln!("Wayterm: failed to clear reminders: {err}");
+            return;
+        }
+        button.set_sensitive(false);
+    });
+    super::row(&[text.upcast_ref(), button.upcast_ref()])
 }
 
 /// check box | title over subtitle. Disabled, with a tooltip, in a build
@@ -177,6 +223,25 @@ fn backend_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
 mod tests {
     use super::*;
     use crate::terminal::backend_preference;
+
+    /// Clearing turns every silenced reminder back on.
+    #[test]
+    fn clearing_reminders_turns_them_all_back_on() {
+        let store = SessionStore::in_memory().unwrap();
+        assert!(
+            !any_reminder_silenced(&store),
+            "a fresh store shows them all"
+        );
+
+        for key in REMINDERS {
+            save(&store, key, false).unwrap();
+        }
+        assert!(any_reminder_silenced(&store));
+
+        clear_reminders(&store).unwrap();
+        assert!(!any_reminder_silenced(&store));
+        assert!(REMINDERS.iter().all(|key| store.flag(key)));
+    }
 
     /// The seeded row reads as VTE; a saved choice round-trips and `apply`
     /// installs it for `create_terminal`.

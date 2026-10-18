@@ -243,7 +243,9 @@ Ghostty terminal" check box that writes `default_backend` (`vte` or
 writes `1`/`0` at once and applies live: the first two count from the
 next tab close or connection drop, open tabs included; `sftp_on_connect`
 governs tabs opened or connected afterwards; the tray setting is read at
-each window close. Its other page, Keyboard Shortcuts, is doc 07's.
+each window close. A "Clear all reminders" button writes `1` to every
+"Do not show me again" row (today `duplicate_tmux_notice`), so each notice
+shows again; it is greyed out while none is silenced. Its other page, Keyboard Shortcuts, is doc 07's.
 
 The seed also inserts 28 `hotkeys` rows with `is_default = 1`. They are
 informational: only `is_default = 0` rows (user overrides) are ever loaded,
