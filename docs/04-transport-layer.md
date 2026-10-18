@@ -153,6 +153,14 @@ own sessions, and the name is shell-quoted (`;` is legal in tmux names).
 prefix); NULL means the session's own name. The dialog shows the full
 remote name, as `tmux list-sessions` prints it, strips one leading
 `wayterm-` on save, and follows the Name field until the user edits it.
+Opening a session that already has a tab open adds a second, independent
+tab. Two tabs attaching to one tmux name would mirror each other, so only
+the first tab uses tmux: duplicates connect with a plain shell, and a
+notice says so unless the user ticked its "Do not show me again"
+(`duplicate_tmux_notice`, doc 06). Tabs restored at startup follow the same
+rule without the notice. The resilience registry is keyed per tab, not per
+session, so duplicates reconnect and disconnect independently.
+
 `tests/tmux_persistence.rs` proves the same tmux session id and its
 environment survive dropping the transport *and* the connection. tmux
 scrollback persists on the remote host; that data at rest is out of scope.

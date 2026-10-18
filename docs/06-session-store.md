@@ -229,6 +229,7 @@ duplicate rows; that constraint is the first schema-v2 candidate).
 | `host_key_policy` | `strict` | doc 11 |
 | `minimize_to_tray` | (not seeded) | missing = on |
 | `sftp_on_connect` | (not seeded) | missing = on; off defers the SFTP sidebar until first viewed (doc 09) |
+| `duplicate_tmux_notice` | (not seeded) | missing = on; off after "Do not show me again" on the duplicate-tab tmux notice (doc 04 §Tmux Session Persistence) |
 | `open_tabs` | (written at runtime) | JSON tab list (doc 10 Phase 4) |
 
 Boolean settings are on unless explicitly `0`/`false`/`no`/`off`; a
