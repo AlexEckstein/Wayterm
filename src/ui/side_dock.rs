@@ -9,7 +9,9 @@
 //! deferred SFTP channel opens — only once the panel has it in view.
 //!
 //! The Macros panel is the window's [`MacrosPanel`](super::macros_panel)
-//! (doc 12). [`DockPage`] and [`toggle_target`] are display-free.
+//! (doc 12). `toggle_session_tree` can hide the panel (doc 07 §Handlers);
+//! picking any tab shows it again. [`DockPage`] and [`toggle_target`] are
+//! display-free.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -163,20 +165,47 @@ impl SideDock {
         self.inner.stack.upcast_ref()
     }
 
+    /// The SFTP panel: the `sftp` shortcuts fire while focus is inside it
+    /// (doc 07 §Dispatch).
+    pub fn sftp_panel(&self) -> &gtk4::Widget {
+        self.inner.sftp.stack.upcast_ref()
+    }
+
     pub fn current(&self) -> DockPage {
         self.inner.current.get()
     }
 
-    /// Switch to `page`'s panel, as a click on its tab does.
+    /// Switch to `page`'s panel, as a click on its tab does, showing the
+    /// panel if it was hidden.
     pub fn select(&self, page: DockPage) {
         if let Some((_, button)) = self.inner.tabs.iter().find(|(p, _)| *p == page) {
             button.set_active(true);
         }
+        self.inner.show_panel();
     }
 
-    /// `toggle_sftp` (doc 09): to the SFTP panel, or back from it.
+    /// `toggle_sftp` (doc 09): to the SFTP panel, or back from it; a
+    /// hidden panel comes back on SFTP.
     pub fn toggle_sftp(&self) {
-        self.select(toggle_target(self.current(), self.inner.previous.get()));
+        let target = if self.inner.stack.is_visible() {
+            toggle_target(self.current(), self.inner.previous.get())
+        } else {
+            DockPage::Sftp
+        };
+        self.select(target);
+    }
+
+    /// `toggle_session_tree` (doc 07): hide the panel while it shows
+    /// Sessions, otherwise show it on Sessions. `true` when Sessions is now
+    /// in view (the caller moves focus into the tree).
+    pub fn toggle_sessions(&self) -> bool {
+        if self.inner.stack.is_visible() && self.current() == DockPage::Sessions {
+            self.inner.stack.set_visible(false);
+            false
+        } else {
+            self.select(DockPage::Sessions);
+            true
+        }
     }
 }
 
@@ -187,6 +216,13 @@ impl DockInner {
             button.connect_toggled(move |button| {
                 if let (true, Some(inner)) = (button.is_active(), weak.upgrade()) {
                     inner.on_selected(page);
+                }
+            });
+            // Even the active tab's click: it brings a hidden panel back.
+            let weak = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                if let Some(inner) = weak.upgrade() {
+                    inner.show_panel();
                 }
             });
         }
@@ -208,6 +244,17 @@ impl DockInner {
         });
     }
 
+    /// Show a hidden panel; SFTP, if current, comes into view.
+    fn show_panel(&self) {
+        if self.stack.is_visible() {
+            return;
+        }
+        self.stack.set_visible(true);
+        if self.current.get() == DockPage::Sftp {
+            self.sftp.show_hosted();
+        }
+    }
+
     fn on_selected(&self, page: DockPage) {
         self.stack.set_visible_child_name(page.id());
         self.current.set(page);
@@ -221,8 +268,8 @@ impl DockInner {
     /// Host `page`'s sidebar in the SFTP panel (a placeholder without one).
     fn host(&self, page: Option<&gtk4::Widget>) {
         let sidebar = page.and_then(SessionTab::sidebar_for_page);
-        self.sftp
-            .host(sidebar, self.current.get() == DockPage::Sftp);
+        let in_view = self.current.get() == DockPage::Sftp && self.stack.is_visible();
+        self.sftp.host(sidebar, in_view);
     }
 }
 
@@ -319,13 +366,16 @@ pub(crate) fn sidebar_replaced(notebook: &gtk4::Notebook) {
 }
 
 /// Bring the SFTP panel forward for `page` when it is the current page
-/// (`sftp_on_connect`). No-op without a dock.
+/// (`sftp_on_connect`). No-op without a dock, or while the user keeps the
+/// panel hidden.
 pub(crate) fn reveal_sftp(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     if current_page(notebook).as_ref() != Some(page) {
         return;
     }
     if let Some(dock) = data::<SideDock>(notebook, DOCK_KEY) {
-        dock.select(DockPage::Sftp);
+        if dock.inner.stack.is_visible() {
+            dock.select(DockPage::Sftp);
+        }
     }
 }
 
@@ -386,6 +436,26 @@ pub(super) mod gtk_tests {
         assert!(tabs[2].1.is_active());
         dock.toggle_sftp();
         assert_eq!(dock.current(), DockPage::Macros, "back where it came from");
+
+        // `toggle_session_tree`: to Sessions, then hide, then back.
+        let panel_shown = || dock.panel().is_visible();
+        assert!(dock.toggle_sessions());
+        assert_eq!(dock.current(), DockPage::Sessions);
+        assert!(!dock.toggle_sessions());
+        assert!(!panel_shown(), "a second toggle hides the panel");
+        tabs[0].1.emit_clicked();
+        assert!(panel_shown(), "a click on the active tab brings it back");
+        dock.inner.stack.set_visible(false);
+        dock.toggle_sftp();
+        assert!(panel_shown());
+        assert_eq!(
+            dock.current(),
+            DockPage::Sftp,
+            "a hidden panel returns on SFTP"
+        );
+        dock.inner.stack.set_visible(false);
+        assert!(dock.toggle_sessions(), "a hidden panel returns on Sessions");
+        assert!(panel_shown());
     }
 
     /// The SFTP panel hosts the current tab's sidebar and a placeholder
@@ -439,10 +509,16 @@ pub(super) mod gtk_tests {
         assert!(hosted(&second) && !hosted(&first));
         assert!(second.is_shown());
 
-        // `sftp_on_connect` brings the panel forward for the current tab only.
+        // `sftp_on_connect` brings the panel forward for the current tab
+        // only, and never un-hides a panel the user hid.
         dock.select(DockPage::Sessions);
         reveal_sftp(&notebook, local.upcast_ref());
         assert_eq!(dock.current(), DockPage::Sessions, "a background tab");
+        dock.inner.stack.set_visible(false);
+        reveal_sftp(&notebook, ssh.upcast_ref());
+        assert_eq!(dock.current(), DockPage::Sessions, "the panel stays hidden");
+        assert!(!dock.panel().is_visible());
+        dock.inner.stack.set_visible(true);
         reveal_sftp(&notebook, ssh.upcast_ref());
         assert_eq!(dock.current(), DockPage::Sftp);
 

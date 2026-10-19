@@ -408,16 +408,7 @@ impl SessionTree {
             item(
                 "Delete Folder",
                 "delete-folder",
-                Box::new(move |tree| {
-                    let tree = tree.clone();
-                    confirm(
-                        tree.parent().as_ref(),
-                        &format!("Delete folder '{name}'?"),
-                        "Sub-folders will be deleted. Sessions inside will be moved to the root.",
-                        "Delete",
-                        move || tree.finish("delete the folder", tree.store.delete_folder(id)),
-                    );
-                }),
+                Box::new(move |tree| tree.delete_folder(id, &name)),
             );
         }
         item(
@@ -434,38 +425,12 @@ impl SessionTree {
             item(
                 "Clone Session",
                 "clone-session",
-                Box::new(move |tree| {
-                    let cloned = tree
-                        .store
-                        .get_session(id)
-                        .and_then(|config| tree.store.insert_session(&cloned_session(&config)));
-                    let clone_id = cloned.as_ref().ok().copied();
-                    tree.finish("clone the session", cloned);
-                    // Straight into the copy's editor; Cancel keeps the copy.
-                    if let Some(clone_id) = clone_id {
-                        tree.edit_session(Some(clone_id));
-                    }
-                }),
+                Box::new(move |tree| tree.clone_session(id)),
             );
             item(
                 "Delete Session",
                 "delete-session",
-                Box::new(move |tree| {
-                    let tree = tree.clone();
-                    confirm(
-                        tree.parent().as_ref(),
-                        &format!("Delete session '{name}'?"),
-                        "This cannot be undone.",
-                        "Delete",
-                        move || {
-                            let deleted = tree.store.delete_session(id);
-                            if deleted.is_ok() {
-                                forget_secrets(id);
-                            }
-                            tree.finish("delete the session", deleted);
-                        },
-                    );
-                }),
+                Box::new(move |tree| tree.delete_session(id, &name)),
             );
         }
 
@@ -485,6 +450,142 @@ impl SessionTree {
             0,
         )));
         self.popover.popup();
+    }
+
+    /// Register the tree's window actions (doc 07 §Handlers):
+    /// `new_session`, and `edit_session`, `duplicate_session`,
+    /// `delete_session` and `connect_session` on the selected row. Those
+    /// four are enabled only while a row they apply to is selected; a
+    /// disabled action lets its key through, so `Return` still reaches the
+    /// list, which activates its focused row.
+    pub fn install_actions(&self, window: &gtk4::ApplicationWindow) {
+        let new_session = gio::SimpleAction::new("new_session", None);
+        let tree = self.clone();
+        new_session.connect_activate(move |_, _| tree.new_session());
+        window.add_action(&new_session);
+
+        type RowAction = (&'static str, fn(&SessionTree), fn(bool) -> bool);
+        let any_row = |_: bool| true;
+        let row_actions: [RowAction; 4] = [
+            ("edit_session", SessionTree::edit_selected, any_row),
+            (
+                "duplicate_session",
+                SessionTree::duplicate_selected,
+                |folder| !folder,
+            ),
+            ("delete_session", SessionTree::delete_selected, any_row),
+            ("connect_session", SessionTree::activate_selected, any_row),
+        ];
+        let mut synced = Vec::new();
+        for (id, run, applies) in row_actions {
+            let action = gio::SimpleAction::new(id, None);
+            let tree = self.clone();
+            action.connect_activate(move |_, _| run(&tree));
+            window.add_action(&action);
+            synced.push((action, applies));
+        }
+        let sync = {
+            let tree = self.clone();
+            move || {
+                let selected = tree.selected().map(|(_, is_folder, _)| is_folder);
+                for (action, applies) in &synced {
+                    action.set_enabled(selected.is_some_and(applies));
+                }
+            }
+        };
+        sync();
+        self.selection.connect_selected_item_notify(move |_| sync());
+    }
+
+    /// `new_session` (doc 07): the session dialog for a new session.
+    pub fn new_session(&self) {
+        self.edit_session(None);
+    }
+
+    /// `edit_session`: edit the selected session, or folder.
+    pub fn edit_selected(&self) {
+        match self.selected() {
+            Some((id, true, _)) => self.edit_folder(id),
+            Some((id, false, _)) => self.edit_session(Some(id)),
+            None => {}
+        }
+    }
+
+    /// `duplicate_session`: Clone Session on the selected session.
+    pub fn duplicate_selected(&self) {
+        if let Some((id, false, _)) = self.selected() {
+            self.clone_session(id);
+        }
+    }
+
+    /// `delete_session`: delete the selected session, or folder, once the
+    /// user confirms.
+    pub fn delete_selected(&self) {
+        match self.selected() {
+            Some((id, true, name)) => self.delete_folder(id, &name),
+            Some((id, false, name)) => self.delete_session(id, &name),
+            None => {}
+        }
+    }
+
+    /// `connect_session`: activate the selected row, as Return or a
+    /// double-click does — a session opens, a folder opens or closes.
+    pub fn activate_selected(&self) {
+        let position = self.selection.selected();
+        if position != gtk4::INVALID_LIST_POSITION {
+            let _ = self
+                .list_view
+                .activate_action("list.activate-item", Some(&position.to_variant()));
+        }
+    }
+
+    /// Move keyboard focus into the tree (`toggle_session_tree`).
+    pub fn focus(&self) {
+        self.list_view.grab_focus();
+    }
+
+    /// Insert a copy of session `id` and open the copy's editor; Cancel
+    /// keeps the copy.
+    fn clone_session(&self, id: i64) {
+        let cloned = self
+            .store
+            .get_session(id)
+            .and_then(|config| self.store.insert_session(&cloned_session(&config)));
+        let clone_id = cloned.as_ref().ok().copied();
+        self.finish("clone the session", cloned);
+        if let Some(clone_id) = clone_id {
+            self.edit_session(Some(clone_id));
+        }
+    }
+
+    /// Delete session `id` and its keyring secrets, once confirmed.
+    fn delete_session(&self, id: i64, name: &str) {
+        let tree = self.clone();
+        confirm(
+            self.parent().as_ref(),
+            &format!("Delete session '{name}'?"),
+            "This cannot be undone.",
+            "Delete",
+            move || {
+                let deleted = tree.store.delete_session(id);
+                if deleted.is_ok() {
+                    forget_secrets(id);
+                }
+                tree.finish("delete the session", deleted);
+            },
+        );
+    }
+
+    /// Delete folder `id`, once confirmed.
+    fn delete_folder(&self, id: i64, name: &str) {
+        let tree = self.clone();
+        confirm(
+            self.parent().as_ref(),
+            &format!("Delete folder '{name}'?"),
+            "Sub-folders will be deleted. Sessions inside will be moved to the root.",
+            "Delete",
+            move || tree.finish("delete the folder", tree.store.delete_folder(id)),
+        );
     }
 
     /// Edit a folder's name and icon.

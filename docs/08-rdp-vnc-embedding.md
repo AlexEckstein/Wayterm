@@ -95,7 +95,7 @@ needed. Layout (`src/vnc/`, `src/ui/vnc_tab.rs`):
   Input: `EventControllerKey` forwards keyvals as X11 keysyms (no table
   needed — GDK keyvals *are* keysyms), `EventControllerMotion` +
   `GestureClick` + scroll wheel build pointer events; view-only mode
-  suppresses all input. VNC tabs attach no Tier-2 shortcut controller
+  suppresses all input. VNC tabs have no shortcut context of their own
   (§Tabs).
 - **Credentials.** The VNC password resolves through the credential
   chain (`vnc_password` secret type, doc 06) before the engine starts;
@@ -128,9 +128,9 @@ checks run under xvfb (`gtk_tests`).
 ## Tabs
 
 The notebook does not care what a tab is: SSH, local, and serial build a
-terminal tab; RDP and VNC build their own widget. RDP/VNC tabs attach no
-Tier-2 shortcut controller, so only global accels intercept keys and the
-rest reach the remote desktop (doc 07).
+terminal tab; RDP and VNC build their own widget. RDP/VNC tabs have no
+terminal and no shortcut context, so only global shortcuts intercept keys
+and the rest reach the remote desktop (doc 07 §Dispatch).
 
 ## v1 limitations
 

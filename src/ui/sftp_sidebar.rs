@@ -87,6 +87,15 @@ impl Attached {
     }
 }
 
+/// A toolbar button the `sftp_*` actions press (doc 07 §Handlers).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SftpButton {
+    Upload,
+    Download,
+    Rename,
+    Delete,
+}
+
 /// The SFTP sidebar (doc 09). Clones share everything; dropping the last
 /// one ends the SFTP task, never the shared SSH connection.
 #[derive(Clone)]
@@ -188,6 +197,21 @@ impl SftpSidebar {
     #[cfg(test)]
     pub(crate) fn path_text(&self) -> String {
         self.inner.path_entry.text().into()
+    }
+
+    /// Press a toolbar button as a click would, and only while it is
+    /// enabled, so a shortcut follows the toolbar's rules (doc 09).
+    pub fn press(&self, button: SftpButton) {
+        let buttons = &self.inner.buttons;
+        let button = match button {
+            SftpButton::Upload => &buttons.upload,
+            SftpButton::Download => &buttons.download,
+            SftpButton::Rename => &buttons.rename,
+            SftpButton::Delete => &buttons.delete,
+        };
+        if button.is_sensitive() {
+            button.emit_clicked();
+        }
     }
 
     /// Whether the sidebar has been shown.

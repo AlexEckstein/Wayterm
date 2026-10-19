@@ -59,9 +59,17 @@ fn build_ui(app: &gtk4::Application) {
     let mut hotkeys = HotkeyEngine::new();
     match hotkeys.load_from_db(&store) {
         Ok(report) if !report.applied.is_empty() || !report.skipped.is_empty() => eprintln!(
-            "Wayterm: loaded {} custom hotkey(s), skipped {}",
+            "Wayterm: loaded {} custom hotkey(s), skipped {}{}",
             report.applied.len(),
-            report.skipped.len()
+            report.skipped.len(),
+            if report.displaced.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; unbound by a colliding chord: {}",
+                    report.displaced.join(", ")
+                )
+            }
         ),
         Ok(_) => {}
         Err(err) => eprintln!("Wayterm: failed to load custom hotkeys: {err}"),

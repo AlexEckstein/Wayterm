@@ -129,16 +129,48 @@ fn rows_from_custom_registry_follow_that_registry() {
 fn capture_formats_a_ctrl_shift_chord() {
     assert_eq!(
         SettingsView::capture_label(chord("Ctrl+Shift+T")),
-        Some("Ctrl+Shift+t".to_string())
+        Some("Ctrl+Shift+T".to_string())
     );
 }
 
+/// GDK reports a lower-case keyval for Ctrl+T; the capture renders it the
+/// way the table spells it, so it is the same chord (doc 07 §Trigger
+/// Parsing).
 #[test]
-fn capture_lowercases_a_single_letter_like_the_parser() {
+fn capture_renders_a_letter_the_way_the_table_does() {
+    let lower = gdk::Key::from_name("t").expect("t key");
     assert_eq!(
-        SettingsView::capture_label(chord("Ctrl+T")),
-        Some("Ctrl+t".to_string())
+        SettingsView::capture_label(KeyChord::new(lower, gdk::ModifierType::CONTROL_MASK)),
+        Some("Ctrl+T".to_string())
     );
+}
+
+/// Capturing a default chord leaves the action at its default, and a
+/// captured chord that another action holds is reported as a conflict.
+#[test]
+fn a_captured_chord_is_the_table_chord() {
+    let store = memory_store();
+    let mut engine = engine();
+    let shift_ctrl = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
+    let captured = SettingsView::capture_label(KeyChord::new(
+        gdk::Key::from_name("t").expect("t key"),
+        shift_ctrl,
+    ))
+    .expect("renders");
+    let losers = SettingsView::conflicts(&engine, "copy", &captured);
+    assert_eq!(losers.len(), 1);
+    assert_eq!(losers[0].id, "new_tab");
+
+    SettingsView::apply_rebind(
+        &mut engine,
+        &store,
+        "new_tab",
+        &captured,
+        ConflictPolicy::Reject,
+    )
+    .expect("its own chord");
+    assert!(engine.action("new_tab").unwrap().is_default);
+    assert!(store.load_custom_hotkeys().unwrap().is_empty());
 }
 
 #[test]
@@ -228,13 +260,23 @@ fn conflicts_excludes_the_action_itself() {
 }
 
 #[test]
-fn conflicts_ignores_other_tier2_contexts() {
+fn conflicts_ignores_the_other_panel() {
     let engine = engine();
-    // `copy` holds Ctrl+Shift+C in the terminal context; aiming the
+    // `edit_session` holds Ctrl+E in the session tree; aiming the
     // sftp-context `sftp_upload` at the same chord is fine (doc 07
-    // rule 4: different Tier-2 contexts never co-fire).
-    let losers = SettingsView::conflicts(&engine, "sftp_upload", "Ctrl+Shift+C");
+    // rule 5: focus is in one panel at most).
+    let losers = SettingsView::conflicts(&engine, "sftp_upload", "Ctrl+E");
     assert!(losers.is_empty());
+}
+
+#[test]
+fn conflicts_reports_a_terminal_chord_against_a_panel_action() {
+    let engine = engine();
+    // Terminal shortcuts stay live while the SFTP panel has focus (doc 07
+    // rule 4), so `copy`'s Ctrl+Shift+C is taken there too.
+    let losers = SettingsView::conflicts(&engine, "sftp_upload", "Ctrl+Shift+C");
+    assert_eq!(losers.len(), 1);
+    assert_eq!(losers[0].id, "copy");
 }
 
 #[test]

@@ -48,7 +48,7 @@ fn binding(engine: &HotkeyEngine, id: &str) -> String {
 #[test]
 fn new_engine_starts_from_doc07_defaults() {
     let engine = engine();
-    assert_eq!(engine.registry().len(), 37);
+    assert_eq!(engine.registry().len(), 34);
     assert_eq!(binding(&engine, "copy"), "Ctrl+Shift+C");
     assert!(engine.action("copy").unwrap().is_default);
     assert_eq!(
@@ -209,6 +209,65 @@ fn load_from_db_applies_custom_rows() {
         "Ctrl+Shift+C",
         "the compiled-in default is metadata, never overwritten"
     );
+}
+
+/// A stored chord that collides under today's rules takes the chord, as
+/// an override would, so no two co-firing actions share it after load.
+#[test]
+fn load_from_db_resolves_a_collision_like_an_override() {
+    let store = store();
+    // Terminal copy on the tree's Ctrl+E: legal before terminal shortcuts
+    // stayed live in the session tree.
+    store
+        .save_custom_hotkey("copy", "Ctrl+E", "terminal", true)
+        .unwrap();
+    let mut engine = engine();
+    let report = engine.load_from_db(&store).expect("load");
+    assert_eq!(report.applied, vec!["copy".to_string()]);
+    assert_eq!(report.displaced, vec!["edit_session".to_string()]);
+    assert_eq!(binding(&engine, "copy"), "Ctrl+E");
+    assert!(!engine.action("edit_session").unwrap().is_bound());
+}
+
+/// Keys load canonical: a row that spells a default chord differently is
+/// that default again, and the next save drops it.
+#[test]
+fn load_from_db_canonicalizes_keys() {
+    let store = store();
+    store
+        .save_custom_hotkey("new_tab", "Ctrl+Shift+t", "global", true)
+        .unwrap();
+    store
+        .save_custom_hotkey("copy", "Shift+Ctrl+y", "terminal", true)
+        .unwrap();
+    let mut engine = engine();
+    let report = engine.load_from_db(&store).expect("load");
+    assert!(report.displaced.is_empty(), "new_tab displaced nothing");
+    assert!(engine.action("new_tab").unwrap().is_default);
+    assert_eq!(binding(&engine, "copy"), "Ctrl+Shift+Y");
+    engine.save_to_db(&store).unwrap();
+    assert_eq!(
+        custom_rows(&store),
+        vec![("copy".to_string(), "Ctrl+Shift+Y".to_string(), true)]
+    );
+}
+
+/// A later row can rebind what an earlier one displaced; it is then not
+/// reported as displaced.
+#[test]
+fn load_from_db_reports_only_what_stays_displaced() {
+    let store = store();
+    store
+        .save_custom_hotkey("copy", "Ctrl+E", "terminal", true)
+        .unwrap();
+    store
+        .save_custom_hotkey("edit_session", "F4", "session_tree", true)
+        .unwrap();
+    let mut engine = engine();
+    let report = engine.load_from_db(&store).expect("load");
+    assert!(report.displaced.is_empty());
+    assert_eq!(binding(&engine, "edit_session"), "F4");
+    assert!(engine.action("edit_session").unwrap().is_bound());
 }
 
 #[test]
@@ -540,18 +599,17 @@ fn pushed(id: &str, accel: Option<&str>) -> (String, Option<String>) {
     (id.to_string(), accel.map(str::to_string))
 }
 
+/// Narrow contexts are tried first, globals last; the passthrough
+/// contexts hold no actions at all.
 #[test]
-fn every_default_action_has_a_tier() {
-    for default in DEFAULT_ACTIONS {
-        let expected = if default.context == ActionContext::Global {
-            Tier::Accel
-        } else {
-            Tier::Controller
-        };
-        assert_eq!(tier(default.context), expected, "{}", default.id);
-    }
-    assert_eq!(tier(ActionContext::RdpTab), Tier::Passthrough);
-    assert_eq!(tier(ActionContext::VncTab), Tier::Passthrough);
+fn precedence_runs_panels_then_terminal_then_global() {
+    use ActionContext::*;
+    assert_eq!(precedence(SessionTree), precedence(Sftp));
+    assert!(precedence(Sftp) < precedence(Terminal));
+    assert!(precedence(Terminal) < precedence(Global));
+    assert!(DEFAULT_ACTIONS
+        .iter()
+        .all(|d| !matches!(d.context, RdpTab | VncTab)));
 }
 
 #[test]
@@ -675,6 +733,23 @@ fn reset_and_enable_rebuild_only_that_binding() {
     assert_eq!(
         recorder.take(),
         vec![pushed("copy", Some("<Control><Shift>c"))]
+    );
+}
+
+#[test]
+fn load_from_db_rebuilds_what_it_displaced() {
+    let store = store();
+    store
+        .save_custom_hotkey("copy", "Ctrl+E", "terminal", true)
+        .unwrap();
+    let (mut engine, recorder) = installed();
+    engine.load_from_db(&store).expect("load");
+    assert_eq!(
+        recorder.take(),
+        vec![
+            pushed("copy", Some("<Control>e")),
+            pushed("edit_session", None)
+        ]
     );
 }
 

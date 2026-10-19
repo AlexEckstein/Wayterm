@@ -2,25 +2,29 @@
 //! §Conflict Detection).
 //!
 //! A chord conflicts when both holders can be active at once: anything
-//! against a Tier-1 (global) action, or two Tier-2 actions in the same
-//! context. Different Tier-2 contexts never co-fire, which is what lets
-//! `Ctrl+D` be both `duplicate_session` and `sftp_download`. Handlers live
-//! in the GTK layer, not here.
+//! against a global action, two actions in the same context, or a terminal
+//! action against a session-tree or SFTP one (terminal shortcuts stay live
+//! while those panels have focus). The session tree and SFTP never
+//! co-fire, which is what lets `Ctrl+D` be both `duplicate_session` and
+//! `sftp_download`. Keys are stored canonical, so chords compare by key,
+//! not by spelling. Handlers live in the GTK layer, not here.
 
 use std::collections::HashMap;
 
 use thiserror::Error;
 
-use crate::hotkeys::trigger::{key_token, key_token_is_bindable, ui_key_is_bindable};
+use crate::hotkeys::trigger::{
+    canonical_ui_key, key_token, key_token_is_bindable, ui_key_is_bindable,
+};
 
 /// One rebindable action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
     pub id: String,
     pub display_name: String,
-    /// The compiled-in binding, UI format (`"Ctrl+Shift+T"`).
+    /// The compiled-in binding, canonical UI format (`"Ctrl+Shift+T"`).
     pub default_key: String,
-    /// The effective binding; empty once an override unbinds it.
+    /// The effective binding, canonical; empty once an override unbinds it.
     pub current_key: String,
     pub context: ActionContext,
     pub enabled: bool,
@@ -36,17 +40,19 @@ impl Action {
     }
 }
 
-/// Which tier binds an action (doc 07 §The Two-Tier Mechanism). Declared
-/// in default-table order, which `Ord` follows.
+/// Where an action's chord fires (doc 07 §Dispatch). Declared in
+/// default-table order, which `Ord` follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ActionContext {
-    /// Tier 1: application accelerators.
+    /// Anywhere in the main window.
     Global,
-    /// Tier 2: widget-scoped shortcut controllers.
+    /// The current tab's terminal, unless focus is in a text field.
     Terminal,
+    /// Focus inside the session tree.
     SessionTree,
+    /// Focus inside the side dock's SFTP panel.
     Sftp,
-    /// Passthrough: no controller, keys go to the remote session.
+    /// Passthrough: no actions, keys go to the remote session.
     RdpTab,
     VncTab,
 }
@@ -79,12 +85,10 @@ impl ActionContext {
             .find(|ctx| ctx.as_str() == text)
     }
 
-    /// Whether the context gets a Tier-2 shortcut controller.
-    pub fn is_widget_context(self) -> bool {
-        matches!(
-            self,
-            ActionContext::Terminal | ActionContext::SessionTree | ActionContext::Sftp
-        )
+    /// Whether the context fires only while focus is in one widget (the
+    /// session tree or the SFTP panel).
+    pub fn is_focus_context(self) -> bool {
+        matches!(self, ActionContext::SessionTree | ActionContext::Sftp)
     }
 }
 
@@ -134,13 +138,14 @@ impl ActionRegistry {
         default_key: &str,
         context: ActionContext,
     ) {
+        let default_key = stored_key(default_key);
         self.actions.insert(
             id.to_string(),
             Action {
                 id: id.to_string(),
                 display_name: display_name.to_string(),
-                default_key: default_key.to_string(),
-                current_key: default_key.to_string(),
+                current_key: default_key.clone(),
+                default_key,
                 context,
                 enabled: true,
                 is_default: true,
@@ -148,10 +153,11 @@ impl ActionRegistry {
         );
     }
 
-    /// Set `current_key` unchecked, keeping `is_default` in step.
+    /// Set `current_key` unchecked (canonicalized when it parses), keeping
+    /// `is_default` in step.
     pub fn rebind(&mut self, id: &str, new_key: &str) -> Result<(), RebindError> {
         let action = self.get_mut(id)?;
-        action.current_key = new_key.to_string();
+        action.current_key = stored_key(new_key);
         action.is_default = action.current_key == action.default_key;
         Ok(())
     }
@@ -292,22 +298,32 @@ impl ActionRegistry {
 }
 
 /// Can shortcuts in these two contexts be active at the same time? Doc 07
-/// rules 1–3 are this predicate; rule 4 is its negation.
+/// rules 1–4 are this predicate; rule 5 is its negation.
 pub fn can_co_fire(a: &ActionContext, b: &ActionContext) -> bool {
-    *a == ActionContext::Global || *b == ActionContext::Global || a == b
+    use ActionContext::{Global, Terminal};
+    let terminal_and_panel =
+        |x: &ActionContext, y: &ActionContext| *x == Terminal && y.is_focus_context();
+    *a == Global || *b == Global || a == b || terminal_and_panel(a, b) || terminal_and_panel(b, a)
 }
 
-/// Bound actions holding `new_key` in a context that co-fires with
-/// `context` (doc 07 §Conflict Detection).
+/// Bound actions holding `new_key`'s chord, however it is spelled, in a
+/// context that co-fires with `context` (doc 07 §Conflict Detection).
 pub fn conflicting_actions<'a>(
     registry: &'a ActionRegistry,
     new_key: &str,
     context: ActionContext,
 ) -> Vec<&'a Action> {
+    let new_key = stored_key(new_key);
     registry
         .actions()
         .filter(|a| a.is_bound() && a.current_key == new_key && can_co_fire(&a.context, &context))
         .collect()
+}
+
+/// `key` as the registry stores it: canonical when it parses, as given
+/// otherwise (an unchecked rebind can store anything; it never fires).
+fn stored_key(key: &str) -> String {
+    canonical_ui_key(key).unwrap_or_else(|| key.to_string())
 }
 
 fn unparsable_reason(key: &str) -> String {

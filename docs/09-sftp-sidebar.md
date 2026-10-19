@@ -21,7 +21,11 @@ line, the listing (name, size, modified, permissions; directories first,
 case-insensitive; a `..` row except at `/`), a progress bar with Cancel,
 a status line, and a "Follow terminal directory" checkbox (§Following
 the shell). `toggle_sftp` (Ctrl+Shift+B) switches the dock to the
-SFTP panel, or back to the panel it came from.
+SFTP panel, or back to the panel it came from; a panel hidden by
+`toggle_session_tree` comes back on SFTP. While focus is in the panel
+(not its path bar), the `sftp_*` shortcuts press the toolbar's Upload,
+Download, Rename and Delete buttons, enabled or not as clicks are
+(doc 07 §Handlers).
 
 ## Connection Model
 
@@ -35,8 +39,8 @@ stays with the supervisor.
 
 With the `sftp_on_connect` setting on (the default, doc 06), a sidebar
 attaches when its tab connects, and a connect the user started on the
-current tab brings the SFTP panel forward; a reconnect never switches the
-dock. Off, a new SSH tab's sidebar starts hidden and the connect flow
+current tab brings the SFTP panel forward, unless the user has hidden the
+dock's panel; a reconnect never switches the dock. Off, a new SSH tab's sidebar starts hidden and the connect flow
 only hands it the connection: the task starts the first time the SFTP
 panel has that tab's sidebar in view, so a user who never looks never
 opens an SFTP channel. A sidebar already shown when the connect lands

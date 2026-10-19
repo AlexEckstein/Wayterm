@@ -1,10 +1,12 @@
 //! Trigger parsing and key capture (doc 07 §Trigger Parsing).
 //!
-//! Bindings are stored in UI format (`"Ctrl+Shift+T"`), converted to GTK
-//! accelerator syntax (`"<Control><Shift>t"`) for binding, and rendered
-//! back for display. Only single characters are lowercased — `Tab`, `F11`
-//! and `Delete` are case-sensitive key names. Everything here is
-//! display-free except [`parse_trigger`].
+//! Bindings are stored in canonical UI format (`"Ctrl+Shift+T"`: modifiers
+//! in [`MODS`] order, a letter upper-case, `ISO_Left_Tab` as `Tab`), so
+//! two spellings of one chord compare equal. They convert to GTK
+//! accelerator syntax (`"<Control><Shift>t"`) for binding; there only
+//! single characters are lowercased — `Tab`, `F11` and `Delete` are
+//! case-sensitive key names. Everything here is display-free except
+//! [`parse_trigger`].
 
 use gtk4::gdk::{Key, ModifierType};
 
@@ -32,9 +34,8 @@ pub fn ui_key_to_accel(key: &str) -> Option<String> {
     Some(accel)
 }
 
-/// `"<Control><Shift>t"` → `"Ctrl+Shift+t"`, the reverse of
-/// [`ui_key_to_accel`]. Chord-preserving rather than string-identical
-/// (modifiers come back in [`MODS`] order). `None` for anything
+/// `"<Control><Shift>t"` → `"Ctrl+Shift+T"`, the reverse of
+/// [`ui_key_to_accel`], in canonical form. `None` for anything
 /// [`parse_trigger`] would reject.
 pub fn accel_to_ui_key(accel: &str) -> Option<String> {
     let mut rest = accel;
@@ -45,7 +46,14 @@ pub fn accel_to_ui_key(accel: &str) -> Option<String> {
         mods |= MODS.iter().find(|(_, accel, _)| *accel == token)?.2;
         rest = &stripped[end + 1..];
     }
-    key_token_is_bindable(rest).then(|| ui_format(mods, rest))
+    KeyChord::new(Key::from_name(rest)?, mods).to_ui_key()
+}
+
+/// `key` in canonical form: `"Shift+Ctrl+t"` → `"Ctrl+Shift+T"`. Two
+/// spellings of one chord canonicalize alike; `None` for anything
+/// [`ui_key_is_bindable`] rejects.
+pub fn canonical_ui_key(key: &str) -> Option<String> {
+    KeyChord::from_ui_key(key)?.to_ui_key()
 }
 
 /// The key part of a UI-format binding (after the last `'+'`).
@@ -65,8 +73,10 @@ pub fn ui_key_is_bindable(key: &str) -> bool {
     ui_key_to_accel(key).is_some() && key_token_is_bindable(key_token(key))
 }
 
-/// A captured key press (`key()` + `modifier_state()`), as the settings
-/// UI's capture button records it.
+/// A chord: a captured key press (`key()` + `modifier_state()`), or a
+/// parsed binding. Built canonical — only [`MODS`] modifiers kept (lock
+/// and button masks dropped), a letter upper-case, `ISO_Left_Tab` (what
+/// Shift+Tab sends) as `Tab` — so equal chords compare equal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyChord {
     pub key: Key,
@@ -75,7 +85,18 @@ pub struct KeyChord {
 
 impl KeyChord {
     pub fn new(key: Key, modifiers: ModifierType) -> Self {
-        Self { key, modifiers }
+        let mask = MODS
+            .iter()
+            .fold(ModifierType::empty(), |all, (_, _, mask)| all | *mask);
+        let key = if key == Key::ISO_Left_Tab {
+            Key::Tab
+        } else {
+            key.to_upper()
+        };
+        Self {
+            key,
+            modifiers: modifiers & mask,
+        }
     }
 
     /// The inverse of [`KeyChord::to_ui_key`].
@@ -87,10 +108,18 @@ impl KeyChord {
         Some(Self::new(Key::from_name(name)?, modifiers))
     }
 
-    /// The chord in UI format (`"Ctrl+Shift+t"`); `None` when GDK has no
-    /// name for the key.
+    /// The chord in canonical UI format (`"Ctrl+Shift+T"`); `None` when
+    /// GDK has no name for the key.
     pub fn to_ui_key(self) -> Option<String> {
-        Some(ui_format(self.modifiers, &self.key.name()?))
+        let mut out = String::new();
+        for (ui, _, mask) in MODS {
+            if self.modifiers.contains(*mask) {
+                out.push_str(ui);
+                out.push('+');
+            }
+        }
+        out.push_str(&self.key.name()?);
+        Some(out)
     }
 }
 
@@ -104,20 +133,6 @@ fn split_ui_key(key: &str) -> Option<(Vec<&'static Modifier>, &str)> {
         .map(|token| MODS.iter().find(|(ui, _, _)| *ui == token))
         .collect::<Option<_>>()?;
     Some((mods, name))
-}
-
-/// `mods` and `name` in UI format, modifiers in [`MODS`] order; lock and
-/// button masks are ignored.
-fn ui_format(mods: ModifierType, name: &str) -> String {
-    let mut out = String::new();
-    for (ui, _, mask) in MODS {
-        if mods.contains(*mask) {
-            out.push_str(ui);
-            out.push('+');
-        }
-    }
-    out.push_str(&normalize_key_name(name));
-    out
 }
 
 /// Single characters lowercase; key names keep their case.
