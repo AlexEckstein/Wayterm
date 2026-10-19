@@ -1,19 +1,21 @@
 //! [`HotkeyEngine`]: the action registry plus its SQLite persistence
 //! (doc 07 §HotkeyEngine, §Persistence), and [`HotkeyEngine::install`],
-//! which binds the registry to GTK: Tier-1 application accels and one
-//! Tier-2 shortcut controller per widget context. Once installed, every
-//! mutation rebuilds only the bindings it changed.
+//! which binds the registry to the main window: one capture-phase shortcut
+//! controller whose shortcuts check their action's context at each key
+//! press (doc 07 §Dispatch). Once installed, every mutation swaps only the
+//! triggers it changed.
 //!
 //! Persistence rules: the registry starts from the compiled-in defaults;
-//! only `is_default = 0` rows are loaded, onto the *current* binding;
-//! unknown action ids are skipped, so a database written by another build
-//! still loads.
+//! only `is_default = 0` rows are loaded, onto the *current* binding and
+//! through the same conflict check as an override; unknown action ids are
+//! skipped, so a database written by another build still loads.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
+use gtk4::{gio, glib};
 
 use crate::hotkeys::defaults;
 use crate::hotkeys::registry::{
@@ -30,28 +32,15 @@ pub struct HotkeyLoadReport {
     pub applied: Vec<String>,
     /// Rows not applied: unknown action ids, or keys GTK could never fire.
     pub skipped: Vec<String>,
+    /// Actions unbound because a loaded chord collides with theirs under
+    /// today's conflict rules.
+    pub displaced: Vec<String>,
 }
 
-/// How an action's chord reaches GTK (doc 07 §The Two-Tier Mechanism).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tier {
-    /// An application accel on the window action: fires whatever has focus.
-    Accel,
-    /// A shortcut in its context's controller: fires only with focus there.
-    Controller,
-    /// RDP/VNC: nothing is bound, keys reach the remote session.
-    Passthrough,
-}
+/// The dispatcher's controller name, so it can be told from GTK's own.
+pub const DISPATCHER_NAME: &str = "wayterm-shortcuts";
 
-pub fn tier(context: ActionContext) -> Tier {
-    match context {
-        ActionContext::Global => Tier::Accel,
-        context if context.is_widget_context() => Tier::Controller,
-        _ => Tier::Passthrough,
-    }
-}
-
-/// Every action is a window action (`win.<id>`), whichever tier binds it.
+/// Every action is a window action, `win.<id>`.
 pub fn action_name(id: &str) -> String {
     format!("win.{id}")
 }
@@ -66,35 +55,48 @@ pub fn live_accel(action: &Action) -> Option<String> {
     }
 }
 
-/// Where a Tier-2 context's controller lives.
-///
-/// The controller is local-scoped and runs in the capture phase: it sees
-/// only key events aimed inside `widget`, and sees them before the focused
-/// widget (VTE takes every key it is given). When `widget` holds more than
-/// the context — the notebook holds RDP/VNC tabs and SFTP sidebars beside
-/// the terminals — `in_context` narrows it; a chord pressed outside the
-/// context propagates untouched.
+/// The order the controller tries a chord's shortcuts in: the narrower
+/// context first. Conflict checks keep co-firing pairs apart, so this only
+/// decides a layout that slipped past them.
+pub fn precedence(context: ActionContext) -> u8 {
+    match context {
+        ActionContext::SessionTree | ActionContext::Sftp => 0,
+        ActionContext::Terminal => 1,
+        ActionContext::Global => 2,
+        ActionContext::RdpTab | ActionContext::VncTab => 3,
+    }
+}
+
+/// When one context's shortcuts may fire (doc 07 §Dispatch), checked at
+/// each key press. The main window gives one per context it hosts; global
+/// shortcuts need none, and a context without one stays unbound.
 #[derive(Clone)]
 pub struct ContextHost {
     context: ActionContext,
-    widget: gtk4::Widget,
-    in_context: Rc<dyn Fn() -> bool>,
+    active: Rc<dyn Fn() -> bool>,
 }
 
 impl ContextHost {
-    /// `widget` is exactly the context: its subtree having focus is enough.
-    pub fn new(context: ActionContext, widget: &impl IsA<gtk4::Widget>) -> Self {
+    /// Active while `active` says so.
+    pub fn new(context: ActionContext, active: impl Fn() -> bool + 'static) -> Self {
         Self {
             context,
-            widget: widget.clone().upcast(),
-            in_context: Rc::new(|| true),
+            active: Rc::new(active),
         }
     }
 
-    /// Fire only while `in_context` says focus is inside the context.
-    pub fn with_focus_check(mut self, in_context: impl Fn() -> bool + 'static) -> Self {
-        self.in_context = Rc::new(in_context);
-        self
+    /// Active while focus is inside `widget`, but not where the focus owns
+    /// its keys ([`focus_owns_keys`]).
+    pub fn focus_within(context: ActionContext, widget: &impl IsA<gtk4::Widget>) -> Self {
+        let widget = widget.clone().upcast::<gtk4::Widget>();
+        Self::new(context, move || {
+            focus_within(&widget) && !focus_owns_keys(&widget)
+        })
+    }
+
+    /// Whether the context is active right now.
+    pub fn is_active(&self) -> bool {
+        (self.active)()
     }
 }
 
@@ -102,7 +104,6 @@ impl fmt::Debug for ContextHost {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ContextHost")
             .field("context", &self.context)
-            .field("widget", &self.widget)
             .finish_non_exhaustive()
     }
 }
@@ -115,6 +116,37 @@ pub fn focus_within(widget: &impl IsA<gtk4::Widget>) -> bool {
         .is_some_and(|focus| focus == *widget.as_ref() || focus.is_ancestor(widget))
 }
 
+/// Whether the focus of `widget`'s window is somewhere that owns its
+/// keys: a text field (an entry, the search popover, a text view) or a
+/// popover (the session tree's menu answers `Return` itself). Context
+/// shortcuts stand aside there, so they never steal typing.
+pub fn focus_owns_keys(widget: &impl IsA<gtk4::Widget>) -> bool {
+    let mut current = widget.root().and_then(|root| root.focus());
+    while let Some(widget) = current {
+        if widget.is::<gtk4::Editable>()
+            || widget.is::<gtk4::TextView>()
+            || widget.is::<gtk4::Popover>()
+        {
+            return true;
+        }
+        current = widget.parent();
+    }
+    false
+}
+
+/// Activate the window action `id` if it is registered and enabled;
+/// `false` — let the key through — otherwise.
+fn fire(window: &gtk4::Widget, id: &str) -> bool {
+    let Some(actions) = window.dynamic_cast_ref::<gio::ActionGroup>() else {
+        return false;
+    };
+    if !actions.has_action(id) || !actions.is_action_enabled(id) {
+        return false;
+    }
+    actions.activate_action(id, None);
+    true
+}
+
 /// Applies one action's current state to whatever is installed.
 trait Binder: fmt::Debug {
     fn bind(&self, action: &Action);
@@ -123,75 +155,73 @@ trait Binder: fmt::Debug {
     fn uninstall(&self) {}
 }
 
-/// The GTK side: app accels for Tier 1, one shortcut per Tier-2 action
-/// whose trigger is swapped in place on a rebind.
+/// The GTK side: one capture-phase controller on the window, one shortcut
+/// per action of a hosted context, its trigger swapped in place on a
+/// rebind.
 #[derive(Debug)]
 struct GtkBinder {
-    app: gtk4::Application,
+    window: gtk4::Widget,
+    controller: gtk4::ShortcutController,
     shortcuts: HashMap<String, gtk4::Shortcut>,
-    controllers: Vec<(gtk4::Widget, gtk4::ShortcutController)>,
 }
 
 impl GtkBinder {
-    fn new(app: &gtk4::Application, registry: &ActionRegistry, hosts: Vec<ContextHost>) -> Self {
+    fn new(
+        window: &gtk4::ApplicationWindow,
+        registry: &ActionRegistry,
+        hosts: Vec<ContextHost>,
+    ) -> Self {
+        let mut active: HashMap<ActionContext, Rc<dyn Fn() -> bool>> = hosts
+            .into_iter()
+            .map(|host| (host.context, host.active))
+            .collect();
+        active.insert(ActionContext::Global, Rc::new(|| true));
+
+        // Local scope on the window: every key aimed anywhere inside it.
+        let controller = gtk4::ShortcutController::new();
+        controller.set_name(Some(DISPATCHER_NAME));
+        controller.set_scope(gtk4::ShortcutScope::Local);
+        controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let mut actions = registry.ordered_actions();
+        actions.sort_by_key(|action| precedence(action.context));
         let mut shortcuts = HashMap::new();
-        let mut controllers = Vec::new();
-        for host in hosts {
-            if tier(host.context) != Tier::Controller {
-                continue;
-            }
-            let controller = gtk4::ShortcutController::new();
-            controller.set_scope(gtk4::ShortcutScope::Local);
-            controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
-            let actions = registry.ordered_actions();
-            for action in actions.into_iter().filter(|a| a.context == host.context) {
-                let (name, in_context) = (action_name(&action.id), host.in_context.clone());
-                let activate = gtk4::CallbackAction::new(move |widget, _| {
-                    if in_context() && widget.activate_action(&name, None).is_ok() {
-                        gtk4::glib::Propagation::Stop
-                    } else {
-                        gtk4::glib::Propagation::Proceed
-                    }
-                });
-                let shortcut = gtk4::Shortcut::new(Some(gtk4::NeverTrigger::get()), Some(activate));
-                controller.add_shortcut(shortcut.clone());
-                shortcuts.insert(action.id.clone(), shortcut);
-            }
-            host.widget.add_controller(controller.clone());
-            controllers.push((host.widget, controller));
+        for action in actions {
+            let Some(active) = active.get(&action.context).cloned() else {
+                continue; // no host was given for this context
+            };
+            let id = action.id.clone();
+            let activate = gtk4::CallbackAction::new(move |window, _| {
+                if active() && fire(window, &id) {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            });
+            let shortcut = gtk4::Shortcut::new(Some(gtk4::NeverTrigger::get()), Some(activate));
+            controller.add_shortcut(shortcut.clone());
+            shortcuts.insert(action.id.clone(), shortcut);
         }
+        window.add_controller(controller.clone());
         Self {
-            app: app.clone(),
+            window: window.clone().upcast(),
+            controller,
             shortcuts,
-            controllers,
         }
     }
 }
 
 impl Binder for GtkBinder {
     fn uninstall(&self) {
-        for (widget, controller) in &self.controllers {
-            widget.remove_controller(controller);
-        }
+        self.window.remove_controller(&self.controller);
     }
 
     fn bind(&self, action: &Action) {
-        match tier(action.context) {
-            Tier::Accel => {
-                let accel = live_accel(action);
-                self.app
-                    .set_accels_for_action(&action_name(&action.id), accel.as_deref().as_slice());
-            }
-            Tier::Controller => {
-                let Some(shortcut) = self.shortcuts.get(&action.id) else {
-                    return; // no host was given for this context
-                };
-                match live_accel(action).and(parse_trigger(&action.current_key)) {
-                    Some(trigger) => shortcut.set_trigger(Some(trigger)),
-                    None => shortcut.set_trigger(Some(gtk4::NeverTrigger::get())),
-                }
-            }
-            Tier::Passthrough => {}
+        let Some(shortcut) = self.shortcuts.get(&action.id) else {
+            return;
+        };
+        match live_accel(action).and(parse_trigger(&action.current_key)) {
+            Some(trigger) => shortcut.set_trigger(Some(trigger)),
+            None => shortcut.set_trigger(Some(gtk4::NeverTrigger::get())),
         }
     }
 }
@@ -216,12 +246,23 @@ impl HotkeyEngine {
         }
     }
 
-    /// Bind every action (doc 07 §The Two-Tier Mechanism): globals as
-    /// `app` accels on `win.<id>`, widget contexts as shortcuts in one
-    /// controller per `hosts` entry. A context without a host stays
-    /// unbound. Installing again replaces the previous controllers.
-    pub fn install(&mut self, app: &gtk4::Application, hosts: Vec<ContextHost>) {
-        self.install_binder(Rc::new(GtkBinder::new(app, &self.registry, hosts)));
+    /// Bind every action to `window` (doc 07 §Dispatch): one shortcut per
+    /// action whose context is global or in `hosts`, each firing the window
+    /// action `win.<id>`. Installing again replaces the previous
+    /// controller. Returns the ids with no window action registered yet —
+    /// their chords would pass through untouched.
+    pub fn install(
+        &mut self,
+        window: &gtk4::ApplicationWindow,
+        hosts: Vec<ContextHost>,
+    ) -> Vec<String> {
+        self.install_binder(Rc::new(GtkBinder::new(window, &self.registry, hosts)));
+        self.registry
+            .ordered_actions()
+            .into_iter()
+            .filter(|action| !window.has_action(&action.id))
+            .map(|action| action.id.clone())
+            .collect()
     }
 
     fn install_binder(&mut self, binder: Rc<dyn Binder>) {
@@ -286,27 +327,56 @@ impl HotkeyEngine {
         self.registry.conflicts_for(action_id, new_key)
     }
 
-    /// Apply the user's `is_default = 0` rows. An empty key is kept: it is
-    /// how an override records the action it unbound.
+    /// Apply the user's `is_default = 0` rows, oldest first. A bound row
+    /// goes through the override check, so a chord that collides under
+    /// today's conflict rules takes the chord and unbinds the holder. A
+    /// disabled row holds no chord and applies as is; an empty key is kept
+    /// too: it is how an override records the action it unbound.
     pub fn load_from_db(
         &mut self,
         store: &SessionStore,
     ) -> Result<HotkeyLoadReport, rusqlite::Error> {
         let mut report = HotkeyLoadReport::default();
         for (action_id, key, enabled) in store.load_custom_hotkeys()? {
-            let usable = key.is_empty() || ui_key_is_bindable(&key);
-            if usable
-                && self
+            let applied = if key.is_empty() || !enabled {
+                (key.is_empty() || ui_key_is_bindable(&key))
+                    && self
+                        .registry
+                        .apply_loaded_binding(&action_id, &key, enabled)
+                        .is_ok()
+            } else {
+                match self
                     .registry
-                    .apply_loaded_binding(&action_id, &key, enabled)
-                    .is_ok()
-            {
+                    .rebind_checked(&action_id, &key, ConflictPolicy::Override)
+                {
+                    Ok(displaced) => {
+                        report.displaced.extend(displaced);
+                        true
+                    }
+                    Err(_) => false,
+                }
+            };
+            if applied {
                 report.applied.push(action_id);
             } else {
                 report.skipped.push(action_id);
             }
         }
-        self.rebuild(report.applied.iter().map(String::as_str));
+        self.rebuild(
+            report
+                .applied
+                .iter()
+                .chain(&report.displaced)
+                .map(String::as_str),
+        );
+        // A displaced action may be one a later row rebound again.
+        report.displaced.retain(|id| {
+            self.registry
+                .action(id)
+                .is_some_and(|action| !action.is_bound())
+        });
+        report.displaced.sort();
+        report.displaced.dedup();
         Ok(report)
     }
 

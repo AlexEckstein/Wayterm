@@ -840,12 +840,12 @@ pub(super) mod gtk_tests {
         }
 
         // The embed area installs no controllers at all: the desktop keeps
-        // its keys, and in particular there is no Tier-2 shortcut
-        // controller (doc 08 §Tabs).
+        // its keys, and in particular there is no shortcut controller of
+        // its own (doc 08 §Tabs).
         let area = build_area();
         assert!(area.is_focusable());
         let controllers = area.observe_controllers();
-        assert_eq!(controllers.n_items(), 0, "no controllers, no Tier-2");
+        assert_eq!(controllers.n_items(), 0, "no controllers, no shortcuts");
 
         // Unmapped: no XID yet, cleanly Unmapped (not Wayland).
         assert_eq!(surface_xid(&area), XidState::Unmapped);

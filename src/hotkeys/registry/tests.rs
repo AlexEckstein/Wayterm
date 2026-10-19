@@ -1,11 +1,11 @@
 //! Action registry + conflict-detection tests (doc 07 §"Action
 //! Registry", §"Conflict Detection").
 //!
-//! The four conflict rules are asserted individually *and* as a full
+//! The five conflict rules are asserted individually *and* as a full
 //! context matrix, because the de-confliction of the default table
-//! rests on rule 4 (two Tier-2 contexts never co-fire) being exactly as
-//! narrow as the doc says — one extra `||` in [`can_co_fire`] would
-//! silently re-introduce the collision the 2026-08 revision removed.
+//! rests on rule 5 (the session tree and SFTP never co-fire) being exactly
+//! as narrow as the doc says — one extra `||` in [`can_co_fire`] would
+//! silently re-introduce a collision.
 
 use super::*;
 
@@ -138,8 +138,8 @@ fn rebind_checked_accepts_a_free_chord() {
     assert_eq!(registry.current_key("copy"), Some("Ctrl+Shift+Y"));
 }
 
-/// Rule 3: a Tier-1 and a Tier-2 action with the same chord both fire
-/// when the Tier-2 widget has focus, so that is a conflict.
+/// Rule 3: a global and a context action with the same chord both fire
+/// while that context is active, so that is a conflict.
 #[test]
 fn rule3_global_and_widget_context_conflict() {
     let mut registry = registry_with_defaults();
@@ -160,12 +160,12 @@ fn rule3_global_and_widget_context_conflict() {
 fn rule1_two_globals_conflict() {
     let mut registry = registry_with_defaults();
     let err = registry
-        .rebind_checked("new_tab", "Ctrl+N", ConflictPolicy::Reject)
+        .rebind_checked("new_tab", "Ctrl+Shift+N", ConflictPolicy::Reject)
         .expect_err("two globals on one chord");
     assert_eq!(
         err,
         RebindError::Conflict {
-            key: "Ctrl+N".to_string(),
+            key: "Ctrl+Shift+N".to_string(),
             context: ActionContext::Global,
             conflicts: vec!["new_session".to_string()],
         }
@@ -188,12 +188,34 @@ fn rule2_same_context_conflicts() {
     );
 }
 
-/// Rule 4: `Ctrl+D` is `duplicate_session` in the tree and
-/// `sftp_download` in the sidebar. Different widgets, never
-/// simultaneously active — the doc's own worked example, and the reason
-/// the shipped table may hold the same chord twice.
+/// Rule 4: terminal shortcuts stay live while the session tree or the
+/// SFTP panel has focus, so a terminal chord collides with theirs.
 #[test]
-fn rule4_different_widget_contexts_do_not_conflict() {
+fn rule4_terminal_and_panel_contexts_conflict() {
+    let mut registry = registry_with_defaults();
+    let err = registry
+        .rebind_checked("copy", "Ctrl+E", ConflictPolicy::Reject)
+        .expect_err("terminal copy taking the tree's edit chord");
+    assert_eq!(
+        err,
+        RebindError::Conflict {
+            key: "Ctrl+E".to_string(),
+            context: ActionContext::Terminal,
+            conflicts: vec!["edit_session".to_string()],
+        }
+    );
+    assert_eq!(
+        ids(registry.conflicts_for("sftp_rename", "Ctrl+Shift+V")),
+        vec!["paste".to_string()]
+    );
+}
+
+/// Rule 5: `Ctrl+D` is `duplicate_session` in the tree and
+/// `sftp_download` in the sidebar. Focus is in one panel at most — the
+/// doc's own worked example, and the reason the shipped table may hold
+/// the same chord twice.
+#[test]
+fn rule5_tree_and_sftp_do_not_conflict() {
     let registry = registry_with_defaults();
     assert_eq!(registry.current_key("duplicate_session"), Some("Ctrl+D"));
     assert_eq!(registry.current_key("sftp_download"), Some("Ctrl+D"));
@@ -215,9 +237,14 @@ fn rule4_different_widget_contexts_do_not_conflict() {
         )),
         vec!["sftp_download".to_string()]
     );
-    assert!(
-        conflicting_actions(&registry, "Ctrl+D", ActionContext::Terminal).is_empty(),
-        "a Tier-2 action in a third context never sees either"
+    // The terminal co-fires with both panels (rule 4), so it sees both.
+    assert_eq!(
+        ids(conflicting_actions(
+            &registry,
+            "Ctrl+D",
+            ActionContext::Terminal
+        )),
+        vec!["duplicate_session".to_string(), "sftp_download".to_string()]
     );
     // An action never conflicts with the chord it already holds.
     assert!(registry
@@ -226,12 +253,12 @@ fn rule4_different_widget_contexts_do_not_conflict() {
 }
 
 #[test]
-fn rule4_delete_in_tree_and_sftp_is_legal() {
+fn rule5_delete_in_tree_and_sftp_is_legal() {
     let registry = registry_with_defaults();
     assert_eq!(registry.current_key("delete_session"), Some("Delete"));
     assert_eq!(registry.current_key("sftp_delete"), Some("Delete"));
 
-    // Rule 4: from either widget context, only its own holder shows up.
+    // Rule 5: from either panel, only its own holder shows up.
     assert_eq!(
         ids(conflicting_actions(
             &registry,
@@ -249,7 +276,7 @@ fn rule4_delete_in_tree_and_sftp_is_legal() {
         vec!["sftp_delete".to_string()]
     );
     // Rule 3: a *global* action taking that chord collides with both,
-    // because a Tier-1 accel fires while either widget has focus.
+    // because a global fires while either panel has focus.
     assert_eq!(
         ids(conflicting_actions(
             &registry,
@@ -263,8 +290,9 @@ fn rule4_delete_in_tree_and_sftp_is_legal() {
 #[test]
 fn can_co_fire_matrix() {
     use ActionContext::*;
-    // (a, b, expected) — doc rules 1–3 collapse into "either side is
-    // global, or the contexts are equal"; rule 4 is everything else.
+    // (a, b, expected) — doc rules 1–4 collapse into "either side is
+    // global, the contexts are equal, or a terminal meets a panel";
+    // rule 5 is everything else.
     let cases = [
         (Global, Global, true),
         (Global, Terminal, true),
@@ -280,8 +308,8 @@ fn can_co_fire_matrix() {
         (Sftp, Sftp, true),
         (RdpTab, RdpTab, true),
         (VncTab, VncTab, true),
-        (Terminal, SessionTree, false),
-        (Terminal, Sftp, false),
+        (Terminal, SessionTree, true),
+        (Terminal, Sftp, true),
         (SessionTree, Sftp, false),
         (Terminal, RdpTab, false),
         (Sftp, VncTab, false),
@@ -421,8 +449,15 @@ fn an_unbound_action_holds_no_chord() {
 #[test]
 fn conflicting_actions_reports_every_holder() {
     let registry = registry_with_defaults();
-    // Ctrl+D: one holder per context; from the terminal, neither fires.
-    assert!(conflicting_actions(&registry, "Ctrl+D", ActionContext::Terminal).is_empty());
+    // Ctrl+D: one holder per panel; the terminal co-fires with both.
+    assert_eq!(
+        ids(conflicting_actions(
+            &registry,
+            "Ctrl+D",
+            ActionContext::Terminal
+        )),
+        vec!["duplicate_session".to_string(), "sftp_download".to_string()]
+    );
     // Alt+1..Alt+9 are the goto_tab chords, each with exactly one holder.
     for n in 1..=9 {
         let holders = conflicting_actions(&registry, &format!("Alt+{n}"), ActionContext::Global);
@@ -528,7 +563,7 @@ fn ordered_actions_follows_the_doc_table_order() {
         .copied()
         .take_while(|id| registry.action(id).unwrap().context == ActionContext::Global)
         .collect();
-    assert_eq!(globals.len(), 20, "20 Tier-1 actions in doc 07's table");
+    assert_eq!(globals.len(), 20, "20 global actions in doc 07's table");
     // Within a context, ids sort; the first global is close_tab.
     assert_eq!(globals[0], "close_tab");
     assert_eq!(
@@ -592,13 +627,50 @@ fn action_context_wire_strings() {
 }
 
 #[test]
-fn widget_contexts_are_the_tier2_ones() {
-    assert!(ActionContext::Terminal.is_widget_context());
-    assert!(ActionContext::SessionTree.is_widget_context());
-    assert!(ActionContext::Sftp.is_widget_context());
-    assert!(!ActionContext::Global.is_widget_context());
-    assert!(!ActionContext::RdpTab.is_widget_context());
-    assert!(!ActionContext::VncTab.is_widget_context());
+fn focus_contexts_are_the_two_panels() {
+    assert!(ActionContext::SessionTree.is_focus_context());
+    assert!(ActionContext::Sftp.is_focus_context());
+    assert!(!ActionContext::Terminal.is_focus_context());
+    assert!(!ActionContext::Global.is_focus_context());
+    assert!(!ActionContext::RdpTab.is_focus_context());
+    assert!(!ActionContext::VncTab.is_focus_context());
+}
+
+/// A chord is a key, not a spelling: the capture dialog renders
+/// `Ctrl+Shift+t`, the table says `Ctrl+Shift+T`, and they collide.
+#[test]
+fn chords_compare_by_key_not_by_spelling() {
+    let mut registry = registry_with_defaults();
+    for spelling in ["Ctrl+Shift+t", "Shift+Ctrl+T", "Shift+Ctrl+t"] {
+        assert_eq!(
+            ids(registry.conflicts_for("copy", spelling)),
+            vec!["new_tab".to_string()],
+            "{spelling}"
+        );
+    }
+    assert_eq!(
+        ids(registry.conflicts_for("next_tab", "Ctrl+Shift+ISO_Left_Tab")),
+        vec!["prev_tab".to_string()],
+        "Shift+Tab arrives as ISO_Left_Tab"
+    );
+    let err = registry
+        .rebind_checked("copy", "Ctrl+Shift+t", ConflictPolicy::Reject)
+        .expect_err("a lower-case capture of new_tab's chord");
+    assert!(matches!(err, RebindError::Conflict { .. }));
+}
+
+#[test]
+fn keys_are_stored_canonical_so_a_recaptured_default_is_the_default() {
+    let mut registry = registry_with_defaults();
+    registry.rebind("new_tab", "Ctrl+Alt+t").unwrap();
+    assert_eq!(registry.current_key("new_tab"), Some("Ctrl+Alt+T"));
+    registry.rebind("new_tab", "Shift+Ctrl+t").unwrap();
+    assert_eq!(registry.current_key("new_tab"), Some("Ctrl+Shift+T"));
+    assert!(registry.action("new_tab").unwrap().is_default);
+    assert!(registry.custom_actions().is_empty());
+    // Anything unparsable is kept as given: it can never fire.
+    registry.rebind("new_tab", "Ctrl+Nonsense").unwrap();
+    assert_eq!(registry.current_key("new_tab"), Some("Ctrl+Nonsense"));
 }
 
 #[test]

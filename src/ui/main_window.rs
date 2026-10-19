@@ -10,7 +10,7 @@ use std::sync::Arc;
 use gtk4::gio;
 use gtk4::prelude::*;
 
-use crate::hotkeys::engine::{focus_within, ContextHost};
+use crate::hotkeys::engine::{focus_owns_keys, ContextHost};
 use crate::hotkeys::{ActionContext, HotkeyEngine};
 use crate::store::SessionStore;
 use crate::transport::connection::SshConnection;
@@ -18,18 +18,26 @@ use crate::transport::supervisor::ConnectionSupervisor;
 use crate::transport::types::TransportState;
 use crate::ui::macros_panel::MacrosPanel;
 use crate::ui::session_tree::SessionTree;
+use crate::ui::sftp_sidebar::SftpButton;
 use crate::ui::side_dock::SideDock;
 use crate::ui::status_bar::StatusBar;
-use crate::ui::tab::SessionTab;
+use crate::ui::tab::{current_page, SessionTab};
 use crate::ui::tab_restore::TabPersistence;
 use crate::ui::widgets::{data, set_data};
-use crate::ui::{settings, tab_resilience, terminal_actions, tunnels_dialog};
+use crate::ui::{settings, tab_actions, tab_resilience, terminal_actions, tunnels_dialog};
 
 /// Window data keys.
 pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
 const STATUS_ROUTER_KEY: &str = "wayterm-status-router";
 
 const TOGGLE_SFTP_ACTION: &str = "toggle_sftp";
+/// The `sftp` context's actions and the toolbar button each presses.
+const SFTP_ACTIONS: [(&str, SftpButton); 4] = [
+    ("sftp_upload", SftpButton::Upload),
+    ("sftp_download", SftpButton::Download),
+    ("sftp_rename", SftpButton::Rename),
+    ("sftp_delete", SftpButton::Delete),
+];
 /// The dock panel's starting width: room for the SFTP sidebar's columns.
 const DOCK_PANEL_WIDTH: i32 = 320;
 
@@ -170,24 +178,34 @@ impl MainWindow {
         install_toggle_sftp(&window, &notebook, &dock);
         install_tunnels_action(&window, &notebook, &store);
         terminal_actions::install(&window, &notebook);
+        tab_actions::install(&window, &notebook, home.upcast_ref(), &store);
+        install_view_actions(&window, &notebook, &dock, &session_tree);
         let for_actions = notebook.clone();
         tab_resilience::install_connection_actions(&window, move || {
             crate::ui::tab::current_tab_id(&for_actions)
         });
-        // Every chord, `toggle_sftp`'s included, comes from the engine
-        // (doc 07). Terminal shortcuts sit on the notebook but fire only
-        // while the current tab's terminal has focus.
-        let for_focus = notebook.clone();
-        hotkeys.borrow_mut().install(
-            app,
+        // Every chord comes from the engine (doc 07 §Dispatch), checked
+        // against its context at each key press. Terminal shortcuts fire
+        // whenever the current tab has a terminal, unless the user is
+        // typing elsewhere.
+        let for_terminal = notebook.clone();
+        let unhandled = hotkeys.borrow_mut().install(
+            &window,
             vec![
-                ContextHost::new(ActionContext::Terminal, &notebook).with_focus_check(move || {
-                    SessionTab::active_terminal(&for_focus)
-                        .is_some_and(|t| focus_within(&t.widget()))
+                ContextHost::new(ActionContext::Terminal, move || {
+                    SessionTab::active_terminal(&for_terminal).is_some()
+                        && !focus_owns_keys(&for_terminal)
                 }),
-                ContextHost::new(ActionContext::SessionTree, &session_tree.widget()),
+                ContextHost::focus_within(ActionContext::SessionTree, &session_tree.widget()),
+                ContextHost::focus_within(ActionContext::Sftp, dock.sftp_panel()),
             ],
         );
+        if !unhandled.is_empty() {
+            eprintln!(
+                "Wayterm: shortcuts with no action behind them: {}",
+                unhandled.join(", ")
+            );
+        }
 
         // Settings on one of its pages; an import there refreshes the tree.
         let show_settings = {
@@ -290,6 +308,62 @@ fn install_tunnels_action(
     window.add_action(&action);
 }
 
+/// The window actions for the view, the session tree and the SFTP sidebar
+/// (doc 07 §Handlers). Session-tree and SFTP actions act on what their
+/// panel shows; the engine fires them only while focus is in that panel.
+fn install_view_actions(
+    window: &gtk4::ApplicationWindow,
+    notebook: &gtk4::Notebook,
+    dock: &SideDock,
+    tree: &SessionTree,
+) {
+    let add = |id: &str, run: Box<dyn Fn()>| {
+        let action = gio::SimpleAction::new(id, None);
+        action.connect_activate(move |_, _| run());
+        window.add_action(&action);
+    };
+
+    let weak = window.downgrade();
+    add(
+        "toggle_fullscreen",
+        Box::new(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_fullscreened(!window.is_fullscreen());
+            }
+        }),
+    );
+    let (for_toggle, for_focus, notebook_for_toggle) =
+        (dock.clone(), tree.clone(), notebook.clone());
+    add(
+        "toggle_session_tree",
+        Box::new(move || {
+            if for_toggle.toggle_sessions() {
+                for_focus.focus();
+            } else if let Some(terminal) = SessionTab::active_terminal(&notebook_for_toggle) {
+                // The hidden panel took focus with it.
+                terminal.widget().grab_focus();
+            }
+        }),
+    );
+
+    tree.install_actions(window);
+
+    for (id, button) in SFTP_ACTIONS {
+        let notebook = notebook.clone();
+        add(
+            id,
+            Box::new(move || {
+                let sidebar = current_page(&notebook)
+                    .as_ref()
+                    .and_then(SessionTab::sidebar_for_page);
+                if let Some(sidebar) = sidebar {
+                    sidebar.press(button);
+                }
+            }),
+        );
+    }
+}
+
 /// `toggle_sftp` (doc 09) switches the dock to the SFTP panel, or back
 /// from it, and is disabled on pages without a sidebar — which is how
 /// non-SSH tabs hide the toggle. Its chord is the hotkey engine's.
@@ -307,4 +381,201 @@ fn install_toggle_sftp(
     });
     action.set_enabled(false);
     window.add_action(&action);
+}
+
+/// Widget checks; they need a display and run from `ui::gtk_tests`.
+#[cfg(test)]
+pub(super) mod gtk_tests {
+    use std::time::{Duration, Instant};
+
+    use gtk4::glib;
+
+    use super::*;
+    use crate::hotkeys::DEFAULT_ACTIONS;
+    use crate::ui::host_picker::LOCAL_SHELL_ID;
+    use crate::ui::tab::current_session_id;
+    use crate::ui::tab_state::TabState;
+
+    /// The first `T` at or below `widget`, depth first.
+    fn find<T: IsA<gtk4::Widget>>(widget: &gtk4::Widget) -> Option<T> {
+        if let Some(found) = widget.downcast_ref::<T>() {
+            return Some(found.clone());
+        }
+        let mut child = widget.first_child();
+        while let Some(node) = child {
+            if let Some(found) = find(&node) {
+                return Some(found);
+            }
+            child = node.next_sibling();
+        }
+        None
+    }
+
+    fn toplevel(title: &str) -> Option<gtk4::Window> {
+        gtk4::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk4::Window>().ok())
+            .find(|w| w.is_visible() && w.title().as_deref() == Some(title))
+    }
+
+    fn spin_until(what: &str, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out: {what}");
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Every action in doc 07's table has a window action behind it and a
+    /// shortcut in the window's dispatcher; the tab actions move between
+    /// tabs; terminal shortcuts keep firing with focus off the terminal;
+    /// and a local-shell tab restores as one.
+    pub(in crate::ui) fn every_shortcut_has_an_action() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _entered = runtime.enter();
+        let app = gtk4::Application::new(
+            Some("com.alex-eckstein.wayterm.window-test"),
+            gio::ApplicationFlags::NON_UNIQUE,
+        );
+        app.register(None::<&gio::Cancellable>).expect("register");
+        let store = Rc::new(SessionStore::in_memory().expect("in-memory store"));
+        store
+            .set_setting(tab_resilience::CONFIRM_CLOSE_SETTING, "0")
+            .unwrap();
+        store
+            .set_setting(settings::backup::IMPORT_OFFERED_KEY, "1")
+            .unwrap();
+        store
+            .save_open_tabs(&[TabState::session(LOCAL_SHELL_ID, "Local shell", 0, 0)])
+            .unwrap();
+        store
+            .insert_session(&crate::store::model::SessionConfig {
+                name: "box".into(),
+                session_type: crate::store::model::SessionType::LocalShell,
+                local_shell: Some("/bin/sh".into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let main = MainWindow::new(&app, store, Rc::new(RefCell::new(HotkeyEngine::new())));
+        let window = main.window().clone();
+        let act = |id: &str| gio::prelude::ActionGroupExt::activate_action(&window, id, None);
+        for default in DEFAULT_ACTIONS {
+            assert!(
+                window.has_action(default.id),
+                "{} has no action",
+                default.id
+            );
+        }
+        let dispatcher = (0..window.observe_controllers().n_items())
+            .filter_map(|i| window.observe_controllers().item(i))
+            .filter_map(|c| c.downcast::<gtk4::ShortcutController>().ok())
+            .find(|c| c.name().as_deref() == Some(crate::hotkeys::engine::DISPATCHER_NAME))
+            .expect("the dispatcher");
+        assert_eq!(dispatcher.n_items() as usize, DEFAULT_ACTIONS.len());
+        let shortcut_for = |accel: &str| {
+            let (key, mods) = gtk4::accelerator_parse(accel).unwrap();
+            let accel = gtk4::accelerator_name(key, mods).to_string();
+            (0..dispatcher.n_items())
+                .filter_map(|i| dispatcher.item(i).and_downcast::<gtk4::Shortcut>())
+                .find(|s| s.trigger().is_some_and(|t| t.to_str() == accel))
+                .expect("a shortcut for the chord")
+        };
+        let fires = |accel: &str| {
+            shortcut_for(accel).action().unwrap().activate(
+                gtk4::ShortcutActionFlags::empty(),
+                &window,
+                None::<&glib::Variant>,
+            )
+        };
+
+        // The saved local shell came back as a local shell, not detached.
+        let notebook = find::<gtk4::Notebook>(window.upcast_ref()).expect("the notebook");
+        assert_eq!(notebook.n_pages(), 2, "Home and the restored tab");
+        assert_eq!(current_session_id(&notebook), Some(LOCAL_SHELL_ID));
+
+        // New Tab: the picker, and its first row opens another local shell.
+        act("new_tab");
+        let picker = toplevel("New Tab").expect("the host picker");
+        let list = find::<gtk4::ListBox>(picker.upcast_ref()).expect("the host list");
+        list.row_at_index(0).expect("local shell").emit_activate();
+        assert_eq!(notebook.n_pages(), 3);
+        assert_eq!(notebook.current_page(), Some(2));
+
+        // Next/previous wrap round the two tabs; Home is never one of them.
+        act("goto_tab_1");
+        assert_eq!(notebook.current_page(), Some(1));
+        act("next_tab");
+        assert_eq!(notebook.current_page(), Some(2));
+        act("next_tab");
+        assert_eq!(notebook.current_page(), Some(1), "wraps");
+        act("prev_tab");
+        assert_eq!(notebook.current_page(), Some(2), "wraps back");
+        act("goto_tab_3");
+        assert_eq!(notebook.current_page(), Some(2), "no third tab");
+
+        // Terminal shortcuts fire with focus anywhere but a text field:
+        // the bug was copy/paste dying once a click moved focus off VTE.
+        spin_until("the local shell connects", || {
+            SessionTab::active_terminal(&notebook).is_some()
+        });
+        let terminal = SessionTab::active_terminal(&notebook).unwrap().widget();
+        terminal.grab_focus();
+        assert!(fires("<Control><Shift>c"), "copy, terminal focused");
+        assert!(!fires("Delete"), "a session-tree chord, focus elsewhere");
+        notebook.grab_focus();
+        assert!(
+            fires("<Control><Shift>c"),
+            "copy after clicking the tab bar"
+        );
+        let tree = find::<gtk4::ListView>(window.upcast_ref()).expect("the tree");
+        tree.grab_focus();
+        assert!(fires("<Control><Shift>c"), "copy with the tree focused");
+        // With no row selected the row actions are off, so their keys reach
+        // the list (Return activates its focused row); selected, Return is
+        // connect_session.
+        assert!(!fires("<Control>e"), "edit with nothing selected");
+        assert!(!fires("Return"), "Return with nothing selected");
+        tree.model()
+            .and_downcast::<gtk4::SingleSelection>()
+            .expect("the tree's selection")
+            .set_selected(0);
+        assert!(fires("Return"), "connect_session on the selected row");
+        assert_eq!(notebook.n_pages(), 4, "the session opened a tab");
+
+        // Rename prompts for the current tab (closed by a timer: the prompt
+        // runs its own loop).
+        glib::timeout_add_local_once(Duration::from_millis(50), || {
+            if let Some(prompt) = toplevel("Rename Tab") {
+                prompt.close();
+            }
+        });
+        act("rename_tab");
+
+        // Toggle Session Tree hides the dock's panel, then brings it back.
+        let panel = find::<gtk4::Paned>(window.upcast_ref())
+            .and_then(|paned| paned.start_child())
+            .expect("the dock panel");
+        assert!(panel.is_visible());
+        act("toggle_session_tree");
+        assert!(!panel.is_visible());
+        act("toggle_session_tree");
+        assert!(panel.is_visible());
+
+        // Close Tab closes tabs, never Home.
+        for _ in 0..3 {
+            act("close_tab");
+        }
+        assert_eq!(notebook.n_pages(), 1);
+        act("close_tab");
+        assert_eq!(notebook.n_pages(), 1, "Home stays");
+
+        for _ in 0..20 {
+            glib::MainContext::default().iteration(false);
+        }
+        window.destroy();
+        // Leave the process-wide settings as the other widget tests expect.
+        tab_resilience::install_settings(true, true);
+    }
 }

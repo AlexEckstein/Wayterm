@@ -84,10 +84,11 @@ fn an_export_document_is_bindings_only() {
     }
 }
 
-/// `HotkeyEngine::install` against real GTK objects: Tier-1 accels on the
-/// application, a Tier-2 controller on the host widget, live rebuilds of
-/// exactly one binding, and the focus check that keeps a terminal chord
-/// from firing outside the terminal. Skipped by default — display-free CI
+/// `HotkeyEngine::install` against real GTK objects (doc 07 §Dispatch):
+/// one capture-phase controller on the window, each shortcut firing its
+/// window action only while its context is active and the action is
+/// enabled, live rebuilds of exactly one trigger, and the report of
+/// actions with no window action. Skipped by default — display-free CI
 /// never runs it. To verify:
 ///
 /// ```text
@@ -95,14 +96,14 @@ fn an_export_document_is_bindings_only() {
 /// ```
 #[test]
 #[ignore = "needs a display: xvfb-run -a cargo test --test hotkeys -- --ignored"]
-fn install_binds_both_tiers_and_rebuilds_one_binding() {
+fn install_dispatches_by_context_and_rebuilds_one_binding() {
     use std::cell::Cell;
     use std::rc::Rc;
 
     use gtk4::prelude::*;
     use gtk4::{gio, glib};
-    use wayterm::hotkeys::engine::{action_name, ContextHost};
-    use wayterm::hotkeys::ActionContext;
+    use wayterm::hotkeys::engine::{focus_owns_keys, precedence, ContextHost, DISPATCHER_NAME};
+    use wayterm::hotkeys::{ActionContext, DEFAULT_ACTIONS};
 
     gtk4::init().expect("GTK must initialize under xvfb");
     // GTK renders accels in its own modifier order.
@@ -110,48 +111,66 @@ fn install_binds_both_tiers_and_rebuilds_one_binding() {
         let (key, mods) = gtk4::accelerator_parse(accel).expect("a valid accel");
         gtk4::accelerator_name(key, mods).to_string()
     };
-    let app = gtk4::Application::new(
-        Some("com.alex-eckstein.wayterm.hotkeys-test"),
-        gio::ApplicationFlags::NON_UNIQUE,
-    );
 
-    // A stand-in window: `win.copy` counts activations; the host widget is
-    // the terminal context's controller host.
-    let copies = Rc::new(Cell::new(0));
-    let group = gio::SimpleActionGroup::new();
-    let copy = gio::SimpleAction::new("copy", None);
-    let for_copy = copies.clone();
-    copy.connect_activate(move |_, _| for_copy.set(for_copy.get() + 1));
-    group.add_action(&copy);
-    let host = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    let window = gtk4::Window::new();
-    window.insert_action_group("win", Some(&group));
-    window.set_child(Some(&host));
+    // A stand-in main window: `copy` and `new_tab` count activations,
+    // `disconnect` exists but is disabled; nothing else is registered.
+    let window = gtk4::ApplicationWindow::builder().build();
+    let counter = |id: &str| {
+        let count = Rc::new(Cell::new(0));
+        let action = gio::SimpleAction::new(id, None);
+        let for_action = count.clone();
+        action.connect_activate(move |_, _| for_action.set(for_action.get() + 1));
+        window.add_action(&action);
+        (action, count)
+    };
+    let (_, copies) = counter("copy");
+    let (_, new_tabs) = counter("new_tab");
+    let (disconnect, _) = counter("disconnect");
+    disconnect.set_enabled(false);
+    // A panel (an entry and a button) and a button outside it.
+    let panel = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    let entry = gtk4::Entry::new();
+    let inside = gtk4::Button::with_label("inside");
+    panel.append(&entry);
+    panel.append(&inside);
+    let outside = gtk4::Button::with_label("outside");
+    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    root.append(&panel);
+    root.append(&outside);
+    window.set_child(Some(&root));
+    window.present();
 
-    let focused = Rc::new(Cell::new(false));
-    let for_focus = focused.clone();
+    let terminal_live = Rc::new(Cell::new(false));
+    let for_terminal = terminal_live.clone();
     let mut engine = HotkeyEngine::new();
-    engine.install(
-        &app,
-        vec![ContextHost::new(ActionContext::Terminal, &host)
-            .with_focus_check(move || for_focus.get())],
+    let unhandled = engine.install(
+        &window,
+        vec![ContextHost::new(ActionContext::Terminal, move || {
+            for_terminal.get()
+        })],
     );
+    let mut expected_unhandled: Vec<String> = DEFAULT_ACTIONS
+        .iter()
+        .map(|d| d.id.to_string())
+        .filter(|id| !["copy", "new_tab", "disconnect"].contains(&id.as_str()))
+        .collect();
+    expected_unhandled.sort_by_key(|id| {
+        let action = engine.action(id).unwrap();
+        (action.context, action.id.clone())
+    });
+    assert_eq!(unhandled, expected_unhandled);
 
-    let accels = |engine: &HotkeyEngine| -> Vec<(String, Vec<String>)> {
-        engine
-            .registry()
-            .ordered_actions()
-            .into_iter()
-            .map(|a| {
-                let accels = app.accels_for_action(&action_name(&a.id));
-                (a.id.clone(), accels.iter().map(|s| s.to_string()).collect())
-            })
+    let controllers = || -> Vec<gtk4::ShortcutController> {
+        (0..window.observe_controllers().n_items())
+            .filter_map(|i| window.observe_controllers().item(i))
+            .filter_map(|c| c.downcast::<gtk4::ShortcutController>().ok())
+            .filter(|c| c.name().as_deref() == Some(DISPATCHER_NAME))
             .collect()
     };
-    let controller = (0..host.observe_controllers().n_items())
-        .filter_map(|i| host.observe_controllers().item(i))
-        .find_map(|c| c.downcast::<gtk4::ShortcutController>().ok())
-        .expect("the terminal host carries a shortcut controller");
+    let controller = controllers()
+        .into_iter()
+        .next()
+        .expect("the window carries the dispatcher");
     assert_eq!(
         controller.propagation_phase(),
         gtk4::PropagationPhase::Capture
@@ -174,85 +193,81 @@ fn install_binds_both_tiers_and_rebuilds_one_binding() {
             .into_iter()
             .find(|s| s.trigger().is_some_and(|t| t.to_str() == accel))
     };
-
-    // Tier 1: every global holds its accel, `toggle_sftp`'s former manual
-    // one included; terminal actions hold none (they live in Tier 2).
-    let before = accels(&engine);
-    let get = |all: &[(String, Vec<String>)], id: &str| {
-        all.iter().find(|(a, _)| a == id).unwrap().1.clone()
-    };
-    assert_eq!(
-        get(&before, "toggle_sftp"),
-        vec![canon("<Control><Shift>b")]
-    );
-    assert_eq!(get(&before, "reconnect"), vec![canon("<Control><Shift>r")]);
-    assert_eq!(get(&before, "disconnect"), vec![canon("<Control><Shift>x")]);
-    assert!(get(&before, "copy").is_empty());
-
-    // Tier 2: one shortcut per terminal action.
-    assert_eq!(shortcuts().len(), 9);
-    let tier2_before = triggers();
-    assert!(tier2_before.contains(&canon("<Control><Shift>c")));
-
-    // The focus check: outside the terminal the chord propagates untouched.
     let activate = |s: &gtk4::Shortcut| {
         s.action().expect("an action").activate(
             gtk4::ShortcutActionFlags::empty(),
-            &host,
+            &window,
             None::<&glib::Variant>,
         )
     };
-    let copy_shortcut = shortcut_for(&canon("<Control><Shift>c")).expect("copy's shortcut");
-    assert!(!activate(&copy_shortcut));
+
+    // One shortcut per action of a hosted context (global, terminal): the
+    // session tree and SFTP were given no host. Narrow contexts first.
+    let hosted: Vec<ActionContext> = engine
+        .registry()
+        .ordered_actions()
+        .into_iter()
+        .filter(|a| matches!(a.context, ActionContext::Global | ActionContext::Terminal))
+        .map(|a| a.context)
+        .collect();
+    assert_eq!(shortcuts().len(), hosted.len());
+    let first_global = hosted
+        .iter()
+        .filter(|c| precedence(**c) < precedence(ActionContext::Global))
+        .count();
+    let tier_order = triggers();
+    assert!(tier_order[..first_global].contains(&canon("<Control><Shift>c")));
+    assert!(tier_order[first_global..].contains(&canon("<Control><Shift>t")));
+
+    // A global fires whatever has focus; a terminal action only while its
+    // context is active.
+    let new_tab = shortcut_for(&canon("<Control><Shift>t")).expect("new_tab's shortcut");
+    assert!(activate(&new_tab));
+    assert_eq!(new_tabs.get(), 1);
+    let copy = shortcut_for(&canon("<Control><Shift>c")).expect("copy's shortcut");
+    assert!(!activate(&copy), "no terminal: the key passes through");
     assert_eq!(copies.get(), 0);
-    focused.set(true);
-    assert!(activate(&copy_shortcut));
+    terminal_live.set(true);
+    assert!(activate(&copy));
     assert_eq!(copies.get(), 1);
 
-    // A Tier-1 rebind changes exactly that accel, live.
-    engine.rebind("new_tab", "Ctrl+Alt+T").expect("free chord");
-    let after = accels(&engine);
-    let changed: Vec<&String> = before
-        .iter()
-        .zip(&after)
-        .filter(|(b, a)| b != a)
-        .map(|(_, (id, _))| id)
-        .collect();
-    assert_eq!(changed, vec!["new_tab"]);
-    assert_eq!(get(&after, "new_tab"), vec![canon("<Control><Alt>t")]);
-    assert_eq!(triggers(), tier2_before, "Tier 2 untouched");
+    // A disabled or missing window action lets the key through.
+    let disconnect_shortcut =
+        shortcut_for(&canon("<Control><Shift>x")).expect("disconnect's shortcut");
+    assert!(!activate(&disconnect_shortcut));
+    let paste = shortcut_for(&canon("<Control><Shift>v")).expect("paste's shortcut");
+    assert!(!activate(&paste), "no win.paste registered");
 
-    // A Tier-2 rebind swaps exactly that trigger, on the same shortcut.
-    engine.rebind("copy", "Ctrl+Alt+C").expect("free chord");
-    let tier2_after = triggers();
-    let changed = tier2_before
-        .iter()
-        .zip(&tier2_after)
-        .filter(|(b, a)| b != a)
-        .count();
+    // A rebind swaps exactly that trigger, in place.
+    let before = triggers();
+    engine.rebind("new_tab", "Ctrl+Alt+T").expect("free chord");
+    let after = triggers();
+    let changed = before.iter().zip(&after).filter(|(b, a)| b != a).count();
     assert_eq!(changed, 1);
-    let rebound = shortcut_for(&canon("<Control><Alt>c")).expect("rebound trigger");
-    assert_eq!(rebound, copy_shortcut, "rebuilt in place, not reinstalled");
-    assert_eq!(accels(&engine), after, "Tier 1 untouched");
+    let rebound = shortcut_for(&canon("<Control><Alt>t")).expect("rebound trigger");
+    assert_eq!(rebound, new_tab, "rebuilt in place, not reinstalled");
 
     // Disable frees the chord; reset restores the default.
     engine.set_enabled("copy", false).expect("disable");
-    assert_eq!(copy_shortcut.trigger().unwrap().to_str(), "never");
+    assert_eq!(copy.trigger().unwrap().to_str(), "never");
     engine.reset_to_default("copy").expect("reset");
-    assert_eq!(triggers(), tier2_before);
-    engine.set_enabled("toggle_sftp", false).expect("disable");
-    assert!(app.accels_for_action("win.toggle_sftp").is_empty());
-    engine.reset_to_default("toggle_sftp").expect("reset");
-    assert_eq!(
-        get(&accels(&engine), "toggle_sftp"),
-        vec![canon("<Control><Shift>b")]
-    );
+    engine.reset_to_default("new_tab").expect("reset");
+    assert_eq!(triggers(), before);
+
+    // A focus host: active with focus inside the panel, except in its
+    // text field, where typing wins.
+    let host = ContextHost::focus_within(ActionContext::SessionTree, &panel);
+    inside.grab_focus();
+    assert!(host.is_active());
+    assert!(!focus_owns_keys(&window));
+    entry.grab_focus();
+    assert!(focus_owns_keys(&window));
+    assert!(!host.is_active(), "typing in the panel's entry");
+    outside.grab_focus();
+    assert!(!host.is_active(), "focus outside the panel");
 
     // Installing again replaces the controller instead of stacking one.
-    engine.install(&app, vec![ContextHost::new(ActionContext::Terminal, &host)]);
-    let controllers = (0..host.observe_controllers().n_items())
-        .filter_map(|i| host.observe_controllers().item(i))
-        .filter(|c| c.is::<gtk4::ShortcutController>())
-        .count();
-    assert_eq!(controllers, 1);
+    engine.install(&window, Vec::new());
+    assert_eq!(controllers().len(), 1);
+    window.destroy();
 }

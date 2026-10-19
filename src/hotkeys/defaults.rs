@@ -1,10 +1,11 @@
 //! The compiled-in default bindings: doc 07 §Default Actions.
 //!
 //! The table is de-conflicted (the tests enforce it): the only chords that
-//! repeat are `Ctrl+D` and `Delete`, each in two Tier-2 contexts that are
-//! never active together. One deliberate deviation from the doc's printed
-//! table: the Enter key is spelled `Return`, because GDK has no key named
-//! `Enter` and such a binding could never fire.
+//! repeat are `Ctrl+D` and `Delete`, each shared by the session tree and
+//! SFTP, which are never active together. The Enter key is spelled
+//! `Return`, because GDK has no key named `Enter`. No global or terminal
+//! default is a bare `Ctrl+<letter>`: those are terminal control
+//! characters, and these chords are taken before the terminal sees them.
 
 use crate::hotkeys::registry::{ActionContext, ActionRegistry};
 
@@ -35,7 +36,7 @@ const fn a(
 use ActionContext::{Global as G, SessionTree as S, Sftp as F, Terminal as T};
 
 /// Doc 07's table in its order; `goto_tab_1` … `goto_tab_9` is one printed
-/// row, so 37 actions in all.
+/// row, so 34 actions in all.
 #[rustfmt::skip]
 pub const DEFAULT_ACTIONS: &[DefaultAction] = &[
     a("new_tab", "New Tab", "Ctrl+Shift+T", G),
@@ -56,11 +57,8 @@ pub const DEFAULT_ACTIONS: &[DefaultAction] = &[
     a("toggle_fullscreen", "Fullscreen", "F11", G),
     a("reconnect", "Reconnect", "Ctrl+Shift+R", G),
     a("disconnect", "Disconnect", "Ctrl+Shift+X", G),
-    a("new_session", "New Session Wizard", "Ctrl+N", G),
+    a("new_session", "New Session Wizard", "Ctrl+Shift+N", G),
     a("rename_tab", "Rename Tab", "Ctrl+Shift+Return", G),
-    a("split_horizontal", "Split Horizontal", "Ctrl+Shift+D", T),
-    a("split_vertical", "Split Vertical", "Ctrl+Shift+E", T),
-    a("close_split", "Close Split", "Ctrl+Shift+Q", T),
     a("search", "Search in Terminal", "Ctrl+Shift+F", T),
     a("search_scrollback", "Search Scrollback", "Ctrl+Shift+K", T),
     a("copy", "Copy Selection", "Ctrl+Shift+C", T),

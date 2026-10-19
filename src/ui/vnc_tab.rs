@@ -23,8 +23,8 @@
 //! - **GDK keyvals are X11 keysyms** (doc 08): forwarded unchanged, and
 //!   modifiers are plain key events of their own, so there is no modifier
 //!   state machine here.
-//! - **No Tier-2 controller** (doc 08 §Tabs): the page installs only the four
-//!   remote-input controllers; window accelerators still fire first.
+//! - **No shortcut controller** (doc 08 §Tabs): the page installs only the
+//!   four remote-input controllers; global shortcuts still fire first.
 //! - **Weak page refs in tasks:** a task holding the page strongly would keep
 //!   it alive after the tab is closed, and the engine is cancelled only when
 //!   the page's data drops (`EngineSlot`).
@@ -610,7 +610,7 @@ pub(super) mod gtk_tests {
         }
         assert!(
             !kinds.iter().any(|k| k.contains("Shortcut")),
-            "no Tier-2 controller: {kinds:?}"
+            "no shortcut controller: {kinds:?}"
         );
 
         // Draw: an 8x4 target scales the 4x2 desktop by 2; every pixel red.

@@ -195,12 +195,12 @@ fn key_token_bindability() {
     assert!(!key_token_is_bindable("Ctrl"));
 }
 
-/// The reverse direction renders GTK's own accelerator spelling.
+/// The reverse direction renders the canonical UI spelling.
 #[test]
 fn accel_to_ui_key_renders_modifiers() {
     assert_eq!(
         accel_to_ui_key("<Control><Shift>t").as_deref(),
-        Some("Ctrl+Shift+t")
+        Some("Ctrl+Shift+T")
     );
     assert_eq!(
         accel_to_ui_key("<Control><Alt>Delete").as_deref(),
@@ -221,13 +221,14 @@ fn accel_to_ui_key_normalizes_modifier_order() {
     );
     assert_eq!(
         accel_to_ui_key("<Shift><Control>t").as_deref(),
-        Some("Ctrl+Shift+t")
+        Some("Ctrl+Shift+T")
     );
 }
 
 #[test]
-fn accel_to_ui_key_lowercases_single_characters() {
-    assert_eq!(accel_to_ui_key("<Control>T").as_deref(), Some("Ctrl+t"));
+fn accel_to_ui_key_renders_letters_upper_case() {
+    assert_eq!(accel_to_ui_key("<Control>T").as_deref(), Some("Ctrl+T"));
+    assert_eq!(accel_to_ui_key("<Control>t").as_deref(), Some("Ctrl+T"));
     assert_eq!(accel_to_ui_key("<Control>Tab").as_deref(), Some("Ctrl+Tab"));
 }
 
@@ -251,9 +252,8 @@ fn accel_to_ui_key_rejects_keys_gdk_does_not_know() {
     assert_eq!(accel_to_ui_key("<Control>Enter"), None);
 }
 
-/// Round-tripping preserves the *chord*, not the spelling: GTK
-/// lowercases single characters, so `"Ctrl+Shift+T"` comes back as
-/// `"Ctrl+Shift+t"`.
+/// Round-tripping preserves the chord, and a canonical key comes back
+/// verbatim.
 #[test]
 fn round_trip_preserves_the_chord() {
     for key in [
@@ -271,7 +271,7 @@ fn round_trip_preserves_the_chord() {
         "Ctrl+U",
         "Ctrl+Shift+Return",
         "Return",
-        "Ctrl+N",
+        "Ctrl+Shift+N",
     ] {
         let accel = ui_key_to_accel(key).unwrap_or_else(|| panic!("{key:?} must parse"));
         let back = accel_to_ui_key(&accel)
@@ -281,6 +281,7 @@ fn round_trip_preserves_the_chord() {
             Some(accel.as_str()),
             "{key:?} must round-trip through its accelerator"
         );
+        assert_eq!(back, key, "{key:?} is canonical");
     }
 }
 
@@ -305,7 +306,7 @@ fn chord_renders_ui_key() {
         Key::t,
         ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK,
     );
-    assert_eq!(chord.to_ui_key().as_deref(), Some("Ctrl+Shift+t"));
+    assert_eq!(chord.to_ui_key().as_deref(), Some("Ctrl+Shift+T"));
 }
 
 #[test]
@@ -346,7 +347,7 @@ fn chord_every_modifier() {
     let chord = KeyChord::new(Key::k, all);
     assert_eq!(
         chord.to_ui_key().as_deref(),
-        Some("Ctrl+Shift+Alt+Super+Meta+k")
+        Some("Ctrl+Shift+Alt+Super+Meta+K")
     );
     assert_eq!(
         accel_of(chord).as_deref(),
@@ -361,18 +362,18 @@ fn chord_ignores_non_modifier_masks() {
         Key::c,
         ModifierType::CONTROL_MASK | ModifierType::BUTTON1_MASK,
     );
-    assert_eq!(chord.to_ui_key().as_deref(), Some("Ctrl+c"));
+    assert_eq!(chord.to_ui_key().as_deref(), Some("Ctrl+C"));
 }
 
 #[test]
 fn chord_round_trips_through_ui_key() {
     for (ui_key, expected) in [
-        ("Ctrl+Shift+T", "Ctrl+Shift+t"),
+        ("Ctrl+Shift+t", "Ctrl+Shift+T"),
         ("Ctrl+Tab", "Ctrl+Tab"),
         ("Alt+1", "Alt+1"),
         ("F2", "F2"),
         ("Delete", "Delete"),
-        ("Ctrl+U", "Ctrl+u"),
+        ("Ctrl+u", "Ctrl+U"),
         ("Ctrl+Shift+Return", "Ctrl+Shift+Return"),
     ] {
         let chord = KeyChord::from_ui_key(ui_key)
@@ -383,6 +384,53 @@ fn chord_round_trips_through_ui_key() {
             accel_of(KeyChord::from_ui_key(expected).unwrap()),
             accel_of(chord)
         );
+    }
+}
+
+/// Equal chords compare equal however they arrive: a letter's case,
+/// Shift+Tab's `ISO_Left_Tab`, and lock or button masks do not count.
+#[test]
+fn chords_are_canonical() {
+    let ctrl_shift = ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK;
+    assert_eq!(
+        KeyChord::new(Key::t, ctrl_shift),
+        KeyChord::new(Key::T, ctrl_shift | ModifierType::LOCK_MASK)
+    );
+    assert_eq!(
+        KeyChord::new(Key::ISO_Left_Tab, ctrl_shift)
+            .to_ui_key()
+            .as_deref(),
+        Some("Ctrl+Shift+Tab")
+    );
+    assert_eq!(
+        KeyChord::from_ui_key("Shift+Ctrl+t"),
+        KeyChord::from_ui_key("Ctrl+Shift+T")
+    );
+    // A shifted symbol stays as GTK reports it: that is the keyval GTK
+    // matches a Shift chord against.
+    assert_eq!(
+        KeyChord::new(Key::exclam, ctrl_shift)
+            .to_ui_key()
+            .as_deref(),
+        Some("Ctrl+Shift+exclam")
+    );
+}
+
+#[test]
+fn canonical_ui_key_examples() {
+    for (key, canonical) in [
+        ("Ctrl+Shift+t", Some("Ctrl+Shift+T")),
+        ("Shift+Ctrl+T", Some("Ctrl+Shift+T")),
+        ("Alt+Ctrl+Delete", Some("Ctrl+Alt+Delete")),
+        ("Ctrl+Shift+ISO_Left_Tab", Some("Ctrl+Shift+Tab")),
+        ("F11", Some("F11")),
+        ("Return", Some("Return")),
+        ("Ctrl+Bogus", None),
+        ("Enter", None),
+        ("Ctrl+", None),
+        ("", None),
+    ] {
+        assert_eq!(canonical_ui_key(key).as_deref(), canonical, "{key:?}");
     }
 }
 
@@ -401,7 +449,7 @@ fn bindable_defaults() {
         "Ctrl+Shift+Tab",
         "Alt+1",
         "F11",
-        "Ctrl+N",
+        "Ctrl+Shift+N",
         "Return",
         "Ctrl+Shift+Return",
         "Delete",
