@@ -127,23 +127,35 @@ pub fn build_tab_label(
         title: RefCell::new(TabTitle::new(session_name)),
         label: name_label.clone(),
     });
-    set_data(&box_, TAB_TITLE_KEY, state.clone());
+    set_data(&box_, TAB_TITLE_KEY, state);
 
     let click = gtk4::GestureClick::new();
     click.set_button(gtk4::gdk::BUTTON_PRIMARY);
-    let label_for_rename = name_label.clone();
-    let state_for_rename = state.clone();
+    let label_widget: gtk4::Widget = box_.upcast();
+    // Weak: the gesture lives on a child of the label widget.
+    let for_rename = label_widget.downgrade();
     click.connect_pressed(move |gesture, n_press, _x, _y| {
         if n_press != 2 {
             return;
         }
         gesture.set_state(gtk4::EventSequenceState::Claimed);
-        let parent = window_of(&label_for_rename);
-        let current = state_for_rename.value();
-        if let Some(new_name) = prompt_text(parent.as_ref(), "Rename Tab", &current) {
-            state_for_rename.rename(&new_name);
+        if let Some(label_widget) = for_rename.upgrade() {
+            prompt_rename(&label_widget);
         }
     });
     name_label.add_controller(click);
-    (box_.upcast(), name_label)
+    (label_widget, name_label)
+}
+
+/// Ask for a new name for the tab whose label is `label_widget` (one
+/// built by [`build_tab_label`]): a double-click on the name, or the
+/// `rename_tab` action. No-op for any other label.
+pub fn prompt_rename(label_widget: &gtk4::Widget) {
+    let Some(state) = title_state_of(label_widget) else {
+        return;
+    };
+    let parent = window_of(label_widget);
+    if let Some(new_name) = prompt_text(parent.as_ref(), "Rename Tab", &state.value()) {
+        state.rename(&new_name);
+    }
 }

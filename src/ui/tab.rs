@@ -1335,19 +1335,33 @@ fn build_tab_label(
     session: &SessionConfig,
 ) -> gtk4::Widget {
     let notebook = notebook.clone();
-    let tab_id = tab_id_of(page).unwrap_or_default();
     // Weak: the label belongs to the notebook, which owns the page.
     let page = page.downgrade();
     let (label, _) = tab_label::build_tab_label(&session.name, move || {
-        let (notebook, page) = (notebook.clone(), page.clone());
-        let parent = window_of(&notebook);
-        crate::ui::tab_resilience::request_close(tab_id, parent.as_ref(), move || {
-            if let Some(page_num) = page.upgrade().and_then(|page| notebook.page_num(&page)) {
-                notebook.remove_page(Some(page_num));
-            }
-        });
+        if let Some(page) = page.upgrade() {
+            request_close_page(&notebook, &page);
+        }
     });
     label
+}
+
+/// Close `page` as its close button does: a session tab asks first while
+/// its transport is live (doc 04 §Lifecycle, `confirm_close`); any other
+/// page goes at once. The `close_tab` action's path too.
+pub(crate) fn request_close_page(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
+    let Some(tab_id) = tab_id_of(page) else {
+        if let Some(page_num) = notebook.page_num(page) {
+            notebook.remove_page(Some(page_num));
+        }
+        return;
+    };
+    let (notebook, weak) = (notebook.clone(), page.downgrade());
+    let parent = window_of(&notebook);
+    crate::ui::tab_resilience::request_close(tab_id, parent.as_ref(), move || {
+        if let Some(page_num) = weak.upgrade().and_then(|page| notebook.page_num(&page)) {
+            notebook.remove_page(Some(page_num));
+        }
+    });
 }
 
 mod duplicate;
