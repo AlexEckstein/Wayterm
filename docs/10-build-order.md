@@ -58,11 +58,13 @@ tray icon with minimize-to-tray.
 
 Gaps, each a wiring task rather than new design:
 
-- ~~`HotkeyEngine::install()` does not exist yet~~ — done in Phase 8: the
-  engine binds both tiers from the registry and rebuilds one binding on
-  rebind (doc 07). Actions without a backing action (`new_tab`,
-  `goto_tab_N`, splits, session-tree actions) still have keys but do
-  nothing; their actions are open Phase 4+ work.
+- ~~`HotkeyEngine::install()` does not exist yet~~ — done in Phase 8,
+  and rebuilt in 2026-10 (doc 07): one controller on the main window
+  checks each action's context at key press, so terminal shortcuts work
+  wherever focus is, short of a text field; chords compare by key, not
+  spelling; and every action in the table has a window action (a widget
+  test checks it). `new_tab` opens the host picker; the split actions
+  were dropped until split panes exist.
 - ~~Connected tabs are not registered as live~~ — done in Phase 8: the
   connect flow registers every streaming tab, and `ConnectionLost` drives
   reconnect (auto, or prompt via the `reconnect` action).
@@ -96,7 +98,7 @@ status bar. Known gaps, each small:
 Path B (`vnc-rs` 0.6.0, doc 08): `VncSession::connect` + engine task
 (`src/vnc/`) owning a `VncPixels` framebuffer, `VncTab`
 (`src/ui/vnc_tab.rs`) with the cairo blit, key/pointer input, view-only
-mode, no Tier-2 shortcut controller; the password resolves through the
+mode, no shortcut context; the password resolves through the
 credential chain (`vnc_password`); tab open/close/retry goes through the
 same session-tab flow as the other types. Protocol correctness comes
 from a hand-rolled RFB 3.8 mock server (`tests/common/vnc.rs` →

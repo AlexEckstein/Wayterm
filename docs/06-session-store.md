@@ -249,9 +249,11 @@ shows again; it is greyed out while none is silenced. Its other page, Keyboard S
 
 The seed also inserts 28 `hotkeys` rows with `is_default = 1`. They are
 informational: only `is_default = 0` rows (user overrides) are ever loaded,
-and doc 07's table is the source of truth. The seed predates two fixes
-there, so it spells the Enter key `Enter` (GDK's name is `Return`) and
-lacks `goto_tab_1` … `goto_tab_9`; a test pins exactly those differences.
+and doc 07's table is the source of truth. The seed predates later
+revisions of that table: it spells the Enter key `Enter` (GDK's name is
+`Return`), lacks `goto_tab_1` … `goto_tab_9`, and still holds the split
+actions and `new_session`'s old `Ctrl+N` that doc 07's 2026-10 revision
+dropped; a test pins exactly those differences.
 
 ## Credential Storage
 

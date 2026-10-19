@@ -33,7 +33,8 @@ notebook:
 | SFTP | the current tab's SFTP sidebar, or a placeholder on tabs without one (doc 09) |
 
 The strip sits outside the paned, so dragging the panel shut never hides
-the tabs. Its icons ship in the binary beside the tree icons (doc 06
+the tabs; `toggle_session_tree` hides the panel the same way, and picking
+a tab brings it back (doc 07 §Handlers). Its icons ship in the binary beside the tree icons (doc 06
 §Icons), so a tab never draws blank.
 
 ## Principles
