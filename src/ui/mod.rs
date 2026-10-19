@@ -2,6 +2,7 @@
 
 pub mod auth_dialog;
 pub mod folder_dialog;
+pub mod host_picker;
 pub mod hostkey_dialog;
 pub mod icons;
 pub mod macro_editor;
@@ -47,6 +48,7 @@ mod gtk_tests {
         super::sftp_sidebar::gtk_tests::follow_checkbox_toggles_following();
         super::side_dock::gtk_tests::icon_tabs_switch_the_panel();
         super::side_dock::gtk_tests::sftp_panel_follows_the_current_tab();
+        super::host_picker::gtk_tests::picker_opens_the_selected_host();
         super::macro_editor::gtk_tests::editor_rows_follow_the_draft();
         super::macros_panel::gtk_tests::panel_lists_macros_and_needs_a_terminal();
         super::macros_panel::gtk_tests::panel_records_and_plays_through_the_terminal();

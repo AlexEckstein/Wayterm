@@ -15,6 +15,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::store::SessionStore;
+use crate::ui::host_picker::{local_shell_session, LOCAL_SHELL_ID};
 use crate::ui::tab::{session_id_of, SessionTab};
 use crate::ui::tab_label::build_tab_label;
 use crate::ui::tab_state::{self, PageInfo, TabState};
@@ -158,7 +159,11 @@ impl TabPersistence {
     }
 
     fn open_restored(&self, tab: &TabState) {
-        let config = tab.session_id.map(|id| (id, self.store.get_session(id)));
+        // The New Tab picker's local shell is unsaved: it has its own id.
+        let config = tab.session_id.map(|id| match id {
+            LOCAL_SHELL_ID => (id, Ok(local_shell_session())),
+            id => (id, self.store.get_session(id)),
+        });
         let content = match config {
             Some((_, Ok(config))) => SessionTab::restore(&self.notebook, &config, &self.store),
             Some((id, Err(err))) => {
