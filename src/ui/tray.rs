@@ -26,8 +26,32 @@ pub const MINIMIZE_TO_TRAY_KEY: &str = "minimize_to_tray";
 pub const NOTIFICATION_TITLE: &str = "Wayterm";
 /// The SNI id: unique and stable.
 pub const TRAY_ID: &str = crate::app::APP_ID;
-/// A stock icon, always present in hicolor.
-pub const TRAY_ICON_NAME: &str = "utilities-terminal";
+/// The app icon, which the packages install into hicolor.
+pub const TRAY_ICON_NAME: &str = crate::app::APP_ID;
+/// The same icon as pixels, for a host that cannot find the name
+/// (`cargo run`, an AppImage without desktop integration).
+const TRAY_ICON_PNG: &[u8] =
+    include_bytes!("../../assets/icons/hicolor/64x64/apps/com.alex-eckstein.wayterm.png");
+
+/// [`TRAY_ICON_PNG`] as an SNI pixmap: ARGB32 in network byte order.
+pub fn tray_icon_pixmap() -> Result<ksni::Icon, glib::Error> {
+    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_static(TRAY_ICON_PNG));
+    let pixbuf = gtk4::gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE)?;
+    let (width, height) = (pixbuf.width(), pixbuf.height());
+    let row_len = width as usize * 4;
+    // Pixbuf rows are RGBA, padded to the rowstride.
+    let data = pixbuf
+        .read_pixel_bytes()
+        .chunks(pixbuf.rowstride() as usize)
+        .flat_map(|row| row[..row_len].as_chunks::<4>().0)
+        .flat_map(|&[r, g, b, a]| [a, r, g, b])
+        .collect();
+    Ok(ksni::Icon {
+        width,
+        height,
+        data,
+    })
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrayAction {
@@ -128,6 +152,8 @@ pub struct TrayHandle {
 /// The status-notifier item.
 pub struct WaytermTray {
     queue: std_mpsc::Sender<TrayAction>,
+    /// [`tray_icon_pixmap`], decoded once; empty if it failed.
+    pixmap: Vec<ksni::Icon>,
 }
 
 impl WaytermTray {
@@ -149,6 +175,10 @@ impl ksni::Tray for WaytermTray {
 
     fn icon_name(&self) -> String {
         TRAY_ICON_NAME.to_string()
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        self.pixmap.clone()
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -176,12 +206,20 @@ impl ksni::Tray for WaytermTray {
 /// handshake on a dedicated one-worker runtime, failing fast when headless.
 pub fn init_tray(app: &gtk4::Application) -> Result<TrayHandle, TrayInitError> {
     let (queue, queue_rx) = std_mpsc::channel();
+    // Not fatal: the icon name still works where the app is installed.
+    let pixmap = match tray_icon_pixmap() {
+        Ok(icon) => vec![icon],
+        Err(err) => {
+            eprintln!("Wayterm: tray icon pixmap unavailable ({err})");
+            Vec::new()
+        }
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_name("wayterm-tray")
         .enable_all()
         .build()?;
-    let handle = runtime.block_on(WaytermTray { queue }.spawn())?;
+    let handle = runtime.block_on(WaytermTray { queue, pixmap }.spawn())?;
     TRAY_DISPATCH.set(Some((app.clone(), queue_rx)));
     Ok(TrayHandle {
         _runtime: runtime,

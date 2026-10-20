@@ -89,5 +89,18 @@ fn tray_identity_is_wayterm() {
     use wayterm::app::APP_ID;
     assert_eq!(tray::TRAY_ID, APP_ID);
     assert_eq!(tray::NOTIFICATION_TITLE, "Wayterm");
-    assert!(!tray::TRAY_ICON_NAME.is_empty());
+    assert_eq!(tray::TRAY_ICON_NAME, APP_ID);
+}
+
+#[test]
+fn tray_pixmap_is_the_app_icon_as_network_order_argb() {
+    let icon = tray::tray_icon_pixmap().expect("the embedded PNG decodes");
+    assert_eq!((icon.width, icon.height), (64, 64));
+    assert_eq!(icon.data.len(), 64 * 64 * 4);
+    let pixel = |x: usize, y: usize| &icon.data[(y * 64 + x) * 4..][..4];
+    // Outside the rounded tile: transparent.
+    assert_eq!(pixel(0, 0)[0], 0);
+    // Alpha first: the black tile, then the front window's left edge.
+    assert_eq!(pixel(6, 32), [255, 0, 0, 0]);
+    assert_eq!(pixel(11, 32), [255, 255, 255, 255]);
 }
