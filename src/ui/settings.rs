@@ -278,5 +278,19 @@ pub(super) mod gtk_tests {
         } else {
             assert_eq!(tooltip.as_deref(), Some(general::GHOSTTY_UNAVAILABLE));
         }
+
+        // The color scheme drop-down: opens on the seeded System and saves
+        // each pick.
+        use crate::terminal::SchemeChoice;
+        let mut dropdowns: Vec<gtk4::DropDown> = Vec::new();
+        descendants(&general, &mut dropdowns);
+        assert_eq!(dropdowns.len(), 1);
+        let dropdown = &dropdowns[0];
+        let position = |choice| SchemeChoice::ALL.iter().position(|c| *c == choice).unwrap();
+        assert_eq!(dropdown.selected() as usize, position(SchemeChoice::System));
+        dropdown.set_selected(position(SchemeChoice::Light) as u32);
+        assert_eq!(general::color_scheme(&store), SchemeChoice::Light);
+        dropdown.set_selected(position(SchemeChoice::System) as u32);
+        assert_eq!(general::color_scheme(&store), SchemeChoice::System);
     }
 }

@@ -27,6 +27,7 @@ use crate::terminal::{create_terminal, TerminalBackend};
 use crate::transport::connection::SshConnection;
 use crate::transport::reconnect::{ConnectFn, ConnectFuture};
 use crate::transport::types::{TransportError, TransportEvent, TransportState};
+use crate::ui::appearance;
 use crate::ui::session_ended::{self, EndedChoice};
 use crate::ui::tab_label;
 use crate::ui::tab_resilience;
@@ -75,6 +76,7 @@ pub(super) async fn finish_connect(
     let gen = current_gen(page);
     let handle = create_terminal();
     let backend = handle.backend.clone();
+    appearance::apply_to(&*backend, session.color_scheme.as_deref());
     let widget = backend.widget();
     set_terminal_area(page, &widget);
     for _ in 0..ALLOC_WAIT_STEPS {

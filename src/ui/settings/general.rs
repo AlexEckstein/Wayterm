@@ -14,14 +14,21 @@
 //! (`ghostty`/`vte`, doc 06) for tabs opened afterwards. In a build without
 //! the `backend-ghostty` feature it is shown disabled, and VTE is used
 //! whatever the row says.
+//!
+//! "Default color scheme" writes `default_color_scheme` (`System`, `Light`,
+//! `Dark`, doc 06) and re-colors open terminals at once; `System` follows
+//! the desktop theme ([`appearance`]).
 
 use std::rc::Rc;
 
 use gtk4::prelude::*;
 
 use crate::store::SessionStore;
-use crate::terminal::{BackendKind, DEFAULT_BACKEND_SETTING, GHOSTTY_COMPILED};
-use crate::ui::{sftp_sidebar, tab, tab_resilience, tray};
+use crate::terminal::{
+    BackendKind, SchemeChoice, DEFAULT_BACKEND_SETTING, DEFAULT_COLOR_SCHEME_SETTING,
+    GHOSTTY_COMPILED,
+};
+use crate::ui::{appearance, sftp_sidebar, tab, tab_resilience, tray};
 
 // ---------------------------------------------------------------------------
 // Display-free data layer
@@ -114,6 +121,26 @@ pub fn save_backend(store: &SessionStore, kind: BackendKind) -> rusqlite::Result
     store.set_setting(DEFAULT_BACKEND_SETTING, kind.as_setting())
 }
 
+/// The row's text.
+pub const COLOR_SCHEME_TITLE: &str = "Default color scheme";
+pub const COLOR_SCHEME_SUBTITLE: &str = "Terminal colors for sessions without their own. \
+                                         System follows the desktop's light or dark theme.";
+
+/// The stored `default_color_scheme`; missing or unknown is `System`, as
+/// tabs resolve it.
+pub fn color_scheme(store: &SessionStore) -> SchemeChoice {
+    store
+        .setting(DEFAULT_COLOR_SCHEME_SETTING)
+        .as_deref()
+        .and_then(SchemeChoice::from_setting)
+        .unwrap_or(SchemeChoice::System)
+}
+
+/// Store the global scheme; [`apply`] makes it take effect.
+pub fn save_color_scheme(store: &SessionStore, choice: SchemeChoice) -> rusqlite::Result<()> {
+    store.set_setting(DEFAULT_COLOR_SCHEME_SETTING, choice.as_setting())
+}
+
 /// Push the stored values to the modules that act on them, at startup and
 /// after every change. `minimize_to_tray` needs no push: the close handler
 /// reads it at each close.
@@ -124,6 +151,7 @@ pub fn apply(store: &SessionStore) {
     );
     sftp_sidebar::install_settings(store.flag(sftp_sidebar::SFTP_ON_CONNECT_SETTING));
     crate::terminal::install_backend_preference(backend(store));
+    appearance::install_default_scheme(store.setting(DEFAULT_COLOR_SCHEME_SETTING));
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +159,7 @@ pub fn apply(store: &SessionStore) {
 // ---------------------------------------------------------------------------
 
 /// The page widget: a heading over one row per toggle and the reminders
-/// reset, then the backend.
+/// reset, then the terminal's color scheme and backend.
 pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     let behavior = super::boxed_list();
     for (toggle, on) in values(&store) {
@@ -141,6 +169,7 @@ pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     let terminal_heading = super::heading("Terminal");
     terminal_heading.set_margin_top(12);
     let terminal = super::boxed_list();
+    terminal.append(&color_scheme_row(&store));
     terminal.append(&backend_row(&store));
     super::scrolling_page(&[
         super::heading("Behavior").upcast_ref(),
@@ -189,6 +218,29 @@ fn clear_reminders_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
         button.set_sensitive(false);
     });
     super::row(&[text.upcast_ref(), button.upcast_ref()])
+}
+
+/// title over subtitle | System / Light / Dark.
+fn color_scheme_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
+    let labels: Vec<&str> = SchemeChoice::ALL.iter().map(|c| c.as_setting()).collect();
+    let current = color_scheme(store);
+    let dropdown = gtk4::DropDown::from_strings(&labels);
+    dropdown.set_valign(gtk4::Align::Center);
+    let selected = SchemeChoice::ALL.iter().position(|c| *c == current);
+    dropdown.set_selected(selected.unwrap_or_default() as u32);
+    let text = super::described(COLOR_SCHEME_TITLE, Some(COLOR_SCHEME_SUBTITLE), &dropdown);
+    let store = Rc::clone(store);
+    dropdown.connect_selected_notify(move |dropdown| {
+        let Some(choice) = SchemeChoice::ALL.get(dropdown.selected() as usize) else {
+            return;
+        };
+        if let Err(err) = save_color_scheme(&store, *choice) {
+            eprintln!("Wayterm: failed to save setting '{DEFAULT_COLOR_SCHEME_SETTING}': {err}");
+            return;
+        }
+        apply(&store);
+    });
+    super::row(&[text.upcast_ref(), dropdown.upcast_ref()])
 }
 
 /// check box | title over subtitle. Disabled, with a tooltip, in a build
@@ -244,6 +296,34 @@ mod tests {
         clear_reminders(&store).unwrap();
         assert!(!any_reminder_silenced(&store));
         assert!(REMINDERS.iter().all(|key| store.flag(key)));
+    }
+
+    /// A new store follows the system; a saved choice round-trips, and an
+    /// unknown row reads as System.
+    #[test]
+    fn color_scheme_choice_round_trips() {
+        let store = SessionStore::in_memory().unwrap();
+        assert_eq!(
+            store
+                .get_setting(DEFAULT_COLOR_SCHEME_SETTING)
+                .unwrap()
+                .as_deref(),
+            Some("System"),
+            "the seed"
+        );
+        assert_eq!(color_scheme(&store), SchemeChoice::System);
+        for choice in [
+            SchemeChoice::Light,
+            SchemeChoice::Dark,
+            SchemeChoice::System,
+        ] {
+            save_color_scheme(&store, choice).unwrap();
+            assert_eq!(color_scheme(&store), choice);
+        }
+        store
+            .set_setting(DEFAULT_COLOR_SCHEME_SETTING, "Solarized")
+            .unwrap();
+        assert_eq!(color_scheme(&store), SchemeChoice::System);
     }
 
     /// The seeded row reads as VTE; a saved choice round-trips and `apply`
