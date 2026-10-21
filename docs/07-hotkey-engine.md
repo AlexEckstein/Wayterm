@@ -160,8 +160,8 @@ session below them are left out.
 the home directory. Its tab is saved under session id 0, which SQLite
 never assigns, and restores as a local shell (doc 10 Phase 4).
 
-The "+" button at the end of the tab bar skips the picker: it opens a
-local shell in a new tab straight away.
+The tab bar's "+" (doc 01 §Tab bar) skips the picker: it opens a local
+shell in a new tab straight away.
 
 ## Trigger Parsing
 

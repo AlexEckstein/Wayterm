@@ -37,6 +37,13 @@ the tabs; `toggle_session_tree` hides the panel the same way, and picking
 a tab brings it back (doc 07 §Handlers). Its icons ship in the binary beside the tree icons (doc 06
 §Icons), so a tab never draws blank.
 
+## Tab bar
+
+The notebook's tab bar (`src/ui/tab_bar.rs`) ends in a "+" drawn as a
+tab, right after the last tab, that opens a local shell (doc 07 §New
+Tab). Once the tabs overflow the bar they scroll, with arrows at both
+ends, and "+" stays pinned at the bar's end.
+
 ## Principles
 
 1. **Transport and terminal are separate.** A `Transport` (doc 04) moves
