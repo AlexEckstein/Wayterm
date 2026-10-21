@@ -64,11 +64,14 @@ graphics, reflow, …) queried once per tab; the UI hides what is false.
 The VTE `commit` signal (keystrokes, pastes) and the resize signals fire on
 the main thread, which must never block. Every backend sends events
 through an `IdleSender` (`src/backpressure.rs`): it `try_send`s, parks
-whatever the channel refuses, and offers it again from an idle callback,
-in order, until the queue drains — then the idle source removes itself. A
-new event always queues behind parked ones. Nothing is dropped unless the
-pump is gone. Keystrokes take the fast path; large pastes exercise the
-queue. The SFTP sidebar sends its commands the same way.
+whatever the channel refuses, and spawns one drain future on the main
+context. The future sleeps in `Sender::reserve()` until the pump frees a
+slot, sends the oldest parked event, flushes what else fits, and repeats
+until the queue drains — then it ends. Nothing runs while the channel stays
+full. A new event always queues behind parked ones. Nothing is dropped
+unless the pump is gone; then the queue is cleared and the drain stops.
+Keystrokes take the fast path; large pastes exercise the queue. The SFTP
+sidebar sends its commands the same way.
 
 Output flows the other way through a bounded channel drained on the main
 context, so a stalled UI backs up into the transport and, ultimately, SSH
