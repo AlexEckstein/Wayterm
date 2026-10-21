@@ -123,7 +123,9 @@ Disconnected → Connecting → VerifyingHostKey → Authenticating → Connecte
 ```
 
 - **Tab close** cancels the tab's token; the pump disconnects. If the
-  transport is live and `confirm_close` is on, the user is asked first.
+  transport is live and `confirm_close` is on, the user is asked first,
+  unless they closed an earlier tab with that prompt's "Do not show me
+  again" ticked (`confirm_close_notice`, doc 06).
 - **Connection drop:** the reader emits `ConnectionLost`. With
   `reconnect_on_drop` on, the reconnect driver retries on its own;
   otherwise it asks before each attempt. Every attempt is a fresh connect

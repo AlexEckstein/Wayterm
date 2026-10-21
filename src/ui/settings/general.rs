@@ -77,7 +77,10 @@ pub fn save(store: &SessionStore, key: &str, on: bool) -> rusqlite::Result<()> {
 
 /// The settings rows behind every "Do not show me again" check box; a new
 /// notice adds its row here so "Clear all reminders" covers it.
-pub const REMINDERS: [&str; 1] = [tab::TMUX_NOTICE_SETTING];
+pub const REMINDERS: [&str; 2] = [
+    tab::TMUX_NOTICE_SETTING,
+    tab_resilience::CONFIRM_CLOSE_NOTICE_SETTING,
+];
 
 pub const CLEAR_REMINDERS_TITLE: &str = "Clear all reminders";
 pub const CLEAR_REMINDERS_SUBTITLE: &str =

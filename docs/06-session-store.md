@@ -230,6 +230,7 @@ duplicate rows; that constraint is the first schema-v2 candidate).
 | `minimize_to_tray` | (not seeded) | missing = on |
 | `sftp_on_connect` | (not seeded) | missing = on; off defers the SFTP sidebar until first viewed (doc 09) |
 | `duplicate_tmux_notice` | (not seeded) | missing = on; off after "Do not show me again" on the duplicate-tab tmux notice (doc 04 §Tmux Session Persistence) |
+| `confirm_close_notice` | (not seeded) | missing = on; off after closing with "Do not show me again" ticked on the confirm-before-close prompt (doc 04 §Lifecycle & Cancellation) |
 | `open_tabs` | (written at runtime) | JSON tab list (doc 10 Phase 4) |
 
 Boolean settings are on unless explicitly `0`/`false`/`no`/`off`; a
@@ -244,7 +245,8 @@ writes `1`/`0` at once and applies live: the first two count from the
 next tab close or connection drop, open tabs included; `sftp_on_connect`
 governs tabs opened or connected afterwards; the tray setting is read at
 each window close. A "Clear all reminders" button writes `1` to every
-"Do not show me again" row (today `duplicate_tmux_notice`), so each notice
+"Do not show me again" row (today `duplicate_tmux_notice` and
+`confirm_close_notice`), so each notice
 shows again; it is greyed out while none is silenced. Its other page, Keyboard Shortcuts, is doc 07's.
 
 The seed also inserts 28 `hotkeys` rows with `is_default = 1`. They are
