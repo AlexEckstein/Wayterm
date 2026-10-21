@@ -107,20 +107,42 @@ dark), each a foreground, a background, cursor colors and 16 ANSI colors.
 A tab's scheme resolves from its session's `color_scheme` override, else
 the global `default_color_scheme` row, else `System`; empty or unknown
 values fall through (doc 06 §Terminal appearance). `System` is not a
-palette: it resolves to `Light` or `Dark` by the desktop theme. GTK's
-`gtk-application-prefer-dark-theme` wins when set; otherwise a theme name
-with a `dark` segment (`Adwaita-dark`, `Breeze Dark`) is dark, one with a
-`light` segment or a known light theme (`Adwaita`, `Breeze`, `Yaru`, …) is
-light, and anything else counts as dark.
+palette: it resolves to `Light` or `Dark` by the desktop theme. A GTK
+theme name with a `dark` segment (`Adwaita-dark`, `Breeze Dark`) is dark,
+since such a theme draws dark; otherwise the desktop's stated preference
+decides; otherwise a name with a `light` segment or a known light theme
+(`Adwaita`, `Breeze`, `Yaru`, …) is light, and anything else counts as
+dark.
+
+The preference is xdg-desktop-portal's `org.freedesktop.appearance`
+`color-scheme` (1 dark, 2 light), which `ui::appearance` reads at start
+and follows through the portal's `SettingChanged` signal. Without a
+portal answer it falls back to GTK's own settings:
+`gtk-interface-color-scheme` on GTK 4.20+, else a set
+`gtk-application-prefer-dark-theme`. The portal comes first because
+neither GTK setting tracks a live switch on KDE: the theme name stays
+`Breeze` in dark mode, and the dark flag comes from `settings.ini`, which
+GTK reads once at startup.
 
 `ui::appearance` applies the resolved name with `set_color_scheme` when a
 tab's terminal is created, and again for every open terminal when the
 global row changes (the Settings window's "Default color scheme") or the
-desktop theme does: it watches `gtk4::Settings`'
-`gtk-application-prefer-dark-theme` and `gtk-theme-name`, which GTK fills
-from xdg-desktop-portal on Linux, so a KDE or GNOME light/dark switch
-re-colors open tabs. Backends without color schemes (Ghostty) ignore the
-call.
+desktop theme does (the portal signal, or a notify of the GTK settings
+above). Backends without color schemes (Ghostty) ignore the call.
+
+The window chrome follows the same preference. `ui::appearance` points
+GTK's theme variant at it: on GTK 4.20+ it sets
+`gtk-interface-color-scheme` and resets
+`gtk-application-prefer-dark-theme`, because GTK only reloads the theme
+when the latter or the theme name notifies, and it warns when the latter
+is set. Older GTK sets `gtk-application-prefer-dark-theme`. When the
+portal withdraws its preference, both settings go back to GTK. KDE also
+recolors GTK apps by rewriting the `colors.css` that
+`$XDG_CONFIG_HOME/gtk-4.0/gtk.css` imports. GTK loads that file once, so
+`ui::appearance` watches the directory and reloads `gtk.css` into its own
+user-priority style provider whenever a `.css` file there changes. It
+adds the provider on the first change only, so it never applies an
+unchanged file twice.
 
 ### Scrollback
 

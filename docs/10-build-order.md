@@ -76,7 +76,9 @@ Gaps, each a wiring task rather than new design:
   of the prompt (doc 11 §CredentialManager).
 - Terminal color schemes are done for VTE (doc 02 §Color schemes): `Light`,
   `Dark`, and a `System` default that follows the desktop theme, set from
-  the General settings page. The session dialog has no picker for the
+  the General settings page. A live light/dark switch re-colors the
+  window chrome too (theme variant and KDE's `colors.css`). The session
+  dialog has no picker for the
   per-session `color_scheme` override yet; an override already in the
   store (imported, restored) is honored.
 
