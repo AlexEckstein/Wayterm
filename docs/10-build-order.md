@@ -207,7 +207,9 @@ Gaps:
 - `GhosttyBackend` has no search, color schemes, opacity, URL detection,
   or image drawing (`features()` says so); no input method or compose
   support (keys go through libghostty-vt's key encoder directly); only a
-  grapheme's base codepoint is drawn.
+  grapheme's base codepoint is drawn; no mouse reporting or alternate
+  scroll, so the wheel does nothing in full-screen programs (less, vim,
+  tmux) where VTE forwards it.
 - The per-session `terminal_backend` override (doc 05) is not read:
   `create_terminal()` follows the global row only.
 

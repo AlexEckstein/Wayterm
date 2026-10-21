@@ -138,7 +138,10 @@ change. `src/terminal/ghostty/`:
   allocation resizes the grid and sends `SizeChange` once per new grid.
   Keys go through libghostty-vt's key encoder, so cursor-key and Kitty
   keyboard modes apply; a primary-button drag selects; the wheel scrolls
-  three rows per notch.
+  three rows per notch, adding up the fractional steps of high-resolution
+  wheels and touchpads (pixel deltas count by cell height);
+  Shift+PageUp/PageDown scroll a page and Shift+Home/End jump to the top
+  and bottom, as in VTE, instead of reaching the remote side.
 - **Backend:** events go through the same never-blocking sender as
   VteBackend's (§Backpressure). `send_input` and `paste` queue `DataOut`
   like a key press, so macros (doc 12) work unchanged; `paste` is
@@ -147,7 +150,10 @@ change. `src/terminal/ghostty/`:
   makes it the widget's natural size.
 - **Not implemented:** search, color schemes, opacity, URL detection, and
   image drawing — `features()` reports them false, so the UI hides them;
-  input methods and compose; graphemes beyond their base codepoint.
+  input methods and compose; graphemes beyond their base codepoint; mouse
+  reporting and alternate scroll (the wheel always scrolls the viewport,
+  so it does nothing in full-screen programs, where VTE sends them mouse
+  or arrow-key input).
 
 `create_terminal()` falls back to VTE when the feature is off or
 libghostty-vt cannot allocate a terminal. The engine tests run in
