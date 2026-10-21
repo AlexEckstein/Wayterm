@@ -19,8 +19,9 @@ output      reader task ─► bridge task ─► drain (main context) ─► ba
   exit status or signal arrived first) or `ConnectionLost` if not. EOF
   alone ends nothing: OpenSSH sends it before the exit status. It is the
   only read path: the trait has no `read()`.
-- The GTK side never blocks: overflow is parked and flushed from an idle
-  callback (doc 02 §Backpressure).
+- The GTK side never blocks: overflow is parked and drained by a
+  main-context future that waits for channel capacity (doc 02
+  §Backpressure).
 - Output channels are bounded, so a stalled UI backs up into the reader and
   then into SSH flow control: the server slows down instead of memory
   growing.
