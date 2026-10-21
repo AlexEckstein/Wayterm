@@ -52,6 +52,9 @@ fn build_ui(app: &gtk4::Application) {
     if let Some(display) = gtk4::gdk::Display::default() {
         crate::ui::icons::register_icons(&display);
     }
+    // Every window's title bar (and the compositor's, via the toplevel
+    // icon) shows the app icon; `register_icons` embeds it.
+    gtk4::Window::set_default_icon_name(APP_ID);
     let store =
         Rc::new(SessionStore::open(&default_db_path()).expect("failed to open session store"));
 
