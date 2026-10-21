@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod connection;
 pub mod credentials;
+pub mod factory;
 pub mod forward;
 pub mod hostkey;
 pub mod jump;
@@ -14,5 +15,4 @@ pub mod reconnect;
 pub mod serial;
 pub mod ssh;
 pub mod supervisor;
-pub mod tab;
 pub mod types;

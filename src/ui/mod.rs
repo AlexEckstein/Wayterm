@@ -24,6 +24,7 @@ pub mod tab_resilience;
 pub mod tab_restore;
 pub mod tab_state;
 pub mod terminal_actions;
+pub mod terminal_tab;
 pub mod tray;
 pub mod tunnels_dialog;
 pub mod vnc_tab;

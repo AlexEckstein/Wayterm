@@ -48,7 +48,6 @@ use crate::transport::hostkey::HostKeyVerifier;
 use crate::transport::jump;
 use crate::transport::reconnect::{ConnectFn, ConnectFuture};
 use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor, HopAuth};
-use crate::transport::tab::TerminalTab;
 use crate::transport::types::{TransportError, TransportEvent, TransportState};
 use crate::ui::auth_dialog::{self, ChallengePrompt};
 use crate::ui::hostkey_dialog;
@@ -60,6 +59,7 @@ use crate::ui::sftp_sidebar::{self, supports_sftp, DirectoryFollower, SftpSideba
 use crate::ui::side_dock;
 use crate::ui::tab_label;
 use crate::ui::tab_resilience;
+use crate::ui::terminal_tab::TerminalTab;
 use crate::ui::tray;
 use crate::ui::tunnels_dialog::{EngineStatusBridge, ForwardStatusSource};
 use crate::ui::vnc_tab;
