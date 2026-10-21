@@ -219,7 +219,7 @@ duplicate rows; that constraint is the first schema-v2 candidate).
 | Setting | Default | Notes |
 |---|---|---|
 | `default_backend` | `vte` | |
-| `default_color_scheme` | `Dark` | |
+| `default_color_scheme` | `System` | `System`, `Light`, or `Dark`; §Terminal appearance |
 | `default_font_family` / `default_font_size` | `Monospace` / `12.0` | |
 | `default_opacity` | `1.0` | |
 | `scrollback_limit` | `10000` | |
@@ -240,8 +240,9 @@ The Settings window's General page switches `confirm_close`,
 `reconnect_on_drop`, `sftp_on_connect`, `minimize_to_tray`, and — when
 the `backend-ghostty` build feature is present — the "Experimental
 Ghostty terminal" check box that writes `default_backend` (`vte` or
-`ghostty`, doc 05). Each flip
-writes `1`/`0` at once and applies live: the first two count from the
+`ghostty`, doc 05), and the "Default color scheme" drop-down that writes
+`default_color_scheme` (§Terminal appearance) and re-colors open tabs at
+once. Each switch writes `1`/`0` at once and applies live: the first two count from the
 next tab close or connection drop, open tabs included; `sftp_on_connect`
 governs tabs opened or connected afterwards; the tray setting is read at
 each window close. A "Clear all reminders" button writes `1` to every
@@ -256,6 +257,19 @@ revisions of that table: it spells the Enter key `Enter` (GDK's name is
 `Return`), lacks `goto_tab_1` … `goto_tab_9`, and still holds the split
 actions and `new_session`'s old `Ctrl+N` that doc 07's 2026-10 revision
 dropped; a test pins exactly those differences.
+
+### Terminal appearance
+
+A session's `color_scheme` overrides `default_color_scheme`; both hold
+`System`, `Light`, or `Dark` (case-insensitive). An empty, missing, or
+unknown value falls through — the override to the global row, the global
+row to `System` — so a row naming a scheme this build lacks never breaks a
+tab. `System` follows the desktop's light or dark theme, re-coloring open
+tabs when it changes (doc 02 §Color schemes). The seed is `System` for new
+installs only; an existing store keeps its row (`Dark` for stores created
+before it). The General page's "Default color scheme" drop-down writes the
+row; the session dialog has no override picker yet (doc 10 Phase 4), but
+an imported or restored override is honored.
 
 ## Credential Storage
 

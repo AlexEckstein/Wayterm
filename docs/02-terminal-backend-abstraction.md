@@ -91,8 +91,36 @@ flow control (doc 04).
   vte4 `commit` binding reads its text as a NUL-terminated UTF-8 string,
   so bytes it cannot carry (invalid UTF-8, NUL) are queued as `DataOut`
   directly instead, still in order.
-- **Not yet implemented:** color schemes and opacity (need the color-scheme
-  store).
+- **Color schemes:** `set_color_scheme` looks the name up among the
+  built-in palettes (§Color schemes) and applies it with `set_colors`
+  (foreground, background, the 16 ANSI colors) plus the cursor colors;
+  bold and the selection fall back to VTE's palette-derived defaults. An
+  unknown name changes nothing.
+- **Not yet implemented:** opacity (the GTK4 binding has no
+  `set_opacity`).
+
+### Color schemes
+
+`src/terminal/color_scheme.rs` is display-free data and logic: two
+palettes, `Light` and `Dark` (GNOME Terminal's Tango light and Tango
+dark), each a foreground, a background, cursor colors and 16 ANSI colors.
+A tab's scheme resolves from its session's `color_scheme` override, else
+the global `default_color_scheme` row, else `System`; empty or unknown
+values fall through (doc 06 §Terminal appearance). `System` is not a
+palette: it resolves to `Light` or `Dark` by the desktop theme. GTK's
+`gtk-application-prefer-dark-theme` wins when set; otherwise a theme name
+with a `dark` segment (`Adwaita-dark`, `Breeze Dark`) is dark, one with a
+`light` segment or a known light theme (`Adwaita`, `Breeze`, `Yaru`, …) is
+light, and anything else counts as dark.
+
+`ui::appearance` applies the resolved name with `set_color_scheme` when a
+tab's terminal is created, and again for every open terminal when the
+global row changes (the Settings window's "Default color scheme") or the
+desktop theme does: it watches `gtk4::Settings`'
+`gtk-application-prefer-dark-theme` and `gtk-theme-name`, which GTK fills
+from xdg-desktop-portal on Linux, so a KDE or GNOME light/dark switch
+re-colors open tabs. Backends without color schemes (Ghostty) ignore the
+call.
 
 ### Scrollback
 
