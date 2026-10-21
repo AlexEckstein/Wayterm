@@ -142,7 +142,7 @@ pub struct EngineStatusBridge {
 
 impl EngineStatusBridge {
     /// Wrap a live engine handle. The caller spawns the drain task that
-    /// feeds [`Self::handle_event`]; see `ui::tab::arm_forward_engine`.
+    /// feeds [`Self::handle_event`]; see `ui::tab::ssh::arm_forward_engine`.
     pub fn new(engine: ForwardEngine) -> Self {
         Self {
             engine,

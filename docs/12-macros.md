@@ -19,10 +19,11 @@ pure pause. A macro's duration is the sum of its pauses.
 ## Recording
 
 `InputTap::wrap` splices a relay between a terminal's event channel and
-its transport pump on every connect (`ui::tab::finish_connect`). Every
-`TerminalEvent` passes through unchanged and in order; the relay awaits
-room in the pump's channel, so backpressure still reaches the backend's
-queue (doc 02 §Backpressure). While a recording is armed, each `DataOut`
+its transport pump on every connect
+(`ui::tab::terminal::finish_connect`). Every `TerminalEvent` passes
+through unchanged and in order; the relay awaits room in the pump's
+channel, so backpressure still reaches the backend's queue (doc 02
+§Backpressure). While a recording is armed, each `DataOut`
 chunk is also timestamped into a `Recorder`:
 
 - each chunk becomes a step whose pause is the time since the previous

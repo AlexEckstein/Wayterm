@@ -12,6 +12,11 @@ use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
+mod chain;
+pub use chain::{
+    credential_sources, prompt_instructions, prompt_label, prompt_source, KEYRING_UNAVAILABLE_HINT,
+};
+
 /// One place credentials can come from, consulted in priority order.
 pub trait CredentialSource: Send + Sync {
     /// `None` when the source has nothing (or the user cancelled a prompt).
