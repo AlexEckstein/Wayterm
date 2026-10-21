@@ -8,7 +8,7 @@ use super::ssh::follow_terminal_directory;
 use super::terminal::{focus_after_connect, focus_terminal, terminal_state};
 use super::*;
 use crate::hotkeys::engine::focus_within;
-use crate::terminal::color_scheme::{Rgb, DARK, LIGHT};
+use crate::terminal::color_scheme::{Brightness, Rgb, DARK, LIGHT};
 use crate::terminal::create_terminal;
 use vte4::prelude::*;
 
@@ -397,6 +397,32 @@ pub(in crate::ui) fn terminals_follow_the_color_scheme_and_system_theme() {
         "dark theme name"
     );
     assert_eq!(background(&pinned), rgb(DARK.background));
+
+    // The portal's preference beats GTK's (KDE keeps `Breeze` in dark
+    // mode, with a stale dark flag from `settings.ini`), and the chrome's
+    // theme variant moves with it.
+    use crate::ui::appearance::{chrome_preference, set_desktop_preference};
+    settings.set_gtk_theme_name(Some("Breeze"));
+    settings.set_gtk_application_prefer_dark_theme(true);
+    set_desktop_preference(Some(Brightness::Light));
+    assert_eq!(
+        background(&follows),
+        rgb(LIGHT.background),
+        "portal light over the dark flag"
+    );
+    assert_ne!(chrome_preference(), Some(Brightness::Dark), "chrome light");
+    set_desktop_preference(Some(Brightness::Dark));
+    assert_eq!(
+        background(&follows),
+        rgb(DARK.background),
+        "portal dark over a light theme name"
+    );
+    assert_eq!(chrome_preference(), Some(Brightness::Dark), "chrome dark");
+    assert_eq!(background(&pinned), rgb(DARK.background));
+    // Withdrawn, the GTK settings decide again.
+    set_desktop_preference(None);
+    settings.set_gtk_application_prefer_dark_theme(false);
+    assert_eq!(background(&follows), rgb(LIGHT.background), "back to GTK");
 
     settings.set_gtk_theme_name(theme_before.as_deref());
     settings.set_gtk_application_prefer_dark_theme(dark_before);

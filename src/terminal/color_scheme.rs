@@ -145,28 +145,54 @@ const LIGHT_THEMES: [&str; 12] = [
     "oxygen-gtk",
 ];
 
-/// The desktop theme's brightness from GTK's settings:
-/// `gtk-application-prefer-dark-theme` and `gtk-theme-name`. The dark
-/// preference wins when set; otherwise a name with a `dark` segment
-/// (`Adwaita-dark`, `Breeze Dark`, `Yaru_dark`) is dark, one with a `light`
-/// segment or a known light theme's name is light, and anything else —
-/// no name included — is [`UNKNOWN_THEME`].
-pub fn classify_system_theme(prefer_dark: bool, theme_name: Option<&str>) -> Brightness {
-    if prefer_dark {
-        return Brightness::Dark;
-    }
-    let Some(name) = theme_name.map(str::trim).filter(|name| !name.is_empty()) else {
-        return UNKNOWN_THEME;
+/// The desktop theme's brightness from the desktop's stated `preference`
+/// (the portal, or GTK's color-scheme settings) and `gtk-theme-name`. A
+/// name with a `dark` segment (`Adwaita-dark`, `Breeze Dark`, `Yaru_dark`)
+/// is dark whatever the preference, since such a theme draws dark; else
+/// the preference decides; else a name with a `light` segment or a known
+/// light theme's name is light, and anything else — no name included — is
+/// [`UNKNOWN_THEME`].
+pub fn classify_system_theme(
+    preference: Option<Brightness>,
+    theme_name: Option<&str>,
+) -> Brightness {
+    let name = theme_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_ascii_lowercase);
+    let segment = |wanted: &str| {
+        name.as_deref().is_some_and(|name| {
+            name.split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|segment| segment == wanted)
+        })
     };
-    let name = name.to_ascii_lowercase();
-    let mut segments = name.split(|c: char| !c.is_ascii_alphanumeric());
-    if segments.clone().any(|segment| segment == "dark") {
+    if segment("dark") {
         return Brightness::Dark;
     }
-    if segments.any(|segment| segment == "light") || LIGHT_THEMES.contains(&name.as_str()) {
+    if let Some(preference) = preference {
+        return preference;
+    }
+    if segment("light")
+        || name
+            .as_deref()
+            .is_some_and(|name| LIGHT_THEMES.contains(&name))
+    {
         return Brightness::Light;
     }
     UNKNOWN_THEME
+}
+
+/// The desktop's preference from xdg-desktop-portal's
+/// `org.freedesktop.appearance` `color-scheme`: 1 prefers dark, 2 prefers
+/// light; 0 (no preference) and anything else is `None`, leaving the
+/// preference to GTK's settings. KDE and GNOME both keep it current,
+/// unlike the GTK theme name (KDE's stays `Breeze` in dark mode).
+pub fn portal_color_scheme(value: u32) -> Option<Brightness> {
+    match value {
+        1 => Some(Brightness::Dark),
+        2 => Some(Brightness::Light),
+        _ => None,
+    }
 }
 
 /// A stored scheme value: a palette, or `System` to follow the desktop.
@@ -277,14 +303,34 @@ mod tests {
     #[test]
     fn dark_preference_beats_the_theme_name() {
         assert_eq!(
-            classify_system_theme(true, Some("Adwaita")),
+            classify_system_theme(Some(Brightness::Dark), Some("Adwaita")),
             Brightness::Dark
         );
         assert_eq!(
-            classify_system_theme(true, Some("Breeze")),
+            classify_system_theme(Some(Brightness::Dark), Some("Breeze")),
             Brightness::Dark
         );
-        assert_eq!(classify_system_theme(true, None), Brightness::Dark);
+        assert_eq!(
+            classify_system_theme(Some(Brightness::Dark), None),
+            Brightness::Dark
+        );
+    }
+
+    /// KDE keeps `Breeze` in dark mode and says so only through the
+    /// preference; a light preference beats unknown names, not dark ones.
+    #[test]
+    fn a_light_preference_beats_all_but_a_dark_name() {
+        let light = Some(Brightness::Light);
+        assert_eq!(
+            classify_system_theme(light, Some("Nordic")),
+            Brightness::Light
+        );
+        assert_eq!(classify_system_theme(light, None), Brightness::Light);
+        assert_eq!(
+            classify_system_theme(light, Some("Adwaita-dark")),
+            Brightness::Dark,
+            "a dark theme draws dark"
+        );
     }
 
     #[test]
@@ -297,16 +343,13 @@ mod tests {
             "Dark",
         ] {
             assert_eq!(
-                classify_system_theme(false, Some(name)),
+                classify_system_theme(None, Some(name)),
                 Brightness::Dark,
                 "{name}"
             );
         }
         // A segment, not a substring.
-        assert_eq!(
-            classify_system_theme(false, Some("Darkling")),
-            UNKNOWN_THEME
-        );
+        assert_eq!(classify_system_theme(None, Some("Darkling")), UNKNOWN_THEME);
     }
 
     #[test]
@@ -320,7 +363,7 @@ mod tests {
             "Default",
         ] {
             assert_eq!(
-                classify_system_theme(false, Some(name)),
+                classify_system_theme(None, Some(name)),
                 Brightness::Light,
                 "{name}"
             );
@@ -331,11 +374,16 @@ mod tests {
     fn unknown_themes_use_the_defined_default() {
         assert_eq!(UNKNOWN_THEME, Brightness::Dark);
         for name in [None, Some(""), Some("  "), Some("Nordic"), Some("Darkling")] {
-            assert_eq!(
-                classify_system_theme(false, name),
-                UNKNOWN_THEME,
-                "{name:?}"
-            );
+            assert_eq!(classify_system_theme(None, name), UNKNOWN_THEME, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn portal_values_map_to_a_preference() {
+        assert_eq!(portal_color_scheme(1), Some(Brightness::Dark));
+        assert_eq!(portal_color_scheme(2), Some(Brightness::Light));
+        for none in [0, 3, u32::MAX] {
+            assert_eq!(portal_color_scheme(none), None, "{none}");
         }
     }
 
@@ -381,11 +429,11 @@ mod tests {
 
     #[test]
     fn system_follows_the_classified_theme() {
-        let system = classify_system_theme(false, Some("Breeze"));
+        let system = classify_system_theme(None, Some("Breeze"));
         assert_eq!(resolve(None, Some("System"), system), &LIGHT);
-        let system = classify_system_theme(false, Some("Breeze-Dark"));
+        let system = classify_system_theme(None, Some("Breeze-Dark"));
         assert_eq!(resolve(None, Some("System"), system), &DARK);
-        let system = classify_system_theme(true, Some("Breeze"));
+        let system = classify_system_theme(Some(Brightness::Dark), Some("Breeze"));
         assert_eq!(resolve(Some("System"), Some("Light"), system), &DARK);
         // A fixed override ignores the system theme.
         assert_eq!(resolve(Some("Light"), Some("System"), system), &LIGHT);
