@@ -216,3 +216,60 @@ pub fn confirm(
         }
     });
 }
+
+/// [`confirm`] with a "Do not show me again" check box under the detail;
+/// `on_accept` runs only if the user accepts, and gets whether the box was
+/// ticked. Cancel, Escape or closing the window answers no.
+pub fn confirm_with_opt_out(
+    parent: Option<&gtk4::Window>,
+    message: &str,
+    detail: &str,
+    accept: &str,
+    on_accept: impl FnOnce(bool) + 'static,
+) {
+    let window = gtk4::Window::builder()
+        .title(message)
+        .modal(true)
+        .resizable(false)
+        .default_width(420)
+        .build();
+    if let Some(parent) = parent {
+        window.set_transient_for(Some(parent));
+        window.set_destroy_with_parent(true);
+    }
+
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    set_margins(&content, 18);
+    content.append(&wrapped_label(detail));
+    let opt_out = gtk4::CheckButton::with_label("Do not show me again");
+    content.append(&opt_out);
+    let cancel = gtk4::Button::with_label("Cancel");
+    let accept = gtk4::Button::with_label(accept);
+    content.append(&button_row(&[&cancel, &accept]));
+    window.set_child(Some(&content));
+    window.set_default_widget(Some(&accept));
+
+    let for_cancel = window.clone();
+    cancel.connect_clicked(move |_| for_cancel.close());
+    let for_accept = window.clone();
+    let on_accept = std::cell::Cell::new(Some(on_accept));
+    accept.connect_clicked(move |_| {
+        for_accept.close();
+        if let Some(on_accept) = on_accept.take() {
+            on_accept(opt_out.is_active());
+        }
+    });
+    // Plain GTK4 windows do not close on Escape.
+    let escape = gtk4::EventControllerKey::new();
+    let for_escape = window.clone();
+    escape.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk4::gdk::Key::Escape {
+            for_escape.close();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    window.add_controller(escape);
+    window.present();
+}

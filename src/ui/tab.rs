@@ -458,7 +458,8 @@ pub(crate) fn request_close_page(notebook: &gtk4::Notebook, page: &gtk4::Widget)
     };
     let (notebook, weak) = (notebook.clone(), page.downgrade());
     let parent = window_of(&notebook);
-    crate::ui::tab_resilience::request_close(tab_id, parent.as_ref(), move || {
+    let store = page_store(page);
+    crate::ui::tab_resilience::request_close(tab_id, parent.as_ref(), store, move || {
         if let Some(page_num) = weak.upgrade().and_then(|page| notebook.page_num(&page)) {
             notebook.remove_page(Some(page_num));
         }

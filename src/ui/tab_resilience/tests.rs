@@ -199,6 +199,23 @@ fn the_setting_turns_the_prompt_off() {
     assert!(!should_confirm_close_for_tab(SESSION));
 }
 
+#[test]
+fn do_not_show_again_silences_the_warning_until_reminders_are_cleared() {
+    let _guard = fresh();
+    register_live_tab(SESSION, tab_in(TransportState::Connected));
+    let store = SessionStore::in_memory().unwrap();
+    assert!(should_show_close_warning(SESSION, Some(&store)));
+    assert!(should_show_close_warning(SESSION, None));
+
+    store
+        .set_setting(CONFIRM_CLOSE_NOTICE_SETTING, "0")
+        .unwrap();
+    assert!(!should_show_close_warning(SESSION, Some(&store)));
+
+    crate::ui::settings::general::clear_reminders(&store).unwrap();
+    assert!(should_show_close_warning(SESSION, Some(&store)));
+}
+
 // ── reconnect action ────────────────────────────────────────────────────────
 
 #[test]

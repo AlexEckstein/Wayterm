@@ -9,6 +9,7 @@
 //! `transport.disconnect()`, and any reconnect loop sharing the token stops.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -17,9 +18,10 @@ use gtk4::prelude::*;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::store::SessionStore;
 use crate::transport::reconnect::{ConfirmFn, ConnectFn, ReconnectDriver, ReconnectPolicy};
 use crate::transport::types::{TransportEvent, TransportState};
-use crate::ui::widgets::confirm;
+use crate::ui::widgets::confirm_with_opt_out;
 
 /// Doc 07 action ids (the hotkey engine owns their chords).
 pub const RECONNECT_ACTION: &str = "reconnect";
@@ -28,6 +30,9 @@ pub const DISCONNECT_ACTION: &str = "disconnect";
 /// Settings rows (doc 06).
 pub const CONFIRM_CLOSE_SETTING: &str = "confirm_close";
 pub const RECONNECT_ON_DROP_SETTING: &str = "reconnect_on_drop";
+
+/// Settings row (doc 06): the close warning shows unless this is off.
+pub const CONFIRM_CLOSE_NOTICE_SETTING: &str = "confirm_close_notice";
 
 pub const CONFIRM_CLOSE_DETAIL: &str = "Processes may be running — close anyway?";
 
@@ -125,6 +130,13 @@ pub fn set_tab_state(tab_id: i64, state: TransportState) {
 
 pub fn should_confirm_close_for_tab(tab_id: i64) -> bool {
     crate::transport::reconnect::should_confirm_close(&tab_state(tab_id), confirm_close_setting())
+}
+
+/// [`should_confirm_close_for_tab`], unless the warning was silenced with
+/// "Do not show me again". Without a store the warning always shows.
+pub fn should_show_close_warning(tab_id: i64, store: Option<&SessionStore>) -> bool {
+    should_confirm_close_for_tab(tab_id)
+        && store.is_none_or(|store| store.flag(CONFIRM_CLOSE_NOTICE_SETTING))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,20 +245,35 @@ pub fn teardown_tab(tab_id: i64) {
     lock(&RUNNING).remove(&tab_id);
 }
 
-/// Close a tab, asking first when its transport is live; `close` removes
-/// the page.
-pub fn request_close(tab_id: i64, parent: Option<&gtk4::Window>, close: impl FnOnce() + 'static) {
+/// Close a tab, asking first when its transport is live
+/// ([`should_show_close_warning`]); `close` removes the page. Closing with
+/// "Do not show me again" ticked silences the warning in `store`.
+pub fn request_close(
+    tab_id: i64,
+    parent: Option<&gtk4::Window>,
+    store: Option<Rc<SessionStore>>,
+    close: impl FnOnce() + 'static,
+) {
     let close = move || {
         teardown_tab(tab_id);
         close();
     };
-    if should_confirm_close_for_tab(tab_id) {
-        confirm(
+    if should_show_close_warning(tab_id, store.as_deref()) {
+        confirm_with_opt_out(
             parent,
             "Close this session?",
             CONFIRM_CLOSE_DETAIL,
             "Close",
-            close,
+            move |silence| {
+                if let Some(store) = store.filter(|_| silence) {
+                    if let Err(err) = store.set_setting(CONFIRM_CLOSE_NOTICE_SETTING, "0") {
+                        eprintln!(
+                            "Wayterm: failed to save '{CONFIRM_CLOSE_NOTICE_SETTING}': {err}"
+                        );
+                    }
+                }
+                close();
+            },
         );
     } else {
         close();
