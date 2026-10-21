@@ -16,7 +16,6 @@ use crate::store::SessionStore;
 use crate::transport::connection::SshConnection;
 use crate::transport::supervisor::ConnectionSupervisor;
 use crate::transport::types::TransportState;
-use crate::ui::host_picker::local_shell_session;
 use crate::ui::macros_panel::MacrosPanel;
 use crate::ui::session_tree::SessionTree;
 use crate::ui::sftp_sidebar::SftpButton;
@@ -25,7 +24,7 @@ use crate::ui::status_bar::StatusBar;
 use crate::ui::tab::{current_page, SessionTab};
 use crate::ui::tab_restore::TabPersistence;
 use crate::ui::widgets::{data, set_data};
-use crate::ui::{settings, tab_actions, tab_resilience, terminal_actions, tunnels_dialog};
+use crate::ui::{settings, tab_actions, tab_bar, tab_resilience, terminal_actions, tunnels_dialog};
 
 /// Window data keys.
 pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
@@ -41,8 +40,6 @@ const SFTP_ACTIONS: [(&str, SftpButton); 4] = [
 ];
 /// The dock panel's starting width: room for the SFTP sidebar's columns.
 const DOCK_PANEL_WIDTH: i32 = 320;
-/// The tab bar "+" button's tooltip and accessible name.
-const NEW_TAB_BUTTON_LABEL: &str = "New local shell tab";
 
 /// Lets only the notebook's current page drive the status bar, and never
 /// pushes the same (page, state) twice, so the elapsed timer is not reset
@@ -101,7 +98,7 @@ impl MainWindow {
         let home = gtk4::Label::new(Some("Welcome to Wayterm"));
         notebook.append_page(&home, Some(&gtk4::Label::new(Some("Home"))));
         auto_hide_home(&notebook, &home);
-        notebook.set_action_widget(&new_tab_button(&notebook, &store), gtk4::PackType::End);
+        tab_bar::install(&notebook, &store);
 
         settings::general::apply(&store);
 
@@ -279,21 +276,6 @@ fn auto_hide_home(notebook: &gtk4::Notebook, home: &gtk4::Label) {
         }
     });
     notebook.connect_page_removed(move |notebook, _, _| sync(notebook));
-}
-
-/// The tab bar's "+": a local shell in a new tab, without the host picker
-/// that `new_tab` opens.
-fn new_tab_button(notebook: &gtk4::Notebook, store: &Rc<SessionStore>) -> gtk4::Button {
-    let button = gtk4::Button::from_icon_name("list-add-symbolic");
-    button.set_has_frame(false);
-    button.set_tooltip_text(Some(NEW_TAB_BUTTON_LABEL));
-    button.update_property(&[gtk4::accessible::Property::Label(NEW_TAB_BUTTON_LABEL)]);
-    button.set_focus_on_click(false);
-    let (notebook, store) = (notebook.clone(), store.clone());
-    button.connect_clicked(move |_| {
-        SessionTab::open(&notebook, &local_shell_session(), &store);
-    });
-    button
 }
 
 /// `win.tunnels` (Phase 11): the current tab's Tunnels dialog. It always
@@ -586,7 +568,7 @@ pub(super) mod gtk_tests {
         // The tab bar's "+" opens a local shell straight away, no picker.
         notebook
             .action_widget(gtk4::PackType::End)
-            .and_downcast::<gtk4::Button>()
+            .and_then(|end| find::<gtk4::Button>(&end))
             .expect("the + button")
             .emit_clicked();
         assert_eq!(notebook.n_pages(), 5);
