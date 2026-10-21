@@ -9,7 +9,9 @@
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
 //! Kitty keyboard modes apply) and leave as `DataOut`; a primary-button
-//! drag selects; the wheel scrolls the viewport three rows per notch.
+//! drag selects; the wheel scrolls the viewport three rows per notch
+//! (smooth steps accumulate), and Shift+PageUp/PageDown/Home/End scroll it
+//! as in VTE.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -45,6 +47,8 @@ mod imp {
         pub(super) reported: Cell<Option<(u16, u16)>>,
         /// Where the current selection drag started, `(col, row)`.
         pub(super) anchor: Cell<Option<(u16, u16)>>,
+        /// Wheel rows not yet scrolled; see [`super::wheel_rows`].
+        pub(super) wheel_carry: Cell<f64>,
     }
 
     #[glib::object_subclass]
@@ -210,14 +214,16 @@ impl GhosttyView {
 
         let wheel = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
         let view = self.downgrade();
-        wheel.connect_scroll(move |_, _, dy| {
+        wheel.connect_scroll(move |wheel, _, dy| {
             let Some(view) = view.upgrade() else {
                 return glib::Propagation::Proceed;
             };
-            if let Some(shared) = view.shared() {
-                shared
-                    .engine
-                    .scroll(Scroll::By((dy * WHEEL_ROWS).round() as isize));
+            let (_, cell_h) = view.cell_size();
+            let carry = &view.imp().wheel_carry;
+            let (rows, rest) = wheel_rows(carry.get(), dy, wheel.unit(), cell_h);
+            carry.set(rest);
+            if let (true, Some(shared)) = (rows != 0, view.shared()) {
+                shared.engine.scroll(Scroll::By(rows));
                 view.queue_draw();
             }
             glib::Propagation::Stop
@@ -230,6 +236,11 @@ impl GhosttyView {
         let Some(shared) = self.shared() else {
             return false;
         };
+        if let Some(scroll) = scroll_key(keyval, state, shared.engine.size().1) {
+            shared.engine.scroll(scroll);
+            self.queue_draw();
+            return true;
+        }
         let mut mods = 0;
         for (mask, bit) in [
             (gdk::ModifierType::SHIFT_MASK, ffi::MOD_SHIFT),
@@ -404,6 +415,41 @@ impl Painted {
     }
 }
 
+/// Rows to scroll for one wheel event, and the fraction left for the next.
+/// High-resolution wheels and touchpads send many steps smaller than a row,
+/// so each one only adds to `carry`; reversing direction drops it.
+fn wheel_rows(carry: f64, dy: f64, unit: gdk::ScrollUnit, cell_h: i32) -> (isize, f64) {
+    let rows = match unit {
+        gdk::ScrollUnit::Surface => dy / f64::from(cell_h.max(1)),
+        _ => dy * WHEEL_ROWS,
+    };
+    let carry = if carry * rows < 0.0 { 0.0 } else { carry };
+    let total = carry + rows;
+    let whole = total.trunc();
+    (whole as isize, total - whole)
+}
+
+/// Shift+PageUp/PageDown scroll a page of `rows`, Shift+Home/End to the
+/// top/bottom, as VTE does; other modifiers let the key reach the remote.
+fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<Scroll> {
+    let mods = state
+        & (gdk::ModifierType::SHIFT_MASK
+            | gdk::ModifierType::CONTROL_MASK
+            | gdk::ModifierType::ALT_MASK
+            | gdk::ModifierType::SUPER_MASK);
+    if mods != gdk::ModifierType::SHIFT_MASK {
+        return None;
+    }
+    let page = isize::try_from(rows.max(1)).unwrap_or(isize::MAX);
+    match keyval {
+        gdk::Key::Page_Up => Some(Scroll::By(-page)),
+        gdk::Key::Page_Down => Some(Scroll::By(page)),
+        gdk::Key::Home => Some(Scroll::Top),
+        gdk::Key::End => Some(Scroll::Bottom),
+        _ => None,
+    }
+}
+
 fn is_cursor(info: &FrameInfo, row: usize, col: usize) -> bool {
     info.cursor_visible != 0
         && usize::from(info.cursor_y) == row
@@ -422,6 +468,70 @@ fn rgba([r, g, b]: [u8; 3], alpha: f32) -> gdk::RGBA {
 /// Non-negative pixels for the engine's size reports.
 fn px(pixels: i32) -> u32 {
     u32::try_from(pixels).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WHEEL: gdk::ScrollUnit = gdk::ScrollUnit::Wheel;
+    const SURFACE: gdk::ScrollUnit = gdk::ScrollUnit::Surface;
+
+    /// Feed `steps` through `wheel_rows`; the total rows scrolled.
+    fn scrolled(steps: &[f64], unit: gdk::ScrollUnit, cell_h: i32) -> isize {
+        let mut carry = 0.0;
+        steps
+            .iter()
+            .map(|&dy| {
+                let (rows, rest) = wheel_rows(carry, dy, unit, cell_h);
+                carry = rest;
+                rows
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_notch_scrolls_three_rows_however_it_is_split() {
+        assert_eq!(scrolled(&[-1.0], WHEEL, 16), -3);
+        assert_eq!(scrolled(&[1.0], WHEEL, 16), 3);
+        // A high-resolution wheel: eight eighth-notches per notch.
+        assert_eq!(scrolled(&[-0.125; 8], WHEEL, 16), -3);
+        assert_eq!(scrolled(&[0.125; 16], WHEEL, 16), 6);
+    }
+
+    #[test]
+    fn touchpad_pixels_scroll_by_cell_height() {
+        assert_eq!(scrolled(&[-48.0], SURFACE, 16), -3);
+        assert_eq!(scrolled(&[4.0; 8], SURFACE, 16), 2);
+        assert_eq!(scrolled(&[1.0], SURFACE, 0), 1, "no division by zero");
+    }
+
+    #[test]
+    fn reversing_drops_the_leftover_fraction() {
+        assert_eq!(scrolled(&[-0.3, 0.3], WHEEL, 16), 0);
+        let (_, rest) = wheel_rows(-0.9, 0.125, WHEEL, 16);
+        assert!(rest > 0.0, "{rest}");
+    }
+
+    #[test]
+    fn shift_page_keys_scroll_and_others_pass_through() {
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let page = |key| scroll_key(key, shift, 24);
+        assert_eq!(page(gdk::Key::Page_Up), Some(Scroll::By(-24)));
+        assert_eq!(page(gdk::Key::Page_Down), Some(Scroll::By(24)));
+        assert_eq!(page(gdk::Key::Home), Some(Scroll::Top));
+        assert_eq!(page(gdk::Key::End), Some(Scroll::Bottom));
+        assert_eq!(page(gdk::Key::A), None);
+        // Caps Lock does not count; no Shift or more modifiers go remote.
+        let caps = shift | gdk::ModifierType::LOCK_MASK;
+        assert!(scroll_key(gdk::Key::Page_Up, caps, 24).is_some());
+        assert_eq!(
+            scroll_key(gdk::Key::Page_Up, gdk::ModifierType::empty(), 24),
+            None
+        );
+        let ctrl_shift = shift | gdk::ModifierType::CONTROL_MASK;
+        assert_eq!(scroll_key(gdk::Key::Page_Up, ctrl_shift, 24), None);
+    }
 }
 
 /// The widget check needs a display. It is its own test, not part of
@@ -472,6 +582,26 @@ mod ghostty_display {
             TerminalEvent::DataOut(b"a".to_vec())
         );
         assert!(!view.key(gdk::Key::Shift_L, gdk::ModifierType::empty()));
+
+        // Shift+PageUp scrolls the viewport and sends nothing.
+        for line in 0..200 {
+            backend.write(format!("line {line}\r\n").as_bytes());
+        }
+        let top_row = || {
+            let mut frame = Frame::default();
+            assert!(view.shared().unwrap().engine.snapshot(&mut frame));
+            frame.row_text(0)
+        };
+        let bottom = top_row();
+        assert!(view.key(gdk::Key::Page_Up, gdk::ModifierType::SHIFT_MASK));
+        assert_ne!(top_row(), bottom);
+        assert!(view.key(gdk::Key::End, gdk::ModifierType::SHIFT_MASK));
+        assert!(
+            !std::iter::from_fn(|| rx.try_recv().ok())
+                .any(|e| matches!(e, TerminalEvent::DataOut(_))),
+            "scroll keys stay local"
+        );
+        assert_eq!(top_row(), bottom);
 
         backend.send_input(b"ls\r");
         assert_eq!(
