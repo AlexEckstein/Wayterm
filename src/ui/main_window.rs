@@ -24,7 +24,7 @@ use crate::ui::status_bar::StatusBar;
 use crate::ui::tab::{current_page, SessionTab};
 use crate::ui::tab_restore::TabPersistence;
 use crate::ui::widgets::{data, set_data};
-use crate::ui::{settings, tab_actions, tab_resilience, terminal_actions, tunnels_dialog};
+use crate::ui::{settings, tab_actions, tab_bar, tab_resilience, terminal_actions, tunnels_dialog};
 
 /// Window data keys.
 pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
@@ -98,6 +98,7 @@ impl MainWindow {
         let home = gtk4::Label::new(Some("Welcome to Wayterm"));
         notebook.append_page(&home, Some(&gtk4::Label::new(Some("Home"))));
         auto_hide_home(&notebook, &home);
+        tab_bar::install(&notebook, &store);
 
         settings::general::apply(&store);
 
@@ -430,7 +431,8 @@ pub(super) mod gtk_tests {
     /// Every action in doc 07's table has a window action behind it and a
     /// shortcut in the window's dispatcher; the tab actions move between
     /// tabs; terminal shortcuts keep firing with focus off the terminal;
-    /// and a local-shell tab restores as one.
+    /// the tab bar's "+" opens a local shell; and a local-shell tab
+    /// restores as one.
     pub(in crate::ui) fn every_shortcut_has_an_action() {
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _entered = runtime.enter();
@@ -563,8 +565,19 @@ pub(super) mod gtk_tests {
         act("toggle_session_tree");
         assert!(panel.is_visible());
 
+        // The tab bar's "+" opens a local shell straight away, no picker.
+        notebook
+            .action_widget(gtk4::PackType::End)
+            .and_then(|end| find::<gtk4::Button>(&end))
+            .expect("the + button")
+            .emit_clicked();
+        assert_eq!(notebook.n_pages(), 5);
+        assert_eq!(notebook.current_page(), Some(4));
+        assert_eq!(current_session_id(&notebook), Some(LOCAL_SHELL_ID));
+        assert!(toplevel("New Tab").is_none(), "the picker stays shut");
+
         // Close Tab closes tabs, never Home.
-        for _ in 0..3 {
+        for _ in 0..4 {
             act("close_tab");
         }
         assert_eq!(notebook.n_pages(), 1);
