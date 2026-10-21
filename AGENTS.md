@@ -99,7 +99,7 @@ Do not disable or bypass checks to get green. Do not push with
 docs/            ← design docs 01–12
 src/terminal/    ← TerminalBackend, VteBackend, FakeBackend (doc 02)
 src/transport/   ← Transport, SSHTransport, SshConnection, supervisor,
-                   auth, host keys, credentials, reconnect, TerminalTab (docs 04/11)
+                   auth, host keys, credentials, reconnect, transport factory (docs 04/11)
 src/sftp/        ← SFTP task + commands (doc 09)
 src/vnc/          ← VNC client + framebuffer, engine task (doc 08)
 src/rdp/          ← RDP process wrapper + cert policy (doc 08)
@@ -107,7 +107,7 @@ src/store/       ← SQLite session store and model (doc 06)
 src/transfer/    ← session import/export: ssh config, Remmina, MobaXterm, Asbru, JSON (doc 06)
 src/hotkeys/     ← ActionRegistry, HotkeyEngine (doc 07)
 src/macros/      ← macro model, recorder, input tap, key notation, playback (doc 12)
-src/ui/          ← GTK window, tabs, dialogs, session tree, sidebar, macros panel, tray (docs 01/07/09/12)
+src/ui/          ← GTK window, tabs, TerminalTab wiring, dialogs, session tree, sidebar, macros panel, tray (docs 01/04/07/09/12)
 tests/           ← integration tests; tests/common is the shared sshd fixture (doc 11)
 packaging/       ← desktop entry, metainfo, Flatpak manifest, AppImage recipe (doc 10)
 scripts/         ← local sshd runners for the integration suites
