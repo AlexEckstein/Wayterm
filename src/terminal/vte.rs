@@ -1,11 +1,12 @@
 use std::cell::Cell;
 
-use gtk4::{pango, Widget};
+use gtk4::{gdk, pango, Widget};
 use tokio::sync::mpsc;
 use vte4::prelude::*;
 use vte4::Terminal as VteTerminal;
 
 use super::backend::{TerminalBackend, TerminalEvent, TerminalFeatures};
+use super::color_scheme::{self, Rgb};
 use crate::backpressure::IdleSender;
 
 /// The built-in backend: the GTK4 VTE widget (doc 02). Main thread only.
@@ -67,6 +68,11 @@ fn grid_from_counts(rows: i64, cols: i64) -> (u32, u32) {
     )
 }
 
+fn rgba(Rgb(r, g, b): Rgb) -> gdk::RGBA {
+    let channel = |c: u8| f32::from(c) / 255.0;
+    gdk::RGBA::new(channel(r), channel(g), channel(b), 1.0)
+}
+
 impl TerminalBackend for VteBackend {
     fn widget(&self) -> Widget {
         self.terminal.clone().upcast()
@@ -115,8 +121,27 @@ impl TerminalBackend for VteBackend {
         }
     }
 
-    /// Not implemented yet: needs the color-scheme store.
-    fn set_color_scheme(&self, _name: &str) {}
+    /// A built-in palette by name ([`color_scheme::by_name`]); an unknown
+    /// name leaves the colors as they are.
+    fn set_color_scheme(&self, name: &str) {
+        let Some(scheme) = color_scheme::by_name(name) else {
+            return;
+        };
+        let palette = scheme.palette.map(rgba);
+        let palette: Vec<&gdk::RGBA> = palette.iter().collect();
+        self.terminal.set_colors(
+            Some(&rgba(scheme.foreground)),
+            Some(&rgba(scheme.background)),
+            &palette,
+        );
+        self.terminal.set_color_cursor(Some(&rgba(scheme.cursor)));
+        self.terminal
+            .set_color_cursor_foreground(Some(&rgba(scheme.cursor_foreground)));
+        // Bold and the selection follow the palette (VTE's defaults).
+        self.terminal.set_color_bold(None);
+        self.terminal.set_color_highlight(None);
+        self.terminal.set_color_highlight_foreground(None);
+    }
 
     fn set_font(&self, font_desc: &pango::FontDescription) {
         self.terminal.set_font(Some(font_desc));

@@ -74,6 +74,11 @@ Gaps, each a wiring task rather than new design:
 - ~~The keyring credential source is a stub~~ — done: the Secret Service
   keyring and, when enabled, the read-only Bitwarden source answer ahead
   of the prompt (doc 11 §CredentialManager).
+- Terminal color schemes are done for VTE (doc 02 §Color schemes): `Light`,
+  `Dark`, and a `System` default that follows the desktop theme, set from
+  the General settings page. The session dialog has no picker for the
+  per-session `color_scheme` override yet; an override already in the
+  store (imported, restored) is honored.
 
 ## Phase 5: Local shell and serial — done
 
@@ -204,7 +209,8 @@ Gaps:
 
 - CI builds and tests the default feature set only; nothing builds
   libghostty-vt there yet.
-- `GhosttyBackend` has no search, color schemes, opacity, URL detection,
+- `GhosttyBackend` has no search, color schemes (VTE has them, doc 02
+  §Color schemes), opacity, URL detection,
   or image drawing (`features()` says so); no input method or compose
   support (keys go through libghostty-vt's key encoder directly); only a
   grapheme's base codepoint is drawn; no mouse reporting or alternate

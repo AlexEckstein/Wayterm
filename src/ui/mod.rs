@@ -1,5 +1,6 @@
 //! GTK4 user interface (docs 01, 07, 09, 12).
 
+pub mod appearance;
 pub mod auth_dialog;
 pub mod folder_dialog;
 pub mod host_picker;
@@ -63,6 +64,7 @@ mod gtk_tests {
         super::tab::gtk_tests::closing_a_tab_focuses_the_next_terminal();
         super::tab::gtk_tests::sftp_sidebar_follows_the_shell_directory();
         super::tab::gtk_tests::a_local_shell_tab_connects_and_closes();
+        super::tab::gtk_tests::terminals_follow_the_color_scheme_and_system_theme();
         super::vnc_tab::gtk_tests::vnc_view_draws_and_routes_input();
         super::rdp_tab::gtk_tests::rdp_embed_builds_and_tracks();
         super::rdp_tab::gtk_tests::rdp_child_follows_the_area_and_dies_with_the_page();

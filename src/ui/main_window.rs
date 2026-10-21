@@ -24,7 +24,9 @@ use crate::ui::status_bar::StatusBar;
 use crate::ui::tab::{current_page, SessionTab};
 use crate::ui::tab_restore::TabPersistence;
 use crate::ui::widgets::{data, set_data};
-use crate::ui::{settings, tab_actions, tab_bar, tab_resilience, terminal_actions, tunnels_dialog};
+use crate::ui::{
+    appearance, settings, tab_actions, tab_bar, tab_resilience, terminal_actions, tunnels_dialog,
+};
 
 /// Window data keys.
 pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
@@ -100,6 +102,7 @@ impl MainWindow {
         auto_hide_home(&notebook, &home);
         tab_bar::install(&notebook, &store);
 
+        appearance::track(&notebook);
         settings::general::apply(&store);
 
         let session_tree = {

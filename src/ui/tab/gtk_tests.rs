@@ -8,7 +8,9 @@ use super::ssh::follow_terminal_directory;
 use super::terminal::{focus_after_connect, focus_terminal, terminal_state};
 use super::*;
 use crate::hotkeys::engine::focus_within;
+use crate::terminal::color_scheme::{Rgb, DARK, LIGHT};
 use crate::terminal::create_terminal;
+use vte4::prelude::*;
 
 /// Focusing the current tab hands keyboard focus from the session tree
 /// to its terminal; a tab in the background never takes it.
@@ -204,7 +206,8 @@ pub(in crate::ui) fn sftp_sidebar_follows_the_shell_directory() {
 
 /// The connect flow end to end on a local shell: opening the tab wires
 /// a terminal and its input tap, the page reports Connected, and
-/// closing the tab lets the page go.
+/// closing the tab lets the page go. The terminal opens in its session's
+/// color scheme.
 pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
     let _entered = runtime.enter();
@@ -217,9 +220,11 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
         name: "local".into(),
         session_type: SessionType::LocalShell,
         local_shell: Some("/bin/sh".into()),
+        color_scheme: Some("Light".into()),
         ..Default::default()
     };
     let store = Rc::new(SessionStore::in_memory().expect("in-memory store"));
+    crate::ui::appearance::install_default_scheme(Some("Dark".into()));
 
     let page = SessionTab::open(&notebook, &session, &store);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -236,6 +241,12 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
     assert_eq!(current_session_id(&notebook), Some(7_001));
     assert!(SessionTab::active_terminal(&notebook).is_some());
     assert!(SessionTab::active_input_tap(&notebook).is_some());
+    let terminal = SessionTab::active_terminal(&notebook).unwrap().widget();
+    assert_eq!(
+        background(&terminal),
+        rgb(LIGHT.background),
+        "the session's override, applied on open"
+    );
     assert!(
         SessionTab::sidebar_for_page(&page).is_none(),
         "only SSH pages carry a sidebar"
@@ -301,4 +312,93 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
         "a tab closed on its error is freed"
     );
     window.destroy();
+}
+
+/// The background VTE paints, as 8-bit RGB.
+fn background(terminal: &gtk4::Widget) -> (u8, u8, u8) {
+    let color = terminal
+        .downcast_ref::<vte4::Terminal>()
+        .expect("a VTE terminal")
+        .color_background_for_draw();
+    let channel = |c: f32| (c * 255.0).round() as u8;
+    (
+        channel(color.red()),
+        channel(color.green()),
+        channel(color.blue()),
+    )
+}
+
+fn rgb(Rgb(r, g, b): Rgb) -> (u8, u8, u8) {
+    (r, g, b)
+}
+
+/// Every open terminal follows the global scheme and, under System, the
+/// desktop theme; a session override holds; an unknown name changes
+/// nothing.
+pub(in crate::ui) fn terminals_follow_the_color_scheme_and_system_theme() {
+    let backend = create_terminal().backend;
+    let widget = backend.widget();
+    backend.set_color_scheme("Light");
+    assert_eq!(background(&widget), rgb(LIGHT.background));
+    backend.set_color_scheme("Dark");
+    assert_eq!(background(&widget), rgb(DARK.background));
+    backend.set_color_scheme("Solarized");
+    assert_eq!(background(&widget), rgb(DARK.background), "unknown: no-op");
+
+    let notebook = gtk4::Notebook::new();
+    let tab = |id, color_scheme: Option<&str>| {
+        let session = SessionConfig {
+            id,
+            name: format!("local-{id}"),
+            session_type: SessionType::LocalShell,
+            color_scheme: color_scheme.map(str::to_string),
+            ..Default::default()
+        };
+        let page = page_content(&Rc::new(session));
+        let backend = create_terminal().backend;
+        set_terminal_area(&page, &backend.widget());
+        terminal_state(&page)
+            .terminal
+            .replace(Some(backend.clone()));
+        notebook.append_page(&page, None::<&gtk4::Widget>);
+        backend.widget()
+    };
+    let follows = tab(1, None);
+    let pinned = tab(2, Some("Dark"));
+    crate::ui::appearance::track(&notebook);
+
+    crate::ui::appearance::install_default_scheme(Some("Light".into()));
+    assert_eq!(background(&follows), rgb(LIGHT.background));
+    assert_eq!(background(&pinned), rgb(DARK.background));
+
+    let settings = gtk4::Settings::default().expect("GTK settings");
+    let (dark_before, theme_before) = (
+        settings.is_gtk_application_prefer_dark_theme(),
+        settings.gtk_theme_name(),
+    );
+    settings.set_gtk_theme_name(Some("Adwaita"));
+    settings.set_gtk_application_prefer_dark_theme(false);
+    crate::ui::appearance::install_default_scheme(Some("System".into()));
+    assert_eq!(background(&follows), rgb(LIGHT.background), "light desktop");
+
+    // The theme switch alone re-colors open terminals.
+    settings.set_gtk_application_prefer_dark_theme(true);
+    assert_eq!(
+        background(&follows),
+        rgb(DARK.background),
+        "dark preference"
+    );
+    settings.set_gtk_application_prefer_dark_theme(false);
+    assert_eq!(background(&follows), rgb(LIGHT.background));
+    settings.set_gtk_theme_name(Some("Adwaita-dark"));
+    assert_eq!(
+        background(&follows),
+        rgb(DARK.background),
+        "dark theme name"
+    );
+    assert_eq!(background(&pinned), rgb(DARK.background));
+
+    settings.set_gtk_theme_name(theme_before.as_deref());
+    settings.set_gtk_application_prefer_dark_theme(dark_before);
+    crate::ui::appearance::install_default_scheme(None);
 }

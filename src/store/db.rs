@@ -690,7 +690,7 @@ INSERT INTO hotkeys (action, key_sequence, context, is_default) VALUES
 -- Default settings
 INSERT INTO settings (key, value) VALUES
 ('default_backend',     'vte'),
-('default_color_scheme', 'Dark'),
+('default_color_scheme', 'System'),
 ('default_font_family',  'Monospace'),
 ('default_font_size',    '12.0'),
 ('default_opacity',      '1.0'),
