@@ -8,6 +8,7 @@ use super::backend::{TerminalBackend, TerminalFeatures};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Interaction {
     SendInput(Vec<u8>),
+    SetColorScheme(String),
     CopySelection,
     Paste(String),
     SelectAll,
@@ -80,7 +81,9 @@ impl TerminalBackend for FakeBackend {
         }
     }
 
-    fn set_color_scheme(&self, _name: &str) {}
+    fn set_color_scheme(&self, name: &str) {
+        self.record(Interaction::SetColorScheme(name.to_string()));
+    }
     fn set_font(&self, _font_desc: &pango::FontDescription) {}
     fn set_opacity(&self, _opacity: f64) {}
     fn set_scrollback_limit(&self, _lines: u32) {}
