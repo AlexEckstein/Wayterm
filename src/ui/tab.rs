@@ -329,13 +329,14 @@ pub(crate) fn page_store(page: &gtk4::Widget) -> Option<Rc<SessionStore>> {
 // ---------------------------------------------------------------------------
 
 /// Closing a page by any path tears its registry entry down, so no
-/// reconnect loop outlives its tab (doc 04 §Lifecycle). Once per notebook.
+/// reconnect loop outlives its tab (doc 04 §Lifecycle), and the tab left
+/// current gets the keyboard focus the closed one held. Once per notebook.
 fn install_teardown_on_remove(notebook: &gtk4::Notebook) {
     if data::<bool>(notebook, TEARDOWN_HOOK_KEY).is_some() {
         return;
     }
     set_data(notebook, TEARDOWN_HOOK_KEY, true);
-    notebook.connect_page_removed(|_, page, _| {
+    notebook.connect_page_removed(|notebook, page, _| {
         if let Some(tab_id) = tab_id_of(page) {
             bump_gen(page);
             // Closing by any path stops the engine deterministically
@@ -343,6 +344,7 @@ fn install_teardown_on_remove(notebook: &gtk4::Notebook) {
             ssh::stop_forward_engine(page);
             tab_resilience::teardown_tab(tab_id);
         }
+        terminal::focus_after_close(notebook);
     });
 }
 

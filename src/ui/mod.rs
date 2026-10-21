@@ -60,6 +60,7 @@ mod gtk_tests {
         super::settings::gtk_tests::pages_and_general_switches();
         super::tab::gtk_tests::focusing_a_tab_moves_focus_to_its_terminal();
         super::tab::gtk_tests::reconnect_does_not_steal_focus();
+        super::tab::gtk_tests::closing_a_tab_focuses_the_next_terminal();
         super::tab::gtk_tests::sftp_sidebar_follows_the_shell_directory();
         super::tab::gtk_tests::a_local_shell_tab_connects_and_closes();
         super::vnc_tab::gtk_tests::vnc_view_draws_and_routes_input();

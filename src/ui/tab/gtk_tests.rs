@@ -121,6 +121,55 @@ pub(in crate::ui) fn reconnect_does_not_steal_focus() {
     window.destroy();
 }
 
+/// Closing the focused tab hands focus to the terminal of the tab left
+/// current, not the notebook GTK leaves it on; closing a tab while the
+/// tree holds focus leaves it there.
+pub(in crate::ui) fn closing_a_tab_focuses_the_next_terminal() {
+    let notebook = gtk4::Notebook::new();
+    let tree = gtk4::Entry::new();
+    let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    root.append(&tree);
+    root.append(&notebook);
+    let window = gtk4::Window::new();
+    window.set_child(Some(&root));
+
+    let terminals: Vec<_> = (1..=3)
+        .map(|id| {
+            let session = SessionConfig {
+                id,
+                name: format!("local-{id}"),
+                session_type: SessionType::LocalShell,
+                ..Default::default()
+            };
+            let page = page_content(&Rc::new(session));
+            let backend = create_terminal().backend;
+            set_terminal_area(&page, &backend.widget());
+            terminal_state(&page)
+                .terminal
+                .replace(Some(backend.clone()));
+            notebook.append_page(&page, None::<&gtk4::Widget>);
+            backend.widget()
+        })
+        .collect();
+    install_teardown_on_remove(&notebook);
+    window.present();
+    for _ in 0..10 {
+        glib::MainContext::default().iteration(false);
+    }
+
+    notebook.set_current_page(Some(2));
+    terminals[2].grab_focus();
+    notebook.remove_page(Some(2));
+    assert_eq!(notebook.current_page(), Some(1));
+    assert!(focus_within(&terminals[1]), "the next tab's terminal");
+
+    tree.grab_focus();
+    notebook.remove_page(Some(1));
+    assert!(focus_within(&tree), "a close stole focus from the tree");
+    assert!(!focus_within(&terminals[0]));
+    window.destroy();
+}
+
 /// The shell's OSC 7 report moves the page's sidebar — through the real
 /// VTE signal — while a report from another host (a nested ssh) does not.
 pub(in crate::ui) fn sftp_sidebar_follows_the_shell_directory() {

@@ -142,6 +142,19 @@ fn focus_unclaimed(page: &gtk4::Widget) -> bool {
     }
 }
 
+/// After a page closes, the current page's terminal takes focus if the
+/// closed page took it along: GTK leaves it on the notebook itself, where
+/// typing goes nowhere. Focus elsewhere (the tree, a sidebar entry) stays.
+pub(super) fn focus_after_close(notebook: &gtk4::Notebook) {
+    let unclaimed = match notebook.root().and_then(|root| root.focus()) {
+        None => true,
+        Some(focus) => focus == *notebook.upcast_ref::<gtk4::Widget>(),
+    };
+    if let (true, Some(page)) = (unclaimed, current_page(notebook)) {
+        focus_terminal(notebook, &page);
+    }
+}
+
 /// Give the page's terminal keyboard focus, so typing reaches the shell
 /// instead of whatever opened the tab (the session tree, whose type-ahead
 /// search would take the keys). Only on the current page: a background
