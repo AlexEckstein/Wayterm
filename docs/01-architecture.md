@@ -71,12 +71,12 @@ ends, and "+" stays pinned at the bar's end.
 |---|---|---|
 | `terminal` | `TerminalBackend`, `VteBackend`, `FakeBackend` | 02, 03, 05 |
 | `backpressure` | GTK-side try-send queue | 02 |
-| `transport` | `Transport`, `SSHTransport`, `SshConnection`, supervisor, auth chain, host keys, credentials, reconnect, `TerminalTab` | 04, 11 |
+| `transport` | `Transport`, `SSHTransport`, `SshConnection`, supervisor, auth chain, host keys, credentials, reconnect, transport factory | 04, 11 |
 | `sftp` | SFTP task and commands | 09 |
 | `store` | SQLite store and session model | 06 |
 | `hotkeys` | action registry, conflicts, defaults, persistence | 07 |
 | `macros` | macro model, recorder, input tap, key notation, playback | 12 |
-| `ui` | window, side dock, tabs, dialogs, session tree, sidebar, macros panel and editor, settings, tray | 01, 07, 09, 10, 12 |
+| `ui` | window, side dock, tabs and their `TerminalTab` wiring, dialogs, session tree, sidebar, macros panel and editor, settings, tray | 01, 04, 07, 09, 10, 12 |
 
 The tray is a StatusNotifierItem over D-Bus via `ksni` (pure Rust, no GTK3
 bindings); disconnect alerts use `gio::Notification`. Without a tray host

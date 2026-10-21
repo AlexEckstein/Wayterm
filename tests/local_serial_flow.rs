@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 
 use wayterm::store::model::{SessionConfig, SessionType};
 use wayterm::terminal::{FakeBackend, TerminalEvent, TerminalHandle};
-use wayterm::transport::tab::TerminalTab;
 use wayterm::transport::types::TransportEvent;
+use wayterm::ui::terminal_tab::TerminalTab;
 
 struct Flow {
     tab: TerminalTab,

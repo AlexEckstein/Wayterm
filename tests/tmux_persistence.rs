@@ -40,9 +40,9 @@ use tokio::time::timeout;
 use common::*;
 use wayterm::store::model::{SessionConfig, SessionType, TMUX_NAME_PREFIX};
 use wayterm::transport::connection::SshConnection;
+use wayterm::transport::factory::create_transport;
 use wayterm::transport::reconnect::{ConnectFn, ConnectFuture};
 use wayterm::transport::supervisor::{ConnectParams, ConnectionSupervisor};
-use wayterm::transport::tab::create_transport;
 use wayterm::transport::types::{Transport, TransportEvent, TransportState, TransportType};
 use wayterm::ui::tab_resilience::{self, ReconnectAction};
 

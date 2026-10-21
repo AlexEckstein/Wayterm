@@ -86,16 +86,18 @@ connection stays up.
 
 ## Transport Factory
 
-`create_transport(config, connection, event_tx, rows, cols)` maps a session
-type to a transport. SSH needs a connection; local and serial build their
-transports directly — there is no dial, and `connection` is `None`. RDP/VNC
-are not byte streams (doc 08). Unsupported types are errors, never panics —
-a malformed row must not crash the app.
+`create_transport(config, connection, event_tx, rows, cols)`
+(`src/transport/factory.rs`) maps a session type to a transport. SSH needs
+a connection; local and serial build their transports directly — there is
+no dial, and `connection` is `None`. RDP/VNC are not byte streams (doc 08).
+Unsupported types are errors, never panics — a malformed row must not crash
+the app.
 
 ## Wiring
 
-`TerminalTab` (`src/transport/tab.rs`) wires one transport to one backend
-with three tasks:
+`TerminalTab` (`src/ui/terminal_tab.rs`) wires one transport to one backend
+with three tasks. Its drain runs on the GTK main context, so it lives in
+`ui`; `transport` has no GTK dependency.
 
 - **pump** (tokio): connects (reporting a failure as `Error` on the state
   channel), forwards `DataOut` and `SizeChange` to the transport, and

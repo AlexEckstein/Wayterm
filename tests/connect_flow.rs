@@ -14,9 +14,9 @@ use common::*;
 use wayterm::sftp::{commands::DirEntry, SftpClient, SftpCommand};
 use wayterm::store::model::{HostKeyPolicy, SessionConfig, SessionType};
 use wayterm::transport::connection::SshConnection;
+use wayterm::transport::factory::create_transport;
 use wayterm::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
 use wayterm::transport::supervisor::{ConnectParams, ConnectionSupervisor, HopAuth};
-use wayterm::transport::tab::create_transport;
 use wayterm::transport::types::TransportError;
 
 fn connect_params(f: &Fixture) -> ConnectParams {
