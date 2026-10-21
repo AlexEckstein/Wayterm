@@ -16,6 +16,7 @@ use crate::store::SessionStore;
 use crate::transport::connection::SshConnection;
 use crate::transport::supervisor::ConnectionSupervisor;
 use crate::transport::types::TransportState;
+use crate::ui::host_picker::local_shell_session;
 use crate::ui::macros_panel::MacrosPanel;
 use crate::ui::session_tree::SessionTree;
 use crate::ui::sftp_sidebar::SftpButton;
@@ -40,6 +41,8 @@ const SFTP_ACTIONS: [(&str, SftpButton); 4] = [
 ];
 /// The dock panel's starting width: room for the SFTP sidebar's columns.
 const DOCK_PANEL_WIDTH: i32 = 320;
+/// The tab bar "+" button's tooltip and accessible name.
+const NEW_TAB_BUTTON_LABEL: &str = "New local shell tab";
 
 /// Lets only the notebook's current page drive the status bar, and never
 /// pushes the same (page, state) twice, so the elapsed timer is not reset
@@ -98,6 +101,7 @@ impl MainWindow {
         let home = gtk4::Label::new(Some("Welcome to Wayterm"));
         notebook.append_page(&home, Some(&gtk4::Label::new(Some("Home"))));
         auto_hide_home(&notebook, &home);
+        notebook.set_action_widget(&new_tab_button(&notebook, &store), gtk4::PackType::End);
 
         settings::general::apply(&store);
 
@@ -277,6 +281,21 @@ fn auto_hide_home(notebook: &gtk4::Notebook, home: &gtk4::Label) {
     notebook.connect_page_removed(move |notebook, _, _| sync(notebook));
 }
 
+/// The tab bar's "+": a local shell in a new tab, without the host picker
+/// that `new_tab` opens.
+fn new_tab_button(notebook: &gtk4::Notebook, store: &Rc<SessionStore>) -> gtk4::Button {
+    let button = gtk4::Button::from_icon_name("list-add-symbolic");
+    button.set_has_frame(false);
+    button.set_tooltip_text(Some(NEW_TAB_BUTTON_LABEL));
+    button.update_property(&[gtk4::accessible::Property::Label(NEW_TAB_BUTTON_LABEL)]);
+    button.set_focus_on_click(false);
+    let (notebook, store) = (notebook.clone(), store.clone());
+    button.connect_clicked(move |_| {
+        SessionTab::open(&notebook, &local_shell_session(), &store);
+    });
+    button
+}
+
 /// `win.tunnels` (Phase 11): the current tab's Tunnels dialog. It always
 /// opens — with no engine (not connected, non-SSH, or no tab at all it is
 /// a no-op) the dialog is the offline fallback: rules editable, live cells
@@ -430,7 +449,8 @@ pub(super) mod gtk_tests {
     /// Every action in doc 07's table has a window action behind it and a
     /// shortcut in the window's dispatcher; the tab actions move between
     /// tabs; terminal shortcuts keep firing with focus off the terminal;
-    /// and a local-shell tab restores as one.
+    /// the tab bar's "+" opens a local shell; and a local-shell tab
+    /// restores as one.
     pub(in crate::ui) fn every_shortcut_has_an_action() {
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _entered = runtime.enter();
@@ -563,8 +583,19 @@ pub(super) mod gtk_tests {
         act("toggle_session_tree");
         assert!(panel.is_visible());
 
+        // The tab bar's "+" opens a local shell straight away, no picker.
+        notebook
+            .action_widget(gtk4::PackType::End)
+            .and_downcast::<gtk4::Button>()
+            .expect("the + button")
+            .emit_clicked();
+        assert_eq!(notebook.n_pages(), 5);
+        assert_eq!(notebook.current_page(), Some(4));
+        assert_eq!(current_session_id(&notebook), Some(LOCAL_SHELL_ID));
+        assert!(toplevel("New Tab").is_none(), "the picker stays shut");
+
         // Close Tab closes tabs, never Home.
-        for _ in 0..3 {
+        for _ in 0..4 {
             act("close_tab");
         }
         assert_eq!(notebook.n_pages(), 1);
