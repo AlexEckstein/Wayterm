@@ -8,6 +8,9 @@
 //! (`wayterm-<file stem>`). `-symbolic` SVGs, the built-in ones included,
 //! are recolored to match the theme.
 //!
+//! The app icon is embedded the same way (`assets/icons`), so windows
+//! draw it when Wayterm is not installed.
+//!
 //! Everything above the GTK layer is display-free.
 
 use std::cell::Cell;
@@ -31,8 +34,9 @@ pub const CUSTOM_PREFIX: &str = "wayterm-";
 /// Imported SVGs larger than this are refused (icons are a few KiB).
 pub const MAX_SVG_BYTES: u64 = 1024 * 1024;
 
-/// Where the built-in icons live in the GResource bundle; laid out as a
-/// hicolor `scalable/actions` directory, as `IconTheme` requires.
+/// Where the built-in icons and the app icon live in the GResource
+/// bundles; laid out as hicolor `scalable/actions` and `scalable/apps`
+/// directories, as `IconTheme` requires.
 const BUILTIN_RESOURCE_PATH: &str = "/com/alex-eckstein/wayterm/icons";
 
 /// The built-in icons, in picker order: infrastructure, network, compute,
@@ -232,13 +236,16 @@ pub fn register_icons(display: &gdk::Display) {
     gtk4::IconTheme::for_display(display).add_search_path(dir);
 }
 
-/// Register the embedded GResource bundle (once per process) and put its
-/// icons on `display`'s theme.
+/// Register the embedded GResource bundles (once per process) and put
+/// their icons on `display`'s theme.
 fn register_builtin_icons(display: &gdk::Display) {
     static REGISTER: std::sync::Once = std::sync::Once::new();
     REGISTER.call_once(|| {
         if let Err(err) = gio::resources_register_include!("tree-icons.gresource") {
             eprintln!("Wayterm: failed to load the built-in icons: {err}");
+        }
+        if let Err(err) = gio::resources_register_include!("app-icon.gresource") {
+            eprintln!("Wayterm: failed to load the app icon: {err}");
         }
     });
     gtk4::IconTheme::for_display(display).add_resource_path(BUILTIN_RESOURCE_PATH);
@@ -475,6 +482,10 @@ pub(super) mod gtk_tests {
         for name in bundled() {
             assert!(theme.has_icon(name), "bundled {name} is in the theme");
         }
+        assert!(
+            theme.has_icon(crate::app::APP_ID),
+            "the app icon is in the theme"
+        );
 
         let tmp = tempfile::tempdir().unwrap();
         let source = tmp.path().join("Home Lab.svg");

@@ -1,27 +1,33 @@
 //! Compiles the built-in tree icons (`assets/tree-icons`, doc 06 §Icons)
-//! into a GResource bundle that `ui::icons` embeds, and — with the
-//! `backend-ghostty` feature only — links libghostty-vt (doc 02).
+//! and the app icon (`assets/icons`, doc 10) into GResource bundles that
+//! `ui::icons` embeds, and — with the `backend-ghostty` feature only —
+//! links libghostty-vt (doc 02).
 
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    let source = "assets/tree-icons";
+    compile_resources("assets/tree-icons", "tree-icons");
+    compile_resources("assets/icons", "app-icon");
+
+    #[cfg(feature = "backend-ghostty")]
+    ghostty::link();
+}
+
+/// `<source>/<name>.gresource.xml` → `$OUT_DIR/<name>.gresource`.
+fn compile_resources(source: &str, name: &str) {
     println!("cargo:rerun-if-changed={source}");
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
     let status = Command::new("glib-compile-resources")
         .arg(format!("--sourcedir={source}"))
         .arg(format!(
             "--target={}",
-            out.join("tree-icons.gresource").display()
+            out.join(format!("{name}.gresource")).display()
         ))
-        .arg(format!("{source}/tree-icons.gresource.xml"))
+        .arg(format!("{source}/{name}.gresource.xml"))
         .status()
         .expect("glib-compile-resources not found (it ships with the GLib dev tools)");
-    assert!(status.success(), "glib-compile-resources failed");
-
-    #[cfg(feature = "backend-ghostty")]
-    ghostty::link();
+    assert!(status.success(), "glib-compile-resources failed for {name}");
 }
 
 /// libghostty-vt for the `backend-ghostty` feature (doc 02 §Engine

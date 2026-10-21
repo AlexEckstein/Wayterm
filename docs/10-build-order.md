@@ -156,7 +156,11 @@ which opens once on first run when the store is empty. Packaging
 Flatpak manifest, a pkg2appimage AppImage recipe built from the `.deb`,
 the Wayterm icon (SVG + 64/128/256 PNG) with the desktop entry and
 AppStream metainfo, and `.github/workflows/release.yml`, which on a
-`v*` tag attaches the `.deb` and AppImage to the GitHub Release.
+`v*` tag attaches the `.deb` and AppImage to the GitHub Release. The
+SVG is also embedded as a GResource (`assets/icons/app-icon.gresource.xml`)
+and set as the default window icon, so the title bar shows it even
+when Wayterm is not installed; the tray sends the 64 px PNG as pixels
+for the same reason.
 **Verify:** the `src/transfer/` unit suite — `~/.ssh/config` forms,
 templates, `Match`, the `Include` chain (cycles, depth cap, non-regular
 files), `ProxyJump`, position remapping, a JSON export → import
