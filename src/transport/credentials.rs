@@ -42,13 +42,10 @@ pub trait CredentialSource: Send + Sync {
     fn source_name(&self) -> &str;
 }
 
-/// Why storing a credential failed.
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialError {
-    /// The source cannot store (read-only, or its backend is unreachable).
     #[error("credential source unavailable: {0}")]
     Unavailable(String),
-    /// The backend refused the item.
     #[error("credential store error: {0}")]
     StoreError(String),
 }
@@ -58,12 +55,10 @@ pub type PromptFn = Arc<dyn Fn(&str, &str) -> Option<Zeroizing<Vec<u8>>> + Send 
 
 /// Interactive source: the GTK dialog in the app, a closure in tests.
 pub struct PromptSource {
-    /// Asks the user.
     prompt: PromptFn,
 }
 
 impl PromptSource {
-    /// A prompt source asking through `prompt`.
     pub fn new(prompt: PromptFn) -> Self {
         Self { prompt }
     }
@@ -87,17 +82,13 @@ pub const LIVE_CONNECT_SESSION_ID: &str = "_live_connect";
 /// libsecret schema and application id (doc 05);
 /// changing either orphans stored credentials.
 const SCHEMA: &str = "com.alex-eckstein.wayterm.Session";
-/// The `application` attribute on every item.
 const APPLICATION: &str = "com.alex-eckstein.wayterm";
 
-/// Secret Service item attributes.
 type Attributes = HashMap<String, String>;
 
 /// The identity attribute a keyring search keys on.
 enum KeyedBy<'a> {
-    /// The saved session's row id.
     Id(&'a str),
-    /// The session name (items made by other tools).
     Name(&'a str),
 }
 
@@ -123,7 +114,6 @@ fn store_attributes(session_id: &str, session_name: &str, secret_type: &str) -> 
     attributes
 }
 
-/// The item label the keyring shows.
 fn item_label(session_name: &str, secret_type: &str) -> String {
     format!("Wayterm — {session_name} ({secret_type})")
 }
@@ -200,21 +190,16 @@ impl KeyringBackend for Oo7Backend {
 /// back to the session name (items made by other tools); an unreachable
 /// keyring is a miss, so the prompt source answers.
 pub struct KeyringSource {
-    /// The saved session's row id.
     session_id: String,
-    /// Its name, the lookup fallback.
     session_name: String,
-    /// oo7, or a fake in tests.
     backend: Arc<dyn KeyringBackend>,
 }
 
 impl KeyringSource {
-    /// The keyring source for one saved session.
     pub fn new(session_id: &str, session_name: &str) -> Self {
         Self::with_backend(session_id, session_name, Arc::new(Oo7Backend))
     }
 
-    /// A source on `backend` (tests inject a fake).
     fn with_backend(
         session_id: &str,
         session_name: &str,
@@ -334,13 +319,9 @@ pub fn bitwarden_item_name(session_name: &str) -> String {
 /// child through its environment only — argv is world-readable in
 /// `/proc/<pid>/cmdline`.
 pub struct BitwardenSource {
-    /// The CLI to run.
     bin: String,
-    /// `wayterm/<session name>`.
     item: String,
-    /// `BW_SESSION`, passed to the child's environment only.
     session_key: Option<Zeroizing<String>>,
-    /// How long one run may take.
     timeout: Duration,
 }
 
@@ -483,7 +464,6 @@ fn run_with_timeout(
     Ok((status, stdout))
 }
 
-/// Kill and reap `child`.
 fn kill(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
@@ -491,9 +471,7 @@ fn kill(child: &mut Child) {
 
 /// Sources in priority order; the first hit wins.
 pub struct CredentialManager {
-    /// Sources in priority order.
     sources: Vec<Box<dyn CredentialSource>>,
-    /// The id the SSH chain looks secrets up under.
     session_id: String,
 }
 
@@ -512,12 +490,10 @@ impl CredentialManager {
         }
     }
 
-    /// The id lookups are made under.
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
-    /// The first source's answer, in priority order.
     pub fn lookup(&self, session_id: &str, secret_type: &str) -> Option<Zeroizing<Vec<u8>>> {
         self.sources
             .iter()

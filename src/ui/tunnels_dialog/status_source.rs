@@ -40,17 +40,12 @@ pub trait ForwardStatusSource: Send + Sync {
 /// behavior proof: drive it with [`Self::emit`] from any thread, read the
 /// toggle requests back with [`Self::toggles`].
 pub struct FakeStatusSource {
-    /// States, subscribers and recorded toggles.
     inner: Mutex<FakeInner>,
 }
 
-/// A [`FakeStatusSource`]'s state.
 struct FakeInner {
-    /// Each rule's current state.
     states: Vec<ForwardState>,
-    /// Subscribers to notify.
     senders: Vec<UnboundedSender<ForwardEvent>>,
-    /// Every toggle request, in order.
     toggles: Vec<(RuleId, bool)>,
 }
 
@@ -137,11 +132,8 @@ impl ForwardStatusSource for FakeStatusSource {
 /// awaits at all — fan-out uses `send` on unbounded channels, and the
 /// engine's controls never block).
 pub struct EngineStatusBridge {
-    /// The engine toggles go to.
     engine: ForwardEngine,
-    /// The last state of each rule, for the initial paint.
     states: Mutex<HashMap<RuleId, ForwardState>>,
-    /// Open subscriptions.
     senders: Mutex<Vec<UnboundedSender<ForwardEvent>>>,
 }
 

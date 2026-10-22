@@ -22,7 +22,6 @@ const RELAY_CAPACITY: usize = 256;
 /// One terminal's recording switch. Clones share the recording.
 #[derive(Clone, Default)]
 pub struct InputTap {
-    /// The armed recording, if any.
     recording: Rc<RefCell<Option<Recorder>>>,
 }
 
@@ -59,7 +58,6 @@ impl InputTap {
         *self.recording.borrow_mut() = Some(Recorder::new());
     }
 
-    /// Whether a recording is armed.
     pub fn is_recording(&self) -> bool {
         self.recording.borrow().is_some()
     }

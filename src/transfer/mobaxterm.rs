@@ -14,7 +14,6 @@ const SECRET_SECTIONS: [&str; 2] = ["passwords", "credentials"];
 /// Bookmark keys that describe the section, not a session.
 const SECTION_KEYS: [&str; 2] = ["subrep", "imgnum"];
 
-/// Parse a MobaXterm `.ini` / `.mxtsessions` export.
 pub fn parse(text: &str) -> Parsed {
     let mut report = ImportReport::default();
     let mut folders = FolderSet::default();
@@ -97,11 +96,8 @@ fn bookmark(name: &str, value: &str, folder: Option<usize>) -> Result<SessionCon
     })
 }
 
-/// One `[section]` of the file.
 struct Section {
-    /// Section name.
     name: String,
-    /// `key=value` lines, in order.
     entries: Vec<(String, String)>,
 }
 

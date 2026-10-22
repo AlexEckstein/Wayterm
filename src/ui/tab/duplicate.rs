@@ -14,7 +14,6 @@ use crate::ui::widgets::{button_row, set_margins, wrapped_label};
 /// Settings row (doc 13 §Settings rows): the notice shows unless this is off.
 pub const TMUX_NOTICE_SETTING: &str = "duplicate_tmux_notice";
 
-/// The duplicate-tab notice's body text.
 pub const TMUX_NOTICE_DETAIL: &str = "Multiple tabs of the same session bookmark cannot use \
      tmux. This tab connects without tmux; the first tab keeps it.";
 
@@ -30,7 +29,6 @@ pub fn tab_config(session: &SessionConfig, already_open: bool) -> (SessionConfig
     (config, dropped)
 }
 
-/// Whether the duplicate-tab notice shows (`duplicate_tmux_notice`).
 pub fn notice_enabled(store: &SessionStore) -> bool {
     store.flag(TMUX_NOTICE_SETTING)
 }

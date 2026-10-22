@@ -49,15 +49,11 @@ pub struct ColorScheme {
     /// The name stored in settings and passed to
     /// [`set_color_scheme`](super::TerminalBackend::set_color_scheme).
     pub name: &'static str,
-    /// Default text.
     pub foreground: Rgb,
-    /// Default background.
     pub background: Rgb,
     /// The cursor block, and the text under it.
     pub cursor: Rgb,
-    /// Text under the cursor block.
     pub cursor_foreground: Rgb,
-    /// ANSI colors 0–15.
     pub palette: [Rgb; 16],
 }
 
@@ -116,14 +112,11 @@ pub fn by_name(name: &str) -> Option<&'static ColorScheme> {
 /// picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Brightness {
-    /// A light theme.
     Light,
-    /// A dark theme.
     Dark,
 }
 
 impl Brightness {
-    /// The palette `System` shows for this brightness.
     pub fn scheme(self) -> &'static ColorScheme {
         match self {
             Self::Light => &LIGHT,
@@ -204,11 +197,8 @@ pub fn portal_color_scheme(value: u32) -> Option<Brightness> {
 /// A stored scheme value: a palette, or `System` to follow the desktop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchemeChoice {
-    /// Follow the desktop's light or dark theme.
     System,
-    /// Always [`LIGHT`].
     Light,
-    /// Always [`DARK`].
     Dark,
 }
 

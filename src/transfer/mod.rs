@@ -53,7 +53,6 @@ pub struct ImportReport {
     pub skipped: usize,
     /// Template sessions (from wildcard `Host` patterns).
     pub templates: usize,
-    /// Every warning, one line each, for the report.
     pub warnings: Vec<String>,
 }
 
@@ -63,11 +62,8 @@ pub struct ImportReport {
 /// path, so duplicate sibling names stay apart.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FolderSpec {
-    /// Folder name.
     pub name: String,
-    /// The parent's path; `None` = root.
     pub parent: Option<String>,
-    /// Icon name, if any.
     pub icon: Option<String>,
 }
 
@@ -81,16 +77,12 @@ impl FolderSpec {
     }
 }
 
-/// Why an import produced nothing.
 #[derive(Debug, thiserror::Error)]
 pub enum ImportError {
-    /// The source is not in the expected format.
     #[error("cannot parse the import: {0}")]
     Parse(String),
-    /// A Wayterm export from a newer version.
     #[error("export version {0} is newer than this Wayterm understands (1)")]
     UnsupportedVersion(u32),
-    /// The file could not be read.
     #[error("cannot read the import: {0}")]
     Io(String),
 }
@@ -216,9 +208,7 @@ pub fn apply_import(
 /// Asbru groups): each distinct path becomes one folder.
 #[derive(Default)]
 struct FolderSet {
-    /// Folders so far, parents first.
     folders: Vec<FolderSpec>,
-    /// Folder index by path.
     by_path: HashMap<String, usize>,
 }
 

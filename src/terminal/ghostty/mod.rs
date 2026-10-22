@@ -28,9 +28,7 @@ const INITIAL_GRID: (u16, u16) = (80, 24);
 
 /// The engine and the event queue, shared by the backend and its widget.
 struct Shared {
-    /// The terminal state.
     engine: Engine,
-    /// Never-blocking sender into the pump's channel.
     events: EventSender,
 }
 
@@ -57,9 +55,7 @@ impl Shared {
 
 /// A libghostty-vt terminal drawn by [`GhosttyView`]. Main thread only.
 pub struct GhosttyBackend {
-    /// Engine and event queue, shared with the view.
     shared: Rc<Shared>,
-    /// The widget the tab embeds.
     view: GhosttyView,
 }
 
@@ -77,7 +73,6 @@ impl GhosttyBackend {
         Some(Self { shared, view })
     }
 
-    /// The shared engine.
     fn engine(&self) -> &Engine {
         &self.shared.engine
     }

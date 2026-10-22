@@ -72,9 +72,7 @@ pub fn precedence(context: ActionContext) -> u8 {
 /// shortcuts need none, and a context without one stays unbound.
 #[derive(Clone)]
 pub struct ContextHost {
-    /// The context this host decides.
     context: ActionContext,
-    /// Whether the context is active right now.
     active: Rc<dyn Fn() -> bool>,
 }
 
@@ -151,7 +149,6 @@ fn fire(window: &gtk4::Widget, id: &str) -> bool {
 
 /// Applies one action's current state to whatever is installed.
 trait Binder: fmt::Debug {
-    /// Apply `action`'s current trigger.
     fn bind(&self, action: &Action);
 
     /// Detach whatever [`HotkeyEngine::install`] attached.
@@ -163,16 +160,12 @@ trait Binder: fmt::Debug {
 /// rebind.
 #[derive(Debug)]
 struct GtkBinder {
-    /// The main window.
     window: gtk4::Widget,
-    /// The capture-phase controller.
     controller: gtk4::ShortcutController,
-    /// Each bound action's shortcut, by id.
     shortcuts: HashMap<String, gtk4::Shortcut>,
 }
 
 impl GtkBinder {
-    /// Add a capture-phase controller on `window` with a shortcut per hosted action.
     fn new(
         window: &gtk4::ApplicationWindow,
         registry: &ActionRegistry,
@@ -233,10 +226,8 @@ impl Binder for GtkBinder {
     }
 }
 
-/// The registry plus persistence and the installed dispatcher.
 #[derive(Clone, Debug, Default)]
 pub struct HotkeyEngine {
-    /// The actions and their bindings.
     registry: ActionRegistry,
     /// Set by [`Self::install`]; every mutation pushes through it.
     binder: Option<Rc<dyn Binder>>,
@@ -248,7 +239,6 @@ impl HotkeyEngine {
         Self::with_registry(defaults::default_registry())
     }
 
-    /// An engine over `registry`, not yet installed.
     pub fn with_registry(registry: ActionRegistry) -> Self {
         Self {
             registry,
@@ -275,7 +265,6 @@ impl HotkeyEngine {
             .collect()
     }
 
-    /// Replace the binder, detaching the previous one.
     fn install_binder(&mut self, binder: Rc<dyn Binder>) {
         if let Some(previous) = self.binder.take() {
             previous.uninstall();
@@ -296,12 +285,10 @@ impl HotkeyEngine {
         }
     }
 
-    /// The registry.
     pub fn registry(&self) -> &ActionRegistry {
         &self.registry
     }
 
-    /// The action `id`, if registered.
     pub fn action(&self, id: &str) -> Option<&Action> {
         self.registry.action(id)
     }
@@ -323,14 +310,12 @@ impl HotkeyEngine {
         Ok(displaced)
     }
 
-    /// Put `action_id` back on its default chord, live.
     pub fn reset_to_default(&mut self, action_id: &str) -> Result<(), RebindError> {
         self.registry.reset_to_default(action_id)?;
         self.rebuild([action_id]);
         Ok(())
     }
 
-    /// Enable or disable `action_id`, live.
     pub fn set_enabled(&mut self, action_id: &str, enabled: bool) -> Result<(), RebindError> {
         self.registry.set_enabled(action_id, enabled)?;
         self.rebuild([action_id]);

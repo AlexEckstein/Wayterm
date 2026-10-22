@@ -37,9 +37,7 @@ use crate::ui::{appearance, sftp_sidebar, tab, tab_resilience, tray};
 /// One switch: a settings row and the text beside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Toggle {
-    /// The settings row.
     pub key: &'static str,
-    /// The switch's label.
     pub title: &'static str,
     /// What the switch does, and what "off" means.
     pub subtitle: &'static str,
@@ -91,9 +89,7 @@ pub const REMINDERS: [&str; 2] = [
     tab_resilience::CONFIRM_CLOSE_NOTICE_SETTING,
 ];
 
-/// The reminders button's label.
 pub const CLEAR_REMINDERS_TITLE: &str = "Clear all reminders";
-/// The reminders button's subtitle.
 pub const CLEAR_REMINDERS_SUBTITLE: &str =
     "Show again every notice you turned off with \"Do not show me again\".";
 
@@ -109,7 +105,6 @@ pub fn clear_reminders(store: &SessionStore) -> rusqlite::Result<()> {
 
 /// The check box's text.
 pub const GHOSTTY_TITLE: &str = "Experimental Ghostty terminal";
-/// The Ghostty check box's subtitle.
 pub const GHOSTTY_SUBTITLE: &str = "Draw new tabs with libghostty-vt instead of VTE. \
                                     Experimental: no search or color schemes yet. \
                                     Open tabs keep their terminal.";
@@ -128,7 +123,6 @@ pub fn save_backend(store: &SessionStore, kind: BackendKind) -> rusqlite::Result
 
 /// The row's text.
 pub const COLOR_SCHEME_TITLE: &str = "Default color scheme";
-/// The color scheme drop-down's subtitle.
 pub const COLOR_SCHEME_SUBTITLE: &str = "Terminal colors for sessions without their own. \
                                          System follows the desktop's light or dark theme.";
 

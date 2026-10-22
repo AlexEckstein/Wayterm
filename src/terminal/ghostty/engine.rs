@@ -14,18 +14,14 @@ pub use super::ffi::{WtCell as Cell, WtFrame as FrameInfo};
 pub enum Effect {
     /// A reply for the remote side (device attributes, status reports).
     Pty(Vec<u8>),
-    /// BEL.
     Bell,
-    /// OSC 0/2 window title.
     Title(String),
 }
 
 /// Where [`Engine::scroll`] moves the viewport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scroll {
-    /// The oldest scrollback line.
     Top,
-    /// The live screen.
     Bottom,
     /// Rows; up is negative.
     By(isize),
@@ -34,14 +30,12 @@ pub enum Scroll {
 /// A snapshot of the viewport, reused between frames.
 #[derive(Clone, Debug, Default)]
 pub struct Frame {
-    /// Grid size, cursor, and default colors.
     pub info: FrameInfo,
     /// Row-major, `info.cols` per row.
     pub cells: Vec<Cell>,
 }
 
 impl Frame {
-    /// The cell at `row`, `col` of the viewport, if inside it.
     pub fn cell(&self, row: usize, col: usize) -> Option<&Cell> {
         if col >= usize::from(self.info.cols) {
             return None;
@@ -66,7 +60,6 @@ impl Frame {
 /// main thread. Effects raised while bytes are processed are collected and
 /// returned by the call that raised them.
 pub struct Engine {
-    /// The libghostty-vt terminal, freed on drop.
     raw: NonNull<ffi::WtGhostty>,
     /// The effect callback's userdata; boxed so its address is stable.
     effects: Box<RefCell<Vec<Effect>>>,
@@ -123,12 +116,10 @@ impl Engine {
         Some(Self { raw, effects })
     }
 
-    /// The raw terminal for FFI calls.
     fn ptr(&self) -> *mut ffi::WtGhostty {
         self.raw.as_ptr()
     }
 
-    /// Drain the effects recorded since the last call.
     fn take_effects(&self) -> Vec<Effect> {
         std::mem::take(&mut *self.effects.borrow_mut())
     }
@@ -156,19 +147,16 @@ impl Engine {
         (cols, rows)
     }
 
-    /// Full reset: screen, scrollback, modes.
     pub fn reset(&self) {
         // SAFETY: valid terminal.
         unsafe { ffi::wt_ghostty_reset(self.ptr()) };
     }
 
-    /// Cap the scrollback at `lines`.
     pub fn set_scrollback_lines(&self, lines: usize) {
         // SAFETY: valid terminal.
         unsafe { ffi::wt_ghostty_set_scrollback_lines(self.ptr(), lines) };
     }
 
-    /// Move the viewport.
     pub fn scroll(&self, scroll: Scroll) {
         let (place, delta) = match scroll {
             Scroll::Top => (0, 0),
@@ -197,7 +185,6 @@ impl Engine {
         (result == ffi::SUCCESS).then(|| String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// Select the whole buffer; `false` if the terminal refused.
     pub fn select_all(&self) -> bool {
         // SAFETY: valid terminal.
         unsafe { ffi::wt_ghostty_select_all(self.ptr()) == ffi::SUCCESS }
@@ -211,7 +198,6 @@ impl Engine {
         }
     }
 
-    /// Drop the selection.
     pub fn clear_selection(&self) {
         // SAFETY: valid terminal.
         unsafe { ffi::wt_ghostty_clear_selection(self.ptr()) };

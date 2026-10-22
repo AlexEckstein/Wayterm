@@ -55,14 +55,11 @@ pub enum ReconnectMode {
 /// open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReconnectPolicy {
-    /// Prompt or automatic.
     pub mode: ReconnectMode,
-    /// `None` for unlimited.
     pub max_attempts: Option<u32>,
 }
 
 impl ReconnectPolicy {
-    /// A policy in `mode`, unlimited attempts.
     pub const fn new(mode: ReconnectMode) -> Self {
         Self {
             mode,
@@ -70,12 +67,10 @@ impl ReconnectPolicy {
         }
     }
 
-    /// Ask before each attempt.
     pub const fn prompt() -> Self {
         Self::new(ReconnectMode::Prompt)
     }
 
-    /// Retry without asking.
     pub const fn auto() -> Self {
         Self::new(ReconnectMode::Auto)
     }
@@ -89,7 +84,6 @@ impl ReconnectPolicy {
         }
     }
 
-    /// Cap the run at `max_attempts`.
     pub const fn with_max_attempts(mut self, max_attempts: u32) -> Self {
         self.max_attempts = Some(max_attempts);
         self
@@ -110,51 +104,36 @@ impl Default for ReconnectPolicy {
 /// Progress of a [`ReconnectDriver`] run, for the UI and the tests.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReconnectEvent {
-    /// Waiting `delay` before attempt `attempt`.
     BackingOff { attempt: u32, delay: Duration },
-    /// Asking whether to try attempt `attempt`.
     Prompting { attempt: u32 },
-    /// Attempt `attempt` is connecting.
     Attempting { attempt: u32 },
-    /// Attempt `attempt` failed with `error`.
     AttemptFailed { attempt: u32, error: String },
-    /// The attempt budget ran out.
     Exhausted { attempts: u32, error: String },
-    /// Attempt `attempts` connected.
     Connected { attempts: u32 },
-    /// The tab closed or a prompt was dismissed.
     Cancelled,
-    /// The user said no to attempt `attempt`.
     Declined { attempt: u32 },
 }
 
 /// How a [`ReconnectDriver`] run ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconnectOutcome {
-    /// Connected after `attempts` attempts.
     Connected { attempts: u32 },
-    /// The tab closed or a prompt was dismissed.
     Cancelled,
-    /// The user said no to attempt `attempt`.
     Declined { attempt: u32 },
-    /// The attempt budget ran out; `error` is the last failure.
     Exhausted { attempts: u32, error: String },
 }
 
 impl ReconnectOutcome {
-    /// Whether the run ended connected.
     pub fn is_connected(&self) -> bool {
         matches!(self, Self::Connected { .. })
     }
 }
 
-/// One connect attempt.
 pub type ConnectFuture = Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send>>;
 
 /// One fresh connect through the supervisor, so tmux can reattach.
 pub type ConnectFn = Arc<dyn Fn() -> ConnectFuture + Send + Sync>;
 
-/// The user's answer to a reconnect prompt.
 pub type ConfirmFuture = Pin<Box<dyn Future<Output = bool> + Send>>;
 
 /// Prompt-mode responder: asks about attempt `n`, resolves to "reconnect?".
@@ -163,14 +142,11 @@ pub type ConfirmFn = Arc<dyn Fn(u32) -> ConfirmFuture + Send + Sync>;
 /// Drives the reconnect state machine for one tab.
 #[derive(Clone, Debug)]
 pub struct ReconnectDriver {
-    /// Mode and attempt budget.
     policy: ReconnectPolicy,
-    /// Shared with the tab: closing it stops the loop.
     cancel: CancellationToken,
 }
 
 impl ReconnectDriver {
-    /// A driver with its own cancel token.
     pub fn new(policy: ReconnectPolicy) -> Self {
         Self::with_cancel_token(policy, CancellationToken::new())
     }
@@ -180,22 +156,18 @@ impl ReconnectDriver {
         Self { policy, cancel }
     }
 
-    /// The token that stops the run.
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
     }
 
-    /// Stop the run before its next step.
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
 
-    /// Whether the run was stopped.
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
 
-    /// The retry policy.
     pub fn policy(&self) -> &ReconnectPolicy {
         &self.policy
     }

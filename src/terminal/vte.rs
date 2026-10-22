@@ -1,6 +1,3 @@
-//! [`VteBackend`]: the default backend, the GTK4 VTE widget (doc 02
-//! §VteBackend).
-
 use std::cell::Cell;
 
 use gtk4::{gdk, pango, Widget};
@@ -14,7 +11,6 @@ use crate::backpressure::IdleSender;
 
 /// The built-in backend: the GTK4 VTE widget (doc 02). Main thread only.
 pub struct VteBackend {
-    /// The widget.
     terminal: VteTerminal,
     /// The queue `commit` feeds, for input `feed_child` cannot carry.
     input: EventSender,
@@ -72,7 +68,6 @@ fn grid_from_counts(rows: i64, cols: i64) -> (u32, u32) {
     )
 }
 
-/// An opaque GDK color from a palette entry.
 fn rgba(Rgb(r, g, b): Rgb) -> gdk::RGBA {
     let channel = |c: u8| f32::from(c) / 255.0;
     gdk::RGBA::new(channel(r), channel(g), channel(b), 1.0)

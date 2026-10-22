@@ -14,11 +14,8 @@ pub const PARENT_ROW: &str = "..";
 /// directory first ([`SftpView::start_at`]).
 pub const START_PATH: &str = ".";
 
-/// Icon of a directory row.
 const DIR_ICON: &str = "📁";
-/// Icon of a file row.
 const FILE_ICON: &str = "📄";
-/// Icon of the `..` row.
 const PARENT_ICON: &str = "⬆";
 
 /// Inline error shown while no SSH connection backs the sidebar.
@@ -37,7 +34,6 @@ pub const COMMAND_FAILED: &str = "SFTP command could not be queued";
 /// opens for a sidebar nobody looks at.
 pub const SFTP_ON_CONNECT_SETTING: &str = "sftp_on_connect";
 
-/// The installed `sftp_on_connect` row.
 static OPEN_ON_CONNECT: AtomicBool = AtomicBool::new(true);
 
 /// `sftp_on_connect`, pushed in at startup and on every change; tabs read
@@ -46,7 +42,6 @@ pub fn install_settings(open_on_connect: bool) {
     OPEN_ON_CONNECT.store(open_on_connect, Ordering::SeqCst);
 }
 
-/// Whether new SSH tabs attach their sidebar at connect.
 pub fn open_on_connect() -> bool {
     OPEN_ON_CONNECT.load(Ordering::SeqCst)
 }
@@ -60,17 +55,12 @@ pub fn attach_on_connect(open_on_connect: bool, shown: bool) -> bool {
 /// One listing row, in store order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RowView {
-    /// Directory, file, or parent icon.
     pub icon: &'static str,
-    /// File name.
     pub name: String,
     /// Already human-formatted; empty for directories.
     pub size: String,
-    /// `YYYY-MM-DD HH:MM` (UTC), or empty.
     pub modified: String,
-    /// `rwxr-xr-x`, or empty.
     pub permissions: String,
-    /// Whether it is a directory.
     pub is_dir: bool,
     /// True only for the synthetic [`PARENT_ROW`] row.
     pub is_parent: bool,
@@ -206,19 +196,12 @@ pub fn failed_status(label: &str, err: &str) -> String {
 /// Button sensitivity: doc 07's six toolbar buttons plus Cancel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToolbarState {
-    /// Upload is clickable.
     pub upload: bool,
-    /// Download is clickable.
     pub download: bool,
-    /// Delete is clickable.
     pub delete: bool,
-    /// Rename is clickable.
     pub rename: bool,
-    /// Refresh is clickable.
     pub refresh: bool,
-    /// New folder is clickable.
     pub mkdir: bool,
-    /// Cancel is clickable.
     pub cancel: bool,
 }
 
@@ -297,7 +280,6 @@ fn split_file_uri(uri: &str) -> Option<(&str, String)> {
 /// call, since probes find it too.
 #[derive(Clone, Debug, Default)]
 pub struct DirectoryFollower {
-    /// The host the first report named; later reports must match it.
     host: Option<String>,
 }
 
@@ -334,7 +316,6 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// A hex digit's value.
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -347,7 +328,6 @@ fn hex_value(byte: u8) -> Option<u8> {
 /// One running transfer, in start order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferState {
-    /// The transfer's id.
     pub id: u64,
     /// Status-line prefix, e.g. `Upload notes.txt`.
     pub label: String,
@@ -561,7 +541,6 @@ impl SftpView {
         !std::mem::replace(&mut self.shown, true)
     }
 
-    /// The label of transfer `id`, if running.
     fn transfer_label(&self, id: u64) -> Option<String> {
         self.transfers
             .iter()

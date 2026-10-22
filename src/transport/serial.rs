@@ -1,6 +1,3 @@
-//! [`SerialTransport`]: a serial console over the `serialport` crate
-//! (doc 06 §Serial).
-
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,17 +28,11 @@ const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 /// §Wire formats).
 #[derive(Clone, Debug, PartialEq)]
 struct PortSettings {
-    /// Device path, e.g. `/dev/ttyUSB0`.
     device: String,
-    /// Line speed.
     baud_rate: u32,
-    /// 5–8 data bits.
     data_bits: DataBits,
-    /// None, odd or even.
     parity: Parity,
-    /// 1 or 2 stop bits.
     stop_bits: StopBits,
-    /// None, hardware (RTS/CTS) or software (XON/XOFF).
     flow_control: FlowControl,
 }
 
@@ -77,7 +68,6 @@ impl PortSettings {
     }
 }
 
-/// The connect error for a value the port cannot take.
 fn unsupported(field: &str, value: impl std::fmt::Display) -> TransportError {
     TransportError::ConnectionFailed(format!("unsupported {field} '{value}'"))
 }
@@ -96,7 +86,6 @@ fn map_parity(value: &str) -> Result<Parity, TransportError> {
     }
 }
 
-/// Map `serial_flow_control`.
 fn map_flow_control(value: &str) -> Result<FlowControl, TransportError> {
     match value {
         "none" => Ok(FlowControl::None),
@@ -106,7 +95,6 @@ fn map_flow_control(value: &str) -> Result<FlowControl, TransportError> {
     }
 }
 
-/// Map `serial_data_bits`.
 fn map_data_bits(value: u8) -> Result<DataBits, TransportError> {
     match value {
         5 => Ok(DataBits::Five),
@@ -117,7 +105,6 @@ fn map_data_bits(value: u8) -> Result<DataBits, TransportError> {
     }
 }
 
-/// Map `serial_stop_bits`.
 fn map_stop_bits(value: u8) -> Result<StopBits, TransportError> {
     match value {
         1 => Ok(StopBits::One),
@@ -137,11 +124,8 @@ pub struct SerialTransport {
     description: String,
     /// The write side; the reader task owns a cloned handle.
     port: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
-    /// Reads the port on the blocking pool.
     reader_task: Option<JoinHandle<()>>,
-    /// Where the reader sends events.
     event_tx: mpsc::Sender<TransportEvent>,
-    /// Stops the reader.
     cancel_token: CancellationToken,
     /// Shared with the reader, which ends the connection when the device
     /// goes away.
@@ -149,7 +133,6 @@ pub struct SerialTransport {
 }
 
 impl SerialTransport {
-    /// A disconnected transport for `config`'s device.
     pub fn new(config: &SessionConfig, event_tx: mpsc::Sender<TransportEvent>) -> Self {
         let settings = PortSettings::from_config(config).map_err(|err| match err {
             TransportError::ConnectionFailed(reason) => reason,
@@ -171,13 +154,11 @@ impl SerialTransport {
         }
     }
 
-    /// Record `err` as the state and return it.
     fn fail(&self, err: TransportError) -> TransportError {
         self.state.set(TransportState::Error(err.to_string()));
         err
     }
 
-    /// Open the device with `settings`.
     fn open(settings: &PortSettings) -> Result<Box<dyn SerialPort>, TransportError> {
         serialport::new(settings.device.as_str(), settings.baud_rate)
             .data_bits(settings.data_bits)

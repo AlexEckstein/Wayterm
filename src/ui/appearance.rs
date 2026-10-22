@@ -33,34 +33,24 @@ use crate::terminal::color_scheme::{self, classify_system_theme, Brightness, UNK
 use crate::terminal::TerminalBackend;
 use crate::ui::tab::SessionTab;
 
-/// xdg-desktop-portal's bus name.
 const PORTAL: &str = "org.freedesktop.portal.Desktop";
-/// Its object path.
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
-/// The settings interface.
 const PORTAL_SETTINGS: &str = "org.freedesktop.portal.Settings";
-/// The appearance namespace.
 const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
-/// The light/dark key in it.
 const COLOR_SCHEME_KEY: &str = "color-scheme";
-/// How long the startup read may take.
 const PORTAL_TIMEOUT_MS: i32 = 2_000;
 
 /// GTK 4.20+'s setting, and its `GtkInterfaceColorScheme` values; read and
 /// written by name, since the build targets older GTK too.
 const INTERFACE_COLOR_SCHEME: &str = "gtk-interface-color-scheme";
-/// `GtkInterfaceColorScheme` dark.
 const INTERFACE_DARK: i32 = 2;
-/// `GtkInterfaceColorScheme` light.
 const INTERFACE_LIGHT: i32 = 3;
-/// GTK's legacy dark-theme setting.
 const PREFER_DARK: &str = "gtk-application-prefer-dark-theme";
 
 /// How long the user stylesheet's directory must be quiet before a
 /// reload: a theme switch rewrites several files.
 const USER_CSS_SETTLE: Duration = Duration::from_millis(200);
 
-/// What the theme follower tracks; one per process, main thread only.
 #[derive(Default)]
 struct Appearance {
     /// The installed `default_color_scheme` row.
@@ -142,7 +132,6 @@ pub fn apply_to(backend: &dyn TerminalBackend, session_override: Option<&str>) {
     apply_with(backend, session_override, system_brightness());
 }
 
-/// Apply the scheme `session_override` resolves to, `System` following `system`.
 fn apply_with(backend: &dyn TerminalBackend, session_override: Option<&str>, system: Brightness) {
     let global = APPEARANCE.with(|state| state.borrow().default_scheme.clone());
     let scheme = color_scheme::resolve(session_override, global.as_deref(), system);
@@ -326,21 +315,14 @@ pub fn refresh() {
 pub(in crate::ui) struct UserCss {
     /// Owned here; the monitor holds it weakly.
     _stylesheet: Rc<Stylesheet>,
-    /// Keeps the directory watch alive.
     _monitor: gio::FileMonitor,
 }
 
-/// The user's `gtk-4.0/gtk.css`, reloaded into its own provider on change.
 struct Stylesheet {
-    /// Path of `gtk.css`.
     path: PathBuf,
-    /// The provider it loads into.
     provider: gtk4::CssProvider,
-    /// The display the provider is added to.
     display: gdk::Display,
-    /// Whether the provider was added.
     installed: Cell<bool>,
-    /// A reload is scheduled.
     pending: Cell<bool>,
 }
 
@@ -385,7 +367,6 @@ impl UserCss {
 }
 
 impl Stylesheet {
-    /// Reload after the directory has been quiet for a moment.
     fn schedule(self: &Rc<Self>) {
         if self.pending.replace(true) {
             return;
@@ -399,7 +380,6 @@ impl Stylesheet {
         });
     }
 
-    /// Load the file into the provider (adding it the first time).
     fn load(&self) {
         if self.path.exists() {
             self.provider.load_from_path(&self.path);

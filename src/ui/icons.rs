@@ -264,20 +264,14 @@ fn rescan(display: &gdk::Display) {
 /// of built-in and imported icons, "Import SVG…", and a reset button.
 #[derive(Clone)]
 pub struct IconPicker {
-    /// The picker's root widget.
     root: gtk4::Box,
-    /// The icon name, editable.
     entry: gtk4::Entry,
-    /// Preview of the current icon.
     preview: gtk4::Image,
-    /// Import error line.
     error: gtk4::Label,
-    /// The icon shown when the entry is empty.
     default: Rc<Cell<&'static str>>,
 }
 
 impl IconPicker {
-    /// A picker whose empty choice means `default`.
     pub fn new(default: &'static str) -> Self {
         let preview = gtk4::Image::builder().pixel_size(24).build();
         let entry = gtk4::Entry::builder()
@@ -333,7 +327,6 @@ impl IconPicker {
         picker
     }
 
-    /// The picker's widget.
     pub fn widget(&self) -> &gtk4::Box {
         &self.root
     }
@@ -343,7 +336,6 @@ impl IconPicker {
         Some(self.entry.text().trim().to_string()).filter(|name| !name.is_empty())
     }
 
-    /// Show `icon` (`None` = the default).
     pub fn set_icon(&self, icon: Option<&str>) {
         self.entry.set_text(icon.unwrap_or_default());
     }
@@ -362,7 +354,6 @@ impl IconPicker {
         self.preview.icon_name().map(Into::into)
     }
 
-    /// Show the current icon in the preview.
     fn update_preview(&self) {
         let icon = self.icon();
         self.preview
@@ -370,7 +361,6 @@ impl IconPicker {
         self.error.set_visible(false);
     }
 
-    /// Show `message` under the picker.
     fn show_error(&self, message: &str) {
         self.error.set_text(message);
         self.error.set_visible(true);
@@ -433,7 +423,6 @@ impl IconPicker {
         flow
     }
 
-    /// Ask for an SVG to import.
     fn choose_svg(&self) {
         let filter = gtk4::FileFilter::new();
         filter.set_name(Some("SVG images"));
@@ -459,7 +448,6 @@ impl IconPicker {
         );
     }
 
-    /// Import the SVG at `path` and select it.
     fn import(&self, path: &Path) {
         let dir = custom_icon_dir();
         let name = match import_svg(path, &dir) {

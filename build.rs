@@ -45,10 +45,8 @@ fn compile_resources(source: &str, name: &str) {
 mod ghostty {
     use std::path::PathBuf;
 
-    /// The C shim compiled against the headers.
     const SHIM: &str = "src/terminal/ghostty/shim.c";
 
-    /// Compile the shim and link `libghostty-vt.a`, or fail with the build steps.
     pub fn link() {
         println!("cargo:rerun-if-env-changed=WAYTERM_GHOSTTY_VT_DIR");
         println!("cargo:rerun-if-changed={SHIM}");

@@ -23,27 +23,19 @@ use crate::ui::widgets::{dim_label, set_margins};
 /// offline, which leaves the engine controls insensitive.
 #[derive(Clone)]
 pub(crate) struct Live {
-    /// The live engine; `None` while offline.
     pub(crate) source: Option<Arc<dyn ForwardStatusSource>>,
 }
 
 /// One editable rule.
 pub(crate) struct RuleRow {
-    /// Local, Remote or Dynamic.
     pub(crate) kind: gtk4::DropDown,
-    /// Bind address; blank means loopback.
     bind: gtk4::Entry,
-    /// Bind port.
     bind_port: gtk4::Entry,
-    /// Remote host.
     remote: gtk4::Entry,
-    /// Remote port.
     remote_port: gtk4::Entry,
-    /// Whether the rule is saved enabled.
     pub(crate) enabled: gtk4::CheckButton,
     /// The live status cell (Tunnels dialog only).
     pub(crate) status: Option<gtk4::Label>,
-    /// Set by Remove: the row stays, hidden, so positions never shift.
     removed: Rc<Cell<bool>>,
 }
 
@@ -74,11 +66,8 @@ impl RuleRow {
 /// The rows of one editor in a `ListBox`. Clones share them.
 #[derive(Clone)]
 pub(crate) struct RuleEditor {
-    /// One row per rule.
     list: gtk4::ListBox,
-    /// The rows, by position.
     rows: Rc<RefCell<Vec<RuleRow>>>,
-    /// The Tunnels dialog's live cells; `None` in the session dialog.
     live: Option<Live>,
 }
 
@@ -94,7 +83,6 @@ impl RuleEditor {
         }
     }
 
-    /// The list widget.
     pub(crate) fn widget(&self) -> &gtk4::ListBox {
         &self.list
     }
@@ -232,7 +220,6 @@ fn live_cells(
     status
 }
 
-/// A text entry with `placeholder`, `width` characters wide.
 fn entry(text: &str, placeholder: &str, width: i32) -> gtk4::Entry {
     gtk4::Entry::builder()
         .text(text)

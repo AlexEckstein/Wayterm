@@ -27,31 +27,22 @@ pub const TERMINAL_ACTIONS: [&str; 6] = [
 /// direction for the searches.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TerminalActionInputs<'a> {
-    /// Clipboard text, for `paste`.
     pub clipboard: Option<&'a str>,
-    /// The query, for the searches.
     pub search: Option<&'a str>,
-    /// Search backwards.
     pub search_reverse: bool,
 }
 
 /// An action id resolved to the backend call it makes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalAction {
-    /// `copy`.
     Copy,
-    /// `paste` with this text.
     Paste(String),
-    /// `select_all`.
     SelectAll,
-    /// `clear`.
     Clear,
-    /// `search` / `search_scrollback`.
     Search { text: String, reverse: bool },
 }
 
 impl TerminalAction {
-    /// Make the backend call.
     pub fn apply(&self, backend: &dyn TerminalBackend) {
         match self {
             Self::Copy => backend.copy_selection(),
@@ -91,7 +82,6 @@ pub fn initial_search_reverse(id: &str) -> bool {
     id == "search_scrollback"
 }
 
-/// Run `search`'s query on `backend`.
 fn search(backend: &dyn TerminalBackend, text: &str, reverse: bool) {
     let inputs = TerminalActionInputs {
         search: Some(text),
@@ -144,22 +134,18 @@ fn paste_from_clipboard(window: &gtk4::ApplicationWindow, backend: Arc<dyn Termi
     });
 }
 
-/// Widget data key: the terminal's [`SearchPopover`].
 const SEARCH_POPOVER_KEY: &str = "wayterm-search-popover";
 
 /// One search popover per terminal widget: Enter searches forward,
 /// Shift+Enter backwards, Escape closes.
 struct SearchPopover {
-    /// The popover, anchored to the terminal.
     popover: gtk4::Popover,
-    /// The query entry.
     entry: gtk4::Entry,
     /// Weak: the popover lives in the widget's data, so a strong reference
     /// to the backend (which owns the widget) would leak every closed tab.
     backend: Weak<dyn TerminalBackend>,
 }
 
-/// Show the terminal's search popover (built on first use), resuming a query.
 fn open_search(backend: Arc<dyn TerminalBackend>, id: &str) {
     let anchor = backend.widget();
     let popover = data::<Rc<SearchPopover>>(&anchor, SEARCH_POPOVER_KEY)
@@ -172,7 +158,6 @@ fn open_search(backend: Arc<dyn TerminalBackend>, id: &str) {
     }
 }
 
-/// Build the search popover for `anchor`.
 fn build_search_popover(
     anchor: &gtk4::Widget,
     backend: &Arc<dyn TerminalBackend>,

@@ -198,11 +198,8 @@ pub(crate) fn ssh_w_argv(jump: &ConnectParams, target_host: &str, target_port: u
 /// the stream drops and the child is killed. Auth material never touches
 /// the child (see [`ssh_w_argv`]).
 struct SshWStream {
-    /// Write half: bytes to the target.
     stdin: ChildStdin,
-    /// Read half: bytes from the target.
     stdout: ChildStdout,
-    /// Killed when the stream drops.
     child: Child,
 }
 
@@ -215,7 +212,6 @@ impl std::fmt::Debug for SshWStream {
 }
 
 impl SshWStream {
-    /// Run `ssh -W target:port [user@]jump`, piped.
     async fn spawn(
         jump: &ConnectParams,
         target_host: &str,

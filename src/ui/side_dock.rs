@@ -26,17 +26,13 @@ use crate::ui::widgets::{data, set_data, set_margins};
 const DOCK_KEY: &str = "wayterm-side-dock";
 /// The SFTP panel's two faces.
 const SFTP_PLACEHOLDER: &str = "none";
-/// Stack page name of the hosted sidebar.
 const SFTP_SIDEBAR: &str = "sidebar";
 
 /// One of the dock's panels.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DockPage {
-    /// The session tree.
     Sessions,
-    /// The macros panel.
     Macros,
-    /// The current tab's SFTP sidebar.
     Sftp,
 }
 
@@ -90,21 +86,14 @@ pub fn toggle_target(current: DockPage, previous: DockPage) -> DockPage {
 /// everything.
 #[derive(Clone)]
 pub struct SideDock {
-    /// State shared with the signal handlers.
     inner: Rc<DockInner>,
 }
 
-/// The dock's widgets and current page.
 struct DockInner {
-    /// The icon tab column.
     strip: gtk4::Box,
-    /// The panel stack.
     stack: gtk4::Stack,
-    /// Each panel's tab button.
     tabs: Vec<(DockPage, gtk4::ToggleButton)>,
-    /// The SFTP panel.
     sftp: SftpPanel,
-    /// The panel shown.
     current: Cell<DockPage>,
     /// The last panel other than SFTP, where `toggle_sftp` returns.
     previous: Cell<DockPage>,
@@ -182,7 +171,6 @@ impl SideDock {
         self.inner.sftp.stack.upcast_ref()
     }
 
-    /// The panel shown.
     pub fn current(&self) -> DockPage {
         self.inner.current.get()
     }
@@ -222,7 +210,6 @@ impl SideDock {
 }
 
 impl DockInner {
-    /// Wire the tab buttons and follow the notebook's current page.
     fn connect_signals(self: &Rc<Self>, notebook: &gtk4::Notebook) {
         for (page, button) in &self.tabs {
             let (page, weak) = (*page, Rc::downgrade(self));
@@ -268,7 +255,6 @@ impl DockInner {
         }
     }
 
-    /// Show `page`'s panel.
     fn on_selected(&self, page: DockPage) {
         self.stack.set_visible_child_name(page.id());
         self.current.set(page);
@@ -289,16 +275,13 @@ impl DockInner {
 
 /// The SFTP panel: the current tab's sidebar, or a placeholder.
 struct SftpPanel {
-    /// The sidebar or the placeholder.
     stack: gtk4::Stack,
     /// Holds the hosted sidebar's widget, at most one.
     slot: gtk4::Box,
-    /// The sidebar in the slot, if any.
     hosted: RefCell<Option<SftpSidebar>>,
 }
 
 impl SftpPanel {
-    /// An empty panel showing the placeholder.
     fn new() -> Self {
         let slot = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         let stack = gtk4::Stack::new();

@@ -61,7 +61,6 @@ pub(crate) use views::{
 /// Page data key: the tab's [`PageState`].
 const PAGE_KEY: &str = "wayterm-session-page";
 // Notebook data key.
-/// Notebook data key: the page-removed teardown is installed.
 const TEARDOWN_HOOK_KEY: &str = "wayterm-teardown-hook";
 /// The next page's tab id ([`PageState::tab_id`]).
 static NEXT_TAB_ID: AtomicI64 = AtomicI64::new(1);
@@ -70,11 +69,8 @@ static NEXT_TAB_ID: AtomicI64 = AtomicI64::new(1);
 /// page becomes current.
 #[derive(Clone, Debug)]
 pub(crate) struct PageStatus {
-    /// The transport state.
     pub(crate) state: TransportState,
-    /// Host shown in the status bar (empty for local and serial).
     pub(crate) host: String,
-    /// Port shown beside the host.
     pub(crate) port: u16,
 }
 
@@ -91,18 +87,14 @@ impl Default for PageStatus {
 /// Which connect flow a page runs ([`start_connect`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TabType {
-    /// Dial through the supervisor, then a terminal (`ssh`).
     Ssh,
     /// Local shell and serial: a terminal with nothing to dial (`local`).
     Local,
-    /// The VNC engine (`vnc_tab`).
     Vnc,
-    /// The xfreerdp subprocess (`rdp_tab`).
     Rdp,
 }
 
 impl TabType {
-    /// The flow for `session_type`.
     fn of(session_type: &SessionType) -> Self {
         match session_type {
             SessionType::SSH => Self::Ssh,
@@ -136,7 +128,6 @@ struct PageState {
     redial: RefCell<Option<(u64, RedialReply)>>,
     /// The next connect was asked for by the user, so it takes focus.
     focus_on_connect: Cell<bool>,
-    /// The last published status ([`publish_status`]).
     status: RefCell<PageStatus>,
 }
 
@@ -205,7 +196,6 @@ impl SessionTab {
         start_connect(notebook, &page, &session);
         (page, dropped_tmux)
     }
-    /// `page`'s SFTP sidebar, if it is an SSH tab.
     pub fn sidebar_for_page(page: &gtk4::Widget) -> Option<SftpSidebar> {
         ssh::sidebar_of(page)
     }
@@ -275,7 +265,6 @@ impl SessionTab {
     }
 }
 
-/// The notebook's current page.
 pub(crate) fn current_page(notebook: &gtk4::Notebook) -> Option<gtk4::Widget> {
     notebook.nth_page(Some(notebook.current_page()?))
 }
@@ -331,7 +320,6 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
 /// The error views for a row missing what its dial needs.
 // used by ui::vnc_tab and ui::rdp_tab
 pub(crate) const NO_HOST: &str = "This session has no host configured.";
-/// The error view for a row missing its username.
 pub(crate) const NO_USERNAME: &str = "This session has no username configured.";
 
 /// A row's text field, trimmed; `None` when blank.
@@ -427,7 +415,6 @@ fn settle_redial(page: &gtk4::Widget, result: Result<(), TransportError>) {
 }
 
 // used by ui::vnc_tab and ui::rdp_tab
-/// `page`'s current attempt generation.
 pub(crate) fn current_gen(page: &gtk4::Widget) -> u64 {
     state(page).gen.get()
 }

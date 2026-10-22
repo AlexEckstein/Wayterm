@@ -36,45 +36,28 @@ pub use model::*;
 
 /// The toolbar buttons plus Cancel.
 struct Buttons {
-    /// Upload a file.
     upload: gtk4::Button,
-    /// Download the selection.
     download: gtk4::Button,
-    /// Delete the selection.
     delete: gtk4::Button,
-    /// Rename the selection.
     rename: gtk4::Button,
-    /// List the directory again.
     refresh: gtk4::Button,
-    /// New folder.
     mkdir: gtk4::Button,
-    /// Cancel the newest transfer.
     cancel: gtk4::Button,
 }
 
 /// Widgets plus state, shared by the callbacks and reply futures.
 struct SidebarInner {
-    /// The sidebar's root.
     container: gtk4::Box,
-    /// The path bar.
     path_entry: gtk4::Entry,
-    /// The listing.
     column_view: gtk4::ColumnView,
     /// The listing's rows, each a boxed [`RowView`].
     model: gio::ListStore,
-    /// The listing's selection.
     selection: gtk4::SingleSelection,
-    /// The inline error line.
     error_label: gtk4::Label,
-    /// The transfer progress bar.
     progress_bar: gtk4::ProgressBar,
-    /// Transfer status text.
     status_label: gtk4::Label,
-    /// "Follow terminal directory".
     follow_check: gtk4::CheckButton,
-    /// The toolbar.
     buttons: Buttons,
-    /// The display-free state.
     state: RefCell<SftpView>,
     /// The live SFTP task, once [`SftpSidebar::attach`] has been called.
     attached: RefCell<Option<Attached>>,
@@ -84,7 +67,6 @@ struct SidebarInner {
     probe: RefCell<Option<ShellCwdProbe>>,
     /// A probe is running; another request waits for it (`probe_again`).
     probing: Cell<bool>,
-    /// Probe once more when the running probe ends.
     probe_again: Cell<bool>,
 }
 
@@ -92,14 +74,11 @@ struct SidebarInner {
 /// commands go through, in order (doc 02 §Backpressure).
 #[derive(Clone)]
 struct Attached {
-    /// The task's handle.
     client: SftpClient,
-    /// Never-blocking sender into the task.
     commands: IdleSender<SftpCommand>,
 }
 
 impl Attached {
-    /// Spawn the task on `connection`.
     fn new(connection: Arc<SshConnection>) -> Self {
         let client = SftpClient::new(connection);
         let commands = IdleSender::new(client.sender());
@@ -110,13 +89,9 @@ impl Attached {
 /// A toolbar button the `sftp_*` actions press (doc 11 §Handlers).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SftpButton {
-    /// The Upload button.
     Upload,
-    /// The Download button.
     Download,
-    /// The Rename button.
     Rename,
-    /// The Delete button.
     Delete,
 }
 
@@ -124,7 +99,6 @@ pub enum SftpButton {
 /// one ends the SFTP task, never the shared SSH connection.
 #[derive(Clone)]
 pub struct SftpSidebar {
-    /// State shared with the signal handlers.
     inner: Rc<SidebarInner>,
 }
 
@@ -605,12 +579,10 @@ impl SidebarInner {
         self.path_entry.set_text(&text);
     }
 
-    /// The attached task's handle, if any.
     fn client(&self) -> Option<SftpClient> {
         Some(self.attached.borrow().as_ref()?.client.clone())
     }
 
-    /// Show `err` inline.
     fn set_error(&self, err: &str) {
         self.state.borrow_mut().set_error(err);
         self.render();
@@ -641,7 +613,6 @@ impl SidebarInner {
         }
     }
 
-    /// Move to the shell's directory, or remember it for the first listing.
     fn go_to_shell_dir(self: &Rc<Self>, path: String) {
         if self.client().is_some() {
             self.cd(path);
@@ -735,7 +706,6 @@ impl SidebarInner {
         }
     }
 
-    /// Upload `local_path` into the current directory.
     fn upload(self: &Rc<Self>, local_path: String) {
         let name = file_name(&local_path);
         if name.is_empty() {
@@ -753,7 +723,6 @@ impl SidebarInner {
         });
     }
 
-    /// Download `remote` to `local`.
     fn download(self: &Rc<Self>, remote: String, local: String) {
         let label = format!("Download {}", file_name(&remote));
         self.run_transfer(label, move |id, progress, reply| SftpCommand::Download {
@@ -822,7 +791,6 @@ impl SidebarInner {
         });
     }
 
-    /// Cancel the newest transfer.
     fn cancel_transfer(self: &Rc<Self>) {
         let Some(transfer_id) = self.state.borrow().cancel_target() else {
             return;
@@ -889,7 +857,6 @@ impl SidebarInner {
         });
     }
 
-    /// Ask for a name and create a folder in the current directory.
     fn mkdir(self: &Rc<Self>) {
         let parent = self.parent_window();
         let Some(name) = prompt_text(parent.as_ref(), "New Folder", "") else {

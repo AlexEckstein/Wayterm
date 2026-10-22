@@ -45,22 +45,16 @@ pub type RuleId = usize;
 /// carries the live connection count.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ForwardState {
-    /// The listener is bound and idle.
     Listening,
-    /// `conns` forwarded connections are open.
     Active { conns: u32 },
-    /// The last connection could not open its channel.
     LastFailed { error: String },
-    /// Not serving (disabled, not Local, or stopped).
     Stopped,
 }
 
 /// One status transition for one rule.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForwardEvent {
-    /// Position of the rule in the last `start`.
     pub rule_id: RuleId,
-    /// Its new state.
     pub state: ForwardState,
 }
 
@@ -72,7 +66,6 @@ pub(crate) trait DuplexStream: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> DuplexStream for T {}
 /// Pinned so the object is `Unpin` and `copy_bidirectional`-compatible.
 pub(crate) type BoxStream = Pin<Box<dyn DuplexStream>>;
-/// An opener's pending channel.
 pub(crate) type OpenerFuture =
     Pin<Box<dyn Future<Output = Result<BoxStream, TransportError>> + Send>>;
 /// `(remote_host, remote_port) -> channel stream`. `Send + Sync` so one
@@ -85,19 +78,13 @@ pub(crate) type ChannelOpener = Arc<dyn Fn(String, u16) -> OpenerFuture + Send +
 /// need a tokio runtime.
 #[derive(Clone)]
 pub struct ForwardEngine {
-    /// Shared by every clone.
     inner: Arc<EngineInner>,
 }
 
-/// The engine's state, shared with its tasks.
 struct EngineInner {
-    /// Opens one channel per accepted connection.
     opener: ChannelOpener,
-    /// Status events for the Tunnels dialog.
     events: mpsc::Sender<ForwardEvent>,
-    /// The rules of the last `start`, by position.
     rules: Mutex<Vec<ForwardRule>>,
-    /// Serving rules by id.
     tasks: Mutex<HashMap<RuleId, RuleTasks>>,
 }
 
@@ -111,21 +98,17 @@ impl EngineInner {
 
 /// One serving rule: its listener and the connections it accepted.
 struct RuleTasks {
-    /// Accepts connections for the rule.
     listener: JoinHandle<()>,
-    /// One copy task per accepted connection.
     conns: Vec<JoinHandle<()>>,
 }
 
 impl RuleTasks {
-    /// Abort the listener and every connection.
     fn abort(self) {
         self.listener.abort();
         self.conns.iter().for_each(JoinHandle::abort);
     }
 }
 
-/// Lock, ignoring poison.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     // A poisoned lock still guards a consistent map.
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -146,7 +129,6 @@ impl ForwardEngine {
         Self::with_opener(opener, events)
     }
 
-    /// An engine whose channels come from `opener` (tests inject a fake).
     pub(crate) fn with_opener(opener: ChannelOpener, events: mpsc::Sender<ForwardEvent>) -> Self {
         Self {
             inner: Arc::new(EngineInner {
@@ -198,7 +180,6 @@ impl ForwardEngine {
         self.stop_all(true);
     }
 
-    /// Serve one rule, unless it is disabled or not Local.
     fn start_rule(&self, id: RuleId, rule: &ForwardRule) {
         if !rule.enabled {
             return self.inner.emit(id, ForwardState::Stopped);
@@ -237,7 +218,6 @@ impl ForwardEngine {
         }
     }
 
-    /// Abort every rule; `announce` emits `Stopped` for each.
     fn stop_all(&self, announce: bool) {
         let ids: Vec<RuleId> = lock(&self.inner.tasks).keys().copied().collect();
         for id in ids {

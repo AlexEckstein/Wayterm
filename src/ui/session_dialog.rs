@@ -39,18 +39,14 @@ pub use model::*;
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// The VNC group's note: its password lives in the keyring.
 const VNC_KEYRING_NOTE: &str = "The VNC password is looked up in your OS keyring \
                                 (saved sessions only) — never stored in Wayterm's database. \
                                 Save it with your keyring tools (or via KeePassXC's Secret \
                                 Service); the connect prompt stores nothing.";
-/// The tmux check box's label.
 const TMUX_LABEL: &str = "Persist via tmux — survive reconnects; sessions on the remote host \
                           are named wayterm-<session name>";
 
-/// The save check box's label once a password is typed.
 const SAVE_PASSWORD_LABEL: &str = "Save password to keyring";
-/// The save check box's label while the password is empty.
 const SAVE_PASSWORD_LABEL_EMPTY: &str = "Save password to keyring (enter password to enable)";
 
 // ---------------------------------------------------------------------------
@@ -94,14 +90,11 @@ pub type StorePasswordFn =
 
 /// Labelled rows in a two-column grid.
 struct FormGrid {
-    /// The grid.
     grid: gtk4::Grid,
-    /// The next free row.
     row: i32,
 }
 
 impl FormGrid {
-    /// An empty grid with `margin` around it.
     fn new(margin: i32) -> Self {
         let grid = gtk4::Grid::builder()
             .row_spacing(6)
@@ -111,7 +104,6 @@ impl FormGrid {
         Self { grid, row: 0 }
     }
 
-    /// Add `widget` under `label`.
     fn add(&mut self, label: &str, widget: &impl IsA<gtk4::Widget>) {
         let label = gtk4::Label::builder()
             .label(label)
@@ -122,7 +114,6 @@ impl FormGrid {
         self.row += 1;
     }
 
-    /// Add a text entry.
     fn entry(&mut self, label: &str, placeholder: &str) -> gtk4::Entry {
         let entry = gtk4::Entry::builder()
             .hexpand(true)
@@ -133,14 +124,12 @@ impl FormGrid {
         entry
     }
 
-    /// Add a number field from `min` to `max`.
     fn spin(&mut self, label: &str, min: f64, max: f64) -> gtk4::SpinButton {
         let spin = gtk4::SpinButton::with_range(min, max, 1.0);
         self.add(label, &spin);
         spin
     }
 
-    /// Add a dropdown of `values`.
     fn dropdown<T: ToString>(&mut self, label: &str, values: &[T]) -> gtk4::DropDown {
         let labels: Vec<String> = values.iter().map(ToString::to_string).collect();
         let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
@@ -181,7 +170,6 @@ impl FormGrid {
 struct TypeGroups([gtk4::Revealer; 5]);
 
 impl TypeGroups {
-    /// Show only the group for `type_index`.
     fn apply(&self, type_index: u32) {
         for (index, group) in self.0.iter().enumerate() {
             group.set_reveal_child(index as u32 == type_index);
@@ -192,7 +180,6 @@ impl TypeGroups {
 /// The tmux entry follows the Name field until the user edits it.
 #[derive(Clone, Default)]
 struct TmuxNameFollow {
-    /// The user edited the tmux name; stop following Name.
     overridden: Rc<Cell<bool>>,
     /// Set while we write the entry ourselves, so `changed` is not taken
     /// for a user edit.
@@ -200,7 +187,6 @@ struct TmuxNameFollow {
 }
 
 impl TmuxNameFollow {
-    /// Write `text` without taking it for a user edit.
     fn fill(&self, entry: &gtk4::Entry, text: &str) {
         self.programmatic.set(true);
         entry.set_text(text);
@@ -208,64 +194,35 @@ impl TmuxNameFollow {
     }
 }
 
-/// Every input widget of the dialog.
 #[derive(Clone)]
 struct Widgets {
-    /// Session name.
     name: gtk4::Entry,
-    /// Type: ssh, rdp, vnc, serial, local.
     session_type: gtk4::DropDown,
-    /// Folder.
     folder: gtk4::DropDown,
-    /// Host.
     host: gtk4::Entry,
-    /// Port; 0 means the type's default.
     port: gtk4::SpinButton,
-    /// Username.
     username: gtk4::Entry,
-    /// SSH auth method.
     auth: gtk4::DropDown,
-    /// The password and save rows (password method only).
     password_rows: gtk4::Box,
-    /// Password to save; never stored in the row.
     password: gtk4::PasswordEntry,
-    /// "Save password to keyring".
     save_password: gtk4::CheckButton,
-    /// Icon picker.
     icon: IconPicker,
-    /// Persist via tmux.
     tmux: gtk4::CheckButton,
-    /// tmux session name, shown with its prefix.
     tmux_name: gtk4::Entry,
-    /// Jump host.
     jump: gtk4::DropDown,
-    /// The session id behind each jump entry; `None` = direct.
     jump_ids: Vec<Option<i64>>,
-    /// Forward rules.
     forward_rules: RuleEditor,
-    /// Forward-rule validation error.
     forward_error: gtk4::Label,
-    /// Serial device.
     serial_device: gtk4::Entry,
-    /// Baud rate.
     serial_baud: gtk4::SpinButton,
-    /// Data bits.
     serial_data_bits: gtk4::DropDown,
-    /// Parity.
     serial_parity: gtk4::DropDown,
-    /// Stop bits.
     serial_stop_bits: gtk4::DropDown,
-    /// Flow control.
     serial_flow_control: gtk4::DropDown,
-    /// RDP domain.
     rdp_domain: gtk4::Entry,
-    /// RDP resolution, `WIDTHxHEIGHT`.
     rdp_resolution: gtk4::Entry,
-    /// RDP color depth.
     rdp_color_depth: gtk4::DropDown,
-    /// Local shell.
     local_shell: gtk4::Entry,
-    /// Local working directory.
     local_working_dir: gtk4::Entry,
 }
 
@@ -334,7 +291,6 @@ impl Widgets {
         .then(|| Zeroizing::new(password.as_bytes().to_vec()))
     }
 
-    /// Fill every widget from `config`.
     fn fill(&self, config: &SessionConfig, folders: &[Folder]) {
         let text = |value: &Option<String>| value.clone().unwrap_or_default();
         self.name.set_text(&config.name);
@@ -401,31 +357,22 @@ impl Widgets {
 /// The dialog. Build with [`Self::new_session`] or [`Self::edit`], then
 /// [`Self::run`] it.
 pub struct SessionDialog {
-    /// The modal; its result is the saved row.
     modal: Modal<SessionConfig>,
-    /// The input widgets.
     widgets: Widgets,
-    /// The per-type groups.
     groups: TypeGroups,
-    /// tmux-name following.
     tmux_follow: TmuxNameFollow,
     /// The edited row; a new session's is the default.
     base: SessionConfig,
-    /// Folders the folder dropdown offers.
     folders: Vec<Folder>,
-    /// Other sessions, for the jump-host picker.
     peers: Vec<SessionConfig>,
-    /// The dialog's layout.
     vbox: gtk4::Box,
 }
 
 impl SessionDialog {
-    /// A dialog for a new session.
     pub fn new_session(parent: &gtk4::Window, folders: &[Folder], peers: &[SessionConfig]) -> Self {
         Self::build(parent, folders, peers, 0, None, &[])
     }
 
-    /// A dialog editing `config`.
     pub fn edit(
         parent: &gtk4::Window,
         config: &SessionConfig,
@@ -524,7 +471,6 @@ impl SessionDialog {
         self.modal.run()
     }
 
-    /// Build the dialog around `base`.
     fn build(
         parent: &gtk4::Window,
         folders: &[Folder],

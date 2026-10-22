@@ -26,28 +26,19 @@ const LOCAL_FIELDS: [&str; 5] = [
     "connect_count",
 ];
 
-/// The export document.
 #[derive(Serialize)]
 struct ExportDoc {
-    /// Format version, currently 1.
     version: u32,
-    /// Top-level folders.
     folders: Vec<ExportFolder>,
-    /// Sessions outside any folder; omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     sessions: Vec<Map<String, Value>>,
 }
 
-/// One exported folder.
 #[derive(Serialize)]
 struct ExportFolder {
-    /// Folder name.
     name: String,
-    /// Icon name, if any.
     icon: Option<String>,
-    /// Sub-folders.
     children: Vec<ExportFolder>,
-    /// The folder's sessions.
     sessions: Vec<Map<String, Value>>,
 }
 
@@ -61,7 +52,6 @@ pub fn export_json(store: &SessionStore) -> serde_json::Result<String> {
     serde_json::to_string_pretty(&doc)
 }
 
-/// Export the folders under `parent`, recursively.
 fn export_folders(
     store: &SessionStore,
     parent: Option<i64>,
@@ -81,7 +71,6 @@ fn export_folders(
         .collect()
 }
 
-/// Export the sessions in `folder`, jump hosts by name.
 fn export_sessions(
     store: &SessionStore,
     folder: Option<i64>,
@@ -113,39 +102,27 @@ fn store_error(e: rusqlite::Error) -> serde_json::Error {
     serde::ser::Error::custom(e)
 }
 
-/// An import document; absent parts default empty.
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct ImportDoc {
-    /// Format version; newer than 1 is refused.
     version: u32,
-    /// Top-level folders.
     folders: Vec<ImportFolder>,
-    /// Sessions outside any folder.
     sessions: Vec<ImportSession>,
 }
 
-/// One imported folder.
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct ImportFolder {
-    /// Folder name.
     name: String,
-    /// Icon name, if any.
     icon: Option<String>,
-    /// Sub-folders.
     children: Vec<ImportFolder>,
-    /// The folder's sessions.
     sessions: Vec<ImportSession>,
 }
 
-/// One imported session.
 #[derive(Deserialize)]
 struct ImportSession {
-    /// The session row.
     #[serde(flatten)]
     config: SessionConfig,
-    /// Its jump host, by name.
     #[serde(default)]
     jump_session: Option<String>,
 }
@@ -166,19 +143,14 @@ pub fn parse(text: &str) -> Result<Parsed, ImportError> {
     Ok(out.finish())
 }
 
-/// Flattens an import document into folders and positional sessions.
 #[derive(Default)]
 struct Collector {
-    /// Folders so far, parents first.
     folders: Vec<FolderSpec>,
-    /// Sessions so far.
     sessions: Vec<SessionConfig>,
-    /// Each session's jump host name, by position.
     jumps: Vec<Option<String>>,
 }
 
 impl Collector {
-    /// Add `folder` and its contents under `parent`.
     fn folder(&mut self, folder: ImportFolder, parent: Option<String>) {
         let spec = FolderSpec {
             name: folder.name,
@@ -193,7 +165,6 @@ impl Collector {
         }
     }
 
-    /// Add `sessions`, in folder `folder` (`None` = root).
     fn sessions(&mut self, sessions: Vec<ImportSession>, folder: Option<usize>) {
         for ImportSession {
             mut config,

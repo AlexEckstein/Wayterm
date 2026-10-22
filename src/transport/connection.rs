@@ -24,18 +24,12 @@ pub enum AuthMethod {
     /// The looked-up password, re-prompted once, then keyboard-interactive.
     /// The payload is not used: the password never comes from the row.
     Password(String),
-    /// The key at `path` only.
     Key {
-        /// The private key file.
         path: String,
-        /// Its passphrase; `None` looks one up if the key is encrypted.
         passphrase: Option<String>,
     },
-    /// Identities offered by `SSH_AUTH_SOCK` only.
     Agent,
-    /// Server-driven challenges (2FA, OTP) only.
     KeyboardInteractive,
-    /// Nothing is tried; authentication fails.
     #[default]
     None,
 }
@@ -43,18 +37,13 @@ pub enum AuthMethod {
 /// One authenticated SSH session. Consumers hold an `Arc`; the supervisor
 /// disconnects it after the last one lets go.
 pub struct SshConnection {
-    /// The russh session; locked per request, never across a channel's life.
     handle: Mutex<Handle<AppClientHandler>>,
-    /// The dialed host.
     host: String,
-    /// The dialed port.
     port: u16,
-    /// The authenticated user.
     username: String,
 }
 
 impl SshConnection {
-    /// Wrap an authenticated handle.
     pub fn new(
         handle: Handle<AppClientHandler>,
         host: String,
@@ -69,17 +58,14 @@ impl SshConnection {
         }
     }
 
-    /// The dialed host.
     pub fn host(&self) -> &str {
         &self.host
     }
 
-    /// The dialed port.
     pub fn port(&self) -> u16 {
         self.port
     }
 
-    /// The authenticated user.
     pub fn username(&self) -> &str {
         &self.username
     }
@@ -123,7 +109,6 @@ impl SshConnection {
         Ok(channel)
     }
 
-    /// Close the session; every channel on it ends.
     pub async fn disconnect(&self) -> Result<(), TransportError> {
         self.handle
             .lock()
@@ -208,7 +193,6 @@ pub(crate) fn auth_config(
     Ok(config)
 }
 
-/// Whether the key at `path` is encrypted (asks for a passphrase).
 fn key_needs_passphrase(path: &str) -> bool {
     matches!(
         load_secret_key(Path::new(path), None),
@@ -219,7 +203,6 @@ fn key_needs_passphrase(path: &str) -> bool {
 /// Why a dial ended during key exchange, as the handler saw it.
 #[derive(Debug, thiserror::Error)]
 pub enum HandlerError {
-    /// A russh protocol or I/O error.
     #[error(transparent)]
     Ssh(#[from] russh::Error),
     /// The verifier refused the server's key (doc 04): its own outcome,
@@ -234,11 +217,8 @@ pub enum HandlerError {
 /// The russh client handler: host-key verification happens here, during
 /// key exchange and before authentication.
 pub struct AppClientHandler {
-    /// Host the key belongs to.
     host: String,
-    /// Port the key belongs to.
     port: u16,
-    /// Decides on the server's key.
     verifier: HostKeyVerifier,
 }
 

@@ -67,31 +67,18 @@ const ALLOWED_ENV: [&str; 5] = ["DISPLAY", "XAUTHORITY", "PATH", "HOME", "XDG_RU
 /// token (`Some("/cert:fingerprint:sha256:<hex>")`), if resolved.
 #[derive(Debug, Clone)]
 pub struct RdpSpec {
-    /// Server host.
     pub host: String,
-    /// Server port.
     pub port: u16,
-    /// Login user (`/u`).
     pub username: String,
-    /// Windows domain (`/d`), if any.
     pub domain: Option<String>,
-    /// Remote desktop width (`/w`).
     pub width: u32,
-    /// Remote desktop height (`/h`).
     pub height: u32,
-    /// Color depth (`/bpp`), if set.
     pub depth: Option<u32>,
-    /// Redirect audio (`/audio`).
     pub audio: bool,
-    /// Share the clipboard.
     pub clipboard: bool,
-    /// Smooth fonts.
     pub fonts: bool,
-    /// Redirect printers (`/printer`).
     pub printer: bool,
-    /// Compress the stream.
     pub compression: bool,
-    /// The certificate token, if resolved.
     pub cert_arg: Option<String>,
 }
 
@@ -166,7 +153,6 @@ pub fn parse_version(output: &str) -> Option<String> {
     parse_paren_version(output).or_else(|| parse_bare_version(output))
 }
 
-/// Whether `candidate` is digits separated by dots.
 fn is_dotted_version(candidate: &str) -> bool {
     let parts: Vec<&str> = candidate.split('.').collect();
     parts.len() >= 2
@@ -231,7 +217,6 @@ pub fn find_binary_in(path_env: Option<&OsStr>) -> Option<String> {
     None
 }
 
-/// Whether `path` is an executable file.
 fn is_executable(path: &std::path::Path) -> bool {
     path.metadata()
         .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
@@ -267,13 +252,9 @@ pub fn minimal_env() -> Vec<(String, String)> {
 /// liveness heuristic in the module docs); `Ended` is always last.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RdpProcessEvent {
-    /// The liveness heuristic passed.
     Connected,
-    /// The child exited.
     Ended {
-        /// Exit code, if it exited normally.
         code: Option<i32>,
-        /// Signal, if it was killed.
         signal: Option<i32>,
     },
 }
@@ -291,17 +272,14 @@ pub fn exit_event(status: &std::process::ExitStatus) -> RdpProcessEvent {
 /// the password is written only to stdin, never to any logged stream.
 #[derive(Debug, Default)]
 pub struct ErrorRing {
-    /// The newest lines, oldest first.
     lines: VecDeque<String>,
 }
 
 impl ErrorRing {
-    /// An empty ring.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Append `line`, dropping the oldest past [`RING_CAPACITY`].
     pub fn push(&mut self, line: String) {
         if self.lines.len() >= RING_CAPACITY {
             self.lines.pop_front();
@@ -319,12 +297,10 @@ impl ErrorRing {
         self.lines.iter().any(|l| l.contains(CONNECT_ERROR_MARKER))
     }
 
-    /// Lines held.
     pub fn len(&self) -> usize {
         self.lines.len()
     }
 
-    /// Whether no line is held.
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
@@ -340,19 +316,12 @@ impl ErrorRing {
 /// in `self` — then [`terminate`](Self::terminate) signals and reaps it.
 /// Dropping the wrapper SIGKILLs the child (`kill_on_drop`) as a backstop.
 pub struct RdpProcess {
-    /// The xfreerdp binary to run.
     binary: String,
-    /// Its argv, built once.
     argv: Vec<String>,
-    /// The running child, if spawned.
     child: Option<Child>,
-    /// Held open for the whole session (see the module docs).
     stdin: Option<ChildStdin>,
-    /// The stderr tail.
     ring: ErrorRing,
-    /// How long before `Connected` is reported.
     connected_delay: Duration,
-    /// How long `terminate` waits between SIGTERM and SIGKILL.
     terminate_grace: Duration,
 }
 
@@ -385,12 +354,10 @@ impl RdpProcess {
         self
     }
 
-    /// The binary being run.
     pub fn binary(&self) -> &str {
         &self.binary
     }
 
-    /// The argv being run.
     pub fn argv(&self) -> &[String] {
         &self.argv
     }

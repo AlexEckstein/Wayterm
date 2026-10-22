@@ -105,20 +105,15 @@ pub fn changed_cert_text(stored: &str, seen: &str, host: &str, port: u16) -> Str
 /// What the user accepted in the unknown-certificate dialog.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AcceptRecord {
-    /// Server host.
     pub host: String,
-    /// Server port.
     pub port: u16,
-    /// The accepted fingerprint.
     pub fingerprint: String,
 }
 
 /// The changed-certificate dialog outcome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeChoice {
-    /// Disconnect: leave the stored pin.
     KeepRefusing,
-    /// Update and Connect: record the new fingerprint and retry.
     UpdateAndRetry,
 }
 
@@ -156,7 +151,6 @@ pub fn changed_cert_decision(host: &str, port: u16, stored: &str, seen: &str) ->
     modal.run().unwrap_or(ChangeChoice::KeepRefusing)
 }
 
-/// Title of both certificate dialogs.
 const CERT_TITLE: &str = "RDP certificate verification";
 
 /// Lay out a certificate modal: fixed width, selectable body text, then

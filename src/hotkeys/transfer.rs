@@ -13,7 +13,6 @@ pub const HOTKEY_EXPORT_VERSION: u32 = 1;
 /// A hotkey export document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotkeyExport {
-    /// Format version, currently 1.
     pub version: u32,
     /// Deviating actions, in table order.
     pub bindings: Vec<ExportedBinding>,
@@ -22,7 +21,6 @@ pub struct HotkeyExport {
 /// One exported binding.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportedBinding {
-    /// Action id.
     pub action: String,
     /// For review before import.
     pub display_name: String,
@@ -30,16 +28,13 @@ pub struct ExportedBinding {
     pub key: String,
     /// The `hotkeys.context` wire string.
     pub context: String,
-    /// Whether the action is enabled.
     pub enabled: bool,
-    /// Whether `key` is the action's default.
     pub is_default: bool,
 }
 
 /// What [`import_json`] did with an export document.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HotkeyImportReport {
-    /// Actions whose binding was imported.
     pub applied: Vec<String>,
     /// Unknown actions, wrong contexts, or keys that no longer bind.
     pub skipped: Vec<String>,

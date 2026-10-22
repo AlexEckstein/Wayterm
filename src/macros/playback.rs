@@ -23,15 +23,12 @@ pub enum PlaybackEnd {
     TerminalGone,
 }
 
-/// The end-of-playback callback, run once.
 type OnDone = Rc<RefCell<Option<Box<dyn FnOnce(PlaybackEnd)>>>>;
 
 /// A macro playing into one terminal. Dropping the handle lets it run
 /// on; [`stop`](Self::stop) ends it.
 pub struct Playback {
-    /// The playback future.
     task: glib::JoinHandle<()>,
-    /// Called once with how it ended.
     on_done: OnDone,
 }
 
@@ -61,7 +58,6 @@ impl Playback {
     }
 }
 
-/// Send each step after its pause, until done or the terminal is gone.
 async fn play(steps: Vec<MacroStep>, terminal: Weak<dyn TerminalBackend>) -> PlaybackEnd {
     for step in steps {
         if step.delay_ms > 0 {
@@ -77,7 +73,6 @@ async fn play(steps: Vec<MacroStep>, terminal: Weak<dyn TerminalBackend>) -> Pla
     PlaybackEnd::Finished
 }
 
-/// Run the callback with `end`, once.
 fn finish(on_done: &OnDone, end: PlaybackEnd) {
     let callback = on_done.borrow_mut().take();
     if let Some(callback) = callback {

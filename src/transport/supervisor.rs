@@ -26,18 +26,14 @@ const MONITOR_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// Where to dial, and the pool key: one connection per identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConnectParams {
-    /// Host to dial.
     pub host: String,
-    /// Port to dial.
     pub port: u16,
-    /// User to authenticate as.
     pub username: String,
 }
 
 /// What the pool holds: anything it can disconnect once released.
 #[async_trait]
 pub trait PooledConnection: Send + Sync + 'static {
-    /// Disconnect the connection.
     async fn disconnect_now(&self);
 }
 
@@ -51,7 +47,6 @@ impl PooledConnection for SshConnection {
 /// Shared with the release monitors, which outlive the supervisor handle.
 type Pool<T> = Arc<Mutex<HashMap<ConnectParams, Arc<T>>>>;
 
-/// Lock the pool, ignoring poison.
 fn lock_pool<T>(pool: &Pool<T>) -> MutexGuard<'_, HashMap<ConnectParams, Arc<T>>> {
     // A poisoned lock still guards a consistent map.
     pool.lock().unwrap_or_else(|e| e.into_inner())
@@ -60,7 +55,6 @@ fn lock_pool<T>(pool: &Pool<T>) -> MutexGuard<'_, HashMap<ConnectParams, Arc<T>>
 /// Hands out shared `Arc`s; a monitor task per connection disconnects and
 /// evicts it once only the pool's own reference is left.
 pub struct ConnectionSupervisor<T: PooledConnection = SshConnection> {
-    /// Live connections by identity.
     pool: Pool<T>,
 }
 
@@ -71,14 +65,12 @@ impl<T: PooledConnection> Default for ConnectionSupervisor<T> {
 }
 
 impl<T: PooledConnection> ConnectionSupervisor<T> {
-    /// An empty pool.
     pub fn new() -> Self {
         Self {
             pool: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// The pooled connection for `key`, if any.
     fn lookup(&self, key: &ConnectParams) -> Option<Arc<T>> {
         lock_pool(&self.pool).get(key).map(Arc::clone)
     }
@@ -128,13 +120,9 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
 /// come from, the host-key check, and who answers challenges. Each hop of
 /// a jumped connection brings its own.
 pub struct HopAuth {
-    /// The session's preferred method.
     pub method: AuthMethod,
-    /// Where secrets come from.
     pub creds: CredentialManager,
-    /// Checks the hop's host key.
     pub verifier: HostKeyVerifier,
-    /// Answers keyboard-interactive and re-prompts; `None` declines.
     pub responder: Option<ChallengeResponder>,
 }
 

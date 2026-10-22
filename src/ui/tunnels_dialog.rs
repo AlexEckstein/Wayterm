@@ -40,13 +40,9 @@ pub const TUNNELS_ACTION: &str = "tunnels";
 
 /// The dialog. Build with [`Self::new`], then [`Self::run`] it.
 pub struct TunnelsDialog {
-    /// The modal; its result is the validated rules.
     modal: Modal<Vec<ForwardRule>>,
-    /// The rule rows.
     rules: RuleEditor,
-    /// The dialog's layout.
     vbox: gtk4::Box,
-    /// The inline validation error.
     error: gtk4::Label,
 }
 

@@ -25,18 +25,15 @@ use crate::ui::widgets::confirm_with_opt_out;
 
 /// Doc 11 action ids (the hotkey engine owns their chords).
 pub const RECONNECT_ACTION: &str = "reconnect";
-/// Window action name for dropping the current tab's connection.
 pub const DISCONNECT_ACTION: &str = "disconnect";
 
 /// Settings rows (doc 13 §Settings rows).
 pub const CONFIRM_CLOSE_SETTING: &str = "confirm_close";
-/// Retry dropped connections without asking.
 pub const RECONNECT_ON_DROP_SETTING: &str = "reconnect_on_drop";
 
 /// Settings row (doc 13 §Settings rows): the close warning shows unless this is off.
 pub const CONFIRM_CLOSE_NOTICE_SETTING: &str = "confirm_close_notice";
 
-/// The confirm-before-close prompt's body text.
 pub const CONFIRM_CLOSE_DETAIL: &str = "Processes may be running — close anyway?";
 
 /// What a connected tab registers.
@@ -51,7 +48,6 @@ pub struct LiveTab {
 }
 
 impl LiveTab {
-    /// A live tab that reconnects with `connect` and stops on `cancel`.
     pub fn new(connect: ConnectFn, cancel: CancellationToken, state: TransportState) -> Self {
         Self {
             connect,
@@ -61,16 +57,12 @@ impl LiveTab {
     }
 }
 
-/// Connected tabs by tab id: what `reconnect` and `disconnect` act on.
 static LIVE_TABS: Mutex<BTreeMap<i64, LiveTab>> = Mutex::new(BTreeMap::new());
 /// Tabs with a reconnect loop running (a second activation is a no-op).
 static RUNNING: Mutex<BTreeSet<i64>> = Mutex::new(BTreeSet::new());
-/// The installed `confirm_close` row.
 static CONFIRM_CLOSE: AtomicBool = AtomicBool::new(true);
-/// The installed `reconnect_on_drop` row.
 static RECONNECT_ON_DROP: AtomicBool = AtomicBool::new(true);
 
-/// Lock, ignoring poison.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -81,12 +73,10 @@ pub fn install_settings(confirm_close: bool, reconnect_on_drop: bool) {
     RECONNECT_ON_DROP.store(reconnect_on_drop, Ordering::SeqCst);
 }
 
-/// Whether closing a live tab asks first.
 pub fn confirm_close_setting() -> bool {
     CONFIRM_CLOSE.load(Ordering::SeqCst)
 }
 
-/// Whether a dropped connection reconnects without asking.
 pub fn reconnect_on_drop_setting() -> bool {
     RECONNECT_ON_DROP.load(Ordering::SeqCst)
 }
@@ -96,7 +86,6 @@ pub fn policy() -> ReconnectPolicy {
     ReconnectPolicy::for_setting(reconnect_on_drop_setting())
 }
 
-/// Register `tab_id` as live (replacing any earlier entry).
 pub fn register_live_tab(tab_id: i64, tab: LiveTab) {
     lock(&LIVE_TABS).insert(tab_id, tab);
 }
@@ -119,12 +108,10 @@ pub fn register_connected_tab(tab_id: i64, connect: ConnectFn) -> CancellationTo
     cancel
 }
 
-/// Forget `tab_id`; its reconnect loop is not stopped.
 pub fn unregister_live_tab(tab_id: i64) {
     lock(&LIVE_TABS).remove(&tab_id);
 }
 
-/// The live tab `tab_id`, if registered.
 pub fn live_tab(tab_id: i64) -> Option<LiveTab> {
     lock(&LIVE_TABS).get(&tab_id).cloned()
 }
@@ -141,7 +128,6 @@ pub fn set_tab_state(tab_id: i64, state: TransportState) {
     }
 }
 
-/// Whether closing `tab_id` must ask first.
 pub fn should_confirm_close_for_tab(tab_id: i64) -> bool {
     crate::transport::reconnect::should_confirm_close(&tab_state(tab_id), confirm_close_setting())
 }
@@ -153,35 +139,26 @@ pub fn should_show_close_warning(tab_id: i64, store: Option<&SessionStore>) -> b
         && store.is_none_or(|store| store.flag(CONFIRM_CLOSE_NOTICE_SETTING))
 }
 
-/// What the `reconnect` action did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReconnectAction {
-    /// A reconnect run started.
     Started { tab_id: i64 },
-    /// A run was already going; nothing new started.
     AlreadyRunning { tab_id: i64 },
-    /// The tab is not live (or there is no current tab).
     NoLiveTab { tab_id: Option<i64> },
 }
 
 impl ReconnectAction {
-    /// Whether a run started.
     pub fn started(self) -> bool {
         matches!(self, Self::Started { .. })
     }
 }
 
-/// What the `disconnect` action did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisconnectAction {
-    /// The tab's connection was dropped.
     Cancelled { tab_id: i64 },
-    /// The tab is not live (or there is no current tab).
     NoLiveTab { tab_id: Option<i64> },
 }
 
 impl DisconnectAction {
-    /// Whether a connection was dropped.
     pub fn cancelled(self) -> bool {
         matches!(self, Self::Cancelled { .. })
     }

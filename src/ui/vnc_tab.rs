@@ -52,18 +52,13 @@ use crate::vnc::{
 
 /// The RFB default (display :0).
 pub const DEFAULT_PORT: u16 = 5900;
-/// Page data key: the [`EngineSlot`].
 const ENGINE_KEY: &str = "wayterm-vnc-engine";
 
 /// RFB pointer button bits (RFC 6143 §7.5.5).
 const BUTTON_LEFT: u8 = 1;
-/// RFB button mask: middle button.
 const BUTTON_MIDDLE: u8 = 2;
-/// RFB button mask: right button.
 const BUTTON_RIGHT: u8 = 4;
-/// RFB button mask: wheel up.
 const WHEEL_UP: u8 = 8;
-/// RFB button mask: wheel down.
 const WHEEL_DOWN: u8 = 16;
 
 // ---------------------------------------------------------------------------
@@ -73,11 +68,8 @@ const WHEEL_DOWN: u8 = 16;
 /// Where the framebuffer sits inside the widget.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
-    /// Picture scale factor.
     pub scale: f64,
-    /// Left offset of the picture in the widget.
     pub off_x: f64,
-    /// Top offset of the picture in the widget.
     pub off_y: f64,
 }
 
@@ -182,36 +174,24 @@ pub fn blit_rows(src: &[u32], width: usize, dst: &mut [u8], stride: usize) {
 // The view: framebuffer -> cairo, widget input -> engine
 // ---------------------------------------------------------------------------
 
-/// Where input events go; `false` if dropped.
 type Sink = Box<dyn Fn(X11Event) -> bool>;
 
 /// Everything the draw and input handlers share. Input goes through `sink`
 /// (the engine's `VncInput` in production, a spy in tests).
 pub(crate) struct View {
-    /// The engine's framebuffer.
     pixels: Arc<Mutex<VncPixels>>,
-    /// Input sink.
     sink: Sink,
-    /// Fit the tab (`true`) or center 1:1.
     scaling: bool,
-    /// Drop all input.
     view_only: bool,
-    /// Framebuffer size last drawn.
     fb: Cell<(u16, u16)>,
-    /// Widget size last drawn.
     widget_size: Cell<(i32, i32)>,
-    /// Last pointer position, in framebuffer pixels.
     pointer: Cell<(f64, f64)>,
-    /// RFB button mask held.
     buttons: Cell<u8>,
-    /// Cached cairo surface, reused while the size holds.
     surface: RefCell<Option<cairo::ImageSurface>>,
-    /// Row buffer for the blit.
     scratch: RefCell<Vec<u32>>,
 }
 
 impl View {
-    /// A view of `pixels`, sending input to `sink`.
     pub(crate) fn new(
         pixels: Arc<Mutex<VncPixels>>,
         sink: Sink,
@@ -243,7 +223,6 @@ impl View {
         !self.view_only && (self.sink)(event)
     }
 
-    /// Send a key press or release.
     fn key(&self, keysym: u32, down: bool) -> bool {
         self.forward(X11Event::KeyEvent(ClientKeyEvent {
             keycode: keysym,
@@ -251,7 +230,6 @@ impl View {
         }))
     }
 
-    /// Send the pointer at widget point `x`, `y` with `buttons`.
     fn send_pointer(&self, x: f64, y: f64, buttons: u8) -> bool {
         self.pointer.set((x, y));
         let p = placement(self.widget_size.get(), self.fb.get(), self.scaling);
@@ -263,12 +241,10 @@ impl View {
         }))
     }
 
-    /// Pointer motion.
     fn moved(&self, x: f64, y: f64) -> bool {
         self.send_pointer(x, y, self.buttons.get())
     }
 
-    /// A button press or release at `x`, `y`.
     fn button(&self, gdk_button: u32, down: bool, x: f64, y: f64) -> bool {
         let mask = apply_button(self.buttons.get(), button_bit(gdk_button), down);
         self.buttons.set(mask);
@@ -350,7 +326,6 @@ impl View {
     }
 }
 
-/// Lock the framebuffer, ignoring poison.
 fn lock(pixels: &Mutex<VncPixels>) -> std::sync::MutexGuard<'_, VncPixels> {
     // A poisoned buffer is still a valid picture.
     pixels.lock().unwrap_or_else(|e| e.into_inner())
@@ -415,7 +390,6 @@ fn keysym(key: gdk::Key) -> u32 {
     key.into_glib()
 }
 
-/// Stop propagation when the event was handled.
 fn propagation(handled: bool) -> glib::Propagation {
     if handled {
         glib::Propagation::Stop
@@ -445,13 +419,10 @@ fn retire_engine(page: &gtk4::Widget) {
     set_data(page, ENGINE_KEY, Rc::new(EngineSlot(RefCell::default())));
 }
 
-/// How a dial on the blocking pool ended.
 enum Dial {
     /// The password prompt was cancelled.
     Cancelled,
-    /// A failure to show on the page.
     Failed(String),
-    /// Connected: the running engine.
     Ready(VncEngine),
 }
 

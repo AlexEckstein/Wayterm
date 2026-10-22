@@ -14,9 +14,7 @@ use crate::store::model::{ForwardKind, ForwardRule};
 
 /// `DropDown` positions for the kind selector, in [`ForwardKind`] order.
 pub const KIND_INDEX_LOCAL: u32 = 0;
-/// Dropdown position of Remote.
 pub const KIND_INDEX_REMOTE: u32 = 1;
-/// Dropdown position of Dynamic.
 pub const KIND_INDEX_DYNAMIC: u32 = 2;
 
 /// The kind labels. `gtk4::DropDown` has no per-item sensitivity, so the
@@ -84,17 +82,11 @@ pub const OFFLINE_STATUS: &str = "no active connection";
 /// reports non-numeric input as an inline error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForwardRuleDraft {
-    /// Dropdown position ([`KIND_INDEX_LOCAL`] …).
     pub kind_index: u32,
-    /// Bind address; blank means loopback.
     pub bind_addr: String,
-    /// Bind port, as typed.
     pub bind_port: String,
-    /// Remote host.
     pub remote_host: String,
-    /// Remote port, as typed.
     pub remote_port: String,
-    /// Whether the rule starts when connected.
     pub enabled: bool,
 }
 
@@ -120,7 +112,6 @@ pub fn kind_from_index(index: u32) -> ForwardKind {
     }
 }
 
-/// The dropdown position of `kind`.
 pub fn kind_index_for(kind: &ForwardKind) -> u32 {
     match kind {
         ForwardKind::Local => KIND_INDEX_LOCAL,
@@ -148,7 +139,6 @@ pub fn drafts_from_rules(rules: Option<&Vec<ForwardRule>>) -> Vec<ForwardRuleDra
     })
 }
 
-/// Parse a port 1–65535; `what` names the field in the error.
 fn parse_port(text: &str, what: &str) -> Result<u16, String> {
     let err = || format!("{what} must be a port 1-65535");
     let port: u16 = text.trim().parse().map_err(|_| err())?;

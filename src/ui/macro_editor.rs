@@ -17,30 +17,27 @@ use crate::ui::widgets::{button_row, set_margins, wrapped_label, Modal};
 /// One step being edited: the pause, and the keys as notation text.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DraftStep {
-    /// Pause in milliseconds.
     pub delay_ms: u32,
-    /// Keys in the notation.
     pub keys: String,
 }
 
 /// A macro being edited.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Draft {
-    /// Row id; 0 for a new macro.
     pub id: i64,
-    /// Name.
     pub name: String,
-    /// Steps, in order.
     pub steps: Vec<DraftStep>,
 }
 
 /// Why a draft cannot be saved.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DraftError {
-    /// The name is blank.
     NoName,
     /// Step `index` (0-based) has keys that do not parse.
-    BadKeys { index: usize, error: NotationError },
+    BadKeys {
+        index: usize,
+        error: NotationError,
+    },
 }
 
 impl fmt::Display for DraftError {
@@ -57,7 +54,6 @@ impl fmt::Display for DraftError {
 pub enum StepOp {
     /// A blank step at this index (the end at most).
     Insert(usize),
-    /// Delete the step at this index.
     Remove(usize),
     /// Swap this step with the one before it.
     MoveUp(usize),
@@ -66,7 +62,6 @@ pub enum StepOp {
 }
 
 impl Draft {
-    /// The draft for editing `m`.
     pub fn from_macro(m: &Macro) -> Self {
         Self {
             id: m.id,
@@ -138,7 +133,6 @@ pub fn default_name(existing: &[Macro]) -> String {
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// The notation reminder under the steps.
 const KEYS_HELP: &str = "Each step waits its pause, then sends its keys. Text is typed as \
     written; <Enter>, <Tab>, <Esc>, <Backspace>, <Up>/<Down>/<Left>/<Right>, <Home>, <End>, \
     <PageUp>, <PageDown>, <Insert>, <Delete>, <F1>–<F12>, <Ctrl-C> and <0x1B> name other \
@@ -147,35 +141,23 @@ const KEYS_HELP: &str = "Each step waits its pause, then sends its keys. Text is
 /// The editor window. Clones share it.
 #[derive(Clone)]
 pub struct MacroEditor {
-    /// State shared with the signal handlers.
     inner: Rc<EditorInner>,
 }
 
-/// The editor's widgets and draft.
 struct EditorInner {
-    /// The modal; its result is the saved macro.
     modal: Modal<Macro>,
-    /// Macro name.
     name: gtk4::Entry,
-    /// One row per step.
     list: gtk4::ListBox,
-    /// "N steps · T s".
     summary: gtk4::Label,
-    /// The first error.
     error: gtk4::Label,
-    /// Save, enabled only for a valid draft.
     save: gtk4::Button,
-    /// The macro being edited.
     draft: RefCell<Draft>,
     /// The rows' widgets, in step order (rebuilt with the rows).
     rows: RefCell<Vec<RowWidgets>>,
 }
 
-/// One step row's inputs.
 struct RowWidgets {
-    /// Pause in milliseconds.
     pause: gtk4::SpinButton,
-    /// Keys in the notation.
     keys: gtk4::Entry,
 }
 
@@ -315,7 +297,6 @@ impl EditorInner {
         self.refresh();
     }
 
-    /// Build the row for step `index` with its buttons.
     fn build_row(
         self: &Rc<Self>,
         index: usize,

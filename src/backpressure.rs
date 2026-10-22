@@ -20,11 +20,8 @@ use tokio::sync::mpsc::{self, error::TrySendError};
 /// order holds. Nothing is dropped unless the receiver is gone. Clones
 /// share the queue.
 pub struct IdleSender<T> {
-    /// The bounded channel.
     tx: mpsc::Sender<T>,
-    /// Items the channel refused, oldest first.
     parked: Rc<RefCell<VecDeque<T>>>,
-    /// Whether a drain future is running.
     drain_pending: Rc<Cell<bool>>,
     /// How often [`Self::flush`] ran, so tests can see it does not poll.
     #[cfg(test)]
@@ -55,7 +52,6 @@ impl<T> Clone for IdleSender<T> {
 }
 
 impl<T: 'static> IdleSender<T> {
-    /// Wrap `tx`.
     pub fn new(tx: mpsc::Sender<T>) -> Self {
         Self {
             tx,

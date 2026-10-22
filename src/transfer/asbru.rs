@@ -27,7 +27,6 @@ const KNOWN_FIELDS: [&str; 10] = [
     "public key",
 ];
 
-/// Parse an Asbru-CM YAML export.
 pub fn parse(text: &str) -> Result<Parsed, ImportError> {
     let doc: Value =
         serde_yaml_ng::from_str(text).map_err(|e| ImportError::Parse(e.to_string()))?;
@@ -172,7 +171,6 @@ fn text_field(entry: &Mapping, key: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// Whether a YAML value is true (`1`, `true`, `yes`).
 fn truthy(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(b)) => *b,

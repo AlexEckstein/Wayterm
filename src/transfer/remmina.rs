@@ -18,7 +18,6 @@ const SECRET_KEYS: [&str; 6] = [
     "gateway_password",
 ];
 
-/// Parse one `.remmina` file.
 pub fn parse(text: &str) -> Parsed {
     let mut report = ImportReport::default();
     let mut fields: HashMap<String, String> = HashMap::new();

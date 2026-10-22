@@ -10,14 +10,11 @@ use crate::macros::model::MacroStep;
 /// pause since the previous chunk.
 #[derive(Debug, Default)]
 pub struct Recorder {
-    /// Steps so far.
     steps: Vec<MacroStep>,
-    /// When the previous chunk arrived.
     last: Option<Instant>,
 }
 
 impl Recorder {
-    /// An empty recording.
     pub fn new() -> Self {
         Self::default()
     }
@@ -49,7 +46,6 @@ impl Recorder {
         &self.steps
     }
 
-    /// The recorded steps.
     pub fn finish(self) -> Vec<MacroStep> {
         self.steps
     }

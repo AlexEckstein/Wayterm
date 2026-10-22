@@ -1,6 +1,3 @@
-//! [`SSHTransport`]: a PTY session channel on a shared [`SshConnection`],
-//! running the login shell or tmux (doc 04 §SSHTransport).
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -18,28 +15,20 @@ use crate::transport::types::{
 /// SSH byte-stream transport: one PTY channel on a shared, supervisor-owned
 /// [`SshConnection`] (doc 04). Disconnecting closes only this channel.
 pub struct SSHTransport {
-    /// The shared connection the channel is opened on.
     connection: Arc<SshConnection>,
-    /// The channel's write half, while connected.
     channel_write: Option<ChannelWriteHalf<Msg>>,
-    /// Owns the read half and pushes events.
     reader_task: Option<JoinHandle<()>>,
-    /// Where the reader sends events.
     event_tx: mpsc::Sender<TransportEvent>,
-    /// Stops the reader; fresh per connect.
     cancel_token: CancellationToken,
     /// The terminal's measured grid at connect time.
     initial_rows: u32,
-    /// Columns of the measured grid at connect time.
     initial_cols: u32,
-    /// State shared with the reader.
     state: SharedState,
     /// The tmux session's bare name while persistence is on (doc 04).
     tmux_session: Option<String>,
 }
 
 impl SSHTransport {
-    /// A disconnected transport for `connection`, opening at `rows` × `cols`.
     pub fn new(
         connection: Arc<SshConnection>,
         event_tx: mpsc::Sender<TransportEvent>,

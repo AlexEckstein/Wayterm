@@ -12,17 +12,13 @@ use crate::hotkeys::registry::{ActionContext, ActionRegistry};
 /// One row of the default table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DefaultAction {
-    /// Action id.
     pub id: &'static str,
-    /// Settings-page name.
     pub display_name: &'static str,
     /// UI format (`"Ctrl+Shift+T"`).
     pub default_key: &'static str,
-    /// Where it fires.
     pub context: ActionContext,
 }
 
-/// One table row.
 const fn a(
     id: &'static str,
     display_name: &'static str,

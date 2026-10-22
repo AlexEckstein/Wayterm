@@ -52,7 +52,6 @@ pub(super) struct TerminalPageState {
     terminal_tab: RefCell<Option<TerminalTab>>,
     /// The connected terminal and the tap on its input (doc 12).
     pub(super) terminal: RefCell<Option<Arc<dyn TerminalBackend>>>,
-    /// The relay the macro recorder arms (doc 12 §Recording).
     pub(super) input_tap: RefCell<Option<InputTap>>,
 }
 

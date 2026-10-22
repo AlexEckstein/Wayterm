@@ -10,27 +10,20 @@ use russh::keys::{Error as KeysError, PublicKey};
 
 use crate::store::model::HostKeyPolicy;
 
-/// What to do with a server's host key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostKeyDecision {
-    /// Trust it for this connection.
     Accept,
     /// Accept and record the key in known_hosts.
     AcceptAndSave,
-    /// Refuse it; the dial fails with `HostKeyRejected`.
     Reject,
 }
 
 /// What the unknown-host prompt shows (OpenSSH style).
 #[derive(Clone, Debug)]
 pub struct HostKeyFacts {
-    /// Host as dialed.
     pub host: String,
-    /// Port as dialed.
     pub port: u16,
-    /// Key algorithm, e.g. `ssh-ed25519`.
     pub key_type: String,
-    /// `SHA256:…`, as OpenSSH prints it.
     pub fingerprint_sha256: String,
 }
 
@@ -51,16 +44,13 @@ pub type HostKeyPrompt = Arc<dyn Fn(&HostKeyFacts) -> HostKeyDecision + Send + S
 /// Maps a known_hosts check to a decision under a [`HostKeyPolicy`].
 #[derive(Clone)]
 pub struct HostKeyVerifier {
-    /// Global or per-session policy.
     policy: HostKeyPolicy,
-    /// Asks about unknown hosts under `strict`.
     prompt: HostKeyPrompt,
     /// `None` = `~/.ssh/known_hosts`; tests pass a temp file.
     known_hosts_path: Option<Arc<Path>>,
 }
 
 impl HostKeyVerifier {
-    /// A verifier for `policy`; `known_hosts_path` `None` is `~/.ssh/known_hosts`.
     pub fn new(
         policy: HostKeyPolicy,
         prompt: HostKeyPrompt,
@@ -102,7 +92,6 @@ impl HostKeyVerifier {
         decision
     }
 
-    /// The known_hosts file in use.
     fn known_hosts(&self) -> PathBuf {
         match &self.known_hosts_path {
             Some(path) => path.to_path_buf(),
