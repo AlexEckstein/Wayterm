@@ -1,6 +1,5 @@
 //! `LocalTransport` against a real `forkpty` + `/bin/bash` (doc 06
-//! §Local shell; doc 15: a local shell runs
-//! commands).
+//! §Local shell): a local shell runs commands.
 
 use std::time::Duration;
 

@@ -253,7 +253,7 @@ fn forward_rule_roundtrip() {
     let rt: ForwardRule = serde_json::from_str(&json).unwrap();
     assert_eq!(rt, rule);
 
-    // v2 kinds: wire format fixed from day one so the JSON column never
+    // Kinds that never start still have a fixed wire format, so the JSON column never
     // shifts under stored rows (doc 04 §Port forwarding).
     assert_eq!(wire(&ForwardKind::Remote), "\"remote\"");
     assert_eq!(wire(&ForwardKind::Dynamic), "\"dynamic\"");

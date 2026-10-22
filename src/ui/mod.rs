@@ -34,8 +34,9 @@ pub mod widgets;
 pub use main_window::MainWindow;
 
 /// Widget tests: they need an X display (`env -u WAYLAND_DISPLAY
-/// GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored gtk_tests`). GTK binds to the first thread that initializes it, so every
-/// widget check in the library runs from this one test.
+/// GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored gtk_tests`). GTK
+/// binds to the first thread that initializes it, so every widget check in
+/// the library runs from this one test.
 #[cfg(test)]
 mod gtk_tests {
     use gtk4::glib;

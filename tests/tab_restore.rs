@@ -1,5 +1,6 @@
-//! Integration tests for the tab-persistence store seam (doc 03 §Restoring tabs Phase 4,
-//! "Remember open tabs on exit, restore on launch").
+//! Integration tests for the tab-persistence store seam (doc 03
+//! §Restoring tabs): open tabs are remembered on exit and restored on
+//! launch.
 //!
 //! [`wayterm::ui::tab_state`] unit-tests the wire format itself; this file
 //! covers the other half of the contract — that the list actually lands in

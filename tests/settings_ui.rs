@@ -1,6 +1,6 @@
 //! Settings UI tests: the Keyboard Shortcuts page (doc 11 §Settings page,
 //! §Conflict detection, §Persistence) and the General page (doc 13
-//! settings rows).
+//! §General).
 //!
 //! Everything here is display-free by design: the tests drive
 //! `ui::settings::hotkeys::SettingsView` — row mapping, capture formatting,

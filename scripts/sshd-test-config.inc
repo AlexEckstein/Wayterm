@@ -28,7 +28,7 @@ StrictModes yes
 
 # No agent/X11/tunnel plumbing is needed by the transport tests; deny it so
 # the throwaway instance exposes as little as possible. TCP forwarding IS
-# allowed: the Phase 11 suites (forward_sshd, jump_sshd) prove direct-tcpip
+# allowed: the forward_sshd and jump_sshd suites prove direct-tcpip
 # channels against this instance. It listens on 127.0.0.1 for one
 # throwaway user only, matching the CI sshd default.
 AllowAgentForwarding no

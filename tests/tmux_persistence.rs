@@ -19,8 +19,7 @@
 //!    variable.
 //! 3. With tmux disabled, the shell is not inside tmux and the
 //!    `wayterm-<name>` session does not exist — the off-path.
-//! 4. Doc ??10's "run vim, kill the network, reconnect, vim is still there",
-//!    through the tab's reconnect path minus GTK: the whole connection is
+//! 4. "Run vim, kill the network, reconnect, vim is still there", through the tab's reconnect path minus GTK: the whole connection is
 //!    killed under a live transport, its `ConnectionLost` starts the
 //!    auto-reconnect driver from the resilience registry, the driver redials
 //!    through a real `ConnectionSupervisor`, and a program running in the

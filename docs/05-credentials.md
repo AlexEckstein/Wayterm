@@ -22,7 +22,9 @@ Code: `src/transport/credentials.rs` (sources, the chain),
    aborts the connect cleanly.
 
 The chain is built per connect from the Settings rows, so a toggle applies
-to the next connect. When the keyring cannot be reached, the prompt's
+to the next connect. Nothing is cached across connects: a secret stays in
+memory only for the dial that asked for it (a TTL cache was rejected for
+that reason). A jump host's chain is its own session's. When the keyring cannot be reached, the prompt's
 instructions line reads "Keyring unavailable — prompting for
 credentials.", so a prompt that used to be answered silently is explained.
 

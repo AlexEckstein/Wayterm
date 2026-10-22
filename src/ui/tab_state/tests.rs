@@ -1,5 +1,5 @@
 //! Unit tests for the display-free tab-persistence model
-//! ([`super`], doc 03 §Restoring tabs Phase 4).
+//! ([`super`], doc 03 §Restoring tabs).
 //!
 //! No GTK here: these lock the wire format and the placement rules,
 //! which is why they can run headless in CI.

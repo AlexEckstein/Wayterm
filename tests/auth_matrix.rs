@@ -1,9 +1,7 @@
-//! Server-gated auth-method fallback matrix — doc 15.
-//!
-//! Item 3 asks for "method fallback order and retry counts" asserted against a
-//! real sshd whose `AuthenticationMethods` pins ONE method per instance. This
-//! file is that matrix; `src/transport/auth.rs` is the code under test and is
-//! NOT modified by it.
+//! Server-gated auth-method fallback matrix (doc 15 §Auth-method matrix):
+//! method fallback order and retry counts, asserted against a real sshd whose
+//! `AuthenticationMethods` pins ONE method per instance. `src/transport/auth.rs`
+//! is the code under test.
 //!
 //! WHY CI DOES NOT RUN THIS FILE: the matrix needs a different sshd per mode.
 //! CI provisions exactly ONE all-methods sshd on port 22
