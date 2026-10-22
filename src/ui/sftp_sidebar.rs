@@ -24,7 +24,6 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::backpressure::IdleSender;
 use crate::sftp::{Progress, SftpClient, SftpCommand, ShellCwdProbe};
-use crate::store::model::SessionType;
 use crate::transport::connection::SshConnection;
 use crate::ui::widgets::{confirm, prompt_text, set_margins, window_of};
 
@@ -294,11 +293,6 @@ fn chooser_paths(model: &gio::ListModel) -> Vec<String> {
         .filter_map(|file| file.path())
         .map(|path| path.to_string_lossy().into_owned())
         .collect()
-}
-
-/// Only SSH sessions get a sidebar (doc 09 §Availability).
-pub fn supports_sftp(session_type: &SessionType) -> bool {
-    matches!(session_type, SessionType::SSH)
 }
 
 /// Build and wire the widgets.

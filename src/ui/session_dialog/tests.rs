@@ -9,11 +9,11 @@ use crate::store::SessionStore;
 use crate::ui::tunnels_dialog::model::ForwardRuleDraft;
 
 use super::{
-    collect_folders, collect_peer_sessions, config_from_fields, default_port_for,
-    default_tmux_session_name, folder_labels, format_resolution, jump_candidates, jump_error,
-    jump_missing_label, jump_picker_model, parse_resolution, resolve_jump, session_type_from_index,
-    type_index_for, DialogFields, DEFAULT_SERIAL_BAUD, JUMP_NONE_LABEL, TYPE_INDEX_LOCAL,
-    TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_SSH, TYPE_INDEX_VNC,
+    collect_folders, collect_peer_sessions, config_from_fields, default_tmux_session_name,
+    folder_labels, format_resolution, jump_candidates, jump_error, jump_missing_label,
+    jump_picker_model, parse_resolution, resolve_jump, session_type_from_index, type_index_for,
+    DialogFields, DEFAULT_SERIAL_BAUD, JUMP_NONE_LABEL, TYPE_INDEX_LOCAL, TYPE_INDEX_RDP,
+    TYPE_INDEX_SERIAL, TYPE_INDEX_SSH, TYPE_INDEX_VNC,
 };
 
 fn sample_folders() -> Vec<Folder> {
@@ -359,16 +359,6 @@ fn out_of_range_type_index_falls_back_to_ssh() {
 // ---------------------------------------------------------------------------
 // Per-type port defaults
 // ---------------------------------------------------------------------------
-
-#[test]
-fn default_ports_per_type() {
-    assert_eq!(default_port_for(&SessionType::SSH), Some(22));
-    assert_eq!(default_port_for(&SessionType::RDP), Some(3389));
-    assert_eq!(default_port_for(&SessionType::VNC), Some(5900));
-    // Serial names a device, local names a shell: no network port.
-    assert_eq!(default_port_for(&SessionType::Serial), None);
-    assert_eq!(default_port_for(&SessionType::LocalShell), None);
-}
 
 #[test]
 fn invalid_port_falls_back_to_the_types_default() {

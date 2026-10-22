@@ -3,7 +3,6 @@
 
 use wayterm::store::model::{SessionConfig, SessionType, VncOptions};
 use wayterm::transport::types::TransportState;
-use wayterm::ui::sftp_sidebar::supports_sftp;
 use wayterm::ui::vnc_tab::{
     apply_button, blit_rows, button_bit, effective_options, placement, state_for, to_framebuffer,
     wheel_bit, Placement,
@@ -142,6 +141,6 @@ fn blit_tolerates_short_buffers() {
 
 #[test]
 fn vnc_tabs_get_no_sftp_sidebar() {
-    assert!(!supports_sftp(&SessionType::VNC));
-    assert!(supports_sftp(&SessionType::SSH));
+    assert!(!SessionType::VNC.supports_sftp());
+    assert!(SessionType::SSH.supports_sftp());
 }

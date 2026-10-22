@@ -547,19 +547,6 @@ fn only_the_first_show_counts() {
 // --- availability ----------------------------------------------------------
 
 #[test]
-fn only_ssh_sessions_get_a_sidebar() {
-    assert!(supports_sftp(&SessionType::SSH), "doc 09 §Availability");
-    for other in [
-        SessionType::RDP,
-        SessionType::VNC,
-        SessionType::Serial,
-        SessionType::LocalShell,
-    ] {
-        assert!(!supports_sftp(&other), "{other:?} must not get a sidebar");
-    }
-}
-
-#[test]
 fn a_connect_attaches_at_once_unless_sftp_on_connect_is_off_and_hidden() {
     // (sftp_on_connect, sidebar shown) → attach now?
     assert!(attach_on_connect(true, true));

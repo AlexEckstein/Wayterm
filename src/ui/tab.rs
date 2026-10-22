@@ -35,7 +35,7 @@ use crate::terminal::TerminalBackend;
 use crate::transport::types::{TransportError, TransportState};
 use crate::ui::main_window::route_status;
 use crate::ui::rdp_tab;
-use crate::ui::sftp_sidebar::{supports_sftp, SftpSidebar};
+use crate::ui::sftp_sidebar::SftpSidebar;
 use crate::ui::tab_label;
 use crate::ui::tab_resilience;
 use crate::ui::tunnels_dialog::ForwardStatusSource;
@@ -436,7 +436,7 @@ fn page_content(session: &Rc<SessionConfig>) -> gtk4::Widget {
     state
         .tab_id
         .set(NEXT_TAB_ID.fetch_add(1, Ordering::Relaxed));
-    if supports_sftp(&session.session_type) {
+    if session.session_type.supports_sftp() {
         ssh::install_sidebar(&page);
     }
     page

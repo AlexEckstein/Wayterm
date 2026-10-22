@@ -70,7 +70,7 @@ fn save_password_state(password_typed: bool) -> (bool, &'static str) {
 /// Store on save only for an SSH session on the password method, with the
 /// box checked and a password typed.
 fn should_store_password(type_index: u32, auth_index: u32, checked: bool, password: &str) -> bool {
-    type_index == TYPE_INDEX_SSH
+    session_type_from_index(type_index).stores_password_on_save()
         && password_rows_visible(auth_index)
         && checked
         && !password.is_empty()
@@ -304,7 +304,7 @@ impl Widgets {
         self.host.set_text(&text(&config.host));
         let port = config
             .port
-            .or_else(|| default_port_for(&config.session_type))
+            .or_else(|| config.session_type.default_port())
             .unwrap_or(PORT_SPIN_PLACEHOLDER);
         self.port.set_value(port.into());
         self.username.set_text(&text(&config.username));
@@ -679,7 +679,7 @@ impl SessionDialog {
             .connect_notify_local(Some("selected"), move |dropdown, _| {
                 for_type.apply(dropdown.selected());
                 let session_type = session_type_from_index(dropdown.selected());
-                let default = default_port_for(&session_type);
+                let default = session_type.default_port();
                 port.set_value(default.unwrap_or(PORT_SPIN_PLACEHOLDER).into());
                 icon.set_default(session_type_icon(&session_type));
             });
@@ -689,7 +689,8 @@ impl SessionDialog {
         // when editing.
         let initial_type = session_type_from_index(widgets.session_type.selected());
         widgets.port.set_value(
-            default_port_for(&initial_type)
+            initial_type
+                .default_port()
                 .unwrap_or(PORT_SPIN_PLACEHOLDER)
                 .into(),
         );
