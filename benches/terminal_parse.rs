@@ -1,4 +1,4 @@
-//! Parse throughput, VTE vs libghostty-vt, on one corpus (doc 03
+//! Parse throughput, VTE vs libghostty-vt, on one corpus (doc 02
 //! §Benchmark). Built only with the `backend-ghostty` feature:
 //!
 //! ```sh
@@ -29,10 +29,14 @@ use wayterm::terminal::{TerminalBackend, VteBackend};
 
 /// A typical transport read.
 const CHUNK: usize = 16 * 1024;
+/// The grid both backends parse into.
 const GRID: (u16, u16) = (80, 24);
 
+/// One named input stream.
 struct Corpus {
+    /// Shown in the results table.
     name: &'static str,
+    /// The bytes fed to each backend.
     bytes: Vec<u8>,
 }
 
@@ -40,6 +44,7 @@ struct Corpus {
 struct Rng(u64);
 
 impl Rng {
+    /// Next xorshift64 value.
     fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -47,11 +52,13 @@ impl Rng {
         self.0
     }
 
+    /// A value in `0..n`.
     fn below(&mut self, n: u64) -> u64 {
         self.next() % n
     }
 }
 
+/// Words the generated lines are made of.
 const WORDS: [&str; 12] = [
     "connect",
     "session",
@@ -87,6 +94,7 @@ fn lines(
     out
 }
 
+/// Every corpus, `size` bytes each, from a fixed seed.
 fn corpora(size: usize) -> Vec<Corpus> {
     let mut rng = Rng(0x5eed_1234_abcd_ef01);
     let plain = lines(size, &mut rng, |_, word| word.to_string());
@@ -145,6 +153,7 @@ fn corpora(size: usize) -> Vec<Corpus> {
     ]
 }
 
+/// One libghostty-vt run over `corpus`.
 fn ghostty_once(corpus: &Corpus) -> Duration {
     let engine = Engine::new(GRID.0, GRID.1).expect("libghostty-vt terminal");
     let start = Instant::now();
@@ -172,6 +181,7 @@ fn vte_setup() -> Option<(
     Some((window, backend, terminal, rx))
 }
 
+/// One VTE run over `corpus`, until its closing title shows it parsed everything.
 fn vte_once(
     backend: &VteBackend,
     terminal: &vte4::Terminal,
@@ -193,10 +203,12 @@ fn vte_once(
     start.elapsed()
 }
 
+/// The fastest of `runs` runs.
 fn best(runs: usize, mut once: impl FnMut(usize) -> Duration) -> Duration {
     (0..runs).map(&mut once).min().unwrap_or_default()
 }
 
+/// Throughput in MiB/s.
 fn mib_per_s(bytes: usize, time: Duration) -> f64 {
     bytes as f64 / (1024.0 * 1024.0) / time.as_secs_f64().max(f64::EPSILON)
 }

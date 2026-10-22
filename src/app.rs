@@ -1,3 +1,6 @@
+//! Application startup: the tokio runtime, data paths, and the main
+//! window with its store, hotkeys and tray.
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -9,8 +12,11 @@ use crate::hotkeys::HotkeyEngine;
 use crate::store::SessionStore;
 use crate::ui::{tray, MainWindow};
 
+/// GApplication id; also baked into the keyring schema and GResource
+/// paths, so changing it orphans stored credentials (doc 05).
 pub const APP_ID: &str = "com.alex-eckstein.wayterm";
 
+/// Run the GTK application until its last window closes.
 pub fn run() -> glib::ExitCode {
     install_tokio_runtime();
     let app = gtk4::Application::builder().application_id(APP_ID).build();
@@ -48,6 +54,7 @@ pub fn default_db_path() -> PathBuf {
     dir.join("wayterm.sqlite3")
 }
 
+/// `activate`: icons, store, hotkeys, the main window and its tray.
 fn build_ui(app: &gtk4::Application) {
     if let Some(display) = gtk4::gdk::Display::default() {
         crate::ui::icons::register_icons(&display);
@@ -58,7 +65,7 @@ fn build_ui(app: &gtk4::Application) {
     let store =
         Rc::new(SessionStore::open(&default_db_path()).expect("failed to open session store"));
 
-    // Compiled-in defaults first, then the user's customized rows (doc 07).
+    // Compiled-in defaults first, then the user's customized rows (doc 11).
     let mut hotkeys = HotkeyEngine::new();
     match hotkeys.load_from_db(&store) {
         Ok(report) if !report.applied.is_empty() || !report.skipped.is_empty() => eprintln!(

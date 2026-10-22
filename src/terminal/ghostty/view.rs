@@ -31,13 +31,18 @@ const DEFAULT_FONT: &str = "Monospace 12";
 /// Rows per wheel notch.
 const WHEEL_ROWS: f64 = 3.0;
 
+/// The GObject subclass behind [`GhosttyView`].
 mod imp {
     use super::*;
 
+    /// Per-widget state.
     #[derive(Default)]
     pub struct GhosttyView {
+        /// Engine and event queue; set once by [`GhosttyView::new`].
         pub(super) shared: RefCell<Option<Rc<Shared>>>,
+        /// The last viewport snapshot, reused between frames.
         pub(super) frame: RefCell<Frame>,
+        /// `None` until `set_font`: [`DEFAULT_FONT`].
         pub(super) font: RefCell<Option<pango::FontDescription>>,
         /// Cell size in pixels; recomputed after a font change.
         pub(super) cell: Cell<Option<(i32, i32)>>,
@@ -89,6 +94,7 @@ glib::wrapper! {
 }
 
 impl GhosttyView {
+    /// A view drawing `shared`'s engine, with its input wired.
     pub(super) fn new(shared: Rc<Shared>) -> Self {
         let view: Self = glib::Object::new();
         let imp = view.imp();
@@ -102,10 +108,12 @@ impl GhosttyView {
         view
     }
 
+    /// The shared engine, if set.
     fn shared(&self) -> Option<Rc<Shared>> {
         self.imp().shared.borrow().clone()
     }
 
+    /// Use `font`; the grid refits on the next allocation.
     pub(super) fn set_font(&self, font: &pango::FontDescription) {
         self.imp().font.replace(Some(font.clone()));
         self.imp().cell.set(None);
@@ -124,6 +132,7 @@ impl GhosttyView {
         self.queue_draw();
     }
 
+    /// The font in use.
     fn font(&self) -> pango::FontDescription {
         self.imp()
             .font
@@ -174,6 +183,7 @@ impl GhosttyView {
         (clamp(x, cell_w, cols), clamp(y, cell_h, rows))
     }
 
+    /// Wire keys, drag selection, and the wheel.
     fn install_input(&self) {
         let keys = gtk4::EventControllerKey::new();
         let view = self.downgrade();
@@ -270,6 +280,7 @@ impl GhosttyView {
         true
     }
 
+    /// Draw the viewport: backgrounds, then text runs, then the cursor.
     fn paint(&self, snapshot: &gtk4::Snapshot) {
         let Some(shared) = self.shared() else { return };
         let mut frame = self.imp().frame.borrow_mut();
@@ -345,10 +356,13 @@ impl GhosttyView {
 
 /// One cell as painted: colors after inverse/selection/cursor swaps.
 struct Painted {
+    /// The character drawn (space for empty).
     ch: char,
+    /// Text color after swaps.
     fg: [u8; 3],
     /// `None` = the frame background already painted underneath.
     bg: Option<[u8; 3]>,
+    /// `CELL_*` bits.
     flags: u8,
 }
 
@@ -361,6 +375,7 @@ const TEXT_FLAGS: u8 = ffi::CELL_BOLD
     | ffi::CELL_INVISIBLE;
 
 impl Painted {
+    /// `cell` as painted, with inverse, selection and cursor applied.
     fn new(info: &FrameInfo, cell: &GridCell, cursor: bool) -> Self {
         let ch = char::from_u32(cell.codepoint)
             .filter(|c| *c != '\0')
@@ -385,10 +400,12 @@ impl Painted {
         }
     }
 
+    /// Whether `other` can join this cell's text run.
     fn same_style(&self, other: &Self) -> bool {
         self.fg == other.fg && self.flags == other.flags
     }
 
+    /// `base` with this cell's weight and style.
     fn font(&self, base: &pango::FontDescription) -> pango::FontDescription {
         let mut font = base.clone();
         if self.flags & ffi::CELL_BOLD != 0 {
@@ -400,6 +417,7 @@ impl Painted {
         font
     }
 
+    /// Underline and strikethrough, if any.
     fn attributes(&self) -> Option<pango::AttrList> {
         if self.flags & (ffi::CELL_UNDERLINE | ffi::CELL_STRIKE) == 0 {
             return None;
@@ -450,12 +468,14 @@ fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<S
     }
 }
 
+/// Whether the cursor block sits at `row`, `col`.
 fn is_cursor(info: &FrameInfo, row: usize, col: usize) -> bool {
     info.cursor_visible != 0
         && usize::from(info.cursor_y) == row
         && usize::from(info.cursor_x) == col
 }
 
+/// A GDK color from RGB bytes.
 fn rgba([r, g, b]: [u8; 3], alpha: f32) -> gdk::RGBA {
     gdk::RGBA::new(
         f32::from(r) / 255.0,

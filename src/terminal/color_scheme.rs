@@ -1,5 +1,5 @@
-//! Terminal color schemes (doc 02 §Color schemes, doc 06 §Terminal
-//! appearance): the built-in palettes, the stored scheme choice, and how a
+//! Terminal color schemes (doc 02 §Color
+//! schemes): the built-in palettes, the stored scheme choice, and how a
 //! tab's scheme is resolved. Display-free: backends turn a [`ColorScheme`]
 //! into widget colors, the UI supplies the system theme.
 //!
@@ -9,7 +9,7 @@
 //! ([`classify_system_theme`]).
 
 /// The global settings row naming the scheme for tabs without an override
-/// (doc 06 §Default Data).
+/// (doc 13 §Settings rows).
 pub const DEFAULT_COLOR_SCHEME_SETTING: &str = "default_color_scheme";
 
 /// An sRGB color.
@@ -49,11 +49,15 @@ pub struct ColorScheme {
     /// The name stored in settings and passed to
     /// [`set_color_scheme`](super::TerminalBackend::set_color_scheme).
     pub name: &'static str,
+    /// Default text.
     pub foreground: Rgb,
+    /// Default background.
     pub background: Rgb,
     /// The cursor block, and the text under it.
     pub cursor: Rgb,
+    /// Text under the cursor block.
     pub cursor_foreground: Rgb,
+    /// ANSI colors 0–15.
     pub palette: [Rgb; 16],
 }
 
@@ -112,11 +116,14 @@ pub fn by_name(name: &str) -> Option<&'static ColorScheme> {
 /// picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Brightness {
+    /// A light theme.
     Light,
+    /// A dark theme.
     Dark,
 }
 
 impl Brightness {
+    /// The palette `System` shows for this brightness.
     pub fn scheme(self) -> &'static ColorScheme {
         match self {
             Self::Light => &LIGHT,
@@ -125,8 +132,7 @@ impl Brightness {
     }
 }
 
-/// What a theme the classifier cannot place counts as: dark, like the
-/// pre-`System` seed.
+/// What a theme the classifier cannot place counts as.
 pub const UNKNOWN_THEME: Brightness = Brightness::Dark;
 
 /// Widely shipped light GTK themes whose names carry no `light` segment.
@@ -198,8 +204,11 @@ pub fn portal_color_scheme(value: u32) -> Option<Brightness> {
 /// A stored scheme value: a palette, or `System` to follow the desktop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchemeChoice {
+    /// Follow the desktop's light or dark theme.
     System,
+    /// Always [`LIGHT`].
     Light,
+    /// Always [`DARK`].
     Dark,
 }
 

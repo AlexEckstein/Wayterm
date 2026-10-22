@@ -1,5 +1,5 @@
-//! Compiles the built-in tree icons (`assets/tree-icons`, doc 06 §Icons)
-//! and the app icon (`assets/icons`, doc 10) into GResource bundles that
+//! Compiles the built-in tree icons (`assets/tree-icons`, doc 09 §Icons)
+//! and the app icon (`assets/icons`, doc 14 §App icon) into GResource bundles that
 //! `ui::icons` embeds, and — with the `backend-ghostty` feature only —
 //! links libghostty-vt (doc 02).
 
@@ -30,12 +30,12 @@ fn compile_resources(source: &str, name: &str) {
     assert!(status.success(), "glib-compile-resources failed for {name}");
 }
 
-/// libghostty-vt for the `backend-ghostty` feature (doc 02 §Engine
-/// backends, doc 05).
+/// libghostty-vt for the `backend-ghostty` feature (doc 02
+/// §GhosttyBackend).
 ///
 /// Pinned upstream: ghostty-org/ghostty @ 22fa134a07f5749edd9e92c6bc17d8aaf61843be
 /// (2026-10-15), built with Zig 0.16.0 — how to rebuild it is in
-/// docs/plans/phase10-pin.md. Bump the pin deliberately, never silently.
+/// doc 02 §libghostty-vt pin. Bump the pin deliberately, never silently.
 ///
 /// The static library and headers are looked up in
 /// `$WAYTERM_GHOSTTY_VT_DIR` (default `third_party/libghostty-vt`):
@@ -45,8 +45,10 @@ fn compile_resources(source: &str, name: &str) {
 mod ghostty {
     use std::path::PathBuf;
 
+    /// The C shim compiled against the headers.
     const SHIM: &str = "src/terminal/ghostty/shim.c";
 
+    /// Compile the shim and link `libghostty-vt.a`, or fail with the build steps.
     pub fn link() {
         println!("cargo:rerun-if-env-changed=WAYTERM_GHOSTTY_VT_DIR");
         println!("cargo:rerun-if-changed={SHIM}");
@@ -60,7 +62,7 @@ mod ghostty {
         assert!(
             include.join("ghostty/vt.h").is_file() && lib.join("libghostty-vt.a").is_file(),
             "backend-ghostty: no libghostty-vt under {} — build it as described in \
-             docs/plans/phase10-pin.md, or set WAYTERM_GHOSTTY_VT_DIR",
+             docs/02-terminal.md (libghostty-vt pin), or set WAYTERM_GHOSTTY_VT_DIR",
             root.display()
         );
         println!(

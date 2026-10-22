@@ -1,3 +1,6 @@
+//! [`VteBackend`]: the default backend, the GTK4 VTE widget (doc 02
+//! §VteBackend).
+
 use std::cell::Cell;
 
 use gtk4::{gdk, pango, Widget};
@@ -68,6 +71,7 @@ fn grid_from_counts(rows: i64, cols: i64) -> (u32, u32) {
     )
 }
 
+/// An opaque GDK color from a palette entry.
 fn rgba(Rgb(r, g, b): Rgb) -> gdk::RGBA {
     let channel = |c: u8| f32::from(c) / 255.0;
     gdk::RGBA::new(channel(r), channel(g), channel(b), 1.0)
@@ -147,8 +151,7 @@ impl TerminalBackend for VteBackend {
         self.terminal.set_font(Some(font_desc));
     }
 
-    /// Not implemented yet: the GTK4 VTE binding has no `set_opacity`; it
-    /// arrives with background-alpha color schemes.
+    /// A no-op: the GTK4 VTE binding has no `set_opacity`.
     fn set_opacity(&self, _opacity: f64) {}
 
     fn set_scrollback_limit(&self, lines: u32) {

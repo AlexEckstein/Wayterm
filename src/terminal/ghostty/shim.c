@@ -1,6 +1,6 @@
 /*
- * A narrow C shim over the pinned libghostty-vt C API (doc 02 §Engine
- * backends; pin in docs/plans/phase10-pin.md).
+ * A narrow C shim over the pinned libghostty-vt C API (doc 02
+ * §GhosttyBackend, pin in §libghostty-vt pin).
  *
  * libghostty-vt's API is built on sized structs and tagged unions. Their
  * layouts come from the C compiler here, so the Rust side (`ffi.rs`) only
@@ -45,6 +45,7 @@ typedef struct {
   size_t utf8_len;
 } WtKey;
 
+/* Effect callback the Rust side installs; `data` is borrowed for the call. */
 typedef void (*WtEffectFn)(void *userdata, int kind, const uint8_t *data,
                            size_t len);
 
@@ -70,6 +71,7 @@ typedef struct {
   uint8_t cursor_has_rgb;
 } WtFrame;
 
+/* One terminal with its render state and key encoder. */
 typedef struct {
   GhosttyTerminal terminal;
   GhosttyRenderState render;
@@ -81,6 +83,7 @@ typedef struct {
   void *userdata;
 } WtGhostty;
 
+/* Terminal callback: bytes for the remote side (query replies). */
 static void on_write_pty(GhosttyTerminal t, void *ud, const uint8_t *data,
                          size_t len) {
   (void)t;
@@ -88,12 +91,14 @@ static void on_write_pty(GhosttyTerminal t, void *ud, const uint8_t *data,
   if (g->effect) g->effect(g->userdata, WT_EFFECT_PTY, data, len);
 }
 
+/* Terminal callback: BEL. */
 static void on_bell(GhosttyTerminal t, void *ud) {
   (void)t;
   WtGhostty *g = ud;
   if (g->effect) g->effect(g->userdata, WT_EFFECT_BELL, NULL, 0);
 }
 
+/* Terminal callback: the window title changed. */
 static void on_title(GhosttyTerminal t, void *ud) {
   WtGhostty *g = ud;
   GhosttyString title = {0};
@@ -105,6 +110,7 @@ static void on_title(GhosttyTerminal t, void *ud) {
               title.len);
 }
 
+/* Free the terminal and everything it owns; NULL is fine. */
 void wt_ghostty_free(WtGhostty *g) {
   if (!g) return;
   ghostty_key_event_free(g->key_event);
@@ -116,6 +122,7 @@ void wt_ghostty_free(WtGhostty *g) {
   free(g);
 }
 
+/* A cols x rows terminal with its callbacks wired; NULL on failure. */
 WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
   WtGhostty *g = calloc(1, sizeof(WtGhostty));
   if (!g) return NULL;
@@ -145,22 +152,27 @@ void wt_ghostty_set_effect(WtGhostty *g, WtEffectFn effect, void *userdata) {
   g->userdata = userdata;
 }
 
+/* Feed remote bytes through the VT parser. */
 void wt_ghostty_write(WtGhostty *g, const uint8_t *data, size_t len) {
   ghostty_terminal_vt_write(g->terminal, data, len);
 }
 
+/* Resize with reflow; cell pixels feed size reports. */
 int wt_ghostty_resize(WtGhostty *g, uint16_t cols, uint16_t rows,
                       uint32_t cell_w, uint32_t cell_h) {
   return ghostty_terminal_resize(g->terminal, cols, rows, cell_w, cell_h);
 }
 
+/* The current grid size. */
 void wt_ghostty_size(WtGhostty *g, uint16_t *cols, uint16_t *rows) {
   ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_COLS, cols);
   ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_ROWS, rows);
 }
 
+/* Full reset: screen, scrollback, modes. */
 void wt_ghostty_reset(WtGhostty *g) { ghostty_terminal_reset(g->terminal); }
 
+/* Cap the scrollback at `lines`. */
 int wt_ghostty_set_scrollback_lines(WtGhostty *g, size_t lines) {
   return ghostty_terminal_set(g->terminal,
                               GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &lines);
@@ -180,6 +192,7 @@ void wt_ghostty_scroll(WtGhostty *g, int where, intptr_t delta) {
   ghostty_terminal_scroll_viewport(g->terminal, s);
 }
 
+/* Free bytes this shim allocated. */
 void wt_ghostty_free_bytes(uint8_t *ptr, size_t len) {
   ghostty_free(NULL, ptr, len);
 }
@@ -214,6 +227,7 @@ int wt_ghostty_selection_text(WtGhostty *g, uint8_t **out, size_t *len) {
                                                  len);
 }
 
+/* Select the whole buffer. */
 int wt_ghostty_select_all(WtGhostty *g) {
   GhosttySelection sel = GHOSTTY_INIT_SIZED(GhosttySelection);
   int r = ghostty_terminal_select_all(g->terminal, &sel);
@@ -240,6 +254,7 @@ int wt_ghostty_select_viewport(WtGhostty *g, uint16_t x0, uint16_t y0,
                               &sel);
 }
 
+/* Drop the selection. */
 void wt_ghostty_clear_selection(WtGhostty *g) {
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, NULL);
 }
@@ -323,6 +338,7 @@ int wt_ghostty_encode_key(WtGhostty *g, const WtKey *key, char *out,
 size_t wt_ghostty_cell_size(void) { return sizeof(WtCell); }
 size_t wt_ghostty_frame_size(void) { return sizeof(WtFrame); }
 
+/* Copy a libghostty color into an RGB triple. */
 static void rgb(uint8_t out[3], GhosttyColorRgb c) {
   out[0] = c.r;
   out[1] = c.g;
@@ -378,7 +394,7 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
       ghostty_render_state_row_cells_get(
           g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &len);
       if (len > 0) {
-        /* Base codepoint only; combining marks are not drawn yet. */
+        /* Base codepoint only; combining marks are not drawn. */
         uint32_t cps[16];
         if (len <= 16 &&
             ghostty_render_state_row_cells_get(

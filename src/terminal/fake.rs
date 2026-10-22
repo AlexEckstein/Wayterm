@@ -1,3 +1,6 @@
+//! [`FakeBackend`]: a display-free backend that records calls for tests
+//! (doc 02 §FakeBackend).
+
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use gtk4::{pango, Widget};
@@ -7,14 +10,23 @@ use super::backend::{TerminalBackend, TerminalFeatures};
 /// One interaction/scrollback call recorded by [`FakeBackend`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Interaction {
+    /// `send_input`.
     SendInput(Vec<u8>),
+    /// `set_color_scheme`.
     SetColorScheme(String),
+    /// `copy_selection`.
     CopySelection,
+    /// `paste`.
     Paste(String),
+    /// `select_all`.
     SelectAll,
+    /// `clear`.
     Clear,
+    /// `search`.
     Search { text: String, reverse: bool },
+    /// `scroll_to_top`.
     ScrollToTop,
+    /// `scroll_to_bottom`.
     ScrollToBottom,
 }
 
@@ -22,15 +34,19 @@ pub enum Interaction {
 /// `write` and every interaction call. Clones share the recordings.
 #[derive(Clone, Default)]
 pub struct FakeBackend {
+    /// Every `write`, concatenated.
     written: Arc<Mutex<Vec<u8>>>,
+    /// Every interaction call, in order.
     interactions: Arc<Mutex<Vec<Interaction>>>,
 }
 
+/// Lock, ignoring poison: a panicked test must not hide later records.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl FakeBackend {
+    /// An empty recorder.
     pub fn new() -> Self {
         Self::default()
     }
@@ -45,6 +61,7 @@ impl FakeBackend {
         lock(&self.interactions).clone()
     }
 
+    /// Append one interaction call.
     fn record(&self, interaction: Interaction) {
         lock(&self.interactions).push(interaction);
     }
