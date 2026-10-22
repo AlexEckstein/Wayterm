@@ -1,5 +1,5 @@
-//! Local shell transport: the user's shell on a `forkpty` pseudo-terminal
-//! (doc 06).
+//! [`LocalTransport`]: the user's shell on a `forkpty` pseudo-terminal
+//! (doc 06 §Local shell).
 
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
@@ -29,6 +29,7 @@ const REAP_KILL_AFTER: Duration = Duration::from_secs(5);
 /// Highest descriptor the pre-5.9-kernel fallback closes in the child
 /// (`close_range(2)` needs no bound).
 const FALLBACK_CLOSE_LIMIT: libc::c_int = 65_536;
+/// How often the reaper checks whether the child exited.
 const REAP_POLL: Duration = Duration::from_millis(20);
 
 /// The user's shell on a local PTY. The reader task pushes output from the
@@ -37,22 +38,29 @@ const REAP_POLL: Duration = Duration::from_millis(20);
 pub struct LocalTransport {
     /// The shell as configured; resolved against `$PATH` at connect.
     shell: PathBuf,
+    /// The child's working directory; `None` is ours.
     working_dir: Option<PathBuf>,
+    /// The PTY master, while connected.
     master: Option<Arc<AsyncFd<OwnedFd>>>,
     /// The child's pid until someone takes it to reap it (0 = none), so it
     /// is waited for exactly once — a reaped pid may be reused.
     child_pid: Arc<AtomicI32>,
+    /// Reads the master and pushes events.
     reader_task: Option<JoinHandle<()>>,
+    /// Where the reader sends events.
     event_tx: mpsc::Sender<TransportEvent>,
+    /// Stops the reader; fresh per connect.
     cancel_token: CancellationToken,
     /// The terminal's measured grid at connect time.
     initial_rows: u32,
+    /// Columns of the measured grid at connect time.
     initial_cols: u32,
     /// Shared with the reader task, which ends the connection on `EIO`.
     state: SharedState,
 }
 
 impl LocalTransport {
+    /// A disconnected transport for `config`'s shell, opening at `rows` × `cols`.
     pub fn new(
         config: &SessionConfig,
         event_tx: mpsc::Sender<TransportEvent>,
@@ -79,6 +87,7 @@ impl LocalTransport {
         }
     }
 
+    /// The master, or `Disconnected`.
     fn master(&self) -> Result<Arc<AsyncFd<OwnedFd>>, TransportError> {
         self.master.clone().ok_or(TransportError::Disconnected)
     }
@@ -113,6 +122,7 @@ fn resolve_shell(shell: &Path) -> Result<PathBuf, TransportError> {
         .ok_or_else(not_found)
 }
 
+/// Whether `path` is an executable file.
 fn is_executable(path: &Path) -> bool {
     let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
         return false;
@@ -137,11 +147,13 @@ fn child_env() -> Vec<CString> {
     env
 }
 
+/// `s` as a C string; a NUL inside is a connect error.
 fn to_cstring(s: &OsStr) -> Result<CString, TransportError> {
     CString::new(s.as_bytes())
         .map_err(|_| TransportError::ConnectionFailed(format!("NUL in {}", s.to_string_lossy())))
 }
 
+/// A `winsize` for `rows` × `cols`, clamped to `u16`.
 fn winsize(rows: u32, cols: u32) -> libc::winsize {
     libc::winsize {
         ws_row: u16::try_from(rows).unwrap_or(u16::MAX),
