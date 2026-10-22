@@ -1,6 +1,6 @@
 //! The Credentials settings page: the Bitwarden source's switch and CLI
-//! path, and whether the keyring and the CLI answer (doc 05
-//! §Credential sources). Every change is saved at once; the chain reads the rows at
+//! path, and whether the keyring and the CLI answer (doc 05 §Credential
+//! sources). Every change is saved at once; the chain reads the rows at
 //! each connect.
 //!
 //! The settings rows and the probe classification are display-free;
@@ -24,12 +24,15 @@ use crate::transport::credentials::{bitwarden_status, BitwardenStatus, KeyringSo
 pub const BITWARDEN_ENABLED_KEY: &str = "bitwarden.enabled";
 /// The `bw` binary to run; blank or missing means [`DEFAULT_BITWARDEN_BIN`].
 pub const BITWARDEN_BIN_KEY: &str = "bitwarden.bin";
+/// The CLI run when `bitwarden.bin` is blank or missing.
 pub const DEFAULT_BITWARDEN_BIN: &str = "bw";
 
 /// The credential settings the chain is built from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CredentialSettings {
+    /// `bitwarden.enabled`: off unless explicitly on.
     pub bitwarden_enabled: bool,
+    /// `bitwarden.bin`, trimmed.
     pub bitwarden_bin: String,
 }
 
@@ -70,10 +73,12 @@ pub fn bitwarden_bin(raw: Option<&str>) -> String {
     }
 }
 
+/// Write `bitwarden.enabled`.
 pub fn save_enabled(store: &SessionStore, on: bool) -> rusqlite::Result<()> {
     store.set_setting(BITWARDEN_ENABLED_KEY, if on { "1" } else { "0" })
 }
 
+/// Write `bitwarden.bin`, trimmed.
 pub fn save_bin(store: &SessionStore, bin: &str) -> rusqlite::Result<()> {
     store.set_setting(BITWARDEN_BIN_KEY, bin.trim())
 }
@@ -195,6 +200,7 @@ fn labelled_row(title: &str, control: &impl IsA<gtk4::Widget>) -> gtk4::ListBoxR
     super::row(&[text.upcast_ref(), control.upcast_ref()])
 }
 
+/// A left-aligned status line.
 fn status_label(text: &str) -> gtk4::Label {
     let label = gtk4::Label::new(Some(text));
     label.set_xalign(0.0);
