@@ -832,12 +832,7 @@ pub(super) mod gtk_tests {
 
     pub(in crate::ui) fn rdp_embed_builds_and_tracks() {
         // GLib criticals abort instead of scrolling by.
-        // SAFETY: plain flag change on the process-wide GLib log mask.
-        unsafe {
-            glib::ffi::g_log_set_always_fatal(
-                glib::ffi::G_LOG_LEVEL_CRITICAL | glib::ffi::G_LOG_LEVEL_WARNING,
-            );
-        }
+        let _fatal = crate::ui::gtk_tests::FatalWarnings::new();
 
         // The embed area installs no controllers at all: the desktop keeps
         // its keys, and in particular there is no shortcut controller of

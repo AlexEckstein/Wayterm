@@ -37,6 +37,34 @@ pub use main_window::MainWindow;
 /// widget check in the library runs from this one test.
 #[cfg(test)]
 mod gtk_tests {
+    use gtk4::glib;
+
+    /// Makes GLib warnings and criticals abort until dropped, then puts
+    /// the previous mask back. The mask is process-wide and every widget
+    /// check shares the process, so a check must not leave it set for
+    /// the ones after it.
+    pub(super) struct FatalWarnings(glib::ffi::GLogLevelFlags);
+
+    impl FatalWarnings {
+        pub(super) fn new() -> Self {
+            // SAFETY: plain flag change on the process-wide GLib log mask.
+            Self(unsafe {
+                glib::ffi::g_log_set_always_fatal(
+                    glib::ffi::G_LOG_LEVEL_CRITICAL | glib::ffi::G_LOG_LEVEL_WARNING,
+                )
+            })
+        }
+    }
+
+    impl Drop for FatalWarnings {
+        fn drop(&mut self) {
+            // SAFETY: as in `new`, restoring the mask it replaced.
+            unsafe {
+                glib::ffi::g_log_set_always_fatal(self.0);
+            }
+        }
+    }
+
     #[test]
     #[ignore = "needs a display; run under xvfb-run"]
     fn widgets() {
