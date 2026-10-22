@@ -12,9 +12,7 @@ pub mod hostkey;
 pub mod jump;
 pub mod local;
 pub mod reconnect;
-/// Serial device transport (doc 06).
 pub mod serial;
-/// SSH session-channel transport (doc 04).
 pub mod ssh;
 pub mod supervisor;
 pub mod types;

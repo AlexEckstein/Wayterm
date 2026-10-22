@@ -8,9 +8,9 @@
 //! shows while the tab is current (`side_dock`). State a type needs beyond
 //! the core lives in that type's own struct on the page (`ssh`, `terminal`).
 //!
-//! Connecting: [`start_connect`] bumps a per-page generation, so a
+//! Connecting: `start_connect` bumps a per-page generation, so a
 //! cancelled or superseded attempt discards its result, and hands the page
-//! to its [`TabType`]'s flow: `ssh` dials through the window's supervisor,
+//! to its `TabType`'s flow: `ssh` dials through the window's supervisor,
 //! `local` starts the terminal directly, and both finish in `terminal`.
 //!
 //! Reconnecting (doc 03 §Lifecycle): every streaming tab registers as a

@@ -40,10 +40,7 @@ pub enum DraftError {
     /// The name is blank.
     NoName,
     /// Step `index` (0-based) has keys that do not parse.
-    BadKeys {
-        index: usize,
-        error: NotationError,
-    },
+    BadKeys { index: usize, error: NotationError },
 }
 
 impl fmt::Display for DraftError {

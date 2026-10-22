@@ -17,7 +17,7 @@ use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
 use crate::transport::types::TransportError;
 
 /// The method a session uses, which decides what the chain tries
-/// ([`auth_config`]). Secrets are looked up through the
+/// (`auth_config`). Secrets are looked up through the
 /// [`CredentialManager`] at connect time (doc 04 §Authentication).
 #[derive(Clone, Debug, Default)]
 pub enum AuthMethod {

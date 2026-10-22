@@ -74,7 +74,7 @@ fn only_ssh_sessions_can_be_jump_hosts() {
 fn only_ssh_sessions_store_a_password_on_save() {
     assert!(
         SessionType::SSH.stores_password_on_save(),
-        "doc 05"
+        "SSH saves its password to the keyring (doc 05)"
     );
     for other in NOT_SSH {
         assert!(

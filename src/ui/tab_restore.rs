@@ -97,7 +97,7 @@ impl TabPersistence {
         });
     }
 
-    /// Note a change: the save runs once [`SAVE_DEBOUNCE`] has passed
+    /// Note a change: the save runs once `SAVE_DEBOUNCE` has passed
     /// without another. The trailing-edge timer is the debounce, on the
     /// main loop's monotonic clock, so a wall-clock step cannot lose it.
     pub fn schedule_save(self: &Rc<Self>) {

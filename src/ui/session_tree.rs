@@ -669,7 +669,7 @@ impl SessionTree {
 }
 
 /// A copy of `config` to insert as a new session: same folder and
-/// settings, named "<name> (copy)", without the id or connection history.
+/// settings, named "`<name> (copy)`", without the id or connection history.
 /// Keyring secrets are keyed on the session id and stay with the original.
 pub fn cloned_session(config: &SessionConfig) -> SessionConfig {
     SessionConfig {

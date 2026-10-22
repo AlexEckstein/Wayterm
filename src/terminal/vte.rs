@@ -14,6 +14,7 @@ use crate::backpressure::IdleSender;
 
 /// The built-in backend: the GTK4 VTE widget (doc 02). Main thread only.
 pub struct VteBackend {
+    /// The widget.
     terminal: VteTerminal,
     /// The queue `commit` feeds, for input `feed_child` cannot carry.
     input: EventSender,
