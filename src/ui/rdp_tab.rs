@@ -8,7 +8,7 @@
 //! runs on the blocking pool inside `dial`; the GTK thread only builds
 //! widgets and pumps the runner's events.
 //!
-//! ## Embedding (spike-validated on FreeRDP 3.15 + xrdp + openbox)
+//! ## Embedding (verified on FreeRDP 3.15 + xrdp + openbox)
 //!
 //! - **XID acquisition:** after the area maps, a 50 ms poll reads
 //!   `native().surface()`, downcasts to [`gdk4_x11::X11Surface`](https://docs.rs/gdk4-x11),
@@ -112,6 +112,7 @@ const XID_POLL: Duration = Duration::from_millis(50);
 const XID_POLLS_MAX: u32 = 200;
 /// Child discovery: first query ~1 s after spawn, second ~3 s.
 const DISCOVER_FIRST: Duration = Duration::from_secs(1);
+/// Second child discovery, about 3 s after spawn.
 const DISCOVER_SECOND: Duration = Duration::from_secs(3);
 /// `ConfigureWindow` fallback poll.
 const CONFIGURE_POLL: Duration = Duration::from_millis(250);
@@ -122,21 +123,27 @@ const FOCUS_POLL: Duration = Duration::from_millis(150);
 // Connect flow
 // ---------------------------------------------------------------------------
 
+/// The process, shared by the runner task and teardown.
 type Proc = Arc<tokio::sync::Mutex<RdpProcess>>;
 
 /// Everything one attempt needs on the GTK thread.
 #[derive(Clone)]
 struct Attempt {
+    /// The window's tab notebook.
     notebook: gtk4::Notebook,
     /// Weak: every timer and task of the attempt holds one, and a strong
     /// ref would keep a closed page alive — with its [`EngineSlot`], so our
     /// xfreerdp would outlive the tab (doc 03 §Lifecycle).
     page: glib::WeakRef<gtk4::Widget>,
+    /// The session being connected.
     session: Rc<SessionConfig>,
     /// Trimmed, as the dial uses it.
     host: Rc<str>,
+    /// Server port.
     port: u16,
+    /// The tab generation the attempt belongs to.
     tab_gen: u64,
+    /// The RDP-local generation (overlay Cancel, retry).
     our_gen: u64,
 }
 
@@ -148,14 +155,17 @@ impl Attempt {
             .filter(|page| current_gen(page) == self.tab_gen && rdp_gen_value(page) == self.our_gen)
     }
 
+    /// Whether the attempt is still the page's newest.
     fn live(&self) -> bool {
         self.page().is_some()
     }
 
+    /// Publish `state` for this attempt's endpoint.
     fn publish(&self, page: &gtk4::Widget, state: TransportState) {
         publish_status(page, state, &self.host, self.port);
     }
 
+    /// Show the error view with `message`.
     fn fail(&self, page: &gtk4::Widget, message: String) {
         show_failure(
             &self.notebook,
@@ -167,15 +177,18 @@ impl Attempt {
         );
     }
 
+    /// Show the disconnected view.
     fn disconnected(&self, page: &gtk4::Widget) {
         show_disconnected(page, &self.host, self.port);
     }
 }
 
+/// `page`'s RDP attempt generation cell.
 fn rdp_gen_slot(page: &gtk4::Widget) -> Rc<Cell<u64>> {
     data_or_default(page, RDP_GEN_KEY)
 }
 
+/// `page`'s RDP attempt generation.
 fn rdp_gen_value(page: &gtk4::Widget) -> u64 {
     rdp_gen_slot(page).get()
 }
@@ -192,12 +205,16 @@ fn bump_rdp_gen(page: &gtk4::Widget) -> u64 {
 /// terminates our own child (SIGTERM pgroup → grace → SIGKILL).
 struct EngineSlot(RefCell<Option<SlotState>>);
 
+/// The process and its runner, while alive.
 struct SlotState {
+    /// The process.
     proc: Proc,
+    /// The task running it.
     runner: tokio::task::JoinHandle<io::Result<()>>,
 }
 
 impl EngineSlot {
+    /// A slot owning `proc` and `runner`.
     fn with_runner(proc: Proc, runner: tokio::task::JoinHandle<io::Result<()>>) -> Self {
         Self(RefCell::new(Some(SlotState { proc, runner })))
     }
@@ -230,17 +247,24 @@ fn dispose_process(proc: Proc, runner: tokio::task::JoinHandle<io::Result<()>>) 
     }
 }
 
+/// How a dial on the blocking pool ended.
 enum Dial {
     /// The password prompt was cancelled, or the user rejected a TOFU
     /// prompt: a clean disconnect, not an error.
     Cancelled,
+    /// A failure to show on the page.
     Failed(String),
+    /// Spawned: hand the handles to the GTK thread.
     Ready(ReadyDial),
 }
 
+/// A spawned session, back on the GTK thread.
 struct ReadyDial {
+    /// The process.
     proc: Proc,
+    /// The task running it.
     runner: tokio::task::JoinHandle<io::Result<()>>,
+    /// Its events.
     events: mpsc::Receiver<RdpProcessEvent>,
     /// The fingerprint the spawn was pinned to (for the changed-cert check
     /// on pre-connect failures).
@@ -363,11 +387,17 @@ fn spawn_real(
 /// newcomer (see [`track_newcomer`]); `conn` took it and runs maintenance
 /// (`None` when the display refused the connection).
 struct Embed {
+    /// The X11-backed area xfreerdp reparents into.
     area: gtk4::DrawingArea,
+    /// The area plus the connecting overlay.
     overlay: gtk4::Overlay,
+    /// The connecting overlay.
     status: gtk4::Widget,
+    /// The toplevel's XID, xfreerdp's parent.
     host_xid: u32,
+    /// The x11rb connection, if the display accepted one.
     conn: Option<RustConnection>,
+    /// Host children before the spawn.
     baseline: Vec<u32>,
 }
 
@@ -738,9 +768,13 @@ fn start_maintenance(
 /// The x11rb side of one embedded attempt: the host window, our tracked
 /// child, and whether we last left that child mapped.
 struct Maintainer {
+    /// The x11rb connection.
     conn: RustConnection,
+    /// The host (toplevel) window.
     host: u32,
+    /// Our tracked child; 0 until found.
     child: Cell<u32>,
+    /// Whether the child was last left mapped.
     shown: Cell<bool>,
 }
 

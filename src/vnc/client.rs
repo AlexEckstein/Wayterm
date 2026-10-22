@@ -79,6 +79,7 @@ const POLL_BUSY: Duration = Duration::from_millis(1);
 const MAX_DRAIN: usize = 256;
 /// Pending input events; a full channel drops the newest (see [`VncInput`]).
 const INPUT_CAPACITY: usize = 256;
+/// Pending UI events.
 const UI_CAPACITY: usize = 256;
 
 /// The [`VncUiEvent::Ended`] reason of an engine stopped by
@@ -97,24 +98,32 @@ pub const DEFAULT_ENCODINGS: [VncEncoding; 6] = [
     VncEncoding::CursorPseudo,
 ];
 
+/// Why a VNC connect failed.
 #[derive(Debug, Error)]
 pub enum VncError {
+    /// The TCP connect failed.
     #[error("could not reach the server: {0}")]
     Io(#[from] std::io::Error),
+    /// The handshake took longer than the timeout.
     #[error("handshake timed out after {0:?}")]
     Timeout(Duration),
+    /// The RFB handshake failed.
     #[error("handshake failed: {0}")]
     Handshake(String),
+    /// The server wants a password and none was given.
     #[error("the server requires a password")]
     AuthRequired,
+    /// The server rejected the password.
     #[error("authentication failed: {0}")]
     AuthFailed(String),
 }
 
+/// The crate's password callback future.
 type AuthFuture = Pin<Box<dyn Future<Output = Result<String, ::vnc::VncError>> + Send + Sync>>;
 
 /// A connected, authenticated RFB session that is not yet running.
 pub struct VncSession {
+    /// The crate's client.
     client: VncClient,
 }
 
@@ -142,6 +151,7 @@ impl VncSession {
             .map_err(|_| VncError::Timeout(timeout))?
     }
 
+    /// Dial `host:port` and run the handshake, asking for the password only if the server wants one.
     async fn dial(
         host: &str,
         port: u16,
@@ -196,6 +206,7 @@ impl VncSession {
     }
 }
 
+/// Map a crate error, telling auth failure from other `General` errors.
 fn map_connect_error(error: ::vnc::VncError, auth_attempted: bool) -> VncError {
     use ::vnc::VncError as E;
     match error {
@@ -216,6 +227,7 @@ pub enum VncUiEvent {
     Dirtied,
     /// Desktop dimensions (initial size, or a mid-session resize).
     Resolved(u16, u16),
+    /// BEL from the server.
     Bell,
     /// Server clipboard text (Latin-1 per RFC 6143 §7.6.4).
     Clipboard(String),
@@ -228,11 +240,14 @@ pub enum VncUiEvent {
 /// event and counts it, so the GTK main thread never waits on the engine.
 #[derive(Clone)]
 pub struct VncInput {
+    /// Into the engine.
     tx: mpsc::Sender<X11Event>,
+    /// Events dropped because the channel was full or closed.
     dropped: Arc<AtomicU64>,
 }
 
 impl VncInput {
+    /// A sender with room for `capacity` events, and its receiver.
     fn new(capacity: usize) -> (Self, mpsc::Receiver<X11Event>) {
         let (tx, rx) = mpsc::channel(capacity);
         let input = Self {
@@ -259,11 +274,15 @@ impl VncInput {
 
 /// Handle to a running engine.
 pub struct VncEngine {
+    /// What the engine reports.
     pub events: mpsc::Receiver<VncUiEvent>,
+    /// Input into the engine.
     pub input: VncInput,
     /// Engine-owned framebuffer; lock briefly to snapshot.
     pub pixels: Arc<Mutex<VncPixels>>,
+    /// Stops the engine.
     cancel: CancellationToken,
+    /// The engine task.
     task: JoinHandle<()>,
 }
 
@@ -289,6 +308,7 @@ enum Applied {
     Ui(VncUiEvent),
     /// Fatal: the engine must stop with this reason.
     Fatal(String),
+    /// Nothing for the UI.
     Ignored,
 }
 
@@ -334,6 +354,7 @@ fn resolve(pixels: &mut VncPixels, width: u16, height: u16) -> Applied {
     Applied::Ui(VncUiEvent::Resolved(width, height))
 }
 
+/// The engine loop: refresh, drain events, forward input, until cancel or error.
 async fn run(
     client: VncClient,
     pixels: Arc<Mutex<VncPixels>>,
@@ -385,6 +406,7 @@ async fn drive(
     }
 }
 
+/// A one-line reason for a failed input send.
 fn input_error(error: ::vnc::VncError) -> String {
     match error {
         ::vnc::VncError::ClientNotRunning => "server closed".into(),

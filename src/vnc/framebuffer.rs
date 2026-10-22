@@ -17,6 +17,7 @@ pub type PixelRect = (u16, u16, u16, u16);
 
 /// Opaque black: the fill for fresh and newly exposed pixels.
 const OPAQUE_BLACK: u32 = 0xFF00_0000;
+/// The alpha byte forced into every pixel.
 const ALPHA_OPAQUE: u32 = 0xFF00_0000;
 
 /// The widest or tallest desktop the engine holds. Cairo image surfaces
@@ -27,6 +28,7 @@ pub const MAX_DIMENSION: u16 = 16_384;
 /// so an unchecked 65535 × 65535 would commit ~17 GB before a frame.
 pub const MAX_PIXELS: usize = 1 << 26;
 
+/// Why a framebuffer write was refused.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum FramebufferError {
     /// The delivered byte count does not equal `width * height * 4` for the
@@ -35,10 +37,14 @@ pub enum FramebufferError {
     RectLength { expected: usize, got: usize },
 }
 
+/// The VNC framebuffer: BGRA32 pixels, always opaque.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VncPixels {
+    /// Width in pixels.
     width: u16,
+    /// Height in pixels.
     height: u16,
+    /// Row-major BGRA32, `width * height` long.
     pixels: Vec<u32>,
 }
 
@@ -53,6 +59,7 @@ impl VncPixels {
         }
     }
 
+    /// `(width, height)`.
     pub fn dims(&self) -> (u16, u16) {
         (self.width, self.height)
     }
@@ -64,6 +71,7 @@ impl VncPixels {
         width <= MAX_DIMENSION && height <= MAX_DIMENSION && len(width, height) <= MAX_PIXELS
     }
 
+    /// Every pixel, row-major.
     pub fn pixels(&self) -> &[u32] {
         &self.pixels
     }
@@ -156,6 +164,7 @@ impl VncPixels {
     }
 }
 
+/// Pixel count of a `width` × `height` buffer.
 fn len(width: u16, height: u16) -> usize {
     usize::from(width) * usize::from(height)
 }

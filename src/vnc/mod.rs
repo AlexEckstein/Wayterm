@@ -1,4 +1,5 @@
-//! VNC tabs (doc 08 §VNC, Path B): a pure-Rust RFB client on tokio.
+//! The VNC engine (doc 08 §VNC): a pure-Rust RFB client (`vnc-rs`) on
+//! tokio.
 //!
 //! VNC is deliberately not a `Transport` (doc 03 §Transport factory): the
 //! engine here hands the UI a framebuffer and an event stream instead of a
