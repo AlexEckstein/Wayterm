@@ -43,7 +43,7 @@ use wayterm::transport::factory::create_transport;
 use wayterm::transport::reconnect::{ConnectFn, ConnectFuture};
 use wayterm::transport::supervisor::{ConnectParams, ConnectionSupervisor};
 use wayterm::transport::types::{Transport, TransportEvent, TransportState, TransportType};
-use wayterm::ui::tab_resilience::{self, ReconnectAction};
+use wayterm::ui::tabs::resilience::{self, ReconnectAction};
 
 fn skip(reason: &str) {
     println!("Skipping tmux persistence test: {reason}");
@@ -526,11 +526,11 @@ async fn auto_reconnect_after_a_dropped_connection_keeps_the_program_running() {
     let connect = supervisor_connect(&f, supervisor.clone(), config, slot.clone());
 
     // --- Connect and register, as finish_connect does --------------------
-    tab_resilience::reset_registry();
-    tab_resilience::install_settings(true, true); // reconnect_on_drop on
+    resilience::reset_registry();
+    resilience::install_settings(true, true); // reconnect_on_drop on
     connect().await.expect("first connect failed");
-    tab_resilience::register_connected_tab(TAB, connect.clone());
-    tab_resilience::set_tab_state(TAB, TransportState::Connected);
+    resilience::register_connected_tab(TAB, connect.clone());
+    resilience::set_tab_state(TAB, TransportState::Connected);
     let (mut transport, mut rx) = slot.lock().await.take().expect("transport installed");
     let first_session_id = session_id(&mut transport, &mut rx).await;
 
@@ -580,10 +580,10 @@ async fn auto_reconnect_after_a_dropped_connection_keeps_the_program_running() {
     // … and starts the driver per policy.
     let (state_tx, mut state_rx) = mpsc::unbounded_channel();
     assert_eq!(
-        tab_resilience::on_connection_lost(TAB, state_tx),
+        resilience::on_connection_lost(TAB, state_tx),
         Some(ReconnectAction::Started { tab_id: TAB })
     );
-    assert_eq!(tab_resilience::tab_state(TAB), TransportState::Disconnected);
+    assert_eq!(resilience::tab_state(TAB), TransportState::Disconnected);
 
     // --- The driver reattaches on its own ---------------------------------
     let mut attempts = 0;
@@ -619,7 +619,7 @@ async fn auto_reconnect_after_a_dropped_connection_keeps_the_program_running() {
     );
 
     // --- Cleanup ----------------------------------------------------------
-    tab_resilience::teardown_tab(TAB);
+    resilience::teardown_tab(TAB);
     let _ = transport.disconnect().await;
     let (mut probe, mut probe_rx) = probe_transport(&f).await;
     run(

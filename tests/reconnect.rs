@@ -4,7 +4,7 @@
 //! These drive [`wayterm::transport::reconnect`] from outside the crate, so
 //! they double as a check that the policy, the driver, and the
 //! confirm-close rule are all reachable as public API — the GTK half in
-//! `wayterm::ui::tab_resilience` consumes exactly this surface.
+//! `wayterm::ui::tabs::resilience` consumes exactly this surface.
 //!
 //! The driver tests use `#[tokio::test(start_paused = true)]` so the
 //! backoff curve is asserted against *virtual* time: a fail-3-then-succeed

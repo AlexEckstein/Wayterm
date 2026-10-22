@@ -1,6 +1,6 @@
 //! Reconnect policy and driver (doc 03 §Lifecycle),
 //! display-free so the whole retry loop is testable against paused time.
-//! The GTK half (prompt dialog, window actions) is `ui::tab_resilience`.
+//! The GTK half (prompt dialog, window actions) is `ui::tabs::resilience`.
 //!
 //! The backoff delay applies before every attempt, the first included, so
 //! attempts land at 1s, 2s, 5s, 10s, then every 60s. Every connect error is

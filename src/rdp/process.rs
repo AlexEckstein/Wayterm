@@ -1,6 +1,6 @@
 //! The xfreerdp subprocess (doc 08 §RDP): argv builder, binary probe, and
 //! the child wrapper that feeds the password and watches the exit.
-//! Display-free and `Send`; the embedding lives in `ui::rdp_tab`.
+//! Display-free and `Send`; the embedding lives in `ui::tabs::rdp`.
 //!
 //! Rules the code depends on (verified on FreeRDP 3.15 and 3.32):
 //!

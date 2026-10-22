@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::macros::model::{steps_from_json, steps_to_json, Macro};
 use crate::store::model::{Folder, HostKeyPolicy, SessionConfig};
-use crate::ui::tab_state::{self, TabState};
+use crate::ui::tabs::state::{tabs_from_json, tabs_to_json, TabState, OPEN_TABS_SETTING_KEY};
 
 /// The settings row holding the global host-key policy (doc 09).
 pub const HOST_KEY_POLICY_SETTING: &str = "host_key_policy";
@@ -295,16 +295,16 @@ impl SessionStore {
     /// it is always read and written whole. `[]` is stored, not deleted, so
     /// "no tabs open" is remembered too. Tab identity only, no credentials.
     pub fn save_open_tabs(&self, tabs: &[TabState]) -> rusqlite::Result<()> {
-        let json = tab_state::tabs_to_json(tabs).map_err(to_sql_error)?;
-        self.set_setting(tab_state::OPEN_TABS_SETTING_KEY, &json)
+        let json = tabs_to_json(tabs).map_err(to_sql_error)?;
+        self.set_setting(OPEN_TABS_SETTING_KEY, &json)
     }
 
     /// The saved open-tab list; empty when never saved. Malformed JSON is an
     /// error, not an empty list, so the caller can tell the two apart.
     pub fn load_open_tabs(&self) -> rusqlite::Result<Vec<TabState>> {
-        match self.get_setting(tab_state::OPEN_TABS_SETTING_KEY)? {
+        match self.get_setting(OPEN_TABS_SETTING_KEY)? {
             None => Ok(Vec::new()),
-            Some(json) => tab_state::tabs_from_json(&json).map_err(from_sql_error),
+            Some(json) => tabs_from_json(&json).map_err(from_sql_error),
         }
     }
 

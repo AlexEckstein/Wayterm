@@ -124,7 +124,7 @@ impl<T: 'static> IdleSender<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::auth_dialog::tests::acquire_default_ctx;
+    use crate::ui::dialogs::auth::tests::acquire_default_ctx;
 
     /// Park `items` as a refused send would, without spawning a drain.
     fn parked(capacity: usize, items: &[u32]) -> (IdleSender<u32>, mpsc::Receiver<u32>) {

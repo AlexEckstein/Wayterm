@@ -31,7 +31,7 @@ use gtk4::{gdk, gio, glib};
 
 use crate::terminal::color_scheme::{self, classify_system_theme, Brightness, UNKNOWN_THEME};
 use crate::terminal::TerminalBackend;
-use crate::ui::tab::SessionTab;
+use crate::ui::tabs::SessionTab;
 
 const PORTAL: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";

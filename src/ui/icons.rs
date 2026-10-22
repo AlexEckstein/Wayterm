@@ -83,7 +83,7 @@ pub const BUILTIN: &[&str] = &[
     "wayterm-star-symbolic",
 ];
 
-/// Icons the window itself draws (the side dock's tabs, `ui::side_dock`):
+/// Icons the window itself draws (the side dock's tabs, `ui::panels::side_dock`):
 /// bundled with [`BUILTIN`] so they look the same on every theme, but not
 /// offered in the picker.
 pub const CHROME: &[&str] = &["wayterm-macro-symbolic", "wayterm-sftp-symbolic"];

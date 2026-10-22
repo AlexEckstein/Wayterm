@@ -16,9 +16,11 @@ use wayterm::hotkeys::{
     DEFAULT_ACTIONS,
 };
 use wayterm::store::db::SessionStore;
+use wayterm::ui::panels::sftp_sidebar;
 use wayterm::ui::settings::general;
 use wayterm::ui::settings::hotkeys::{context_label, SettingsError, SettingsRow, SettingsView};
-use wayterm::ui::{sftp_sidebar, tab_resilience, tray};
+use wayterm::ui::tabs::resilience;
+use wayterm::ui::tray;
 
 fn engine() -> HotkeyEngine {
     HotkeyEngine::new()
@@ -551,8 +553,8 @@ fn general_toggles_cover_the_behavior_rows_in_page_order() {
     assert_eq!(
         keys,
         vec![
-            tab_resilience::CONFIRM_CLOSE_SETTING,
-            tab_resilience::RECONNECT_ON_DROP_SETTING,
+            resilience::CONFIRM_CLOSE_SETTING,
+            resilience::RECONNECT_ON_DROP_SETTING,
             sftp_sidebar::SFTP_ON_CONNECT_SETTING,
             tray::MINIMIZE_TO_TRAY_KEY,
         ]
@@ -613,8 +615,8 @@ fn general_apply_pushes_the_stored_values_live() {
         general::save(&store, toggle.key, false).expect("save off");
     }
     general::apply(&store);
-    assert!(!tab_resilience::confirm_close_setting());
-    assert!(!tab_resilience::reconnect_on_drop_setting());
+    assert!(!resilience::confirm_close_setting());
+    assert!(!resilience::reconnect_on_drop_setting());
     assert!(!sftp_sidebar::open_on_connect());
     assert!(!tray::minimize_to_tray_enabled(&store));
 
@@ -622,8 +624,8 @@ fn general_apply_pushes_the_stored_values_live() {
         general::save(&store, toggle.key, true).expect("save on");
     }
     general::apply(&store);
-    assert!(tab_resilience::confirm_close_setting());
-    assert!(tab_resilience::reconnect_on_drop_setting());
+    assert!(resilience::confirm_close_setting());
+    assert!(resilience::reconnect_on_drop_setting());
     assert!(sftp_sidebar::open_on_connect());
     assert!(tray::minimize_to_tray_enabled(&store));
 }
