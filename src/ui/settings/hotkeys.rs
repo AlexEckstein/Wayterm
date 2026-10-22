@@ -26,8 +26,10 @@ use crate::ui::widgets::{confirm, set_margins};
 /// Why a rebind or reset through the UI failed.
 #[derive(Debug, Error)]
 pub enum SettingsError {
+    /// The registry refused the change.
     #[error(transparent)]
     Rebind(#[from] RebindError),
+    /// Saving failed.
     #[error(transparent)]
     Db(#[from] rusqlite::Error),
 }
@@ -35,17 +37,26 @@ pub enum SettingsError {
 /// One list row: name | key | context, plus reset state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsRow {
+    /// Action id.
     pub id: String,
+    /// Action name.
     pub display_name: String,
+    /// Current chord; empty when unbound.
     pub current_key: String,
+    /// Default chord.
     pub default_key: String,
+    /// Where it fires.
     pub context: ActionContext,
+    /// The context's display name.
     pub context_label: String,
+    /// Whether the action is at its default.
     pub is_default: bool,
+    /// Whether the action is enabled.
     pub enabled: bool,
 }
 
 impl SettingsRow {
+    /// The row for `action`.
     pub fn from_action(action: &Action) -> Self {
         Self {
             id: action.id.clone(),
@@ -81,6 +92,7 @@ impl SettingsView {
         Self::rows_from_registry(engine.registry())
     }
 
+    /// Every action's row, in table order.
     pub fn rows_from_registry(registry: &crate::hotkeys::ActionRegistry) -> Vec<SettingsRow> {
         registry
             .ordered_actions()
@@ -176,7 +188,9 @@ impl SettingsView {
 
 /// What every settings callback needs.
 struct SettingsState {
+    /// The live engine every change goes through.
     engine: Rc<RefCell<HotkeyEngine>>,
+    /// Where changes are saved.
     store: Rc<SessionStore>,
 }
 

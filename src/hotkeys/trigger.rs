@@ -79,11 +79,14 @@ pub fn ui_key_is_bindable(key: &str) -> bool {
 /// Shift+Tab sends) as `Tab` — so equal chords compare equal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyChord {
+    /// The key pressed.
     pub key: Key,
+    /// Modifiers held, lock and button masks removed.
     pub modifiers: ModifierType,
 }
 
 impl KeyChord {
+    /// A chord from `key` and `modifiers`, keeping only the binding modifiers.
     pub fn new(key: Key, modifiers: ModifierType) -> Self {
         let mask = MODS
             .iter()

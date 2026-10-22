@@ -20,13 +20,17 @@ use crate::hotkeys::trigger::{
 /// One rebindable action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
+    /// Stable id, the window action's name (`new_tab`).
     pub id: String,
+    /// What the settings page shows ("New Tab").
     pub display_name: String,
     /// The compiled-in binding, canonical UI format (`"Ctrl+Shift+T"`).
     pub default_key: String,
     /// The effective binding, canonical; empty once an override unbinds it.
     pub current_key: String,
+    /// Where it fires.
     pub context: ActionContext,
+    /// Disabled actions hold no chord.
     pub enabled: bool,
     /// `current_key == default_key`.
     pub is_default: bool,
@@ -54,10 +58,12 @@ pub enum ActionContext {
     Sftp,
     /// Passthrough: no actions, keys go to the remote session.
     RdpTab,
+    /// VNC tabs (holds no actions).
     VncTab,
 }
 
 impl ActionContext {
+    /// Every context, in settings-page order.
     pub const ALL: [ActionContext; 6] = [
         ActionContext::Global,
         ActionContext::Terminal,
@@ -79,6 +85,7 @@ impl ActionContext {
         }
     }
 
+    /// Parse a `hotkeys.context` value.
     pub fn from_db_str(text: &str) -> Option<ActionContext> {
         ActionContext::ALL
             .into_iter()
@@ -95,6 +102,7 @@ impl ActionContext {
 /// Why a rebind was refused; each variant names the offending input.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum RebindError {
+    /// No action has this id.
     #[error("no action registered with id {id:?}")]
     UnknownAction { id: String },
 
@@ -120,12 +128,15 @@ pub enum ConflictPolicy {
     Override,
 }
 
+/// Every action with its current binding; data only, handlers are window actions.
 #[derive(Clone, Debug, Default)]
 pub struct ActionRegistry {
+    /// Every action, by id.
     actions: HashMap<String, Action>,
 }
 
 impl ActionRegistry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
@@ -229,6 +240,7 @@ impl ActionRegistry {
         Ok(())
     }
 
+    /// The action `id`, if registered.
     pub fn action(&self, id: &str) -> Option<&Action> {
         self.actions.get(id)
     }
@@ -239,20 +251,24 @@ impl ActionRegistry {
         self.actions.get_mut(id)
     }
 
+    /// The action `id`, or `UnknownAction`.
     fn get_mut(&mut self, id: &str) -> Result<&mut Action, RebindError> {
         self.actions
             .get_mut(id)
             .ok_or_else(|| RebindError::UnknownAction { id: id.to_string() })
     }
 
+    /// Whether `id` is registered.
     pub fn contains(&self, id: &str) -> bool {
         self.actions.contains_key(id)
     }
 
+    /// How many actions there are.
     pub fn len(&self) -> usize {
         self.actions.len()
     }
 
+    /// Whether there are none.
     pub fn is_empty(&self) -> bool {
         self.actions.is_empty()
     }
@@ -288,10 +304,12 @@ impl ActionRegistry {
             .collect()
     }
 
+    /// The current chord of `id`; empty when unbound.
     pub fn current_key(&self, id: &str) -> Option<&str> {
         self.actions.get(id).map(|a| a.current_key.as_str())
     }
 
+    /// Where `id` fires.
     pub fn context_of(&self, id: &str) -> Option<ActionContext> {
         self.actions.get(id).map(|a| a.context)
     }
@@ -326,6 +344,7 @@ fn stored_key(key: &str) -> String {
     canonical_ui_key(key).unwrap_or_else(|| key.to_string())
 }
 
+/// Why `key` does not parse, for the error.
 fn unparsable_reason(key: &str) -> String {
     let token = key_token(key);
     if token.is_empty() {
