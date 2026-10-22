@@ -174,6 +174,9 @@ cargo bench --features backend-ghostty      # doc 02 §Benchmark
   `tmux_persistence`, `reconnect_sshd`, `forward_sshd` and `jump_sshd`
   need only that same sshd but run locally only.
 - CI does not run the widget tests, and does not build `backend-ghostty`.
+- `jump_sshd` dials through `dial_via_jump` while the test itself holds
+  the jump connection, so the app's path — where nothing holds the jump
+  hop after the dial (doc 04 §Limitations) — is not exercised.
 - The serial hardware path has not run against real hardware; Tight/ZRLE
   VNC decoding is exercised only against real servers, not the mock.
 - No fuzzing yet: `known_hosts` handling and SFTP path joining are the

@@ -154,7 +154,8 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Bump `connect_count` and stamp `last_connected`.
+    /// Bump `connect_count` and stamp `last_connected`. Nothing in the app
+    /// calls it (doc 09 §Limitations).
     pub fn touch_connected(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE sessions SET last_connected = datetime('now'), \

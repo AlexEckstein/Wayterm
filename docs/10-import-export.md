@@ -56,9 +56,10 @@ did next, so it never nags.
 - `Match` blocks and options outside any `Host` are skipped and counted
   in the report;
 - like OpenSSH, the first value obtained for an alias wins;
-- `Include` is followed where it appears, relative to `~/.ssh`, `~/`
-  expanded, at most 5 levels deep and cycle-safe; non-regular files are
-  skipped with a warning;
+- `Include` is followed where it appears: relative paths resolve against
+  the chosen file's directory (else `~/.ssh`), `~/` is expanded, globs
+  match files, at most 5 levels deep and cycle-safe; non-regular files
+  are skipped with a warning;
 - mapped: `HostName`, `Port`, `User`, `IdentityFile` (the key path;
   `none` ignored), `IdentitiesOnly yes` (the key method),
   `ServerAliveInterval` (the stored keepalive interval) and `ProxyJump`

@@ -59,8 +59,9 @@ the shared connection stays up for its other consumers.
 
 1. Use `~/.ssh/known_hosts`, one store shared with every other SSH client.
 2. **Unknown host:** an OpenSSH-style prompt with the SHA-256 fingerprint.
-   Accepting always records the key (hashed if the file uses hashing),
-   so the host is never asked about twice.
+   Accepting always records the key, so the host is never asked about
+   twice. Hashed entries are read, but new entries are appended in plain
+   text (`host` or `[host]:port`, then the key), even to a hashed file.
 3. **Changed key:** hard fail, never a one-click override.
 4. The policy is global (`host_key_policy`, seeded `strict`) with a
    per-session override:
@@ -160,9 +161,10 @@ and run the target's SSH session over that stream.
   dialog.
 - The jump hop comes from the supervisor like any connection. The target
   connection is never pooled — the pool key describes a TCP endpoint, not
-  a connection backed by a jump channel — and holds its bastion's `Arc`
-  for its whole life, so the supervisor cannot evict the bastion under a
-  live target.
+  a connection backed by a jump channel — and the tab holds only the
+  target. Nothing holds the jump hop's `Arc` once the dial returns, so the
+  supervisor's monitor releases the bastion like any unused connection
+  (§Limitations).
 - No SFTP task runs over a jumped connection; the sidebar says so instead
   of attaching.
 
@@ -235,6 +237,13 @@ Re-verify these when bumping a dependency; these APIs have moved before.
 - Only Local forwards: Remote (`ssh -R`) and Dynamic (SOCKS, `ssh -D`)
   rules can be stored and are shown marked, but never start. No agent or
   X11 forwarding.
+- **A jumped session does not keep its bastion alive.** After the dial,
+  only the supervisor's pool references the jump hop, so its monitor
+  disconnects it within about 250 ms — closing the direct-tcpip channel
+  the target runs over — unless another consumer (a direct tab to the
+  same host and user) holds it. The `jump_sshd` suite holds the jump
+  connection itself, so it does not exercise this path. Read from the
+  code, not observed in a running app.
 - Jump depth is one hop. Jumped connections are not deduplicated (two tabs
   to the same target through the same bastion open two target
   connections), and have no SFTP sidebar.

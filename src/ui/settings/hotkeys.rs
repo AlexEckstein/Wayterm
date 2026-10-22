@@ -5,8 +5,8 @@
 //! conflicts, rebind-then-save); the GTK functions only render it. A
 //! captured chord that is taken raises "… is already bound to 'X'.
 //! Override?"; overriding unbinds the loser. Every change is saved at once.
-//! A `ListBox` stands in for doc 11's `ColumnView`: same columns, far less
-//! machinery for a fixed 37-row table.
+//! A `ListBox` stands in for a `ColumnView`: same columns, far less
+//! machinery for a fixed 34-row table.
 
 use std::cell::RefCell;
 use std::rc::Rc;

@@ -1,6 +1,8 @@
 //! Host-key dialogs (doc 04 §Host key verification): the OpenSSH-style
 //! prompt for an unknown host, and the MITM warning for a changed key,
-//! which has no accept button at all.
+//! which has no accept button at all. The connect flow only shows the
+//! first: a changed key is rejected without the warning (doc 04
+//! §Limitations).
 
 use std::sync::Arc;
 
@@ -79,7 +81,8 @@ pub fn prompt_unknown(facts: &HostKeyFacts) -> HostKeyDecision {
     decision_from_response(show(facts, HostKeyNotice::Unknown) == Some(true))
 }
 
-/// The changed-key warning; always rejects.
+/// The changed-key warning; always rejects. Not called by the connect
+/// flow.
 pub fn prompt_changed(facts: &HostKeyFacts) -> HostKeyDecision {
     show(facts, HostKeyNotice::Changed);
     HostKeyDecision::Reject

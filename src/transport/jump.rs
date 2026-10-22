@@ -101,7 +101,9 @@ pub fn hop_auth_method(config: &SessionConfig) -> AuthMethod {
 /// [`TransportError::Cancelled`].
 ///
 /// The returned connection is NOT pooled: it is backed by a jump channel,
-/// not a TCP endpoint the pool key could describe.
+/// not a TCP endpoint the pool key could describe. It does not hold the
+/// jump hop either, so the supervisor may release the hop once this
+/// returns (doc 04 §Limitations).
 pub async fn dial_with_jump(
     supervisor: &ConnectionSupervisor,
     jump_config: &SessionConfig,
