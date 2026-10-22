@@ -1,5 +1,5 @@
-//! The status bar: connection state, host, and time connected (doc 03 §Status bar
-//! Phase 2). [`status_view_from`] decides what to show; [`StatusBar`]
+//! The status bar: connection state, host, and time connected (doc 03
+//! §Status bar). [`status_view_from`] decides what to show; [`StatusBar`]
 //! only renders it. Which tab drives it is the window's business.
 
 use std::cell::RefCell;
@@ -22,6 +22,7 @@ pub enum ColorKind {
 }
 
 impl ColorKind {
+    /// The dot's color.
     pub fn hex(self) -> &'static str {
         match self {
             Self::Green => "#4caf50",
@@ -36,7 +37,9 @@ impl ColorKind {
 pub struct StatusView {
     /// E.g. "Connected to example.com:22".
     pub state: String,
+    /// The dot color for the state.
     pub color: ColorKind,
+    /// `host:port`, or the transport's description; `None` hides it.
     pub host: Option<String>,
     /// Only while connected.
     pub elapsed_secs: Option<u64>,
@@ -117,8 +120,11 @@ pub fn format_elapsed(secs: u64) -> String {
 
 /// A coloured dot, the state text, and a per-second timer while connected.
 pub struct StatusBar {
+    /// The bar itself.
     container: gtk4::Box,
+    /// The colored state dot.
     dot: gtk4::Label,
+    /// State, host and time connected.
     label: gtk4::Label,
     /// The tick updating the time connected, while connected.
     timer: RefCell<Option<glib::SourceId>>,
@@ -154,6 +160,7 @@ impl StatusBar {
         this
     }
 
+    /// The bar's widget.
     pub fn widget(&self) -> &gtk4::Widget {
         self.container.upcast_ref()
     }
@@ -175,12 +182,14 @@ impl StatusBar {
         }
     }
 
+    /// Stop the time-connected ticker.
     fn stop_timer(&self) {
         if let Some(tick) = self.timer.take() {
             tick.remove();
         }
     }
 
+    /// Show `view`.
     fn render(&self, view: &StatusView) {
         self.dot.set_markup(&format!(
             "<span foreground=\"{}\">●</span>",

@@ -1,6 +1,6 @@
 //! The open-tab list's format and every decision about it that needs no
-//! display (doc 03 §Restoring tabs Phase 4). It is one JSON array in the `open_tabs`
-//! settings row — always read and written whole, so no table. Only tab
+//! display (doc 03 §Restoring tabs). It is one JSON array in the
+//! `open_tabs` settings row — always read and written whole, so no table. Only tab
 //! identity is stored, never a credential or connection detail.
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,7 @@ pub struct TabState {
 }
 
 impl TabState {
+    /// A tab showing saved session `session_id`.
     pub fn session(session_id: i64, label: impl Into<String>, created_at: i64, order: i64) -> Self {
         Self {
             session_id: Some(session_id),
@@ -34,6 +35,7 @@ impl TabState {
         }
     }
 
+    /// A tab with no session behind it.
     pub fn detached(label: impl Into<String>, created_at: i64, order: i64) -> Self {
         Self {
             session_id: None,
@@ -44,6 +46,7 @@ impl TabState {
     }
 }
 
+/// The list as the `open_tabs` JSON.
 pub fn tabs_to_json(tabs: &[TabState]) -> Result<String, serde_json::Error> {
     serde_json::to_string(tabs)
 }
@@ -81,8 +84,11 @@ pub fn renumber(tabs: &mut [TabState]) {
 /// One notebook page as plain values.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PageInfo {
+    /// `None` for a page without a session.
     pub session_id: Option<i64>,
+    /// The tab's label text.
     pub label: String,
+    /// Unix millis the page was opened.
     pub created_at: i64,
 }
 

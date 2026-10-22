@@ -87,9 +87,12 @@ pub fn install(
     );
 }
 
+/// The notebook as the tab actions see it: Home is not a tab.
 #[derive(Clone)]
 struct Tabs {
+    /// The window's tab notebook.
     notebook: gtk4::Notebook,
+    /// The Home page, skipped by every action.
     home: gtk4::Widget,
 }
 
@@ -110,11 +113,13 @@ impl Tabs {
         current_page(&self.notebook).filter(|page| *page != self.home)
     }
 
+    /// Show the next or previous tab, wrapping round.
     fn step(&self, forward: bool) {
         let tabs = self.page_numbers();
         self.show(step_tab(&tabs, self.notebook.current_page(), forward));
     }
 
+    /// Show page `page_num`, if any.
     fn show(&self, page_num: Option<u32>) {
         if let Some(page_num) = page_num {
             self.notebook.set_current_page(Some(page_num));

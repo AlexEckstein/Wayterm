@@ -11,9 +11,12 @@ use gtk4::{gdk, glib};
 pub const NOTICE: &str =
     "\r\n\x1b[0m\x1b[1mSession disconnected.\x1b[0m Press r to reconnect or q to close this tab.\r\n";
 
+/// The user's answer to the ended-session notice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndedChoice {
+    /// `r`: connect again.
     Reconnect,
+    /// `q`: close the tab.
     CloseTab,
 }
 

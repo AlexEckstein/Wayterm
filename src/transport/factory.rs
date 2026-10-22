@@ -1,4 +1,5 @@
-//! [`create_transport`]: session type → transport (doc 03 §Transport factory).
+//! [`create_transport`]: session type → byte-stream transport (doc 03
+//! §Transport factory).
 
 use std::sync::Arc;
 
@@ -11,8 +12,9 @@ use crate::transport::serial::SerialTransport;
 use crate::transport::ssh::SSHTransport;
 use crate::transport::types::{Transport, TransportError, TransportEvent};
 
-/// Transport factory (doc 03 §Transport factory). Unsupported session types
-/// are errors, never panics — a malformed row must not crash the app.
+/// The transport for `config`: SSH needs `connection`, local and serial
+/// build their own. RDP/VNC are errors, never panics, so a malformed row
+/// cannot crash the app.
 pub fn create_transport(
     config: &SessionConfig,
     connection: Option<Arc<SshConnection>>,

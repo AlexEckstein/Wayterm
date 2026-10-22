@@ -36,9 +36,13 @@ const CLOSE_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// (the pump still disconnects on its way out); [`close`](Self::close) also
 /// waits for them.
 pub struct TerminalTab {
+    /// Connects, forwards terminal events, disconnects last.
     pump_task: Option<JoinHandle<()>>,
+    /// Routes transport events to the drain and the state channel.
     bridge_task: Option<JoinHandle<()>>,
+    /// Stops all three tasks.
     cancel: CancellationToken,
+    /// [`Transport::description`], kept after the transport moves into the pump.
     description: String,
 }
 

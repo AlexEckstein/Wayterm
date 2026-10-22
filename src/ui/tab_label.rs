@@ -1,5 +1,5 @@
 //! The tab label: session name plus close button; double-click renames
-//! (doc 03 §Tab labels Phase 4).
+//! (doc 03 §Tab labels).
 //!
 //! Each label carries a [`TabTitle`]: placeholder (the session name) →
 //! set (a title from the terminal) → renamed (by the user). Once renamed,
@@ -12,23 +12,31 @@ use gtk4::prelude::*;
 
 use crate::ui::widgets::{data, prompt_text, set_data, window_of};
 
+/// Label data key: the [`TabTitleLabel`].
 const TAB_TITLE_KEY: &str = "wayterm-tab-title";
 
+/// Where a tab's title came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabTitleState {
+    /// The session name, until the terminal sets a title.
     Placeholder,
+    /// The terminal's window title.
     Set,
+    /// The user's rename; terminal titles no longer apply.
     Renamed,
 }
 
 /// The display-free title state machine.
 #[derive(Debug)]
 pub struct TabTitle {
+    /// Where the title came from.
     state: TabTitleState,
+    /// The text shown.
     value: String,
 }
 
 impl TabTitle {
+    /// A title showing `placeholder`.
     pub fn new(placeholder: &str) -> Self {
         Self {
             state: TabTitleState::Placeholder,
@@ -57,10 +65,12 @@ impl TabTitle {
         true
     }
 
+    /// Where the title came from.
     pub fn state(&self) -> &TabTitleState {
         &self.state
     }
 
+    /// The text shown.
     pub fn value(&self) -> &str {
         &self.value
     }
@@ -68,19 +78,24 @@ impl TabTitle {
 
 /// A [`TabTitle`] bound to the label that shows it.
 pub struct TabLabelState {
+    /// The title state machine.
     title: RefCell<TabTitle>,
+    /// The label it drives.
     label: gtk4::Label,
 }
 
 impl TabLabelState {
+    /// Show a terminal title, unless renamed; `true` if it changed.
     pub fn set(&self, title: &str) -> bool {
         self.update(|t| t.set(title))
     }
 
+    /// Rename by the user; `true` if it changed.
     pub fn rename(&self, title: &str) -> bool {
         self.update(|t| t.rename(title))
     }
 
+    /// Apply `change`; show the new title if it changed.
     fn update(&self, change: impl FnOnce(&mut TabTitle) -> bool) -> bool {
         let changed = change(&mut self.title.borrow_mut());
         if changed {
@@ -89,6 +104,7 @@ impl TabLabelState {
         changed
     }
 
+    /// The text shown.
     pub fn value(&self) -> String {
         self.title.borrow().value().to_string()
     }

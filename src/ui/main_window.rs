@@ -30,8 +30,10 @@ use crate::ui::{
 
 /// Window data keys.
 pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
+/// Window data key: the [`StatusRouter`].
 const STATUS_ROUTER_KEY: &str = "wayterm-status-router";
 
+/// Window action name for the SFTP panel toggle.
 const TOGGLE_SFTP_ACTION: &str = "toggle_sftp";
 /// The `sftp` context's actions and the toolbar button each presses.
 const SFTP_ACTIONS: [(&str, SftpButton); 4] = [
@@ -47,12 +49,16 @@ const DOCK_PANEL_WIDTH: i32 = 320;
 /// pushes the same (page, state) twice, so the elapsed timer is not reset
 /// for nothing.
 struct StatusRouter {
+    /// The window's tab notebook.
     notebook: gtk4::Notebook,
+    /// The window's status bar.
     status_bar: Rc<StatusBar>,
+    /// The last page and state shown.
     last: Option<(gtk4::Widget, TransportState)>,
 }
 
 impl StatusRouter {
+    /// Record `page`'s new state; show it if `page` is current.
     fn push(&mut self, page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
         let current = self
             .notebook
@@ -69,6 +75,7 @@ impl StatusRouter {
     }
 }
 
+/// The window's shared status router.
 type StatusRouterCell = Rc<RefCell<StatusRouter>>;
 
 /// Show `page`'s new state if it is the current page (no-op without a
@@ -85,7 +92,9 @@ pub(crate) fn route_status(
     }
 }
 
+/// The main window: side dock, notebook, status bar.
 pub struct MainWindow {
+    /// The application window.
     window: gtk4::ApplicationWindow,
 }
 
@@ -251,6 +260,7 @@ impl MainWindow {
         Self { window }
     }
 
+    /// The GTK window.
     pub fn window(&self) -> &gtk4::ApplicationWindow {
         &self.window
     }

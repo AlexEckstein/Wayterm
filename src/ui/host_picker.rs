@@ -39,6 +39,7 @@ pub fn local_shell_session() -> SessionConfig {
 /// A folder heading drawn above an entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PickerHeading {
+    /// Folder name.
     pub name: String,
     /// The stored icon name; `None` = the folder icon.
     pub icon: Option<String>,
@@ -51,10 +52,13 @@ pub struct PickerHeading {
 pub struct PickerEntry {
     /// `None` for the local shell.
     pub session_id: Option<i64>,
+    /// Session name, or "Local shell".
     pub name: String,
     /// The stored icon name; `None` = `default_icon`.
     pub icon: Option<String>,
+    /// The session type's default icon.
     pub default_icon: &'static str,
+    /// Nesting depth: 0 at the root.
     pub depth: usize,
     /// The folders that open right above this entry, outermost first.
     pub headings: Vec<PickerHeading>,

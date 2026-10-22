@@ -1,4 +1,5 @@
-//! GTK4 user interface (docs 01, 11, 07, 12).
+//! The GTK4 user interface: the main window, tabs, dialogs, panels and the
+//! Settings window (doc 01).
 
 pub mod appearance;
 pub mod auth_dialog;

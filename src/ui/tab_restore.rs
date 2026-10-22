@@ -1,11 +1,11 @@
-//! Keeping the open-tab list saved and reopening it at launch (doc 03 §Restoring tabs
-//! Phase 4). [`super::tab_state`] owns the format and every display-free
-//! decision; this is the notebook side.
+//! Keeping the open-tab list saved and reopening it at launch (doc 03
+//! §Restoring tabs). [`super::tab_state`] owns the format and every
+//! display-free decision; this is the notebook side.
 //!
 //! Saves happen on tab open, close, and rename, debounced so a rename is
-//! one write rather than one per keystroke, and once more on exit. Restore
-//! reopens tab frames only: connections start when the user asks, since
-//! credentials would need prompting.
+//! one write rather than one per keystroke, and once more on exit. Restored
+//! session tabs connect as they open, like new ones but without the
+//! duplicate-tmux notice; a tab whose session is gone reopens detached.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -31,16 +31,19 @@ const SAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 /// Mirrors a notebook's tabs into the store. Owned by the window's close
 /// handler; the notebook's handlers only hold weak references.
 pub struct TabPersistence {
+    /// The window's tab notebook.
     notebook: gtk4::Notebook,
     /// The welcome tab, rebuilt every launch and never saved. Found by
     /// identity, so reordering cannot mistake another tab for it.
     home: gtk4::Widget,
+    /// Where the list is saved.
     store: Rc<SessionStore>,
     /// The pending save, re-armed by every change.
     timer: RefCell<Option<glib::SourceId>>,
 }
 
 impl TabPersistence {
+    /// Watch `notebook`, whose welcome tab is `home`.
     pub fn new(notebook: gtk4::Notebook, home: gtk4::Widget, store: Rc<SessionStore>) -> Rc<Self> {
         Rc::new(Self {
             notebook,
@@ -66,7 +69,7 @@ impl TabPersistence {
             self.open_restored(tab);
         }
         if !ordered.is_empty() {
-            // Clamped: two rows for one session collapse into one tab.
+            // Clamped defensively to the pages that exist.
             let page = tab_state::restore_page_index(ordered.len() - 1)
                 .min(self.notebook.n_pages().saturating_sub(1));
             self.notebook.set_current_page(Some(page));
@@ -115,6 +118,7 @@ impl TabPersistence {
         self.save_now();
     }
 
+    /// Drop the pending save, if any.
     fn cancel_timer(&self) {
         if let Some(id) = self.timer.take() {
             id.remove();
@@ -130,6 +134,7 @@ impl TabPersistence {
         tab_state::states_from_pages(&pages, home)
     }
 
+    /// Write the list now; a failure is logged.
     fn save_now(&self) {
         if let Err(err) = self.store.save_open_tabs(&self.current_states()) {
             eprintln!("Wayterm: failed to save the open tab list: {err}");
@@ -158,6 +163,7 @@ impl TabPersistence {
         }
     }
 
+    /// Reopen one saved tab: its session (or the local shell), else a detached tab.
     fn open_restored(&self, tab: &TabState) {
         // The New Tab picker's local shell is unsaved: it has its own id.
         let config = tab.session_id.map(|id| match id {
@@ -192,6 +198,7 @@ impl TabPersistence {
         content
     }
 
+    /// One page as plain values, label falling back to the session name.
     fn page_info(&self, page_num: u32) -> Option<PageInfo> {
         let content = self.notebook.nth_page(Some(page_num))?;
         let session_id = session_id_of(&content);

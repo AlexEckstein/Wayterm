@@ -91,12 +91,15 @@ fn new_tab_button(notebook: &gtk4::Notebook, store: &Rc<SessionStore>) -> gtk4::
     button
 }
 
+/// The notebook's tab bar with its "+" tab.
 struct TabBar {
+    /// The window's tab notebook.
     notebook: gtk4::Notebook,
     /// GtkNotebook's own tab strip.
     strip: gtk4::Widget,
     /// The end action widget holding "+".
     end: gtk4::Box,
+    /// The "+" tab.
     plus: gtk4::Widget,
     /// The strip's width beyond its tabs (its CSS box), measured while it
     /// fits: a scrolling strip reports less than its tabs.
@@ -104,6 +107,7 @@ struct TabBar {
 }
 
 impl TabBar {
+    /// Switch between the fitting and overflowing layouts.
     fn set_overflowing(&self, overflowing: bool) {
         self.notebook.set_scrollable(overflowing);
         self.strip.set_hexpand(overflowing);
@@ -142,6 +146,7 @@ impl TabBar {
     }
 }
 
+/// `widget`'s minimum width.
 fn min_width(widget: &impl IsA<gtk4::Widget>) -> i32 {
     widget.measure(gtk4::Orientation::Horizontal, -1).0
 }

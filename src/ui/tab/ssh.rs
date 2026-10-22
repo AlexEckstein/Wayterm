@@ -52,6 +52,7 @@ const PROBE_QUIET: Duration = Duration::from_millis(300);
 struct SshPageState {
     /// The page's sidebar, and whether it holds the connection.
     sidebar: RefCell<Option<SftpSidebar>>,
+    /// Whether the sidebar's SFTP task has the connection.
     sidebar_attached: Cell<bool>,
     /// The live forward status source, while the engine is armed.
     forward: RefCell<Option<Arc<EngineStatusBridge>>>,

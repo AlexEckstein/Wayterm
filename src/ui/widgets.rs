@@ -38,6 +38,7 @@ pub fn data_or_default<T: Clone + Default + 'static>(
     })
 }
 
+/// Set the same margin on all four sides.
 pub fn set_margins(widget: &impl IsA<gtk4::Widget>, margin: i32) {
     widget.set_margin_top(margin);
     widget.set_margin_bottom(margin);
@@ -101,11 +102,14 @@ pub fn button_row(buttons: &[&gtk4::Button]) -> gtk4::Box {
 /// A modal window built by the caller: buttons write their answer into
 /// `result` and close the window.
 pub struct Modal<T> {
+    /// The modal window.
     pub window: gtk4::ApplicationWindow,
+    /// The answer, once a button wrote it.
     pub result: Rc<RefCell<Option<T>>>,
 }
 
 impl<T: 'static> Modal<T> {
+    /// A modal window titled `title`, transient for `parent`.
     pub fn new(title: &str, parent: Option<&gtk4::Window>) -> Self {
         let window = gtk4::ApplicationWindow::builder()
             .title(title)

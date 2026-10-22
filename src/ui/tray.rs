@@ -1,4 +1,4 @@
-//! Tray icon and disconnect notifications (doc 03 §Tray Phase 4).
+//! Tray icon and disconnect notifications (doc 03 §Tray).
 //!
 //! The icon is a StatusNotifierItem over D-Bus via `ksni` (pure Rust,
 //! tokio-native); notifications go through `gio::Notification`. Without a
@@ -23,6 +23,7 @@ use crate::store::SessionStore;
 
 /// Settings row; a missing row means on (not seeded).
 pub const MINIMIZE_TO_TRAY_KEY: &str = "minimize_to_tray";
+/// Title of every desktop notification.
 pub const NOTIFICATION_TITLE: &str = "Wayterm";
 /// The SNI id: unique and stable.
 pub const TRAY_ID: &str = crate::app::APP_ID;
@@ -53,16 +54,19 @@ pub fn tray_icon_pixmap() -> Result<ksni::Icon, glib::Error> {
     })
 }
 
+/// A tray menu or icon action.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrayAction {
     /// Un-hide and present the main window.
     ShowWindow,
     /// Present the window, where the session tree creates sessions.
     NewSession,
+    /// Quit the application.
     Quit,
 }
 
 impl TrayAction {
+    /// The menu item's text.
     pub fn label(self) -> &'static str {
         match self {
             Self::ShowWindow => "Open Wayterm",
@@ -72,9 +76,12 @@ impl TrayAction {
     }
 }
 
+/// One row of the tray menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuEntry {
+    /// A clickable item.
     Item(TrayAction),
+    /// A divider.
     Separator,
 }
 
@@ -98,14 +105,18 @@ pub fn should_minimize_to_tray(tray_available: bool, setting_enabled: bool) -> b
     tray_available && setting_enabled
 }
 
+/// A desktop notification's text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisconnectAlert {
+    /// Notification title.
     pub title: String,
+    /// Notification body.
     pub body: String,
     /// Per session, so repeated alerts replace each other.
     pub notification_id: String,
 }
 
+/// The alert for `session_name`'s dropped connection.
 pub fn disconnect_alert(session_name: &str) -> DisconnectAlert {
     DisconnectAlert {
         title: NOTIFICATION_TITLE.to_string(),
@@ -117,6 +128,7 @@ pub fn disconnect_alert(session_name: &str) -> DisconnectAlert {
 /// Never fatal: the caller falls back to quit-on-close.
 #[derive(Debug, thiserror::Error)]
 pub enum TrayInitError {
+    /// The tray's own runtime could not start.
     #[error("tray runtime failed: {0}")]
     Runtime(#[from] std::io::Error),
     /// No D-Bus, or no StatusNotifierWatcher.
@@ -132,6 +144,7 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+/// Run every tray action queued since the last drain (main thread).
 fn drain_queued_actions() {
     TRAY_DISPATCH.with(|cell| {
         if let Some((app, rx)) = cell.borrow().as_ref() {
@@ -145,18 +158,22 @@ fn drain_queued_actions() {
 /// Keeps the tray's runtime and D-Bus service alive; drop it to remove
 /// the icon.
 pub struct TrayHandle {
+    /// The tokio runtime ksni's D-Bus service runs on.
     _runtime: tokio::runtime::Runtime,
+    /// The registered StatusNotifierItem.
     _handle: ksni::Handle<WaytermTray>,
 }
 
 /// The status-notifier item.
 pub struct WaytermTray {
+    /// Menu clicks for the main thread.
     queue: std_mpsc::Sender<TrayAction>,
     /// [`tray_icon_pixmap`], decoded once; empty if it failed.
     pixmap: Vec<ksni::Icon>,
 }
 
 impl WaytermTray {
+    /// Queue `action` and wake the main thread to run it.
     fn fire(&self, action: TrayAction) {
         if self.queue.send(action).is_ok() {
             glib::MainContext::default().invoke(drain_queued_actions);
@@ -227,6 +244,7 @@ pub fn init_tray(app: &gtk4::Application) -> Result<TrayHandle, TrayInitError> {
     })
 }
 
+/// Run `action` on the main thread.
 pub fn handle_app_action(app: &gtk4::Application, action: TrayAction) {
     match action {
         TrayAction::ShowWindow | TrayAction::NewSession => {
