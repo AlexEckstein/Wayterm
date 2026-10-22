@@ -9,7 +9,9 @@ use crate::ui::widgets::{ok_cancel_row, set_margins, Modal};
 /// What the dialog saves: the name, and the icon (`None` = the default).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FolderEdit {
+    /// New name.
     pub name: String,
+    /// New icon; `None` = the default.
     pub icon: Option<String>,
 }
 
@@ -26,16 +28,21 @@ pub fn folder_edit(current: &Folder, name: &str, icon: Option<String>) -> Folder
     }
 }
 
+/// The Edit Folder dialog.
 pub struct FolderDialog {
+    /// The modal; its result is the edit.
     modal: Modal<FolderEdit>,
     // Read back by the widget test only.
+    /// Folder name.
     #[cfg_attr(not(test), allow(dead_code))]
     name: gtk4::Entry,
+    /// Icon picker.
     #[cfg_attr(not(test), allow(dead_code))]
     icon: IconPicker,
 }
 
 impl FolderDialog {
+    /// A dialog editing `folder`.
     pub fn new(parent: Option<&gtk4::Window>, folder: &Folder) -> Self {
         let modal = Modal::new("Edit Folder", parent);
         modal.window.set_default_width(420);

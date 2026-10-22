@@ -7,15 +7,20 @@ use serde::{Deserialize, Serialize};
 #[allow(clippy::upper_case_acronyms)]
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SessionType {
+    /// `ssh`.
     #[default]
     #[serde(rename = "ssh")]
     SSH,
+    /// `rdp`.
     #[serde(rename = "rdp")]
     RDP,
+    /// `vnc`.
     #[serde(rename = "vnc")]
     VNC,
+    /// `serial`.
     #[serde(rename = "serial")]
     Serial,
+    /// `local`: a local shell.
     #[serde(rename = "local")]
     LocalShell,
 }
@@ -64,11 +69,16 @@ impl SessionType {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
+    /// `password`.
     Password,
+    /// `key`: a private key file.
     Key,
+    /// `agent`: `SSH_AUTH_SOCK`.
     Agent,
+    /// `keyboard-interactive`.
     #[serde(rename = "keyboard-interactive")]
     KeyboardInteractive,
+    /// `none`.
     None,
 }
 
@@ -86,32 +96,44 @@ pub enum HostKeyPolicy {
     Off,
 }
 
-/// Port-forward direction (doc 04). Only `Local` is implemented in v1; all
-/// three are in the wire format so the JSON stays stable.
+/// Port-forward direction (doc 04 §Port forwarding). Only `Local` runs;
+/// all three are in the wire format so the JSON stays stable.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForwardKind {
+    /// `local`: a port here to a host the server reaches (`ssh -L`).
     Local,
+    /// `remote`: stored, never started.
     Remote,
+    /// `dynamic` (SOCKS): stored, never started.
     Dynamic,
 }
 
 /// One entry of the `sessions.forward_rules` JSON array (doc 04).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ForwardRule {
+    /// Direction.
     pub kind: ForwardKind,
+    /// Bind address; empty means loopback.
     pub bind_addr: String,
+    /// Bind port.
     pub bind_port: u16,
+    /// Destination host, as the server resolves it.
     pub remote_host: String,
+    /// Destination port.
     pub remote_port: u16,
+    /// Start at connect.
     pub enabled: bool,
 }
 
 /// The `sessions.ssh_options` JSON column.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SshOptions {
+    /// Stored, not applied.
     pub compression: bool,
+    /// Stored, not applied.
     pub keepalive_interval: Option<u32>,
+    /// Stored, not applied.
     pub keepalive_count: Option<u32>,
     /// Run `ssh -W` as the jump stream when the jump hop rejects
     /// direct-tcpip (doc 04 §Jump hosts). Off by default; rows written
@@ -123,9 +145,13 @@ pub struct SshOptions {
 /// The `sessions.rdp_options` JSON column.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RdpOptions {
+    /// Redirect audio.
     pub audio: bool,
+    /// Share the clipboard.
     pub clipboard: bool,
+    /// Smooth fonts.
     pub fonts: bool,
+    /// Redirect printers.
     pub printer: bool,
 }
 
@@ -134,7 +160,9 @@ pub struct RdpOptions {
 pub struct VncOptions {
     /// 0-9.
     pub quality: u8,
+    /// Fit the tab instead of 1:1.
     pub scaling: bool,
+    /// Send no input.
     pub view_only: bool,
 }
 
@@ -149,60 +177,92 @@ pub const TMUX_NAME_PREFIX: &str = "wayterm-";
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionConfig {
+    /// Row id; 0 before the first save.
     pub id: i64,
+    /// Display name.
     pub name: String,
+    /// Protocol.
     pub session_type: SessionType,
+    /// Containing folder; `None` = root.
     pub folder_id: Option<i64>,
 
     // Common connection fields.
+    /// Host name or address.
     pub host: Option<String>,
+    /// `None` = the type's default port.
     pub port: Option<u16>,
+    /// Login user.
     pub username: Option<String>,
+    /// SSH auth method; `None` = password.
     pub auth_method: Option<AuthMethod>,
 
     // SSH.
+    /// Private key for the `key` method.
     pub key_path: Option<String>,
     /// `None` = the global setting.
     pub host_key_policy: Option<HostKeyPolicy>,
     /// ProxyJump-style hop through another session (doc 04; depth ≤ 1).
     pub jump_session_id: Option<i64>,
+    /// Port-forward rules (SSH).
     pub forward_rules: Option<Vec<ForwardRule>>,
     /// Run the shell inside a remote tmux session (doc 04). Stored for
     /// every type, read only by the SSH transport.
     pub tmux_enabled: bool,
     /// Bare tmux name (no [`TMUX_NAME_PREFIX`]); `None` = the session name.
     pub tmux_session_name: Option<String>,
+    /// SSH options.
     pub ssh_options: Option<SshOptions>,
 
     // RDP.
+    /// Windows domain.
     pub rdp_domain: Option<String>,
+    /// Remote desktop width; `None` = 1024.
     pub rdp_width: Option<u32>,
+    /// Remote desktop height; `None` = 768.
     pub rdp_height: Option<u32>,
+    /// Color depth: 16, 24 or 32; `None` = 32.
     pub rdp_color_depth: Option<u32>,
+    /// Compress the stream.
     pub rdp_compression: bool,
+    /// Clipboard, fonts, audio, printer.
     pub rdp_options: Option<RdpOptions>,
 
     // VNC.
+    /// Stored, not applied.
     pub vnc_color_depth: Option<u32>,
+    /// Scaling, view-only, quality.
     pub vnc_options: Option<VncOptions>,
 
     // Serial.
+    /// Device path.
     pub serial_device: Option<String>,
+    /// Line speed.
     pub serial_baud_rate: Option<u32>,
+    /// 5–8.
     pub serial_data_bits: Option<u8>,
+    /// `none`, `odd`, `even`, `mark`, `space`.
     pub serial_parity: Option<String>,
+    /// 1–2.
     pub serial_stop_bits: Option<u8>,
+    /// `none`, `hardware`, `software`.
     pub serial_flow_control: Option<String>,
 
     // Local shell.
+    /// Shell to run; `None` = `$SHELL`.
     pub local_shell: Option<String>,
+    /// Starting directory; `None` = Wayterm's.
     pub local_working_dir: Option<String>,
 
     // Terminal appearance (per-session override, empty = use global).
+    /// `terminal_backend`: stored, not read.
     pub preferred_backend: Option<String>,
+    /// `System`, `Light` or `Dark`; `None` = the global default.
     pub color_scheme: Option<String>,
+    /// Stored, not applied.
     pub font_family: Option<String>,
+    /// Stored, not applied.
     pub font_size: Option<f64>,
+    /// Stored, not applied.
     pub opacity: Option<f64>,
     /// Icon name (themed or a custom SVG's); `None` = the type's default.
     /// Left out of the JSON when unset, so the wire format of a session
@@ -211,7 +271,9 @@ pub struct SessionConfig {
     pub icon: Option<String>,
 
     // Metadata.
+    /// Stored; nothing updates it.
     pub last_connected: Option<String>,
+    /// Stored; nothing updates it.
     pub connect_count: u32,
 }
 
@@ -257,9 +319,13 @@ pub fn strip_tmux_prefix(name: &str) -> &str {
 /// One `folders` row (doc 09).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Folder {
+    /// Row id.
     pub id: i64,
+    /// Display name.
     pub name: String,
+    /// Parent folder; `None` = root.
     pub parent_id: Option<i64>,
+    /// Order among siblings.
     pub sort_order: i64,
     /// Icon name (themed or a custom SVG's); `None` = the default.
     pub icon: Option<String>,
@@ -269,18 +335,27 @@ pub struct Folder {
 // the defaults; these lists are the single source for the dialog and the
 // mapper. Adding a value changes the wire vocabulary.
 
+/// Stored `serial_parity` values.
 pub const SERIAL_PARITIES: [&str; 5] = ["none", "odd", "even", "mark", "space"];
+/// Parity for a NULL row.
 pub const SERIAL_PARITY_DEFAULT: &str = "none";
+/// Stored `serial_flow_control` values.
 pub const SERIAL_FLOW_CONTROLS: [&str; 3] = ["none", "hardware", "software"];
+/// Flow control for a NULL row.
 pub const SERIAL_FLOW_CONTROL_DEFAULT: &str = "none";
+/// Selectable data bits.
 pub const SERIAL_DATA_BITS: [u8; 4] = [5, 6, 7, 8];
+/// Data bits for a NULL row.
 pub const SERIAL_DATA_BITS_DEFAULT: u8 = 8;
+/// Selectable stop bits.
 pub const SERIAL_STOP_BITS: [u8; 2] = [1, 2];
+/// Stop bits for a NULL row.
 pub const SERIAL_STOP_BITS_DEFAULT: u8 = 1;
-/// The serial group's starting baud rate (doc 09 names no default).
+/// The serial group's starting baud rate (the schema names no default).
 pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 /// Bits per pixel; doc 08 falls back to 32.
 pub const RDP_COLOR_DEPTHS: [u32; 3] = [16, 24, 32];
+/// `/bpp` for a NULL `rdp_color_depth`.
 pub const RDP_COLOR_DEPTH_DEFAULT: u32 = 32;
 
 /// DropDown index → stored value; out of range falls back to `default`.

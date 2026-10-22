@@ -1,6 +1,8 @@
 //! The session tree sidebar: folders and saved sessions with a right-click
-//! CRUD menu (sessions can also be cloned); sessions and folders drag onto folders to move (docs 01, 09). Rows draw their icon by name from the icon
-//! theme (`ui::icons`). [`collect_rows`] is the display-free part.
+//! CRUD menu (sessions can also be cloned); sessions and folders drag onto
+//! folders to move (doc 09 §Session tree). Rows draw their icon by name
+//! from the icon theme (`ui::icons`). [`collect_rows`] is the display-free
+//! part.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -20,12 +22,17 @@ use crate::ui::widgets::{confirm, data, prompt_text, set_data, window_of};
 /// One row of the tree, in display order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionRow {
+    /// Row id.
     pub id: i64,
+    /// Folder or session.
     pub is_folder: bool,
+    /// Display name.
     pub name: String,
     /// The stored icon name; `None` = `default_icon`.
     pub icon: Option<String>,
+    /// The type's (or folder's) default icon.
     pub default_icon: &'static str,
+    /// Parent folder; `None` = root.
     pub parent_id: Option<i64>,
 }
 
@@ -68,9 +75,13 @@ pub fn collect_rows(store: &SessionStore) -> rusqlite::Result<Vec<SessionRow>> {
 
 /// One item of the list model, boxed in a `glib::BoxedAnyObject`.
 struct Node {
+    /// Row id.
     id: i64,
+    /// Folder or session.
     is_folder: bool,
+    /// Display name.
     name: String,
+    /// Parent folder; `None` = root.
     parent_id: Option<i64>,
     /// The resolved icon name.
     icon: String,
@@ -92,7 +103,9 @@ fn node_of(item: &glib::Object) -> Option<glib::BoxedAnyObject> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, glib::Boxed)]
 #[boxed_type(name = "WaytermTreeDrag")]
 enum Dragged {
+    /// A session, by id.
     Session(i64),
+    /// A folder, by id.
     Folder(i64),
 }
 
@@ -103,14 +116,20 @@ type Selected = (i64, bool, String);
 /// a click can be traced back to a model position.
 const LIST_ITEM_KEY: &str = "wayterm-list-item";
 
+/// The session tree panel: folders and sessions, their context menu, drag and drop.
 #[derive(Clone)]
 pub struct SessionTree {
+    /// Where the tree reads and writes.
     store: Rc<SessionStore>,
+    /// The list.
     list_view: gtk4::ListView,
     /// Top-level folders and sessions; the tree model wraps it.
     root: gio::ListStore,
+    /// Expands folders into rows.
     tree_model: gtk4::TreeListModel,
+    /// The selected row.
     selection: gtk4::SingleSelection,
+    /// Scrolls the list; also anchors the context menu.
     scroll: gtk4::ScrolledWindow,
     /// The context menu, reused for every right-click. It hangs off
     /// `scroll`, outside the list view's own widget tree.
@@ -340,6 +359,7 @@ impl SessionTree {
         self.scroll.clone().upcast()
     }
 
+    /// The selected row, if any.
     fn selected(&self) -> Option<Selected> {
         let node = node_of(&self.selection.selected_item()?)?;
         let node = node.borrow::<Node>();
@@ -642,6 +662,7 @@ impl SessionTree {
         dialog.run(save, store_password);
     }
 
+    /// The window the tree is in.
     fn parent(&self) -> Option<gtk4::Window> {
         window_of(&self.list_view)
     }

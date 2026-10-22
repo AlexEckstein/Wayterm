@@ -11,13 +11,20 @@ use crate::store::SessionStore;
 use crate::ui::tunnels_dialog::model::{rules_from_drafts, ForwardRuleDraft};
 
 // Type DropDown indices, in doc 09 order.
+/// Type dropdown position of SSH.
 pub const TYPE_INDEX_SSH: u32 = 0;
+/// Type dropdown position of RDP.
 pub const TYPE_INDEX_RDP: u32 = 1;
+/// Type dropdown position of VNC.
 pub const TYPE_INDEX_VNC: u32 = 2;
+/// Type dropdown position of serial.
 pub const TYPE_INDEX_SERIAL: u32 = 3;
+/// Type dropdown position of local shell.
 pub const TYPE_INDEX_LOCAL: u32 = 4;
 
+/// Type dropdown labels, in index order.
 pub(super) const TYPE_LABELS: [&str; 5] = ["ssh", "rdp", "vnc", "serial", "local"];
+/// Auth dropdown labels, in index order.
 pub(super) const AUTH_LABELS: [&str; 5] =
     ["password", "key", "agent", "keyboard-interactive", "none"];
 
@@ -29,30 +36,47 @@ pub(super) const PORT_SPIN_PLACEHOLDER: u16 = 22;
 /// without GTK. `*_index` fields are DropDown positions.
 #[derive(Clone, Debug)]
 pub struct DialogFields {
+    /// Session name.
     pub name: String,
+    /// Type dropdown position.
     pub type_index: u32,
     /// 0 = root, otherwise 1 + the index into the folder list.
     pub folder_index: u32,
+    /// Host.
     pub host: String,
+    /// Port; 0 means the type's default.
     pub port: u32,
+    /// Username.
     pub username: String,
+    /// Auth dropdown position.
     pub auth_index: u32,
     /// Icon name; empty = the type's default.
     pub icon: String,
+    /// Persist via tmux.
     pub tmux_enabled: bool,
     /// As shown: the full `wayterm-<suffix>` name.
     pub tmux_session_name: String,
+    /// Serial device.
     pub serial_device: String,
+    /// Baud rate.
     pub serial_baud: u32,
+    /// Data bits dropdown position.
     pub serial_data_bits_index: u32,
+    /// Parity dropdown position.
     pub serial_parity_index: u32,
+    /// Stop bits dropdown position.
     pub serial_stop_bits_index: u32,
+    /// Flow control dropdown position.
     pub serial_flow_control_index: u32,
+    /// RDP domain.
     pub rdp_domain: String,
-    /// `WIDTHxHEIGHT`; empty means doc 08's 1024×768 at connect time.
+    /// `WIDTHxHEIGHT`; empty means 1024×768 at connect time.
     pub rdp_resolution: String,
+    /// Color depth dropdown position.
     pub rdp_color_depth_index: u32,
+    /// Local shell.
     pub local_shell: String,
+    /// Local working directory.
     pub local_working_dir: String,
     /// The chosen jump host's session id (`None` = direct). Validated by
     /// [`resolve_jump`]; only stored for SSH.
@@ -100,6 +124,7 @@ impl Default for DialogFields {
     }
 }
 
+/// The dropdown position of `default` in `values`.
 fn default_index<T: Copy + PartialEq>(values: &[T], default: T) -> u32 {
     vocab_index(values, Some(default), default)
 }
@@ -115,6 +140,7 @@ pub fn session_type_from_index(index: u32) -> SessionType {
     }
 }
 
+/// The type dropdown position for `session_type`.
 pub fn type_index_for(session_type: &SessionType) -> u32 {
     match session_type {
         SessionType::SSH => TYPE_INDEX_SSH,
@@ -125,6 +151,7 @@ pub fn type_index_for(session_type: &SessionType) -> u32 {
     }
 }
 
+/// The method at auth dropdown position `index`.
 fn auth_method_from_index(index: u32) -> AuthMethod {
     match index {
         1 => AuthMethod::Key,
@@ -135,6 +162,7 @@ fn auth_method_from_index(index: u32) -> AuthMethod {
     }
 }
 
+/// The auth dropdown position for `method` (`None` = password).
 pub(super) fn auth_index_for(method: Option<&AuthMethod>) -> u32 {
     match method {
         Some(AuthMethod::Password) => 0,
@@ -154,6 +182,7 @@ pub fn parse_resolution(text: &str) -> Option<(u32, u32)> {
     (width > 0 && height > 0).then_some((width, height))
 }
 
+/// `WIDTHxHEIGHT`, or empty when unset.
 pub fn format_resolution(width: Option<u32>, height: Option<u32>) -> String {
     match (width, height) {
         (Some(width), Some(height)) => format!("{width}x{height}"),
@@ -166,6 +195,7 @@ pub fn default_tmux_session_name(session_name: &str) -> String {
     format!("{TMUX_NAME_PREFIX}{}", session_name.trim())
 }
 
+/// `value` trimmed; `None` when blank.
 fn trimmed_opt(value: &str) -> Option<String> {
     Some(value.trim().to_string()).filter(|v| !v.is_empty())
 }

@@ -21,6 +21,7 @@ pub const HOST_KEY_POLICY_SETTING: &str = "host_key_policy";
 /// A SQLite-backed store of session folders and saved sessions. Not
 /// `Send`: the UI shares one through an `Rc` on the main thread.
 pub struct SessionStore {
+    /// The SQLite connection; one per store.
     conn: Connection,
 }
 
@@ -40,6 +41,7 @@ impl SessionStore {
         Ok(Self { conn })
     }
 
+    /// Create a folder under `parent_id` (`None` = root); returns its id.
     pub fn insert_folder(&self, name: &str, parent_id: Option<i64>) -> rusqlite::Result<i64> {
         self.conn.execute(
             "INSERT INTO folders (name, parent_id) VALUES (?1, ?2)",
@@ -145,6 +147,7 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Delete a session; its history goes with it.
     pub fn delete_session(&self, id: i64) -> rusqlite::Result<()> {
         self.conn
             .execute("DELETE FROM sessions WHERE id = ?1", [id])?;
@@ -189,6 +192,7 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Delete a macro.
     pub fn delete_macro(&self, id: i64) -> rusqlite::Result<()> {
         self.conn
             .execute("DELETE FROM macros WHERE id = ?1", [id])?;
@@ -370,6 +374,7 @@ pub fn flag_enabled(raw: Option<&str>) -> bool {
 /// `(action, key_sequence, enabled)` of one `is_default = 0` hotkey row.
 pub type CustomHotkeyRow = (String, String, bool);
 
+/// Pragmas, every idempotent schema step, and the seed on a fresh store.
 fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     // `foreign_keys` is per connection; WAL persists in the file.
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
@@ -401,8 +406,10 @@ const SESSION_COLUMNS: &str = "name, type, folder_id, sort_order, \
     serial_device, serial_baud_rate, serial_data_bits, serial_parity, serial_stop_bits, \
     serial_flow_control, local_shell, local_working_dir, \
     terminal_backend, color_scheme, font_family, font_size, opacity, icon";
+/// How many columns [`SESSION_COLUMNS`] lists.
 const SESSION_COLUMN_COUNT: usize = 37;
 
+/// `count` comma-separated `?` placeholders.
 fn placeholders(count: usize) -> String {
     vec!["?"; count].join(", ")
 }
@@ -452,6 +459,7 @@ fn session_values(c: &SessionConfig) -> rusqlite::Result<[Value; SESSION_COLUMN_
     ])
 }
 
+/// `value` as a JSON text column, or NULL.
 fn json<T: Serialize>(value: Option<&T>) -> rusqlite::Result<Value> {
     value
         .map(serde_json::to_string)
@@ -465,14 +473,17 @@ fn macro_steps(m: &Macro) -> rusqlite::Result<String> {
     steps_to_json(&m.steps).map_err(to_sql_error)
 }
 
+/// A JSON encode error as a rusqlite error.
 fn to_sql_error(e: serde_json::Error) -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(e))
 }
 
+/// A JSON decode error as a rusqlite error.
 fn from_sql_error(e: serde_json::Error) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
 }
 
+/// Decode a nullable JSON column.
 fn optional_json_column<T: serde::de::DeserializeOwned>(
     row: &rusqlite::Row,
     name: &str,
@@ -630,6 +641,7 @@ fn migrate_004(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Whether `table` has `column`.
 fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
@@ -701,6 +713,7 @@ INSERT INTO settings (key, value) VALUES
 ('host_key_policy',     'strict');   -- global default; per-session override via sessions.host_key_policy
 "#;
 
+/// A `folders` row.
 fn row_to_folder(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
     Ok(Folder {
         id: row.get("id")?,
@@ -711,6 +724,7 @@ fn row_to_folder(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
     })
 }
 
+/// A `macros` row.
 fn row_to_macro(row: &rusqlite::Row) -> rusqlite::Result<Macro> {
     Ok(Macro {
         id: row.get("id")?,
@@ -719,6 +733,7 @@ fn row_to_macro(row: &rusqlite::Row) -> rusqlite::Result<Macro> {
     })
 }
 
+/// A `sessions` row.
 fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
     Ok(SessionConfig {
         id: row.get("id")?,
