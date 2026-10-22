@@ -1,4 +1,4 @@
-//! The byte-stream [`Transport`] trait and its vocabulary (doc 04).
+//! The byte-stream [`Transport`] trait and its vocabulary (doc 03).
 
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -105,7 +105,7 @@ impl TransportError {
 
 /// A byte-stream transport. It owns one channel, never the SSH session:
 /// that lives in a shared [`SshConnection`](super::connection::SshConnection)
-/// so the SFTP sidebar and tunnels can use it too.
+/// so the SFTP sidebar and port forwards can use it too.
 #[async_trait]
 pub trait Transport: Send {
     /// Open the channel, request the PTY, start the shell (or tmux), and

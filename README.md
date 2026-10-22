@@ -8,15 +8,21 @@ configurable hotkeys, and keystroke macros.
 
 App id `com.alex-eckstein.wayterm` · [github.com/AlexEckstein/Wayterm](https://github.com/AlexEckstein/Wayterm) · Apache-2.0
 
-## Status
+## Features
 
-Phases 1–9, 11 and 13 of the [build order](docs/10-build-order.md) are done:
-session management, SSH terminal tabs with host-key verification and the
-full auth chain, the SFTP sidebar, hotkeys, tab restore and a tray icon,
-local shell and serial tabs, VNC and RDP tabs, tmux persistence,
-import/export and packaging, jump hosts with local port forwarding, and
-keystroke macros.
-Doc 10 lists the known gaps in each phase and what comes next.
+- Saved sessions in a folder tree, with icons, drag and drop, and import
+  from `~/.ssh/config`, Remmina, MobaXterm and Asbru-CM.
+- SSH terminal tabs: `known_hosts` verification, agent/key/password/
+  keyboard-interactive auth, credentials from the OS keyring or Bitwarden,
+  tmux persistence, jump hosts and local port forwards.
+- An SFTP sidebar over the same SSH connection that follows the shell's
+  working directory.
+- Local shell and serial tabs; embedded RDP (xfreerdp) and VNC tabs.
+- Automatic reconnect, restored tabs, a tray icon, rebindable hotkeys,
+  and keystroke macros.
+
+Each design doc ends with a **Limitations** section listing that
+feature's known gaps.
 
 ## Build and test
 
@@ -33,6 +39,9 @@ scripts/run-sshd-tests.sh        # suites against a throwaway local sshd (needs 
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored
 ```
 ### Build with Ghostty
+
+Needs libghostty-vt built locally first (docs/02-terminal.md, "libghostty-vt pin").
+
 ```sh
 cargo build --release --features backend-ghostty
 ```
@@ -48,7 +57,7 @@ cargo build --release --features backend-ghostty
 | | Choice | Why |
 |---|---|---|
 | Language, UI | Rust, GTK 4 | memory safety for a network-facing app; native Linux toolkit |
-| Terminal | VTE behind a `TerminalBackend` trait | the standard GTK terminal widget; an engine backend can follow |
+| Terminal | VTE behind a `TerminalBackend` trait | the standard GTK terminal widget; libghostty-vt as an opt-in second backend |
 | Async | tokio | SSH, SFTP, and reconnects off the UI thread |
 | SSH, SFTP | russh, russh-sftp | pure Rust; SFTP reuses the terminal's SSH session |
 | Store | SQLite (rusqlite) | sessions, settings, hotkey overrides, macros |
@@ -59,16 +68,19 @@ cargo build --release --features backend-ghostty
 ## Design documents
 
 1. [Architecture](docs/01-architecture.md)
-2. [Terminal backend abstraction](docs/02-terminal-backend-abstraction.md)
-3. [Terminal widget comparison](docs/03-terminal-widget-comparison.md)
-4. [Transport layer](docs/04-transport-layer.md)
-5. [Backend plugins](docs/05-plugin-system.md)
-6. [Session store](docs/06-session-store.md)
-7. [Hotkey engine](docs/07-hotkey-engine.md)
-8. [RDP and VNC embedding](docs/08-rdp-vnc-embedding.md)
-9. [SFTP sidebar](docs/09-sftp-sidebar.md)
-10. [Build order](docs/10-build-order.md)
-11. [SSH authentication and security](docs/11-ssh-auth-security.md)
+2. [Terminal](docs/02-terminal.md)
+3. [Tabs and connections](docs/03-tabs.md)
+4. [SSH](docs/04-ssh.md)
+5. [Credentials](docs/05-credentials.md)
+6. [Local shell and serial](docs/06-local-and-serial.md)
+7. [SFTP sidebar](docs/07-sftp.md)
+8. [Remote desktop](docs/08-remote-desktop.md)
+9. [Sessions](docs/09-sessions.md)
+10. [Import and export](docs/10-import-export.md)
+11. [Hotkeys](docs/11-hotkeys.md)
 12. [Keystroke macros](docs/12-macros.md)
+13. [Settings](docs/13-settings.md)
+14. [Building and packaging](docs/14-packaging.md)
+15. [Testing](docs/15-testing.md)
 
 Contributors and agents: read [AGENTS.md](AGENTS.md) first.

@@ -72,7 +72,7 @@ fn an_export_document_is_bindings_only() {
     let export: HotkeyExport = serde_json::from_str(&json).expect("export parses");
     assert_eq!(export.version, 1);
     for binding in &export.bindings {
-        // No connection parameters, no credential material — doc 06
+        // No connection parameters, no credential material — doc 05
         // keeps those out of everything but the keyring.
         let json = serde_json::to_string(binding).expect("serialize");
         for forbidden in ["password", "key_path", "username", "host", "session_id"] {
@@ -84,7 +84,7 @@ fn an_export_document_is_bindings_only() {
     }
 }
 
-/// `HotkeyEngine::install` against real GTK objects (doc 07 §Dispatch):
+/// `HotkeyEngine::install` against real GTK objects (doc 11 §Dispatch):
 /// one capture-phase controller on the window, each shortcut firing its
 /// window action only while its context is active and the action is
 /// enabled, live rebuilds of exactly one trigger, and the report of

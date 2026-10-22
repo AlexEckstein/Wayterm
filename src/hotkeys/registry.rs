@@ -1,5 +1,5 @@
-//! The action registry and the conflict rules (doc 07 §Action Registry,
-//! §Conflict Detection).
+//! The action registry and the conflict rules (doc 11 §Action registry,
+//! §Conflict detection).
 //!
 //! A chord conflicts when both holders can be active at once: anything
 //! against a global action, two actions in the same context, or a terminal
@@ -40,7 +40,7 @@ impl Action {
     }
 }
 
-/// Where an action's chord fires (doc 07 §Dispatch). Declared in
+/// Where an action's chord fires (doc 11 §Dispatch). Declared in
 /// default-table order, which `Ord` follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ActionContext {
@@ -67,7 +67,7 @@ impl ActionContext {
         ActionContext::VncTab,
     ];
 
-    /// The `hotkeys.context` column value (doc 06).
+    /// The `hotkeys.context` column value (doc 09).
     pub fn as_str(self) -> &'static str {
         match self {
             ActionContext::Global => "global",
@@ -202,7 +202,7 @@ impl ActionRegistry {
         Ok(conflicts)
     }
 
-    /// Per-row "Reset to Default" (doc 07 §Settings UI).
+    /// Per-row "Reset to Default" (doc 11 §Settings page).
     pub fn reset_to_default(&mut self, id: &str) -> Result<(), RebindError> {
         let action = self.get_mut(id)?;
         action.current_key = action.default_key.clone();
@@ -217,7 +217,7 @@ impl ActionRegistry {
         Ok(())
     }
 
-    /// Apply a stored binding as-is (doc 07 §Persistence).
+    /// Apply a stored binding as-is (doc 11 §Persistence).
     pub fn apply_loaded_binding(
         &mut self,
         id: &str,
@@ -297,7 +297,7 @@ impl ActionRegistry {
     }
 }
 
-/// Can shortcuts in these two contexts be active at the same time? Doc 07
+/// Can shortcuts in these two contexts be active at the same time? Doc 11
 /// rules 1–4 are this predicate; rule 5 is its negation.
 pub fn can_co_fire(a: &ActionContext, b: &ActionContext) -> bool {
     use ActionContext::{Global, Terminal};
@@ -307,7 +307,7 @@ pub fn can_co_fire(a: &ActionContext, b: &ActionContext) -> bool {
 }
 
 /// Bound actions holding `new_key`'s chord, however it is spelled, in a
-/// context that co-fires with `context` (doc 07 §Conflict Detection).
+/// context that co-fires with `context` (doc 11 §Conflict detection).
 pub fn conflicting_actions<'a>(
     registry: &'a ActionRegistry,
     new_key: &str,

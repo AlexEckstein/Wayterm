@@ -1,4 +1,4 @@
-//! The terminal-context window actions (doc 07 §Default Actions): copy,
+//! The terminal-context window actions (doc 11 §Default actions): copy,
 //! paste, select all, clear, and the two searches, applied to the active
 //! tab's terminal. The routing is display-free; the hotkey engine owns the
 //! chords, so the actions are registered without accels.
@@ -13,7 +13,7 @@ use crate::terminal::TerminalBackend;
 use crate::ui::tab::SessionTab;
 use crate::ui::widgets::{data, set_data, set_margins};
 
-/// The action ids, all doc 07 terminal-context defaults.
+/// The action ids, all doc 11 terminal-context defaults.
 pub const TERMINAL_ACTIONS: [&str; 6] = [
     "copy",
     "paste",

@@ -1,4 +1,5 @@
-//! Terminal backends behind the [`TerminalBackend`] trait (doc 02).
+//! Terminal backends behind the [`TerminalBackend`] trait (doc 02): VTE,
+//! the opt-in Ghostty engine, and an in-memory fake for tests.
 
 pub mod backend;
 pub mod color_scheme;

@@ -1,4 +1,4 @@
-//! Session import and export (doc 06 §Import and export, Phase 9).
+//! Session import and export (doc 10).
 //!
 //! Importers are pure readers: source text in, `(folders, sessions,
 //! report)` out — no store access, no network, no exec, never a key file.
@@ -161,7 +161,7 @@ pub fn apply_import(
         folder_ids.push(id);
     }
 
-    // Jump targets go in first so their ids exist; one hop only (doc 11),
+    // Jump targets go in first so their ids exist; one hop only (doc 04),
     // so a target that itself jumps is never a target.
     let mut session_ids: Vec<Option<i64>> = vec![None; sessions.len()];
     let (direct, jumping): (Vec<usize>, Vec<usize>) =

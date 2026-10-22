@@ -1,4 +1,4 @@
-//! The SFTP sidebar — the GTK half of doc 09. It holds an [`SftpClient`],
+//! The SFTP sidebar — the GTK half of doc 07. It holds an [`SftpClient`],
 //! sends commands, and applies the replies from `spawn_local` futures, so
 //! no GTK callback ever awaits.
 //!
@@ -86,7 +86,7 @@ impl Attached {
     }
 }
 
-/// A toolbar button the `sftp_*` actions press (doc 07 §Handlers).
+/// A toolbar button the `sftp_*` actions press (doc 11 §Handlers).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SftpButton {
     Upload,
@@ -95,7 +95,7 @@ pub enum SftpButton {
     Delete,
 }
 
-/// The SFTP sidebar (doc 09). Clones share everything; dropping the last
+/// The SFTP sidebar (doc 07). Clones share everything; dropping the last
 /// one ends the SFTP task, never the shared SSH connection.
 #[derive(Clone)]
 pub struct SftpSidebar {
@@ -142,7 +142,7 @@ impl SftpSidebar {
     }
 
     /// Show the jumped-session state instead of attaching: no SFTP task
-    /// runs over a jumped connection (doc 11 v1), so any deferred
+    /// runs over a jumped connection (doc 04 §Limitations), so any deferred
     /// connection is dropped and the previous client, if any, is replaced
     /// by the limitation notice.
     pub fn show_jump_placeholder(&self) {
@@ -199,7 +199,7 @@ impl SftpSidebar {
     }
 
     /// Press a toolbar button as a click would, and only while it is
-    /// enabled, so a shortcut follows the toolbar's rules (doc 09).
+    /// enabled, so a shortcut follows the toolbar's rules (doc 07).
     pub fn press(&self, button: SftpButton) {
         let buttons = &self.inner.buttons;
         let button = match button {
@@ -297,13 +297,13 @@ fn chooser_paths(model: &gio::ListModel) -> Vec<String> {
 
 /// Build and wire the widgets.
 fn build_sidebar() -> Rc<SidebarInner> {
-    // 1. Path bar (doc 09 §Layout): Enter navigates.
+    // 1. Path bar (doc 07 §Layout): Enter navigates.
     let path_entry = gtk4::Entry::new();
     path_entry.set_text(START_PATH);
     path_entry.set_placeholder_text(Some("remote path"));
     path_entry.set_hexpand(true);
 
-    // 2. Toolbar — exactly doc 09's six buttons.
+    // 2. Toolbar — exactly doc 07's six buttons.
     let buttons = Buttons {
         upload: icon_button("document-send-symbolic", "Upload"),
         download: icon_button("document-receive-symbolic", "Download"),
@@ -330,7 +330,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
         toolbar.append(button);
     }
 
-    // 3. Listing: a ColumnView over boxed rows, one column per doc 09.
+    // 3. Listing: a ColumnView over boxed rows, one column per doc 07.
     let model = gio::ListStore::new::<glib::BoxedAnyObject>();
     let selection = gtk4::SingleSelection::builder()
         .model(&model)
@@ -369,7 +369,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
     status_label.set_xalign(0.0);
     status_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
 
-    // 6. Following the shell (doc 09 §Following the shell), on by default.
+    // 6. Following the shell (doc 07 §Following the shell), on by default.
     let follow_check = gtk4::CheckButton::with_label("Follow terminal directory");
     follow_check.set_active(true);
     follow_check.set_tooltip_text(Some(
@@ -951,7 +951,7 @@ pub(super) mod gtk_tests {
         }
     }
 
-    /// The listing shows every row under doc 09's columns; selection feeds
+    /// The listing shows every row under doc 07's columns; selection feeds
     /// the toolbar rules, and a re-render (which clears the selection)
     /// does not re-enter the state borrow.
     pub(in crate::ui) fn listing_renders_and_selection_drives_toolbar() {

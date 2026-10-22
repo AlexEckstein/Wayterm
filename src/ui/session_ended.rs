@@ -1,4 +1,4 @@
-//! The ended-session prompt (doc 04 §Lifecycle): when the shell exits on
+//! The ended-session prompt (doc 03 §Lifecycle): when the shell exits on
 //! its own (`exit`, logout) nothing reconnects. The terminal stays with a
 //! notice, and `r` reconnects or `q` closes the tab.
 

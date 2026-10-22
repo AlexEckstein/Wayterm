@@ -8,12 +8,9 @@
 //! [`EngineStatusBridge`] serves it from a live engine, [`FakeStatusSource`]
 //! from tests.
 //!
-//! GTK discipline follows `tab.rs`: status travels on a
-//! `tokio::sync::mpsc` unbounded channel whose receiver is drained by a
-//! `MainContext::spawn_local` future (`while let Some … = rx.recv().await`),
-//! and `send` never blocks — so there is no `blocking_recv` on the UI path
-//! and no lock held across `.await` (the dialog keeps no async fns at all).
-//! `set_rule_enabled` queues the request and returns.
+//! Status travels on an unbounded channel drained by a main-context
+//! future, so nothing on the UI path blocks; `set_rule_enabled` queues the
+//! request and returns.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

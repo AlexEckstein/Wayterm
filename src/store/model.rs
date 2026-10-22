@@ -1,4 +1,4 @@
-//! The session data model (doc 06). Serde spellings are the database
+//! The session data model (doc 09). Serde spellings are the database
 //! contract, locked by the tests — changing one is a schema break.
 
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,7 @@ impl SessionType {
         }
     }
 
-    /// Only SSH sessions get an SFTP sidebar (doc 09 §Availability).
+    /// Only SSH sessions get an SFTP sidebar (doc 07 §Availability).
     pub fn supports_sftp(&self) -> bool {
         match self {
             Self::SSH => true,
@@ -41,7 +41,7 @@ impl SessionType {
         }
     }
 
-    /// Only an SSH session can be another's jump host (doc 11 §Jump hosts).
+    /// Only an SSH session can be another's jump host (doc 04 §Jump hosts).
     pub fn can_be_jump_host(&self) -> bool {
         match self {
             Self::SSH => true,
@@ -50,7 +50,7 @@ impl SessionType {
     }
 
     /// Whether the session dialog offers to save a typed password to the
-    /// keyring (doc 06 §Credential Storage, "Store on save").
+    /// keyring (doc 05, "Store on save").
     pub fn stores_password_on_save(&self) -> bool {
         match self {
             Self::SSH => true,
@@ -72,7 +72,7 @@ pub enum AuthMethod {
     None,
 }
 
-/// `sessions.host_key_policy` (doc 11): `strict`, `accept-new`, `off`;
+/// `sessions.host_key_policy` (doc 04): `strict`, `accept-new`, `off`;
 /// NULL means the global setting.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -86,8 +86,8 @@ pub enum HostKeyPolicy {
     Off,
 }
 
-/// Port-forward direction (doc 11). Only `Local` is implemented in v1; all
-/// three are in the wire format so the JSON stays stable.
+/// Port-forward direction (doc 04 §Port forwarding). Only `Local` runs;
+/// all three are in the wire format so the JSON stays stable.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForwardKind {
@@ -96,7 +96,7 @@ pub enum ForwardKind {
     Dynamic,
 }
 
-/// One entry of the `sessions.forward_rules` JSON array (doc 11).
+/// One entry of the `sessions.forward_rules` JSON array (doc 04).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ForwardRule {
     pub kind: ForwardKind,
@@ -114,7 +114,7 @@ pub struct SshOptions {
     pub keepalive_interval: Option<u32>,
     pub keepalive_count: Option<u32>,
     /// Run `ssh -W` as the jump stream when the jump hop rejects
-    /// direct-tcpip (doc 11 §Jump hosts). Off by default; rows written
+    /// direct-tcpip (doc 04 §Jump hosts). Off by default; rows written
     /// before this field existed load as `false`.
     #[serde(default)]
     pub ssh_w_fallback: bool,
@@ -139,11 +139,11 @@ pub struct VncOptions {
 }
 
 /// Prefix of every Wayterm tmux session on the remote host, so they never
-/// collide with the user's own (doc 04 §Tmux Session Persistence).
+/// collide with the user's own (doc 04 §Tmux session persistence).
 /// `SSHTransport` adds it; the stored name is the bare suffix.
 pub const TMUX_NAME_PREFIX: &str = "wayterm-";
 
-/// A saved session — one `sessions` row (doc 06). Never holds a secret:
+/// A saved session — one `sessions` row (doc 09). Never holds a secret:
 /// `auth_method` says which method, the keyring holds the credential.
 /// `#[serde(default)]` keeps JSON written before a field existed readable.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -164,7 +164,7 @@ pub struct SessionConfig {
     pub key_path: Option<String>,
     /// `None` = the global setting.
     pub host_key_policy: Option<HostKeyPolicy>,
-    /// ProxyJump-style hop through another session (doc 11; depth ≤ 1).
+    /// ProxyJump-style hop through another session (doc 04; depth ≤ 1).
     pub jump_session_id: Option<i64>,
     pub forward_rules: Option<Vec<ForwardRule>>,
     /// Run the shell inside a remote tmux session (doc 04). Stored for
@@ -254,7 +254,7 @@ pub fn strip_tmux_prefix(name: &str) -> &str {
     name.strip_prefix(TMUX_NAME_PREFIX).unwrap_or(name)
 }
 
-/// One `folders` row (doc 06).
+/// One `folders` row (doc 09).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Folder {
     pub id: i64,
@@ -265,7 +265,7 @@ pub struct Folder {
     pub icon: Option<String>,
 }
 
-// Value vocabularies of the enum-like per-type columns. Doc 06 names only
+// Value vocabularies of the enum-like per-type columns. Doc 09 names only
 // the defaults; these lists are the single source for the dialog and the
 // mapper. Adding a value changes the wire vocabulary.
 
@@ -277,7 +277,7 @@ pub const SERIAL_DATA_BITS: [u8; 4] = [5, 6, 7, 8];
 pub const SERIAL_DATA_BITS_DEFAULT: u8 = 8;
 pub const SERIAL_STOP_BITS: [u8; 2] = [1, 2];
 pub const SERIAL_STOP_BITS_DEFAULT: u8 = 1;
-/// The serial group's starting baud rate (doc 06 names no default).
+/// The serial group's starting baud rate (the schema names no default).
 pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 /// Bits per pixel; doc 08 falls back to 32.
 pub const RDP_COLOR_DEPTHS: [u32; 3] = [16, 24, 32];

@@ -1,68 +1,23 @@
-//! xfreerdp subprocess wrapper (doc 08 §RDP). Display-free and tokio-side:
-//! no GTK types, no X11 types — everything here is `Send`. The embedding
-//! (reparenting into a container widget) lives in `ui::rdp_tab`; this module
-//! only builds the argv, finds the binary, spawns the child, feeds it the
-//! password, and watches it exit.
+//! The xfreerdp subprocess (doc 08 §RDP): argv builder, binary probe, and
+//! the child wrapper that feeds the password and watches the exit.
+//! Display-free and `Send`; the embedding lives in `ui::rdp_tab`.
 //!
-//! ## Credentials via stdin (probed on FreeRDP 3.15, Debian 13, xrdp)
+//! Rules the code depends on (verified on FreeRDP 3.15 and 3.32):
 //!
-//! - The username travels on argv (`/u:<user>` — not a secret); the
-//!   password travels on stdin as exactly one line with
-//!   `/from-stdin:force`. Passing `/u` avoids the ordering trap: without
-//!   it, `:force` reads the password *first* and the username second.
-//! - Lines are bare (no quoting; `\r` or `\n` ends a line), so a password
-//!   cannot contain a newline — [`RdpProcess::run`] truncates at the first
-//!   one rather than sending a second line.
-//! - Write the line and KEEP the pipe open until the session is connected:
-//!   closing stdin early aborts the connect with
-//!   `ERRCONNECT_CONNECT_CANCELLED`. The writer side therefore holds the
-//!   `ChildStdin` handle for the whole session; only the in-memory copy of
-//!   the password is dropped (zeroized) right after the write.
-//! - `/from-stdin` exists in every FreeRDP since 2.0.0, but was buggy
-//!   around 3.5–3.17 (fixed in 3.20). Tested on 3.15: it works there, but
-//!   treat other versions in that range with suspicion. `FREERDP_ASKPASS`
-//!   is not used (environment-based, 3.10+ only).
-//!
-//! ## Argv contract
-//!
-//! [`build_args`] emits, in order: `/v:<host>:<port>`, `/u:<username>`,
-//! `/d:<domain>` (iff set), `/w:`/​`/h:`, `/bpp:` (iff set),
-//! `/from-stdin:force` and `/sec:rdp:off` (always), the feature toggles,
-//! `/parent-window:<xid>` (iff embedded — note the flag name:
-//! `/parent-window:`, NOT `/parent-window-id:`, as verified on 3.15), and
-//! the certificate token (iff resolved). The password never appears in
-//! argv — it is not even an input to the builder, so the compiler enforces
-//! what the tests document.
-//!
-//! `/sec:rdp:off` keeps the certificate pin meaningful. Legacy "Standard
-//! RDP Security" has no TLS handshake, so `/cert:fingerprint:` is never
-//! consulted: a peer that answers the negotiation with
-//! `SSL_NOT_ALLOWED_BY_SERVER` gets a session — and the auto-logon password
-//! — despite a pin that cannot match (verified on FreeRDP 3.32 against a
-//! `freerdp-shadow-cli3 /sec:rdp` server). With the flag the client refuses
-//! with `ERRCONNECT_SECURITY_NEGO_CONNECT_FAILED`; TLS and NLA servers are
-//! unaffected. The `:off` toggle syntax is FreeRDP 3; 2.x spelled it
-//! `-sec-rdp`, which 3.x rejects.
-//!
-//! So the contract speaks FreeRDP 3 only: a 2.x binary (still the packaged
-//! `xfreerdp` on Ubuntu 22.04, Debian 12, RHEL 8) is refused at probe time
-//! ([`is_supported_version`]) rather than handed an argv it would
-//! misparse — and nothing here was ever verified on 2.x.
-//!
-//! Toggle forms follow FreeRDP's own `cmdline.h`/man pages (bool options
-//! accept `+`/`-`): clipboard, fonts and compression default ON upstream,
-//! so they are always spelled out (`+clipboard`/`-clipboard`,
-//! `+fonts`/`-fonts`, `+compression`/`-compression`); audio redirection
-//! (`/audio`, alias of `/sound`) and printer (`/printer`) default OFF, so
-//! they are passed only when enabled (their `-` forms are not clean bool
-//! toggles — both take optional values).
-//!
-//! ## Liveness heuristic
-//!
-//! xfreerdp has no machine-readable "connected" signal on stderr, so
-//! [`RdpProcess::run`] emits `Connected` once when the child has lived
-//! [`CONNECTED_DELAY`] (15 s) after spawn without exiting AND stderr
-//! carries no `ERRCONNECT_*` line.
+//! - **Password on stdin only**, one line, with `/u` on argv and
+//!   `/from-stdin:force` (without `/u`, `:force` reads the password first).
+//!   A password is cut at its first newline. Stdin stays open for the whole
+//!   session: closing it early aborts with `ERRCONNECT_CONNECT_CANCELLED`.
+//!   The password is not even an input to [`build_args`].
+//! - **`/sec:rdp:off` always:** Standard RDP Security has no TLS, so a
+//!   certificate pin would never be checked and the password would reach a
+//!   peer that refused TLS.
+//! - **FreeRDP 3 only:** the argv uses 3.x toggle syntax, so 2.x is refused
+//!   at probe time ([`is_supported_version`]).
+//! - Clipboard, fonts and compression are always spelled out (`+x`/`-x`,
+//!   on by default upstream); `/audio` and `/printer` only when enabled.
+//! - **Connected** is a heuristic: the child lived [`CONNECTED_DELAY`]
+//!   with no `ERRCONNECT_*` line on stderr.
 
 use std::collections::VecDeque;
 use std::ffi::OsStr;

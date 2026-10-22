@@ -1,6 +1,8 @@
 //! The session tree sidebar: folders and saved sessions with a right-click
-//! CRUD menu (sessions can also be cloned); sessions and folders drag onto folders to move (docs 01, 06). Rows draw their icon by name from the icon
-//! theme (`ui::icons`). [`collect_rows`] is the display-free part.
+//! CRUD menu (sessions can also be cloned); sessions and folders drag onto
+//! folders to move (doc 09 §Session tree). Rows draw their icon by name
+//! from the icon theme (`ui::icons`). [`collect_rows`] is the display-free
+//! part.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -452,7 +454,7 @@ impl SessionTree {
         self.popover.popup();
     }
 
-    /// Register the tree's window actions (doc 07 §Handlers):
+    /// Register the tree's window actions (doc 11 §Handlers):
     /// `new_session`, and `edit_session`, `duplicate_session`,
     /// `delete_session` and `connect_session` on the selected row. Those
     /// four are enabled only while a row they apply to is selected; a
@@ -497,7 +499,7 @@ impl SessionTree {
         self.selection.connect_selected_item_notify(move |_| sync());
     }
 
-    /// `new_session` (doc 07): the session dialog for a new session.
+    /// `new_session` (doc 11): the session dialog for a new session.
     pub fn new_session(&self) {
         self.edit_session(None);
     }
@@ -648,7 +650,7 @@ impl SessionTree {
 }
 
 /// A copy of `config` to insert as a new session: same folder and
-/// settings, named "<name> (copy)", without the id or connection history.
+/// settings, named "`<name> (copy)`", without the id or connection history.
 /// Keyring secrets are keyed on the session id and stay with the original.
 pub fn cloned_session(config: &SessionConfig) -> SessionConfig {
     SessionConfig {
@@ -660,8 +662,8 @@ pub fn cloned_session(config: &SessionConfig) -> SessionConfig {
     }
 }
 
-/// Every secret type a session can have in the keyring (doc 06
-/// §Credential Storage).
+/// Every secret type a session can have in the keyring (doc 05
+/// §Keyring).
 const SECRET_TYPES: [&str; 4] = ["password", "key_passphrase", "vnc_password", "rdp_password"];
 
 /// Remove a deleted session's keyring entries, one per secret type. A
@@ -689,7 +691,7 @@ fn delete_keyring_entries(
 
 /// [`delete_keyring_entries`] against the OS keyring, probed once rather
 /// than per secret type. An unreachable keyring has nothing to delete
-/// (same semantics as a lookup miss, doc 11 §CredentialManager).
+/// (same semantics as a lookup miss, doc 05).
 fn forget_secrets(session_id: i64) -> usize {
     let source = KeyringSource::new(&session_id.to_string(), "");
     if !source.available() {

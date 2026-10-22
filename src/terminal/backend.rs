@@ -29,7 +29,7 @@ pub enum TerminalEvent {
     Closed,
 }
 
-/// A terminal backend (doc 02): VTE today, an engine backend later,
+/// A terminal backend (doc 02): VTE, Ghostty when compiled in, or
 /// [`FakeBackend`](super::FakeBackend) in tests.
 ///
 /// Bytes come in through [`write`](Self::write); events go out through the
@@ -80,12 +80,12 @@ pub struct TerminalHandle {
     pub events: mpsc::Receiver<TerminalEvent>,
 }
 
-/// The global settings row naming the backend for new tabs (doc 06
-/// §Default Data, doc 05): `vte` or `ghostty`.
+/// The settings row naming the backend for new tabs: `vte` or `ghostty`
+/// (doc 13 §Settings rows).
 pub const DEFAULT_BACKEND_SETTING: &str = "default_backend";
 
 /// Whether this build has the experimental Ghostty backend
-/// (`backend-ghostty`, doc 05).
+/// (`backend-ghostty` feature).
 pub const GHOSTTY_COMPILED: bool = cfg!(feature = "backend-ghostty");
 
 /// A terminal backend [`create_terminal`] can build.
@@ -144,8 +144,8 @@ pub fn backend_preference() -> BackendKind {
 }
 
 /// Build the terminal backend and its event channel: the installed
-/// [`backend_preference`] when this build has it, VTE otherwise (doc 05);
-/// main thread only.
+/// [`backend_preference`] when this build has it, VTE otherwise or when
+/// libghostty-vt cannot allocate a terminal. Main thread only.
 pub fn create_terminal() -> TerminalHandle {
     let (tx, events) = mpsc::channel(256);
     #[cfg(feature = "backend-ghostty")]

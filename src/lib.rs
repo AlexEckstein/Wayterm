@@ -3,7 +3,7 @@
 //! the doc it implements.
 //!
 //! - [`ui`]: the GTK window, tabs, dialogs and session tree.
-//! - [`terminal`]: the `TerminalBackend` seam and its VTE implementation.
+//! - [`terminal`]: the `TerminalBackend` seam and its VTE and Ghostty backends.
 //! - [`transport`]: byte-stream transports (SSH, local PTY, serial), SSH
 //!   auth, host keys, jump hosts, port forwarding and reconnects.
 //! - [`sftp`], [`vnc`], [`rdp`]: the protocol engines behind their tabs.

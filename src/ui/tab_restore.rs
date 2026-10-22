@@ -1,11 +1,11 @@
-//! Keeping the open-tab list saved and reopening it at launch (doc 10
-//! Phase 4). [`super::tab_state`] owns the format and every display-free
-//! decision; this is the notebook side.
+//! Keeping the open-tab list saved and reopening it at launch (doc 03
+//! §Restoring tabs). [`super::tab_state`] owns the format and every
+//! display-free decision; this is the notebook side.
 //!
 //! Saves happen on tab open, close, and rename, debounced so a rename is
-//! one write rather than one per keystroke, and once more on exit. Restore
-//! reopens tab frames only: connections start when the user asks, since
-//! credentials would need prompting.
+//! one write rather than one per keystroke, and once more on exit. Restored
+//! session tabs connect as they open, like new ones but without the
+//! duplicate-tmux notice; a tab whose session is gone reopens detached.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -66,7 +66,7 @@ impl TabPersistence {
             self.open_restored(tab);
         }
         if !ordered.is_empty() {
-            // Clamped: two rows for one session collapse into one tab.
+            // Clamped defensively to the pages that exist.
             let page = tab_state::restore_page_index(ordered.len() - 1)
                 .min(self.notebook.n_pages().saturating_sub(1));
             self.notebook.set_current_page(Some(page));
@@ -94,7 +94,7 @@ impl TabPersistence {
         });
     }
 
-    /// Note a change: the save runs once [`SAVE_DEBOUNCE`] has passed
+    /// Note a change: the save runs once `SAVE_DEBOUNCE` has passed
     /// without another. The trailing-edge timer is the debounce, on the
     /// main loop's monotonic clock, so a wall-clock step cannot lose it.
     pub fn schedule_save(self: &Rc<Self>) {

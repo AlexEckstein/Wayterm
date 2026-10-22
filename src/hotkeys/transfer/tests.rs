@@ -1,4 +1,4 @@
-//! Export/import tests (doc 07 §"Persistence", last paragraph).
+//! Export/import tests (doc 11 §Persistence, last paragraph).
 //!
 //! The point of the file format is that a layout can move between
 //! machines, so these tests care about two things: a round-trip must

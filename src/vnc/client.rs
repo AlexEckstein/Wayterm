@@ -1,6 +1,6 @@
 //! VNC engine: dial + handshake (`VncSession`), then a tokio task
 //! (`VncEngine`) that owns the framebuffer and talks to the UI over channels
-//! (doc 08 §VNC Path B, doc 04 §Threading model). Display-free: nothing here
+//! (doc 08 §VNC, doc 01 §Threading model). Display-free: nothing here
 //! touches GTK or cairo.
 //!
 //! ## vnc-rs 0.6.0 behavior this module is built around

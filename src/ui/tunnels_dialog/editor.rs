@@ -17,7 +17,8 @@ use super::status_source::{ForwardState, ForwardStatusSource, RuleId};
 use crate::store::model::ForwardRule;
 use crate::ui::widgets::{dim_label, set_margins};
 
-/// The Tunnels dialog's side of each row: a status cell, the v2 note, and
+/// The Tunnels dialog's side of each row: a status cell, the unsupported-kind
+/// note, and
 /// an Enabled toggle that drives the engine through `source` — `None`
 /// offline, which leaves the engine controls insensitive.
 #[derive(Clone)]
@@ -117,7 +118,7 @@ impl RuleEditor {
 
     /// Append a row for `draft`; `state` is what the engine last reported
     /// for it (live rows only). Only Local converts on save: Remote and
-    /// Dynamic stay selectable so the v2 refusal is visible.
+    /// Dynamic stay selectable so their refusal is visible.
     pub(crate) fn add(&self, draft: &ForwardRuleDraft, state: Option<&ForwardState>) {
         let rule_id = self.rows.borrow().len();
         let kind = gtk4::DropDown::builder()
@@ -179,8 +180,8 @@ impl RuleEditor {
 }
 
 /// Append the Tunnels dialog's cells to `hbox` and wire them: the status
-/// cell, the v2 note, and the engine toggle, sensitive only for a Local
-/// rule while online — re-armed whenever the kind changes (doc 11).
+/// cell, the unsupported-kind note, and the engine toggle, sensitive only for a Local
+/// rule while online — re-armed whenever the kind changes (doc 04).
 fn live_cells(
     hbox: &gtk4::Box,
     live: &Live,

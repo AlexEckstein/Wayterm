@@ -1,4 +1,4 @@
-//! Jump hosts, one level deep (doc 11 §Jump hosts).
+//! Jump hosts, one level deep (doc 04 §Jump hosts).
 //!
 //! A session with `jump_session_id` dials by opening a direct-tcpip channel
 //! on the jump hop's [`SshConnection`] to the target and running the
@@ -6,14 +6,11 @@
 //! style). Each hop authenticates on its own; host-key verification runs on
 //! the inner hop through the same [`AppClientHandler`] path, never skipped.
 //!
-//! Shape: [`dial_with_jump`] is the config-level entry the connect flow
-//! calls (it resolves both hops from their [`SessionConfig`] rows, checks
-//! depth, dials the jump hop through the supervisor, then hands the live
-//! jump connection to [`dial_via_jump`]). [`dial_via_jump`] takes an
-//! already-connected jump [`SshConnection`], which keeps it testable
-//! against a single sshd and keeps the supervisor pool out of the inner
-//! (stream-backed) connection — the inner connection is intentionally NOT
-//! pooled, so the caller owns the returned [`SshConnection`] outright.
+//! [`dial_with_jump`] is the connect flow's entry: it resolves both hops
+//! from their rows, checks depth, dials the jump hop through the
+//! supervisor, and hands it to [`dial_via_jump`], which runs the target
+//! over the live jump connection (testable against one sshd). The inner
+//! connection is never pooled: the caller owns it outright.
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -29,7 +26,7 @@ use crate::transport::supervisor::{
 };
 use crate::transport::types::TransportError;
 
-/// Depth and self-jump checks (doc 11: depth ≤ 1). Pure so the connect flow
+/// Depth and self-jump checks (doc 04: depth ≤ 1). Pure so the connect flow
 /// and tests can call it without dialing anything.
 pub fn check_jump_chain(
     jump_config: &SessionConfig,
@@ -38,7 +35,7 @@ pub fn check_jump_chain(
     if jump_config.jump_session_id.is_some() {
         return Err(TransportError::ConnectionFailed(format!(
             "jump depth > 1 is not supported: jump session '{}' itself jumps \
-             (v1 allows one hop, doc 11)",
+             (v1 allows one hop, doc 04)",
             jump_config.name,
         )));
     }
@@ -100,11 +97,13 @@ pub fn hop_auth_method(config: &SessionConfig) -> AuthMethod {
 /// Config-level jump dial for the connect flow: check the chain, dial the
 /// jump hop through the supervisor with `jump_auth`, then dial the target
 /// over it with `target_auth` — each hop authenticating as its own session
-/// (doc 11). Cancellation from either hop's auth propagates as
+/// (doc 04). Cancellation from either hop's auth propagates as
 /// [`TransportError::Cancelled`].
 ///
 /// The returned connection is NOT pooled: it is backed by a jump channel,
-/// not a TCP endpoint the pool key could describe.
+/// not a TCP endpoint the pool key could describe. It does not hold the
+/// jump hop either, so the supervisor may release the hop once this
+/// returns (doc 04 §Limitations).
 pub async fn dial_with_jump(
     supervisor: &ConnectionSupervisor,
     jump_config: &SessionConfig,
@@ -177,7 +176,7 @@ where
 /// `ssh -W host:port [user@]host` argv. No secrets ever appear here: the
 /// child is only the transport, auth happens through the stream.
 /// `BatchMode=yes` keeps OpenSSH from ever prompting on a tty Wayterm does
-/// not own (doc 11).
+/// not own (doc 04).
 pub(crate) fn ssh_w_argv(jump: &ConnectParams, target_host: &str, target_port: u16) -> Vec<String> {
     let mut argv = vec![
         "-W".to_string(),

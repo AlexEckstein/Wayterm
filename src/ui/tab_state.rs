@@ -1,6 +1,6 @@
 //! The open-tab list's format and every decision about it that needs no
-//! display (doc 10 Phase 4). It is one JSON array in the `open_tabs`
-//! settings row — always read and written whole, so no table. Only tab
+//! display (doc 03 §Restoring tabs). It is one JSON array in the
+//! `open_tabs` settings row — always read and written whole, so no table. Only tab
 //! identity is stored, never a credential or connection detail.
 
 use serde::{Deserialize, Serialize};

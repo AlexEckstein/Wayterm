@@ -1,6 +1,6 @@
 /*
- * A narrow C shim over the pinned libghostty-vt C API (doc 02 §Engine
- * backends; pin in docs/plans/phase10-pin.md).
+ * A narrow C shim over the pinned libghostty-vt C API (doc 02
+ * §GhosttyBackend, pin in §libghostty-vt pin).
  *
  * libghostty-vt's API is built on sized structs and tagged unions. Their
  * layouts come from the C compiler here, so the Rust side (`ffi.rs`) only
@@ -378,7 +378,7 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
       ghostty_render_state_row_cells_get(
           g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &len);
       if (len > 0) {
-        /* Base codepoint only; combining marks are not drawn yet. */
+        /* Base codepoint only; combining marks are not drawn. */
         uint32_t cps[16];
         if (len <= 16 &&
             ghostty_render_state_row_cells_get(

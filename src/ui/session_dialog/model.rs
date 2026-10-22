@@ -10,7 +10,8 @@ use crate::store::model::{
 use crate::store::SessionStore;
 use crate::ui::tunnels_dialog::model::{rules_from_drafts, ForwardRuleDraft};
 
-// Type DropDown indices, in doc 06 order.
+// Type DropDown indices, in doc 09 order.
+/// Type dropdown position of SSH.
 pub const TYPE_INDEX_SSH: u32 = 0;
 pub const TYPE_INDEX_RDP: u32 = 1;
 pub const TYPE_INDEX_VNC: u32 = 2;
@@ -49,7 +50,7 @@ pub struct DialogFields {
     pub serial_stop_bits_index: u32,
     pub serial_flow_control_index: u32,
     pub rdp_domain: String,
-    /// `WIDTHxHEIGHT`; empty means doc 08's 1024×768 at connect time.
+    /// `WIDTHxHEIGHT`; empty means 1024×768 at connect time.
     pub rdp_resolution: String,
     pub rdp_color_depth_index: u32,
     pub local_shell: String,
@@ -212,7 +213,7 @@ pub fn jump_error(peers: &[SessionConfig], self_id: i64, desired: Option<i64>) -
     }
     if peer.jump_session_id.is_some() {
         return Some(format!(
-            "“{}” itself jumps through another session — depth > 1 is not supported (doc 11).",
+            "“{}” itself jumps through another session — depth > 1 is not supported (doc 04).",
             peer.name
         ));
     }
@@ -365,7 +366,7 @@ pub fn config_from_fields(
         port,
         username: trimmed_opt(&fields.username),
         auth_method: Some(auth_method_from_index(fields.auth_index)),
-        // Doc 06 defaults `rdp_compression` on; there is no widget for it.
+        // Doc 09 defaults `rdp_compression` on; there is no widget for it.
         rdp_compression: kept.map_or(session_type == SessionType::RDP, |b| b.rdp_compression),
         tmux_enabled: fields.tmux_enabled,
         tmux_session_name,
@@ -430,7 +431,7 @@ pub fn config_from_fields(
             config.local_shell = trimmed_opt(&fields.local_shell);
             config.local_working_dir = trimmed_opt(&fields.local_working_dir);
         }
-        // VNC's only secret is keyring-only (doc 06).
+        // VNC's only secret is keyring-only (doc 05).
         SessionType::VNC => {
             if let Some(kept) = kept {
                 config.vnc_color_depth = kept.vnc_color_depth;

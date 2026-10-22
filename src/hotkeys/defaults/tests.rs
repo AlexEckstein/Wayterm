@@ -41,7 +41,7 @@ fn every_default_key_fires_and_renders_back() {
     }
 }
 
-/// Doc 07's conflict rules over the whole table: the only repeats are
+/// Doc 11's conflict rules over the whole table: the only repeats are
 /// `Ctrl+D` and `Delete`, each shared by the session tree and SFTP.
 #[test]
 fn defaults_never_double_fire() {
@@ -125,7 +125,7 @@ fn the_2026_10_revision_stays() {
     assert_eq!(registry.current_key("new_session"), Some("Ctrl+Shift+N"));
 }
 
-/// Doc 06's seed rows are informational (never loaded); this pins their
+/// Doc 09's seed rows are informational (never loaded); this pins their
 /// known differences from the table: no `goto_tab_N` rows; `Enter`, which
 /// GDK cannot resolve, where the table says `Return`; and the 2026-10
 /// revision's dropped split actions and old `Ctrl+N`.

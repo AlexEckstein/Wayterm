@@ -1,4 +1,4 @@
-//! Tray icon and disconnect notifications (doc 10 Phase 4).
+//! Tray icon and disconnect notifications (doc 03 §Tray).
 //!
 //! The icon is a StatusNotifierItem over D-Bus via `ksni` (pure Rust,
 //! tokio-native); notifications go through `gio::Notification`. Without a
@@ -33,7 +33,7 @@ pub const TRAY_ICON_NAME: &str = crate::app::APP_ID;
 const TRAY_ICON_PNG: &[u8] =
     include_bytes!("../../assets/icons/hicolor/64x64/apps/com.alex-eckstein.wayterm.png");
 
-/// [`TRAY_ICON_PNG`] as an SNI pixmap: ARGB32 in network byte order.
+/// `TRAY_ICON_PNG` as an SNI pixmap: ARGB32 in network byte order.
 pub fn tray_icon_pixmap() -> Result<ksni::Icon, glib::Error> {
     let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_static(TRAY_ICON_PNG));
     let pixbuf = gtk4::gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE)?;

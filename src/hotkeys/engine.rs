@@ -1,8 +1,8 @@
 //! [`HotkeyEngine`]: the action registry plus its SQLite persistence
-//! (doc 07 §HotkeyEngine, §Persistence), and [`HotkeyEngine::install`],
+//! (doc 11 §HotkeyEngine, §Persistence), and [`HotkeyEngine::install`],
 //! which binds the registry to the main window: one capture-phase shortcut
 //! controller whose shortcuts check their action's context at each key
-//! press (doc 07 §Dispatch). Once installed, every mutation swaps only the
+//! press (doc 11 §Dispatch). Once installed, every mutation swaps only the
 //! triggers it changed.
 //!
 //! Persistence rules: the registry starts from the compiled-in defaults;
@@ -67,7 +67,7 @@ pub fn precedence(context: ActionContext) -> u8 {
     }
 }
 
-/// When one context's shortcuts may fire (doc 07 §Dispatch), checked at
+/// When one context's shortcuts may fire (doc 11 §Dispatch), checked at
 /// each key press. The main window gives one per context it hosts; global
 /// shortcuts need none, and a context without one stays unbound.
 #[derive(Clone)]
@@ -234,7 +234,7 @@ pub struct HotkeyEngine {
 }
 
 impl HotkeyEngine {
-    /// An engine over doc 07's default table.
+    /// An engine over doc 11's default table.
     pub fn new() -> Self {
         Self::with_registry(defaults::default_registry())
     }
@@ -246,7 +246,7 @@ impl HotkeyEngine {
         }
     }
 
-    /// Bind every action to `window` (doc 07 §Dispatch): one shortcut per
+    /// Bind every action to `window` (doc 11 §Dispatch): one shortcut per
     /// action whose context is global or in `hosts`, each firing the window
     /// action `win.<id>`. Installing again replaces the previous
     /// controller. Returns the ids with no window action registered yet —

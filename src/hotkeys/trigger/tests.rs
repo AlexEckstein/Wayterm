@@ -1,4 +1,4 @@
-//! Trigger parsing tests (doc 07 §"Trigger Parsing").
+//! Trigger parsing tests (doc 11 §Trigger parsing).
 //!
 //! Every doc example is asserted verbatim, and the two rules the doc
 //! calls out as fixes — single characters lowercase / key names keep
@@ -157,7 +157,7 @@ fn unknown_key_name_is_not_a_binding() {
 
 #[test]
 fn enter_is_not_a_gdk_key_name() {
-    // Doc 07's `connect_session` = `Enter` / `rename_tab` =
+    // Doc 11's `connect_session` = `Enter` / `rename_tab` =
     // `Ctrl+Shift+Enter` could never fire; the default table spells the
     // same physical key `Return`. See src/hotkeys/defaults.rs.
     assert_eq!(Key::from_name("Enter"), None);

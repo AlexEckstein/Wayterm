@@ -1,8 +1,8 @@
-//! The experimental libghostty-vt backend (doc 02 §Engine backends), built
+//! The experimental libghostty-vt backend (doc 02 §GhosttyBackend), built
 //! only with the `backend-ghostty` feature.
 //!
 //! - [`ffi`] declares `shim.c`, a narrow C layer over the pinned
-//!   libghostty-vt C API (docs/plans/phase10-pin.md).
+//!   libghostty-vt C API (doc 02 §libghostty-vt pin).
 //! - [`engine::Engine`] owns one terminal safely and needs no display.
 //! - [`view::GhosttyView`] is the GTK4 widget that paints the engine's
 //!   grid snapshot and turns keys, mouse drags, and wheel turns into input.
@@ -108,8 +108,8 @@ impl TerminalBackend for GhosttyBackend {
             scrollback_search: false,
             url_detection: false,
             sixel_graphics: false,
-            // libghostty-vt parses Kitty graphics; the widget does not draw
-            // images yet.
+            // libghostty-vt parses Kitty graphics; the widget draws no
+            // images.
             kitty_graphics: false,
             custom_fonts: true,
             reflow: true,
@@ -118,14 +118,14 @@ impl TerminalBackend for GhosttyBackend {
         }
     }
 
-    /// Not implemented: no color-scheme store yet (as for VTE).
+    /// A no-op: `features().color_schemes` is false.
     fn set_color_scheme(&self, _name: &str) {}
 
     fn set_font(&self, font_desc: &pango::FontDescription) {
         self.view.set_font(font_desc);
     }
 
-    /// Not implemented (as for VTE).
+    /// A no-op, as for VTE.
     fn set_opacity(&self, _opacity: f64) {}
 
     fn set_scrollback_limit(&self, lines: u32) {
@@ -159,7 +159,7 @@ impl TerminalBackend for GhosttyBackend {
         self.reset();
     }
 
-    /// Not implemented: `features().search` is false, so the UI hides it.
+    /// A no-op: `features().search` is false, so the UI hides it.
     fn search(&self, _text: &str, _reverse: bool) {}
 
     fn scrollback_text(&self) -> Option<String> {

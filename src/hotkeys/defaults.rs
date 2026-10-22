@@ -1,4 +1,4 @@
-//! The compiled-in default bindings: doc 07 §Default Actions.
+//! The compiled-in default bindings: doc 11 §Default actions.
 //!
 //! The table is de-conflicted (the tests enforce it): the only chords that
 //! repeat are `Ctrl+D` and `Delete`, each shared by the session tree and
@@ -35,7 +35,7 @@ const fn a(
 
 use ActionContext::{Global as G, SessionTree as S, Sftp as F, Terminal as T};
 
-/// Doc 07's table in its order; `goto_tab_1` … `goto_tab_9` is one printed
+/// Doc 11's table in its order; `goto_tab_1` … `goto_tab_9` is one printed
 /// row, so 34 actions in all.
 #[rustfmt::skip]
 pub const DEFAULT_ACTIONS: &[DefaultAction] = &[

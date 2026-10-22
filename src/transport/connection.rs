@@ -1,6 +1,6 @@
 //! [`SshConnection`]: one authenticated russh session shared by every
-//! consumer — terminal channels, the SFTP sidebar, future tunnels (doc 04
-//! §Connection Supervisor).
+//! consumer — terminal channels, the SFTP sidebar, port forwards (doc 04
+//! §Connection supervisor).
 
 use std::fmt;
 use std::path::Path;
@@ -16,13 +16,13 @@ use crate::transport::credentials::CredentialManager;
 use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
 use crate::transport::types::TransportError;
 
-/// The method a session prefers. Secrets are looked up through the
-/// [`CredentialManager`] at connect time; the chain still falls through to
-/// the other methods (doc 11 §Flow).
+/// The method a session uses, which decides what the chain tries
+/// (`auth_config`). Secrets are looked up through the
+/// [`CredentialManager`] at connect time (doc 04 §Authentication).
 #[derive(Clone, Debug, Default)]
 pub enum AuthMethod {
-    /// The payload is not used: the password comes from the credential
-    /// lookup, never from the session row.
+    /// The looked-up password, re-prompted once, then keyboard-interactive.
+    /// The payload is not used: the password never comes from the row.
     Password(String),
     Key {
         path: String,
@@ -81,8 +81,8 @@ impl SshConnection {
             .map_err(TransportError::from_russh)
     }
 
-    /// direct-tcpip channels for local forwards and jump hosts (doc 11
-    /// §Jump hosts and port forwarding). Originator address/port are
+    /// direct-tcpip channels for local forwards and jump hosts (doc 04
+    /// §Jump hosts, §Port forwarding). Originator address/port are
     /// client-side metadata, so the loopback/0 convention (like OpenSSH
     /// `-W`) is used; callers only name the destination.
     pub async fn open_direct_tcpip(
@@ -99,7 +99,7 @@ impl SshConnection {
     }
 
     /// A session channel with the `sftp` subsystem requested; the SFTP task
-    /// turns it into a session with `into_stream()` (doc 09).
+    /// turns it into a session with `into_stream()` (doc 07).
     pub async fn open_sftp_channel(&self) -> Result<Channel<Msg>, TransportError> {
         let channel = self.open_session_channel().await?;
         channel
@@ -118,7 +118,7 @@ impl SshConnection {
             .map_err(TransportError::from_russh)
     }
 
-    /// Run the auth chain on this session (doc 11 §Flow).
+    /// Run the auth chain on this session (doc 04 §Authentication).
     pub async fn authenticate(
         &self,
         method: &AuthMethod,
@@ -205,11 +205,11 @@ fn key_needs_passphrase(path: &str) -> bool {
 pub enum HandlerError {
     #[error(transparent)]
     Ssh(#[from] russh::Error),
-    /// The verifier refused the server's key (doc 11): its own outcome,
+    /// The verifier refused the server's key (doc 04): its own outcome,
     /// `TransportError::HostKeyRejected`, never a connect failure.
     #[error("host key rejected for {0}")]
     HostKeyRejected(String),
-    /// Host certificates are not supported yet (doc 11 §Limitations).
+    /// Host certificates are not supported (doc 04 §Limitations).
     #[error("certificate-based host auth not supported yet")]
     HostCertificate,
 }

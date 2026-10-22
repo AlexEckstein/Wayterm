@@ -13,12 +13,12 @@ fn wire<T: serde::Serialize>(value: &T) -> String {
 
 #[test]
 fn session_type_wire_formats() {
-    // Doc 06 `sessions.type` column: 'ssh', 'rdp', 'vnc', 'serial', 'local'.
+    // Doc 09 `sessions.type` column: 'ssh', 'rdp', 'vnc', 'serial', 'local'.
     assert_eq!(wire(&SessionType::SSH), "\"ssh\"");
     assert_eq!(wire(&SessionType::RDP), "\"rdp\"");
     assert_eq!(wire(&SessionType::VNC), "\"vnc\"");
     assert_eq!(wire(&SessionType::Serial), "\"serial\"");
-    // Not snake_case "local_shell" — doc 06 stores 'local'.
+    // Not snake_case "local_shell" — doc 09 stores 'local'.
     assert_eq!(wire(&SessionType::LocalShell), "\"local\"");
 
     // Wire strings deserialize back, and only the exact spelling is accepted.
@@ -53,7 +53,7 @@ const NOT_SSH: [SessionType; 4] = [
 
 #[test]
 fn only_ssh_sessions_get_a_sidebar() {
-    assert!(SessionType::SSH.supports_sftp(), "doc 09 §Availability");
+    assert!(SessionType::SSH.supports_sftp(), "doc 07 §Availability");
     for other in NOT_SSH {
         assert!(!other.supports_sftp(), "{other:?} must not get a sidebar");
     }
@@ -61,7 +61,7 @@ fn only_ssh_sessions_get_a_sidebar() {
 
 #[test]
 fn only_ssh_sessions_can_be_jump_hosts() {
-    assert!(SessionType::SSH.can_be_jump_host(), "doc 11 §Jump hosts");
+    assert!(SessionType::SSH.can_be_jump_host(), "doc 04 §Jump hosts");
     for other in NOT_SSH {
         assert!(
             !other.can_be_jump_host(),
@@ -74,7 +74,7 @@ fn only_ssh_sessions_can_be_jump_hosts() {
 fn only_ssh_sessions_store_a_password_on_save() {
     assert!(
         SessionType::SSH.stores_password_on_save(),
-        "doc 06 §Credential Storage"
+        "SSH saves its password to the keyring (doc 05)"
     );
     for other in NOT_SSH {
         assert!(
@@ -86,12 +86,12 @@ fn only_ssh_sessions_store_a_password_on_save() {
 
 #[test]
 fn auth_method_wire_formats() {
-    // Doc 06 `sessions.auth_method` column: 'password', 'key', 'agent',
+    // Doc 09 `sessions.auth_method` column: 'password', 'key', 'agent',
     // 'keyboard-interactive', 'none'.
     assert_eq!(wire(&AuthMethod::Password), "\"password\"");
     assert_eq!(wire(&AuthMethod::Key), "\"key\"");
     assert_eq!(wire(&AuthMethod::Agent), "\"agent\"");
-    // Hyphen, not snake_case "keyboard_interactive" — doc 06 stores
+    // Hyphen, not snake_case "keyboard_interactive" — doc 09 stores
     // 'keyboard-interactive'.
     assert_eq!(
         wire(&AuthMethod::KeyboardInteractive),
@@ -108,8 +108,8 @@ fn auth_method_wire_formats() {
 
 #[test]
 fn host_key_policy_wire_formats() {
-    // Doc 06 `sessions.host_key_policy` column: 'strict', 'accept-new',
-    // 'off' — doc 11 matches OpenSSH's StrictHostKeyChecking=accept-new.
+    // Doc 09 `sessions.host_key_policy` column: 'strict', 'accept-new',
+    // 'off' — doc 04 matches OpenSSH's StrictHostKeyChecking=accept-new.
     assert_eq!(wire(&HostKeyPolicy::Strict), "\"strict\"");
     assert_eq!(wire(&HostKeyPolicy::AcceptNew), "\"accept-new\"");
     assert_eq!(wire(&HostKeyPolicy::Off), "\"off\"");
@@ -243,7 +243,7 @@ fn forward_rule_roundtrip() {
         enabled: true,
     };
 
-    // `kind: Local` wires as "local" — doc 06's forward_rules JSON example.
+    // `kind: Local` wires as "local" — doc 09's forward_rules JSON example.
     let json = serde_json::to_string(&rule).unwrap();
     assert!(
         json.contains(r#""kind":"local""#),
@@ -253,15 +253,15 @@ fn forward_rule_roundtrip() {
     let rt: ForwardRule = serde_json::from_str(&json).unwrap();
     assert_eq!(rt, rule);
 
-    // v2 kinds: wire format fixed from day one so the JSON column never
-    // shifts under stored rows (doc 11 §Port forwarding).
+    // Kinds that never start still have a fixed wire format, so the JSON column never
+    // shifts under stored rows (doc 04 §Port forwarding).
     assert_eq!(wire(&ForwardKind::Remote), "\"remote\"");
     assert_eq!(wire(&ForwardKind::Dynamic), "\"dynamic\"");
 }
 
 #[test]
 fn ssh_w_fallback_defaults_off_for_old_rows() {
-    // Rows written before `ssh_w_fallback` existed (doc 11 §Jump hosts)
+    // Rows written before `ssh_w_fallback` existed (doc 04 §Jump hosts)
     // must load as `false`, never fail to parse.
     let options: SshOptions =
         serde_json::from_str(r#"{"compression":true,"keepalive_interval":30,"keepalive_count":3}"#)
@@ -291,7 +291,7 @@ fn default_is_sane() {
 
 #[test]
 fn vocab_defaults_are_members_of_their_vocabulary() {
-    // Doc 06 names these defaults in the schema comments; each must be
+    // Doc 09 names these defaults in the schema comments; each must be
     // selectable in the dialog's DropDown for that column.
     assert!(SERIAL_PARITIES.contains(&SERIAL_PARITY_DEFAULT));
     assert!(SERIAL_FLOW_CONTROLS.contains(&SERIAL_FLOW_CONTROL_DEFAULT));
@@ -299,14 +299,14 @@ fn vocab_defaults_are_members_of_their_vocabulary() {
     assert!(SERIAL_STOP_BITS.contains(&SERIAL_STOP_BITS_DEFAULT));
     assert!(RDP_COLOR_DEPTHS.contains(&RDP_COLOR_DEPTH_DEFAULT));
 
-    // Doc 06: serial_data_bits DEFAULT 8, serial_stop_bits DEFAULT 1,
+    // Doc 09: serial_data_bits DEFAULT 8, serial_stop_bits DEFAULT 1,
     // serial_parity/serial_flow_control DEFAULT 'none'.
     assert_eq!(SERIAL_DATA_BITS_DEFAULT, 8);
     assert_eq!(SERIAL_STOP_BITS_DEFAULT, 1);
     assert_eq!(SERIAL_PARITY_DEFAULT, "none");
     assert_eq!(SERIAL_FLOW_CONTROL_DEFAULT, "none");
 
-    // Doc 08 §RDP passes `/bpp:{rdp_color_depth.unwrap_or(32)}` to xfreerdp,
+    // Doc 08 §RDP `/bpp:{rdp_color_depth.unwrap_or(32)}` to xfreerdp,
     // so 32 is the fallback the dialog must default to.
     assert_eq!(RDP_COLOR_DEPTH_DEFAULT, 32);
 }
@@ -381,7 +381,7 @@ fn vocab_index_round_trips_every_value() {
 
 #[test]
 fn vocab_index_falls_back_to_the_default_selection() {
-    // NULL column (doc 06's nullable per-type columns) selects the default.
+    // NULL column (doc 09's nullable per-type columns) selects the default.
     assert_eq!(
         vocab_index(&SERIAL_PARITIES, None, SERIAL_PARITY_DEFAULT),
         0

@@ -1,5 +1,5 @@
-//! Local sessions through the real tab wiring (doc 04 §Wiring; doc 10
-//! Phase 5): a `LocalShell` config builds a `LocalTransport` over a real
+//! Local sessions through the real tab wiring (doc 03 §Wiring): a
+//! `LocalShell` config builds a `LocalTransport` over a real
 //! `forkpty` bash, wired to a `FakeBackend` through the pump/bridge/drain.
 //! Display-free: the drain runs on a private main context driven by hand.
 

@@ -1,6 +1,6 @@
-//! Settings UI tests: the Keyboard Shortcuts page (doc 07 §"Settings UI",
-//! §"Conflict Detection", §"Persistence") and the General page (doc 06
-//! settings rows).
+//! Settings UI tests: the Keyboard Shortcuts page (doc 11 §Settings page,
+//! §Conflict detection, §Persistence) and the General page (doc 13
+//! §General).
 //!
 //! Everything here is display-free by design: the tests drive
 //! `ui::settings::hotkeys::SettingsView` — row mapping, capture formatting,
@@ -134,8 +134,8 @@ fn capture_formats_a_ctrl_shift_chord() {
 }
 
 /// GDK reports a lower-case keyval for Ctrl+T; the capture renders it the
-/// way the table spells it, so it is the same chord (doc 07 §Trigger
-/// Parsing).
+/// way the table spells it, so it is the same chord (doc 11
+/// §Trigger parsing).
 #[test]
 fn capture_renders_a_letter_the_way_the_table_does() {
     let lower = gdk::Key::from_name("t").expect("t key");
@@ -263,8 +263,8 @@ fn conflicts_excludes_the_action_itself() {
 fn conflicts_ignores_the_other_panel() {
     let engine = engine();
     // `edit_session` holds Ctrl+E in the session tree; aiming the
-    // sftp-context `sftp_upload` at the same chord is fine (doc 07
-    // rule 5: focus is in one panel at most).
+    // sftp-context `sftp_upload` at the same chord is fine (doc 11
+    // §Conflict detection rule 5: focus is in one panel at most).
     let losers = SettingsView::conflicts(&engine, "sftp_upload", "Ctrl+E");
     assert!(losers.is_empty());
 }
@@ -272,8 +272,8 @@ fn conflicts_ignores_the_other_panel() {
 #[test]
 fn conflicts_reports_a_terminal_chord_against_a_panel_action() {
     let engine = engine();
-    // Terminal shortcuts stay live while the SFTP panel has focus (doc 07
-    // rule 4), so `copy`'s Ctrl+Shift+C is taken there too.
+    // Terminal shortcuts stay live while the SFTP panel has focus (doc 11
+    // §Conflict detection rule 4), so `copy`'s Ctrl+Shift+C is taken there too.
     let losers = SettingsView::conflicts(&engine, "sftp_upload", "Ctrl+Shift+C");
     assert_eq!(losers.len(), 1);
     assert_eq!(losers[0].id, "copy");

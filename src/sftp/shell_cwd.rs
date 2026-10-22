@@ -1,5 +1,5 @@
 //! Where the tab's shell is, asked of the remote over the shared
-//! connection for shells that do not report it with OSC 7 (doc 09
+//! connection for shells that do not report it with OSC 7 (doc 07
 //! §Following the shell). Each probe runs one `sh` with its script on
 //! stdin, so the login shell (fish, bash, zsh) never parses the script.
 //!

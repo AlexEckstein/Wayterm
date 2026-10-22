@@ -1,5 +1,5 @@
-//! End-to-end tmux persistence against a real sshd (doc 04 §Tmux Session
-//! Persistence, doc 10 Phase 8).
+//! End-to-end tmux persistence against a real sshd (doc 04 §Tmux
+//! session persistence).
 //!
 //! Needs the `common` sshd fixture and `tmux` on the remote host (the
 //! tests skip without either).
@@ -19,8 +19,7 @@
 //!    variable.
 //! 3. With tmux disabled, the shell is not inside tmux and the
 //!    `wayterm-<name>` session does not exist — the off-path.
-//! 4. Doc 10's "run vim, kill the network, reconnect, vim is still there",
-//!    through the tab's reconnect path minus GTK: the whole connection is
+//! 4. "Run vim, kill the network, reconnect, vim is still there", through the tab's reconnect path minus GTK: the whole connection is
 //!    killed under a live transport, its `ConnectionLost` starts the
 //!    auto-reconnect driver from the resilience registry, the driver redials
 //!    through a real `ConnectionSupervisor`, and a program running in the
@@ -428,7 +427,7 @@ async fn tmux_flag_on_a_serial_session_is_inert() {
 
     let (tx, _rx) = mpsc::channel::<TransportEvent>(1);
     let transport = create_transport(&config, None, tx, 24, 80)
-        .expect("serial sessions get a SerialTransport (doc 10 Phase 5)");
+        .expect("serial sessions get a SerialTransport (doc 06)");
     assert!(matches!(transport.transport_type(), TransportType::Serial));
     assert_eq!(transport.description(), "/dev/ttyUSB0@115200");
 }

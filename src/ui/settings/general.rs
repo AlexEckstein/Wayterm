@@ -1,5 +1,5 @@
-//! The General settings page: on/off switches for the doc 06 settings rows
-//! the app acts on, and the experimental terminal backend choice. Every
+//! The General settings page (doc 13 §General): on/off switches for the
+//! settings rows the app acts on, and the experimental terminal backend choice. Every
 //! flip is saved at once and applied live.
 //!
 //! [`TOGGLES`] and the functions over it are display-free; [`page`] only
@@ -11,12 +11,12 @@
 //! "Do not show me again" ([`REMINDERS`]).
 //!
 //! The "Experimental Ghostty terminal" check box writes `default_backend`
-//! (`ghostty`/`vte`, doc 06) for tabs opened afterwards. In a build without
+//! (`ghostty`/`vte`) for tabs opened afterwards. In a build without
 //! the `backend-ghostty` feature it is shown disabled, and VTE is used
 //! whatever the row says.
 //!
 //! "Default color scheme" writes `default_color_scheme` (`System`, `Light`,
-//! `Dark`, doc 06) and re-colors open terminals at once; `System` follows
+//! `Dark`) and re-colors open terminals at once; `System` follows
 //! the desktop theme ([`appearance`]).
 
 use std::rc::Rc;

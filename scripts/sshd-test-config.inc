@@ -18,7 +18,7 @@ AllowUsers $WAYTERM_SSHD_USER
 PermitRootLogin no
 UsePAM yes
 
-# All three auth methods the integration suite exercises (doc 11 §Testing).
+# All three auth methods the integration suite exercises (doc 15).
 PubkeyAuthentication yes
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
@@ -28,7 +28,7 @@ StrictModes yes
 
 # No agent/X11/tunnel plumbing is needed by the transport tests; deny it so
 # the throwaway instance exposes as little as possible. TCP forwarding IS
-# allowed: the Phase 11 suites (forward_sshd, jump_sshd) prove direct-tcpip
+# allowed: the forward_sshd and jump_sshd suites prove direct-tcpip
 # channels against this instance. It listens on 127.0.0.1 for one
 # throwaway user only, matching the CI sshd default.
 AllowAgentForwarding no
@@ -41,7 +41,7 @@ MaxSessions 20
 LoginGraceTime 30
 
 # The dedicated config does not inherit the distro's default sshd_config, so
-# the sftp subsystem must be declared explicitly (doc 09 SFTP integration).
+# the sftp subsystem must be declared explicitly (doc 07 SFTP integration).
 Subsystem sftp internal-sftp
 
 # Test-host chatter lands in the throwaway log file, not the system journal.

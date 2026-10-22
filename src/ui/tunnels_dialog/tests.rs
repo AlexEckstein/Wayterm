@@ -348,7 +348,7 @@ fn bridge_fans_out_and_prunes_dead_subscribers() {
 #[tokio::test]
 async fn bridge_set_rule_enabled_is_queued_and_reaches_the_engine() {
     let (engine, mut rx) = closed_engine();
-    // A Remote rule never binds a socket (v2, skipped with Stopped), so
+    // A Remote rule never binds a socket (skipped with Stopped), so
     // this toggle exercises the full engine path with no network.
     engine.start(vec![remote_rule()]);
     assert!(matches!(

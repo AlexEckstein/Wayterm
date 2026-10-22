@@ -1,5 +1,5 @@
-//! Engine tests: the registry wrapper plus the doc 06 `hotkeys`
-//! persistence path (doc 07 §"Persistence").
+//! Engine tests: the registry wrapper plus the doc 09 `hotkeys`
+//! persistence path (doc 11 §Persistence).
 //!
 //! Persistence is tested against real SQLite — an in-memory store for
 //! the load/save semantics, and a file-backed pair for the two cases
@@ -407,7 +407,7 @@ fn save_never_touches_the_seed_rows() {
     engine.rebind("copy", "Ctrl+Y").unwrap();
     engine.save_to_db(&store).expect("save");
 
-    // The seeded row survives beside the custom one: doc 06's design is
+    // The seeded row survives beside the custom one: doc 09's design is
     // "is_default = 0 rows override at load time", not "replace the row".
     let count: i64 = raw
         .query_row("SELECT COUNT(*) FROM hotkeys", [], |row| row.get(0))
@@ -431,7 +431,7 @@ fn save_never_touches_the_seed_rows() {
     assert_eq!(custom, 1);
 }
 
-/// Doc 06's `hotkeys` table has no `UNIQUE (action, context)`
+/// Doc 09's `hotkeys` table has no `UNIQUE (action, context)`
 /// constraint, so a rebind relies on the store's delete-then-insert
 /// guard. Two writers through two connections must still converge on one
 /// custom row per action.

@@ -2,7 +2,7 @@
 #
 # Run tests/auth_matrix.rs against real, throwaway sshd instances — one per
 # auth method, so the server actually pins each method
-# (doc 11 §Testing Strategy item 3).
+# (doc 15).
 #
 # WHY A SEPARATE RUNNER: the matrix needs an sshd whose AuthenticationMethods
 # names exactly ONE acceptable method. CI provisions a single all-methods sshd

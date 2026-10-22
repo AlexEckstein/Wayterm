@@ -1,4 +1,4 @@
-//! Wayterm's own JSON export (doc 06 §Import and export):
+//! Wayterm's own JSON export (doc 10):
 //! `{"version":1,"folders":[{"name","icon","children":[…],"sessions":[…]}]}`.
 //! Folders own their sessions by nesting; sessions never carry ids. A
 //! jump host is named by `jump_session`. Root sessions, which have no

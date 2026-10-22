@@ -3,7 +3,7 @@
 //!
 //! [`ForwardRuleDraft`] keeps ports as text so the dialog can show
 //! "not a number" inline instead of refusing the keystroke; only valid
-//! drafts convert into the stored [`ForwardRule`] (doc 06 wire keys
+//! drafts convert into the stored [`ForwardRule`] (doc 09 wire keys
 //! `kind/bind_addr/bind_port/remote_host/remote_port/enabled` are never
 //! renamed here). The session dialog reuses the drafts and the validators
 //! for its own forward-rules editor, so both editors accept exactly the
@@ -17,16 +17,14 @@ pub const KIND_INDEX_LOCAL: u32 = 0;
 pub const KIND_INDEX_REMOTE: u32 = 1;
 pub const KIND_INDEX_DYNAMIC: u32 = 2;
 
-/// The kind labels. Remote/Dynamic carry their v2 marker in the label
-/// itself: `gtk4::DropDown` has no per-item sensitivity, so a "disabled
-/// with a v2 tooltip" item is expressed as a visibly-marked choice that
-/// validation refuses with [`V2_NOTE`], plus a tooltip on the widget.
+/// The kind labels. `gtk4::DropDown` has no per-item sensitivity, so the
+/// unsupported kinds stay choosable but are marked in their label,
+/// refused by validation with [`V2_NOTE`], and explained in a tooltip.
 pub const FORWARD_KIND_LABELS: [&str; 3] = ["Local", "Remote (v2)", "Dynamic (v2)"];
 
-/// Why a non-Local kind is refused (doc 11 §Limitations: remote and dynamic
-/// forwarding are v2).
+/// Why a non-Local kind is refused (doc 04 §Limitations).
 pub const V2_NOTE: &str =
-    "Remote and dynamic forwarding are v2 (doc 11) — only Local rules start in this version.";
+    "Remote and dynamic forwarding are v2 (doc 04) — only Local rules start in this version.";
 
 /// The help popover's contents: one (term, explanation) pair per row
 /// control, in row order, plus how saving works.

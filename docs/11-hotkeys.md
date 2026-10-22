@@ -1,9 +1,11 @@
-# Hotkey Engine
+# Hotkeys
 
 Every app action has a rebindable shortcut, and shortcuts can differ by
-context (terminal vs session tree vs SFTP sidebar). `src/hotkeys/` holds
-the data model, persistence, and the GTK dispatcher (§HotkeyEngine); the
-UI registers each action's handler (§Handlers).
+context (terminal, session tree, SFTP sidebar). `src/hotkeys/` holds the
+data model, the conflict rules, persistence and the GTK dispatcher
+(§HotkeyEngine); the UI registers each action's handler as a window
+action (§Handlers); the Settings window's Keyboard Shortcuts page edits
+the bindings (§Settings page).
 
 ## Dispatch
 
@@ -23,17 +25,19 @@ activates the window action `win.<id>`:
 
 A text field is anything editable (entries, the terminal search popover,
 text views); a popover owns its keys (the session tree's context menu
-answers `Return` itself). So terminal shortcuts keep working after a
-click on a tab, the side dock or a header button, and stand aside only
-while the user types somewhere else. RDP and VNC tabs have no terminal,
-so only global chords are taken from them; every other key reaches the
-remote session.
+answers `Return` itself). So terminal shortcuts keep working after a click
+on a tab, the side dock or a header button, and stand aside only while
+the user types somewhere else. RDP and VNC tabs have no terminal, so only
+global chords are taken from them; every other key reaches the remote
+session.
 
 A key whose shortcut's context is inactive, or whose window action is
 missing or disabled (`toggle_sftp` on a tab without a sidebar), passes
-through untouched.
+through untouched. Should a co-firing pair ever share a chord, the
+narrower context is tried first: session tree and SFTP, then terminal,
+then global.
 
-## Action Registry
+## Action registry
 
 ```rust
 pub struct Action {
@@ -49,11 +53,11 @@ pub struct Action {
 pub enum ActionContext { Global, Terminal, SessionTree, Sftp, RdpTab, VncTab }
 ```
 
-The registry is data only: handlers are window actions (§Handlers).
-Contexts are stored in `hotkeys.context` as `global`, `terminal`,
-`session_tree`, `sftp`, `rdp_tab`, `vnc_tab`.
+The registry is data only: handlers are window actions. Contexts are
+stored in `hotkeys.context` as `global`, `terminal`, `session_tree`,
+`sftp`, `rdp_tab`, `vnc_tab`.
 
-## Conflict Detection
+## Conflict detection
 
 Two bound actions conflict when they share a chord and can fire together:
 
@@ -66,17 +70,13 @@ Two bound actions conflict when they share a chord and can fire together:
    panel at most, which is why `Ctrl+D` can be both `duplicate_session`
    and `sftp_download`.
 
-Disabled and unbound actions hold no chord. Chords compare by key, not
-by spelling (§Trigger Parsing): a captured `Ctrl+Shift+t` collides with
-`new_tab`'s `Ctrl+Shift+T`. A rebind onto a taken chord is refused (the
-UI then asks "*Ctrl+Shift+T* is already bound to 'New Tab'. Override?");
+Disabled and unbound actions hold no chord. Chords compare by key, not by
+spelling (§Trigger parsing): a captured `Ctrl+Shift+t` collides with
+`new_tab`'s `Ctrl+Shift+T`. A rebind onto a taken chord is refused (the UI
+then asks "*Ctrl+Shift+T* is already bound to 'New Tab'. Override?");
 overriding takes the chord and unbinds and disables the loser.
 
-Should a co-firing pair share a chord anyway, the dispatcher tries the
-narrower context first: session tree and SFTP, then terminal, then
-global.
-
-## Default Actions
+## Default actions
 
 | Action | Default | Context |
 |---|---|---|
@@ -95,79 +95,65 @@ global.
 | `sftp_upload`, `sftp_download` | Ctrl+U, Ctrl+D | sftp |
 | `sftp_rename`, `sftp_delete` | F2, Delete | sftp |
 
-34 actions. The table is conflict-free under the rules above (tests
-enforce it); the only repeated chords are `Ctrl+D` and `Delete`, each
-shared by the session tree and SFTP. The Enter key is spelled `Return`:
-GDK has no key named `Enter`, so such a binding could never fire.
+34 actions (`src/hotkeys/defaults.rs`). Rules the table keeps, each
+enforced by a test:
 
-Global and terminal chords are taken before the terminal sees them, so
-none of their defaults is a bare `Ctrl+<letter>`: those are the
-terminal's control characters (tests enforce it). `Alt+1` … `Alt+9` are
-taken from the terminal too (readline's digit argument, irssi's window
-keys), as in GNOME Terminal.
+- It is conflict-free under the rules above; the only repeated chords are
+  `Ctrl+D` and `Delete`, each shared by the session tree and SFTP.
+- No global or terminal default is a bare `Ctrl+<letter>`: those chords
+  are taken before the terminal sees them, and bare `Ctrl+<letter>` is the
+  terminal's control characters (so `new_session` is not `Ctrl+N`, the
+  shell's next-history key). `Alt+1` … `Alt+9` are taken from the terminal
+  too (readline's digit argument, irssi's window keys), as in GNOME
+  Terminal.
+- `rename_tab` and `reconnect`, and `toggle_sftp` and terminal `search`,
+  never share a chord.
+- The Enter key is spelled `Return`: GDK has no key named `Enter`, so such
+  a binding could never fire.
 
-The 2026-08 revision fixed two collisions that must stay fixed:
-`rename_tab` vs `reconnect`, and `toggle_sftp` vs terminal `search`. The
-2026-10 revision moved `new_session` off `Ctrl+N` (the shell's
-next-history key, vim's completion) and dropped `split_horizontal`,
-`split_vertical` and `close_split`: there are no split panes, and the
-actions return with them.
+There are no split panes, so there are no split actions.
 
 ## Handlers
 
-Every action is a window action, `win.<id>`, registered before the
-engine is installed; `install` lists any action without one (logged at
-startup), and a widget test builds the main window and checks that every
-action in the table has one. What each does:
+Every action is a window action, `win.<id>`, registered before the engine
+is installed; `install` logs any action without one at startup, and a
+widget test builds the main window and checks that every action in the
+table has one.
 
-- `new_tab`: the host picker (§New Tab).
+- `new_tab`: the host picker (doc 03 §New Tab).
 - `close_tab`: closes the current tab as its close button does, asking
-  first per `confirm_close` (doc 04 §Lifecycle). Home is never closed.
+  first per `confirm_close` (doc 03 §Closing a tab). Home is never closed.
 - `next_tab`, `prev_tab`: the next or previous tab, wrapping round;
   `goto_tab_N`: the Nth tab, if there is one. Home is not counted.
-- `rename_tab`: the current tab's rename prompt, as double-clicking its
-  name opens.
+- `rename_tab`: the current tab's rename prompt (doc 03 §Tab labels).
 - `toggle_sftp`: the side dock's SFTP panel, or back to the panel it came
-  from (doc 09).
+  from (doc 07 §Layout).
 - `toggle_session_tree`: hides the dock's panel while it shows Sessions;
   otherwise shows the panel on Sessions and moves focus into the tree.
   Picking any dock tab brings a hidden panel back; while it is hidden,
-  `sftp_on_connect` (doc 09) leaves it hidden.
+  `sftp_on_connect` leaves it hidden.
 - `toggle_fullscreen`: the window's fullscreen state.
-- `reconnect`, `disconnect`: the current tab's connection (doc 04).
-- `new_session`: the session dialog for a new session (doc 06).
-- terminal actions: on the current tab's terminal; the two searches
-  open its search popover.
-- session-tree actions act on the selected row, like its context menu:
+- `reconnect`, `disconnect`: the current tab's connection (doc 03
+  §Reconnect).
+- `new_session`: the session dialog for a new session (doc 09 §Session
+  dialog).
+- Terminal actions (`src/ui/terminal_actions.rs`): on the current tab's
+  terminal; the two searches open its search popover (doc 02 §Terminal
+  actions).
+- Session-tree actions act on the selected row, like its context menu:
   `edit_session` edits a session or folder, `duplicate_session` is Clone
   Session, `delete_session` deletes a session or folder once confirmed,
   `connect_session` opens a session or opens and closes a folder. Each is
   enabled only while a row it applies to is selected, so with none their
   keys reach the list (`Return` activates its focused row).
 - SFTP actions press the current sidebar's toolbar button, so they follow
-  its enable rules (doc 09).
+  its enable rules (doc 07 §Layout).
 
-## New Tab
-
-`new_tab` opens a modal host picker. "Local shell" comes first and is
-selected; every saved session follows in the session tree's order, under
-its folders, all expanded, with the tree's icons. Up and Down move
-between hosts (folders are headings, never selected), Return or a
-double-click opens the host in a new tab, Escape cancels. Folders with no
-session below them are left out.
-
-"Local shell" is an unsaved local session: the login shell (`$SHELL`) in
-the home directory. Its tab is saved under session id 0, which SQLite
-never assigns, and restores as a local shell (doc 10 Phase 4).
-
-The tab bar's "+" (doc 01 §Tab bar) skips the picker: it opens a local
-shell in a new tab straight away.
-
-## Trigger Parsing
+## Trigger parsing
 
 Bindings are stored in canonical UI format and converted for GTK:
 `Ctrl+Shift+T` → `<Control><Shift>t`, `Ctrl+Alt+Delete` →
-`<Control><Alt>Delete`, `F11` → `F11`.
+`<Control><Alt>Delete`, `F11` → `F11` (`src/hotkeys/trigger.rs`).
 
 - Modifiers: `Ctrl`, `Shift`, `Alt`, `Super`, `Meta`; anything else, or a
   trailing `+`, is invalid. A literal `+` key can only be captured.
@@ -180,15 +166,16 @@ Bindings are stored in canonical UI format and converted for GTK:
   (`Tab`, `F11`, `Delete`) are case-sensitive.
 - A binding is accepted only if it parses **and** GDK knows the key name,
   so nothing can be stored that would silently never fire.
-- Capture reads `key()` + `modifier_state()` from the key event and renders
-  it canonically; lock and button masks are ignored. A shifted symbol is
-  kept as GTK reports it (`Ctrl+Shift+exclam` on a US layout): that is the
-  key GTK matches a Shift chord against.
+- Capture reads `key()` + `modifier_state()` from the key event and
+  renders it canonically; lock and button masks are ignored. A shifted
+  symbol is kept as GTK reports it (`Ctrl+Shift+exclam` on a US layout):
+  that is the key GTK matches a Shift chord against.
 
 ## HotkeyEngine
 
-`HotkeyEngine` wraps the registry with the checked rebind (`Reject` or
-`Override`), reset, enable/disable, persistence, and JSON export.
+`HotkeyEngine` (`src/hotkeys/engine.rs`) wraps the registry with the
+checked rebind (`Reject` or `Override`), reset, enable/disable,
+persistence and JSON export.
 
 `install(window, hosts)` adds the dispatcher (§Dispatch) to the main
 window. Each `ContextHost` says when one context is active, checked at
@@ -198,41 +185,57 @@ widgets. Global needs no host; a context without one stays unbound.
 Disabled and unbound actions hold a never-trigger. Installing again
 replaces the controller.
 
-Once installed, `rebind`/`rebind_with`, `reset_to_default`, and
+Once installed, `rebind`/`rebind_with`, `reset_to_default` and
 `set_enabled` swap only the triggers they changed (an override also its
 losers), in place. `load_from_db` rebuilds the rows it applied and the
 actions they displaced, and `import_json` re-syncs every binding. The
-settings UI goes through these methods, so a change takes effect live.
+settings page goes through these methods, so a change takes effect live.
 
-## Settings UI
+## Settings page
 
-The Keyboard Shortcuts page of the Settings window (beside General, doc 06
-§Default Data) lists every action (name | key | context) with Capture and
-Reset buttons. Capture opens a small modal that records the next chord
-(Escape cancels; bare modifiers are ignored). Conflicts raise the
-Override? prompt; every change is saved immediately. A `ListBox` stands in
-for a `ColumnView`: the same columns, less machinery for 34 rows.
+The Keyboard Shortcuts page of the Settings window
+(`src/ui/settings/hotkeys.rs`, doc 13) lists every action (name | key |
+context) with Capture and Reset buttons. Capture opens a small modal that
+records the next chord (Escape cancels; bare modifiers are ignored).
+Conflicts raise the Override? prompt; every change is saved immediately.
+A `ListBox` stands in for a `ColumnView`: the same columns, less machinery
+for 34 rows.
 
 ## Persistence
 
 On startup the registry starts from the default table, then the
-`is_default = 0` rows from doc 06's `hotkeys` table are applied to the
-*current* binding, oldest first. Seeded `is_default = 1` rows are never
-loaded. A bound row goes through the same check as an override, so a
-stored chord that collides under today's rules takes the chord and
-unbinds the holder (logged at startup; the next save records it). A
-disabled row holds no chord and applies as stored. Rows for unknown
-action ids (the dropped split actions among them), or with keys GTK
-cannot fire, are skipped and reported, so a database from another build
-still loads; an empty key is kept (it records an override's loser). Keys
-load canonical, so a row that spells a default chord differently is that
-default again.
+`is_default = 0` rows of the `hotkeys` table (doc 09 §Schema) are applied
+to the *current* binding, oldest first:
+
+- A bound row goes through the same check as an override, so a stored
+  chord that collides under the current rules takes the chord and unbinds
+  the holder (logged at startup; the next save records it).
+- A disabled row holds no chord and applies as stored. An empty key is
+  kept (it records an override's loser).
+- Rows for unknown action ids, or with keys GTK cannot fire, are skipped
+  and reported, so a database from another build still loads.
+- Keys load canonical, so a row that spells a default chord differently is
+  that default again.
 
 Saving writes one `is_default = 0` row per rebound or disabled action
 (replacing any earlier row inside a `BEGIN IMMEDIATE` transaction) and
 deletes the row of every action back at its default.
 
-Layouts export as JSON (`{"version": 1, "bindings": [...]}`), deviations
-only, so an import onto a newer build keeps that build's defaults.
-Imported chords override what holds them; unknown actions, changed
-contexts, and keys that no longer bind are skipped and reported.
+The seed (doc 13 §Settings rows) also inserts 28 `is_default = 1` rows.
+They are informational: they are never loaded, and the compiled-in table
+is the source of truth. They differ from it — the seed spells the Enter
+key `Enter`, lacks `goto_tab_1` … `goto_tab_9`, and holds split actions and
+`new_session` on `Ctrl+N` — and a test pins exactly those differences.
+
+Layouts export as JSON (`{"version": 1, "bindings": [...]}`,
+`src/hotkeys/transfer.rs`), deviations only, so an import onto a newer
+build keeps that build's defaults. Imported chords override what holds
+them; unknown actions, changed contexts, and keys that no longer bind are
+skipped and reported.
+
+## Limitations
+
+- No hotkeys play a macro (doc 12 §Limitations).
+- RDP and VNC tabs take no shortcuts but the global ones.
+- The JSON layout export has no button in the UI; it exists as an API
+  (`export_json` / `import_json`) only.

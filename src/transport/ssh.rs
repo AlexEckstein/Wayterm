@@ -125,7 +125,7 @@ impl Transport for SSHTransport {
                     msg = read_half.wait() => msg,
                 };
                 match msg {
-                    // v1 shows stderr inline with stdout.
+                    // stderr is shown inline with stdout.
                     Some(ChannelMsg::Data { data })
                     | Some(ChannelMsg::ExtendedData { data, .. }) => {
                         let event = TransportEvent::DataReceived(data.to_vec());

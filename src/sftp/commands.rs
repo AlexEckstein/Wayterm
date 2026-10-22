@@ -3,7 +3,7 @@
 use tokio::sync::{mpsc, oneshot};
 
 /// One progress sample. Sent with `try_send`: a dropped sample is fine, a
-/// stalled transfer is not (doc 09 §Transfers).
+/// stalled transfer is not (doc 07 §Transfers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Progress {
     pub transferred: u64,
@@ -22,7 +22,7 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
-/// Commands to the SFTP task (doc 09). Every variant but `Cancel` is
+/// Commands to the SFTP task (doc 07). Every variant but `Cancel` is
 /// answered exactly once, with `Err` when the session is dead. Transfers
 /// carry an id from [`SftpClient::next_transfer_id`] so `Cancel` can name
 /// them.

@@ -1,6 +1,6 @@
 //! RDP sessions via an xfreerdp subprocess (doc 08 §RDP).
 //!
-//! RDP is deliberately not a `Transport` (doc 04 §Transport Factory): the
+//! RDP is deliberately not a `Transport` (doc 03 §Transport factory): the
 //! engine here owns a child process and an event stream instead of a byte
 //! stream, mirroring how `vnc` stays display-free (doc 08 §VNC). The GTK
 //! embedding (reparenting xfreerdp into a container widget) lives in

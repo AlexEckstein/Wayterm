@@ -1,7 +1,7 @@
-//! Trigger parsing and key capture (doc 07 §Trigger Parsing).
+//! Trigger parsing and key capture (doc 11 §Trigger parsing).
 //!
 //! Bindings are stored in canonical UI format (`"Ctrl+Shift+T"`: modifiers
-//! in [`MODS`] order, a letter upper-case, `ISO_Left_Tab` as `Tab`), so
+//! in `MODS` order, a letter upper-case, `ISO_Left_Tab` as `Tab`), so
 //! two spellings of one chord compare equal. They convert to GTK
 //! accelerator syntax (`"<Control><Shift>t"`) for binding; there only
 //! single characters are lowercased — `Tab`, `F11` and `Delete` are
@@ -74,7 +74,7 @@ pub fn ui_key_is_bindable(key: &str) -> bool {
 }
 
 /// A chord: a captured key press (`key()` + `modifier_state()`), or a
-/// parsed binding. Built canonical — only [`MODS`] modifiers kept (lock
+/// parsed binding. Built canonical — only `MODS` modifiers kept (lock
 /// and button masks dropped), a letter upper-case, `ISO_Left_Tab` (what
 /// Shift+Tab sends) as `Tab` — so equal chords compare equal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-//! The authentication chain (doc 11 §Authentication State Machine):
+//! The authentication chain (doc 04 §Authentication):
 //! agent → key → password → keyboard-interactive. A failing method falls
 //! through to the next; running out of methods is a clean `Failed`.
 
@@ -87,7 +87,7 @@ impl fmt::Debug for AuthConfig {
     }
 }
 
-/// Run the chain (doc 11 §Flow). Failure reasons name the method and never
+/// Run the chain (doc 04 §Authentication). Failure reasons name the method and never
 /// contain a credential.
 pub async fn authenticate_chain(
     handle: &mut Handle<AppClientHandler>,
@@ -121,7 +121,7 @@ pub async fn authenticate_chain(
         match try_password_auth(handle, username, password).await {
             Ok(true) => return Ok(AuthOutcome::Success),
             Err(reason) => last_reason = format!("password: {reason}"),
-            // Wrong password: re-prompt exactly once (doc 11 §Flow).
+            // Wrong password: re-prompt exactly once (doc 04 §Authentication).
             Ok(false) => match &config.challenge_responder {
                 None => last_reason = "password: rejected, no re-prompt available".into(),
                 Some(responder) => {
@@ -181,7 +181,7 @@ enum KbdAuthError {
 }
 
 /// The server's preferred RSA hash, or `None` for non-RSA keys — never a
-/// hardcoded algorithm (doc 11).
+/// hardcoded algorithm (doc 04).
 async fn rsa_hash(handle: &Handle<AppClientHandler>) -> Result<Option<HashAlg>, String> {
     handle
         .best_supported_rsa_hash()
@@ -206,7 +206,7 @@ async fn try_agent_auth(
         return Err("agent has no identities".into());
     }
     for identity in identities {
-        // Certificate identities are not supported yet.
+        // Certificate identities are not supported.
         let AgentIdentity::PublicKey { key, .. } = identity else {
             continue;
         };

@@ -41,7 +41,7 @@ use wayterm::transport::types::{Transport, TransportError, TransportEvent, Trans
 
 /// A reconnectable transport slot standing in for the supervisor: one
 /// shared [`SshConnection`], a fresh [`SSHTransport`] per attempt, exactly
-/// doc 04's "fresh `connect()` through the supervisor".
+/// doc 03's "fresh `connect()` through the supervisor".
 struct Supervisor {
     connection: Arc<SshConnection>,
     /// The currently installed transport; replaced on every connect.
@@ -85,7 +85,7 @@ impl Supervisor {
         Ok(())
     }
 
-    /// The connect closure the driver calls — doc 04's supervisor seam.
+    /// The connect closure the driver calls — doc 03's supervisor seam.
     fn connect_fn(self: &Arc<Self>) -> ConnectFn {
         let supervisor = self.clone();
         Arc::new(move || {
@@ -134,7 +134,7 @@ fn drain_events(rx: &mut mpsc::UnboundedReceiver<ReconnectEvent>) -> Vec<Reconne
     out
 }
 
-/// Doc 04's curve, checked against a real reconnect: connect, drop, let
+/// Doc 03's curve, checked against a real reconnect: connect, drop, let
 /// the driver reconnect through the supervisor, and assert the new
 /// transport actually executes a remote command.
 #[tokio::test]
@@ -277,7 +277,7 @@ async fn cancel_mid_backoff_opens_no_further_channel() {
         async move { driver.run(connect, &events, None, None).await }
     });
 
-    // Well inside doc 04's first 1s rung, then cancel: no attempt may run.
+    // Well inside doc 03's first 1s rung, then cancel: no attempt may run.
     tokio::time::sleep(Duration::from_millis(150)).await;
     cancel.cancel();
 
@@ -319,7 +319,7 @@ async fn prompt_mode_declined_never_opens_a_channel() {
 }
 
 /// The real transport emits `Reconnecting`-able states: after a drop the
-/// old transport reads `Disconnected`, which is exactly the state doc 04's
+/// old transport reads `Disconnected`, which is exactly the state doc 03's
 /// close guard treats as "nothing to confirm" and the driver treats as
 /// "needs a fresh connect".
 #[tokio::test]
@@ -365,7 +365,7 @@ async fn a_dropped_real_transport_reads_disconnected_and_needs_a_fresh_connect()
 }
 
 /// Reconnect preserves the PTY size, so a reattached tmux session comes
-/// back with the right dimensions (doc 04 §Tmux Session Persistence: the
+/// back with the right dimensions (doc 04 §Tmux session persistence: the
 /// reconnect restores full state).
 #[tokio::test]
 async fn reconnected_transport_keeps_its_pty_size() {

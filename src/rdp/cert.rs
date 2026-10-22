@@ -1,31 +1,13 @@
-//! Server-certificate trust for RDP (TOFU, SSH-like).
+//! RDP server-certificate trust, TOFU like SSH host keys (doc 08
+//! §Certificates). Known fingerprints live in the `rdp_trust` table, one per
+//! `(host, port)`, and reach xfreerdp as `/cert:fingerprint:sha256:<hex>`;
+//! in that mode xfreerdp writes nothing to its own store, so the table is
+//! the only source of truth. `/cert:ignore` is never emitted.
 //!
-//! Wayterm manages RDP server trust itself instead of delegating it to
-//! xfreerdp: the known fingerprints live in the `rdp_trust` store table
-//! (one row per `(host, port)`), and the resolved fingerprint is passed to
-//! xfreerdp as `/cert:fingerprint:sha256:<hex>`. In fingerprint mode
-//! xfreerdp writes nothing to its own known-hosts store, so our table is
-//! the single source of truth. `/cert:ignore` is never emitted (there is a
-//! unit test pinning that negative path in [`crate::rdp::process`]).
-//!
-//! ## Trust matrix (as probed against FreeRDP 3.15 / xrdp)
-//!
-//! | Stored | Seen    | Outcome                                     |
-//! |--------|---------|---------------------------------------------|
-//! | none   | fp      | prompt the user (TOFU); on approval, record |
-//! | fp     | same fp | pass the fingerprint token, connect         |
-//! | fp     | other   | hard fail, never auto-accept (possible MITM)|
-//! | any    | none    | error: no server certificate to check       |
-//!
-//! [`decide`] maps `(stored, seen)` to a [`CertDecision`]; [`cert_arg`]
-//! maps a decision to the argv token (`Some` only when a fingerprint was
-//! resolved — `None` means the caller must prompt first or abort). Both are
-//! pure and display-free.
-//!
-//! The fingerprint form is lowercase hex WITHOUT colons: 64 chars for
-//! SHA-256 (e.g. `111e9442…7fe1e3` style, as the probe showed). Use
-//! [`fingerprint_sha256_hex`] to compute it from DER bytes and
-//! [`is_valid_fingerprint`] to check the shape before comparing.
+//! [`decide`] maps `(stored, seen)` to a [`CertDecision`]: none stored →
+//! ask and record; same → connect; different → hard fail; nothing seen →
+//! error. [`cert_arg`] turns a decision into the argv token. Fingerprints
+//! are 64 lowercase hex characters, no colons ([`is_valid_fingerprint`]).
 
 /// Prefix of the xfreerdp argv token carrying a pinned SHA-256 fingerprint.
 pub const CERT_ARG_PREFIX: &str = "/cert:fingerprint:sha256:";
@@ -106,13 +88,9 @@ pub fn is_valid_fingerprint(s: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
-/// Sentinel fingerprint for the acquisition probe: a fingerprint-mode
-/// connect holding this value can never match a real server certificate
-/// (the all-zero SHA-256), so xfreerdp refuses the handshake and — as
-/// verified on 3.15 — prints the server's actual thumbprint on stderr
-/// while writing nothing to any known-hosts store. The UI flow feeds the
-/// parsed value into the TOFU prompt, then reconnects with the real
-/// [`CERT_ARG_PREFIX`] token.
+/// The first-contact probe's pin: no certificate matches the all-zero
+/// SHA-256, so xfreerdp refuses at TLS, printing the server's real
+/// thumbprint on stderr and storing nothing.
 pub const PROBE_FINGERPRINT: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -124,21 +102,14 @@ pub const PROBE_FINGERPRINT: &str =
 ///     Thumbprint:  11:1e:94:…
 /// ```
 ///
-/// Both carry colon-separated hex; the value is normalized (colons
-/// stripped, lowercased) and shape-checked before being returned.
+/// The value is normalized (colons stripped, lowercased) and shape-checked.
 ///
-/// The server controls text that lands on the same stream — its
-/// certificate's names are printed (the name-mismatch block quotes the CN
-/// *before* the fingerprint line) — so each shape is anchored: the
-/// key-line text must be the whole log message (or the bare line), and
-/// `Thumbprint:` must start the line. Every match must also agree: two
-/// different values mean something besides FreeRDP wrote one, and `None`
-/// is returned rather than guessing. `None` too when no line carries a
-/// parseable fingerprint (nothing is ever invented). xfreerdp, not this
-/// parser, enforces the pin; this only decides what the user is shown and
-/// what is recorded. The UI supplies raw stderr lines — the ring's
-/// [`RdpProcess::error_digest`](super::process::RdpProcess::error_digest)
-/// or live lines.
+/// The server controls text on the same stream (its certificate's names
+/// are printed before the fingerprint), so each shape is anchored: the key
+/// line must be the whole log message, `Thumbprint:` must start the line,
+/// and every match must agree — otherwise `None`, never a guess. xfreerdp,
+/// not this parser, enforces the pin; this only decides what the user sees
+/// and what is recorded.
 pub fn parse_seen_fingerprint(lines: &[String]) -> Option<String> {
     let mut found: Option<String> = None;
     for candidate in lines.iter().filter_map(|line| fingerprint_on(line)) {

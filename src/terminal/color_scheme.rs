@@ -1,5 +1,5 @@
-//! Terminal color schemes (doc 02 §Color schemes, doc 06 §Terminal
-//! appearance): the built-in palettes, the stored scheme choice, and how a
+//! Terminal color schemes (doc 02 §Color
+//! schemes): the built-in palettes, the stored scheme choice, and how a
 //! tab's scheme is resolved. Display-free: backends turn a [`ColorScheme`]
 //! into widget colors, the UI supplies the system theme.
 //!
@@ -9,7 +9,7 @@
 //! ([`classify_system_theme`]).
 
 /// The global settings row naming the scheme for tabs without an override
-/// (doc 06 §Default Data).
+/// (doc 13 §Settings rows).
 pub const DEFAULT_COLOR_SCHEME_SETTING: &str = "default_color_scheme";
 
 /// An sRGB color.
@@ -125,8 +125,7 @@ impl Brightness {
     }
 }
 
-/// What a theme the classifier cannot place counts as: dark, like the
-/// pre-`System` seed.
+/// What a theme the classifier cannot place counts as.
 pub const UNKNOWN_THEME: Brightness = Brightness::Dark;
 
 /// Widely shipped light GTK themes whose names carry no `light` segment.

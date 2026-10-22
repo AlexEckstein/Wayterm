@@ -1,21 +1,18 @@
-//! The Tunnels dialog (Phase 11): one row per forward rule of an SSH
+//! The Tunnels dialog (doc 04 §Tunnels dialog): one row per forward rule of an SSH
 //! session — kind, bind, remote, ENABLED toggle, and a LIVE STATUS cell
 //! driven by a [`ForwardStatusSource`].
 //!
-//! Working fallback + seam: the dialog takes
-//! `Option<Arc<dyn ForwardStatusSource>>`. With `None` (not connected, or
-//! a non-SSH session) it still opens — editing rules offline is useful —
-//! but every status cell reads "no active connection" and the controls
-//! that need an engine stay insensitive. With `Some`, the enable toggle
-//! live-applies through [`ForwardStatusSource::set_rule_enabled`] and
-//! status updates arrive on a tokio unbounded channel drained by
-//! `MainContext::spawn_local` (the `tab.rs` pattern): no blocking recv on
-//! the UI path. Persistence happens on OK: [`TunnelsDialog::run`] returns the
-//! validated rules and the caller writes them back through the store, so
-//! the store roundtrip stays intact.
+//! The dialog takes an `Option<Arc<dyn ForwardStatusSource>>`. With `None`
+//! (not connected, or a non-SSH session) it still opens for offline
+//! editing, every status cell reads "no active connection", and engine
+//! controls stay insensitive. With `Some`, the enable toggle applies live
+//! through [`ForwardStatusSource::set_rule_enabled`] and status arrives on
+//! an unbounded channel drained on the main context. On OK,
+//! [`TunnelsDialog::run`] returns the validated rules for the caller to
+//! save.
 //!
-//! Remote/Dynamic rows render with a v2 note and never arm an engine
-//! control (doc 11 §Limitations); only Local rows start listeners.
+//! Remote/Dynamic rows carry the unsupported-kind note and never arm an
+//! engine control (doc 04 §Limitations); only Local rows start listeners.
 
 pub mod editor;
 pub mod model;

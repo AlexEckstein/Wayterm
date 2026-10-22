@@ -174,7 +174,7 @@ fn search_actions_differ_only_in_initial_direction() {
 
 /// Tab rename state machine: placeholder (store name) → set (programmatic
 /// `TitleChanged`) → renamed (user double-click), with a user rename
-/// locking out later programmatic titles (doc 02 §TitleChanged seam).
+/// locking out later programmatic titles (doc 02 §Window titles).
 #[test]
 fn tab_title_state_machine_placeholder_set_renamed() {
     let mut title = TabTitle::new("web-prod");

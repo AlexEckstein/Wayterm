@@ -1,9 +1,7 @@
-//! Server-gated auth-method fallback matrix — doc 11 §Testing Strategy item 3.
-//!
-//! Item 3 asks for "method fallback order and retry counts" asserted against a
-//! real sshd whose `AuthenticationMethods` pins ONE method per instance. This
-//! file is that matrix; `src/transport/auth.rs` is the code under test and is
-//! NOT modified by it.
+//! Server-gated auth-method fallback matrix (doc 15 §Auth-method matrix):
+//! method fallback order and retry counts, asserted against a real sshd whose
+//! `AuthenticationMethods` pins ONE method per instance. `src/transport/auth.rs`
+//! is the code under test.
 //!
 //! WHY CI DOES NOT RUN THIS FILE: the matrix needs a different sshd per mode.
 //! CI provisions exactly ONE all-methods sshd on port 22
@@ -274,7 +272,7 @@ async fn password_only_chain_falls_through_to_password() {
     assert_success(outcome, "key + correct password against password-only sshd");
 }
 
-/// Retry accounting (doc 11 §Flow: "wrong password = retry, not an error
+/// Retry accounting (doc 04 §Authentication: "wrong password = retry, not an error
 /// screen"): one wrong password triggers exactly one re-prompt, and when that
 /// also fails the chain reports a CLEAN `Failed` — not a transport error and
 /// not an error screen. Every method is configured here, so an empty
@@ -318,7 +316,7 @@ async fn password_only_wrong_password_fails_cleanly_after_one_retry() {
         .count();
     assert_eq!(
         retries, 1,
-        "exactly one password re-prompt is allowed by doc 11 §Flow, saw {prompts:?}"
+        "exactly one password re-prompt is allowed by doc 04 §Authentication, saw {prompts:?}"
     );
 }
 

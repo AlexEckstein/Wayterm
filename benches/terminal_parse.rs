@@ -1,4 +1,4 @@
-//! Parse throughput, VTE vs libghostty-vt, on one corpus (doc 03
+//! Parse throughput, VTE vs libghostty-vt, on one corpus (doc 02
 //! §Benchmark). Built only with the `backend-ghostty` feature:
 //!
 //! ```sh

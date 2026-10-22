@@ -4,7 +4,7 @@ A macro is what was typed into a terminal tab, pauses included, saved
 under a name, editable, and played back into any terminal tab. Code:
 `src/macros/` (model, recording, notation, playback) and
 `src/ui/macros_panel.rs`, `src/ui/macro_editor.rs` (the side dock's
-Macros panel, doc 01, and the editor).
+Macros panel, doc 01 §Side dock, and the editor).
 
 ## Model
 
@@ -51,7 +51,7 @@ it. Stop returns what was recorded, even if that tab has since closed.
 Steps hold the bytes the terminal sent, not key names. The same key can
 send different bytes depending on the terminal's mode: Up is `CSI A`
 normally but `SS3 A` in application cursor mode (vim, less), and an
-engine backend (doc 03) could use the kitty keyboard protocol when an
+engine backend (doc 02 §GhosttyBackend) could use the kitty keyboard protocol when an
 application asks for it. A macro replays the bytes as recorded, whatever
 mode the terminal is in by then. Recording logical keys instead would
 need the backend to encode synthetic key events, which VTE cannot do.
@@ -63,7 +63,7 @@ the pause (a GLib timeout, millisecond resolution), then calls
 `TerminalBackend::send_input` (doc 02) — input as if typed, through the
 same queue as keystrokes. VTE implements it with `feed_child`, which
 emits `commit`, so replayed keys reach every `commit` listener (the SFTP
-sidebar's directory follower, doc 09) exactly like typed ones. The vte4
+sidebar's directory follower, doc 07 §Following the shell) exactly like typed ones. The vte4
 `commit` binding reads its text as a NUL-terminated UTF-8 string, so
 bytes it cannot carry (invalid UTF-8, NUL) skip `feed_child` and join
 the same queue directly, still in order.
@@ -107,7 +107,7 @@ panel's Edit. `Draft` is its display-free model.
 
 ## Panel
 
-The side dock's Macros panel (doc 01): Record at the top, the macros by
+The side dock's Macros panel (doc 01 §Side dock): Record at the top, the macros by
 name (case-insensitive) with each one's summary, and Play, Edit and
 Delete for the selected one. Record arms the current tab's tap and moves
 focus to its terminal; it becomes Stop, and stopping opens the editor
@@ -119,8 +119,8 @@ terminal being recorded or played into.
 
 ## Storage
 
-The `macros` table (schema v5, created on open like doc 06's other
-idempotent steps):
+The `macros` table (schema step 5, doc 09 §Database), in the session
+store:
 
 ```sql
 CREATE TABLE IF NOT EXISTS macros (
@@ -136,23 +136,17 @@ CREATE TABLE IF NOT EXISTS macros (
 locked by `macros::model` tests. Macros are global, not per session.
 
 Steps are stored as typed, in plain text, like other user data. Wayterm
-cannot tell a password typed at a prompt from a command, and by decision
-(2026-10-12) shows no recording warning; macro contents are never
+cannot tell a password typed at a prompt from a command, and shows no
+recording warning (a deliberate choice); macro contents are never
 logged.
 
-## Not done
+## Limitations
 
 - Terminal tabs only (SSH, local shell, serial): RDP and VNC tabs pass
   keys to the remote session and have no tap.
 - No hotkeys to play a macro, no playback into several tabs at once,
-  and macros are not part of the session import/export (doc 06).
+  and macros are not part of the session import/export (doc 10).
+- Steps are bytes, so a macro replays the bytes as recorded even if the
+  terminal's keyboard mode has changed since (§Bytes, not keys).
 
-## Testing
-
-Display-free: the recorder's pause arithmetic and report filtering, the
-notation (exhaustive roundtrip), the tap's ordering and arming, playback
-order, stop and a dropped terminal (`FakeBackend`), the editor's `Draft`
-operations and validation, and the store's CRUD and migration. Under
-xvfb (`ui::gtk_tests`): the editor's rows and validation, the panel's
-list and toolbar, and a record-then-play roundtrip through a real VTE
-terminal, including a non-UTF-8 byte.
+Tests are listed in doc 15 §Macros.

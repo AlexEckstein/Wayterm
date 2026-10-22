@@ -1,4 +1,4 @@
-//! Reconnect policy and driver (doc 04 §Lifecycle & Cancellation),
+//! Reconnect policy and driver (doc 03 §Lifecycle),
 //! display-free so the whole retry loop is testable against paused time.
 //! The GTK half (prompt dialog, window actions) is `ui::tab_resilience`.
 //!
@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::transport::types::{TransportError, TransportEvent, TransportState};
 
-/// The documented rungs before the cap.
+/// The backoff rungs before the cap.
 pub const BACKOFF_SCHEDULE: [Duration; 4] = [
     Duration::from_secs(1),
     Duration::from_secs(2),
@@ -45,14 +45,14 @@ pub fn next_delay(attempt: u32) -> Duration {
 /// What a dropped connection does next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReconnectMode {
-    /// Ask before every attempt (the default).
+    /// Ask before every attempt (`ReconnectPolicy::default`).
     Prompt,
     /// Retry on the backoff curve without asking.
     Auto,
 }
 
-/// Retry policy for one tab. `max_attempts: None` is the documented
-/// "unlimited attempts while the tab is open".
+/// Retry policy for one tab; `max_attempts: None` retries while the tab is
+/// open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReconnectPolicy {
     pub mode: ReconnectMode,

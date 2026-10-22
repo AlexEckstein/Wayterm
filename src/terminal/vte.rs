@@ -147,8 +147,7 @@ impl TerminalBackend for VteBackend {
         self.terminal.set_font(Some(font_desc));
     }
 
-    /// Not implemented yet: the GTK4 VTE binding has no `set_opacity`; it
-    /// arrives with background-alpha color schemes.
+    /// A no-op: the GTK4 VTE binding has no `set_opacity`.
     fn set_opacity(&self, _opacity: f64) {}
 
     fn set_scrollback_limit(&self, lines: u32) {

@@ -1,6 +1,6 @@
 //! The Settings window: a sidebar of pages beside the selected one —
-//! [`general`], [`credentials`] (doc 11), Keyboard Shortcuts
-//! ([`hotkeys`], doc 07), and Backup / Restore ([`backup`], doc 06). Every
+//! [`general`], [`credentials`] (doc 05), Keyboard Shortcuts
+//! ([`hotkeys`], doc 11), and Backup / Restore ([`backup`], doc 10). Every
 //! page saves each change at once and applies it live; there is no Apply
 //! button.
 

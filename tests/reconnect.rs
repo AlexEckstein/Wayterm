@@ -1,5 +1,5 @@
-//! Display-free tests for the reconnect core (doc 04 §Lifecycle &
-//! Cancellation).
+//! Display-free tests for the reconnect core (doc 03
+//! §Lifecycle).
 //!
 //! These drive [`wayterm::transport::reconnect`] from outside the crate, so
 //! they double as a check that the policy, the driver, and the
@@ -175,7 +175,7 @@ fn drain_events(rx: &mut mpsc::UnboundedReceiver<ReconnectEvent>) -> Vec<Reconne
     out
 }
 
-// ── Backoff curve (doc 04: 1s, 2s, 5s, 10s, capped 60s) ────────────────────
+// ── Backoff curve (doc 03: 1s, 2s, 5s, 10s, capped 60s) ────────────────────
 
 #[test]
 fn next_delay_walks_the_documented_curve_then_stays_capped() {
@@ -247,7 +247,7 @@ async fn auto_mode_succeeds_on_first_attempt_without_retrying() {
 
     assert_eq!(outcome, ReconnectOutcome::Connected { attempts: 1 });
     assert_eq!(mock.calls(), 1);
-    // Attempt 1 still waits its rung (doc 04's curve, see module docs).
+    // Attempt 1 still waits its rung (doc 03's curve, see module docs).
     assert_eq!(
         drain_events(&mut rx).first().cloned(),
         Some(ReconnectEvent::BackingOff {
@@ -269,7 +269,7 @@ async fn auto_mode_fail_three_times_then_succeeds_uses_the_documented_delays() {
     assert_eq!(outcome, ReconnectOutcome::Connected { attempts: 4 });
     assert_eq!(mock.calls(), 4);
     // Attempts land at 1s, 1+2s, 1+2+5s, 1+2+5+10s: each one waited its
-    // own rung of doc 04's curve.
+    // own rung of doc 03's curve.
     assert_eq!(
         mock.attempt_offsets(run_start),
         vec![
@@ -365,7 +365,7 @@ async fn auto_mode_bounded_policy_reports_exhausted_with_the_last_error() {
 
 #[tokio::test(start_paused = true)]
 async fn transport_error_cancelled_stops_the_loop_immediately() {
-    // Doc 04: cancelling a prompt aborts the connect with
+    // Doc 03: cancelling a prompt aborts the connect with
     // TransportError::Cancelled — that is not a transient fault.
     let mock = MockConnector::scripted(|_| Err(TransportError::Cancelled));
     let driver = ReconnectDriver::new(ReconnectPolicy::auto());
@@ -445,7 +445,7 @@ async fn cancel_after_a_failure_does_not_run_the_queued_attempt() {
 
 #[tokio::test(start_paused = true)]
 async fn tab_close_token_cancels_a_shared_driver() {
-    // Doc 04: tab close fires the tab's token; the reconnect driver shares
+    // Doc 03: tab close fires the tab's token; the reconnect driver shares
     // it, so closing the tab during backoff stops the loop.
     let tab_token = CancellationToken::new();
     let mock = MockConnector::always_err();
@@ -641,7 +641,7 @@ async fn spawn_runs_the_driver_and_reports_the_outcome() {
     ));
 }
 
-// ── Confirm-before-close policy (doc 04 §Lifecycle, setting `confirm_close`) ─
+// ── Confirm-before-close policy (doc 03 §Lifecycle, setting `confirm_close`) ─
 
 #[test]
 fn live_states_are_the_ones_that_can_have_remote_processes() {

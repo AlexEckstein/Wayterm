@@ -1,11 +1,11 @@
 //! Confirm-before-close, the reconnect prompt, and the `reconnect` /
-//! `disconnect` window actions (doc 04 §Lifecycle & Cancellation, doc 07).
+//! `disconnect` window actions (doc 03 §Lifecycle).
 //!
 //! The policy lives in [`crate::transport::reconnect`]; this is its GTK
 //! side. The actions act on a registry of [`LiveTab`]s keyed by tab id (one
 //! session can have several tabs open), which the connect flow (`ui::tab`)
-//! fills for every streaming tab; with
-//! nothing registered they are no-ops. Disconnect cancels the tab's token: the pump's last act is
+//! fills for every streaming tab; with nothing registered they are no-ops.
+//! Disconnect cancels the tab's token: the pump's last act is
 //! `transport.disconnect()`, and any reconnect loop sharing the token stops.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,15 +23,15 @@ use crate::transport::reconnect::{ConfirmFn, ConnectFn, ReconnectDriver, Reconne
 use crate::transport::types::{TransportEvent, TransportState};
 use crate::ui::widgets::confirm_with_opt_out;
 
-/// Doc 07 action ids (the hotkey engine owns their chords).
+/// Doc 11 action ids (the hotkey engine owns their chords).
 pub const RECONNECT_ACTION: &str = "reconnect";
 pub const DISCONNECT_ACTION: &str = "disconnect";
 
-/// Settings rows (doc 06).
+/// Settings rows (doc 13 §Settings rows).
 pub const CONFIRM_CLOSE_SETTING: &str = "confirm_close";
 pub const RECONNECT_ON_DROP_SETTING: &str = "reconnect_on_drop";
 
-/// Settings row (doc 06): the close warning shows unless this is off.
+/// Settings row (doc 13 §Settings rows): the close warning shows unless this is off.
 pub const CONFIRM_CLOSE_NOTICE_SETTING: &str = "confirm_close_notice";
 
 pub const CONFIRM_CLOSE_DETAIL: &str = "Processes may be running — close anyway?";
@@ -205,7 +205,7 @@ pub fn activate_reconnect(
     ReconnectAction::Started { tab_id: id }
 }
 
-/// A tab's state channel reported `ConnectionLost` (doc 04 §Lifecycle):
+/// A tab's state channel reported `ConnectionLost` (doc 03 §Lifecycle):
 /// the tab reads as disconnected and, with `reconnect_on_drop` on, a driver
 /// starts on `state_tx`. Prompt mode leaves it to the `reconnect` action.
 pub fn on_connection_lost(

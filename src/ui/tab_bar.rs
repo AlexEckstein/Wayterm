@@ -1,5 +1,5 @@
 //! The notebook's tab bar (doc 01 §Tab bar): a "+" drawn as a tab right
-//! after the last tab opens a local shell (doc 07 §New Tab); once the tabs
+//! after the last tab opens a local shell (doc 03 §New Tab); once the tabs
 //! overflow the bar they scroll, with arrows at both ends, and "+" stays
 //! pinned at the bar's end.
 //!

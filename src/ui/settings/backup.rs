@@ -1,5 +1,4 @@
-//! The Backup / Restore settings page (doc 06 §Import and export): one
-//! row per import source with a file picker, and an Export button. The
+//! The Backup / Restore settings page (doc 10): one row per import source with a file picker, and an Export button. The
 //! work is `crate::transfer`'s; this page picks files, confirms, and
 //! reports. The page is also offered once on first run
 //! ([`take_first_run_offer`]).
@@ -26,7 +25,7 @@ pub const IMPORT_OFFERED_KEY: &str = "import_offered";
 /// Warnings listed in the status line before the rest become "…".
 const SHOWN_WARNINGS: usize = 3;
 
-/// The sources, in the order the page lists them (doc 06 priority).
+/// The sources, in the order the page lists them (doc 10 priority).
 const SOURCES: [(ImportSource, &str); 5] = [
     (ImportSource::SshConfig, "OpenSSH config"),
     (ImportSource::Remmina, "Remmina (.remmina)"),

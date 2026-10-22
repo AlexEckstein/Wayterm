@@ -50,7 +50,7 @@ async fn assert_released(weak: &Weak<SshConnection>) {
     }
 }
 
-/// Doc 04 §Connection Supervisor: one dial per key, reuse while a consumer
+/// Doc 04 §Connection supervisor: one dial per key, reuse while a consumer
 /// holds the connection, disconnect + eviction once the last consumer drops
 /// it, and a fresh dial afterwards.
 #[tokio::test]
@@ -92,7 +92,7 @@ async fn supervisor_reuses_dial_and_releases_when_idle() {
 /// The connect flow end to end: transport over the supervisor connection, tab
 /// close (transport disconnect) does NOT kill the shared session, the SFTP
 /// sidebar keeps working on it, and the supervisor disconnects only after
-/// the sidebar releases it too (doc 04 + doc 09 §Connection Model).
+/// the sidebar releases it too (doc 03 + doc 07 §Connection model).
 #[tokio::test]
 async fn shared_connection_survives_tab_close_for_sftp() {
     let Some(f) = fixture() else { return };

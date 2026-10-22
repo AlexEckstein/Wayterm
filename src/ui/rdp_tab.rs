@@ -1,65 +1,26 @@
-//! The RDP tab page (doc 08 §RDP, §Tabs): an X11-backed `DrawingArea`
-//! whose window reparents the xfreerdp child, plus the TOFU connect flow.
+//! The RDP tab page (doc 08 §RDP): an X11-backed `DrawingArea` that
+//! xfreerdp reparents into, and the TOFU connect flow.
 //!
-//! The connect flow mirrors `vnc_tab::start`: validate the row, resolve the
-//! password through the credential chain, resolve the server certificate
-//! through the `rdp_trust` store table, then spawn. Everything that blocks
-//! (password prompt, trust-store reads, the probe spawn, cert dialogs)
-//! runs on the blocking pool inside `dial`; the GTK thread only builds
-//! widgets and pumps the runner's events.
+//! - **Connect** mirrors `vnc_tab::start`: validate the row, resolve the
+//!   password and the server certificate (`rdp_trust`, a probe run on first
+//!   contact), then spawn. Everything that blocks runs on the blocking pool
+//!   in `dial`; the GTK thread builds widgets and pumps the runner's events.
+//! - **Embedding:** poll for the area's XID, spawn with `/parent-window:`,
+//!   then on one x11rb connection track only the child that appeared after
+//!   our spawn (`track_newcomer`; GTK keeps children of its own there),
+//!   keep it at the area's origin and size, and hand it X input focus —
+//!   without that there is no keyboard under a window manager.
+//! - **Teardown:** `EngineSlot` owns the process and its runner; close,
+//!   retry or a superseded attempt terminates only our own process group.
+//! - **Trust store:** read through a second [`SessionStore`] handle on the
+//!   blocking thread (WAL makes it safe); the credential chain carries
+//!   secrets only.
+//! - **Wayland:** without an X11 surface the page offers a relaunch under
+//!   `GDK_BACKEND=x11` or a separate xfreerdp window, never a silent one.
+//! - **Version:** probed once (`cached_probe`); 2.x is refused, below
+//!   3.20 the connecting overlay warns ([`warn_below`]).
 //!
-//! ## Embedding (spike-validated on FreeRDP 3.15 + xrdp + openbox)
-//!
-//! - **XID acquisition:** after the area maps, a 50 ms poll reads
-//!   `native().surface()`, downcasts to [`gdk4_x11::X11Surface`](https://docs.rs/gdk4-x11),
-//!   and takes [`xid()`](https://docs.rs/gdk4-x11) once nonzero.
-//! - **Spawn** passes the host XID as `parent_xid` (`/parent-window:`).
-//! - **Maintenance** keeps one x11rb connection on the GTK thread: the host
-//!   tree is snapshotted before OUR spawn, then discovery (~1 s, again ~3 s)
-//!   tracks only the newcomer past that baseline (`track_newcomer`). A
-//!   pre-existing child is never ours: GTK keeps at least one of its own
-//!   under the toplevel (measured 0x20000D alongside host 0x20000C — the
-//!   tree never holds "exactly one"), and an orphan from a killed previous
-//!   run may linger. `ConfigureWindow` positions our tracked child at the
-//!   area's surface-relative origin (`area_origin` — the host XID is the
-//!   toplevel window the area shares, not a per-area window) on resize plus
-//!   a 250 ms poll fallback, and X input focus is handed to our child when
-//!   focus sits on the parent (without the handoff there is no keyboard
-//!   under a WM). Configure and focus only the tracked window, and kill
-//!   nothing (teardown signals our own process group via
-//!   [`RdpProcess::terminate`](crate::rdp::RdpProcess::terminate)).
-//! - **Teardown:** `EngineSlot` owns the process handle and the runner
-//!   task; page close, retry, or a superseded attempt aborts the runner and
-//!   terminates our own child.
-//!
-//! ## Trust store access
-//!
-//! The credential chain (`credential_manager`) carries secrets only. The
-//! trust table is reached the other allowed way:
-//! [`default_db_path`](crate::app::default_db_path) +
-//! [`SessionStore::open`](crate::store::SessionStore::open) on the blocking thread at cert-resolution time.
-//! That is a second read-only-mostly handle to the same SQLite file, which
-//! is safe: schema init is idempotent, reads are concurrent under WAL, and
-//! trust writes are rare single-row upserts serialized by SQLite itself.
-//!
-//! ## Wayland
-//!
-//! When the mapped surface does not downcast to `X11Surface` the page shows
-//! the doc-08 choice instead of embedding: relaunch the app under
-//! `GDK_BACKEND=x11` (the current instance exits after respawning itself —
-//! `Application::quit`-style via the default application handle) or open
-//! xfreerdp as a top-level window (`parent_xid = None`, fully supported by
-//! `build_args`). Never a silent second window. This path is untestable on
-//! an X-only host; it is code-review-only quality.
-//!
-//! ## FreeRDP version
-//!
-//! The binary is probed once per process (`cached_probe`). FreeRDP 2.x is
-//! refused with an error view (`usable_freerdp`): the argv speaks
-//! FreeRDP 3 (`rdp::process`). `/from-stdin` was buggy around 3.5–3.17
-//! (fixed in 3.20), so below 3.20 the connecting overlay carries a warning
-//! ([`warn_below`], pure and tested); it disappears at Connected with the
-//! overlay.
+//! [`SessionStore`]: crate::store::SessionStore
 
 use std::cell::{Cell, RefCell};
 use std::io;
@@ -96,7 +57,7 @@ use x11::*;
 
 /// The RDP default port (display `:0`-style: 3389).
 pub const DEFAULT_PORT: u16 = 3389;
-/// Password secret type in the credential chain (doc 06 naming).
+/// Password secret type in the credential chain (doc 05).
 const PASSWORD_SECRET: &str = "rdp_password";
 /// Page data key for the process slot.
 const ENGINE_KEY: &str = "wayterm-rdp-engine";
@@ -130,7 +91,7 @@ struct Attempt {
     notebook: gtk4::Notebook,
     /// Weak: every timer and task of the attempt holds one, and a strong
     /// ref would keep a closed page alive — with its [`EngineSlot`], so our
-    /// xfreerdp would outlive the tab (doc 04 §Lifecycle).
+    /// xfreerdp would outlive the tab (doc 03 §Lifecycle).
     page: glib::WeakRef<gtk4::Widget>,
     session: Rc<SessionConfig>,
     /// Trimmed, as the dial uses it.

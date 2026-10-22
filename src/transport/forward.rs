@@ -1,27 +1,24 @@
-//! Local port-forward engine (doc 11 §Port forwarding).
+//! Local port-forward engine (doc 04 §Port forwarding).
 //!
-//! The engine is owned by THE CALLER (the connect flow / reconnect driver
-//! — a later wiring step), not by the connection: build one
-//! [`ForwardEngine`] per live [`SshConnection`] with
-//! [`ForwardEngine::new`], [`start`](ForwardEngine::start) it with the
-//! session's rules, and on reconnect [`stop`](ForwardEngine::stop) the old
-//! engine and start a fresh one on the new connection `Arc`. Listeners die
-//! with the connection; they never migrate across it.
+//! The engine is owned by the caller (the SSH tab's connect flow), not by
+//! the connection: one [`ForwardEngine`] per live [`SshConnection`],
+//! [`start`](ForwardEngine::start)ed with the session's rules; every
+//! (re)connect [`stop`](ForwardEngine::stop)s the old engine and starts a
+//! fresh one on the new connection `Arc`. Listeners never migrate across
+//! connections.
 //!
 //! Per enabled [`ForwardKind::Local`](crate::store::model::ForwardKind)
 //! rule the engine binds one `TcpListener`; each accepted connection opens
 //! one direct-tcpip channel to the rule's remote and pipes both directions
 //! with `copy_bidirectional`. A refused remote closes only the accepted
 //! socket (reported as [`ForwardState::LastFailed`]); the listener keeps
-//! serving. `Remote`/`Dynamic` rules are v2 (doc 11): they are skipped with
-//! one report line each and a [`ForwardState::Stopped`] event so the status
-//! snapshot stays honest.
+//! serving. `Remote`/`Dynamic` rules are not supported (doc 04
+//! §Limitations): each is skipped with one log line and a
+//! [`ForwardState::Stopped`] event, so the status snapshot stays honest.
 //!
-//! Testability: the accept/copy/shutdown core runs against a
-//! `ChannelOpener` closure, so unit tests inject an in-process fake while
-//! [`ForwardEngine::new`] wires the real `SshConnection` path (covered by
-//! `tests/forward_sshd.rs`). `SshConnection` itself stays concrete — no
-//! new generics on any protected seam.
+//! The accept/copy/shutdown core runs against a `ChannelOpener` closure:
+//! unit tests inject an in-process fake, [`ForwardEngine::new`] the real
+//! direct-tcpip path (`tests/forward_sshd.rs`).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -44,8 +41,8 @@ use crate::transport::types::TransportError;
 /// `start()` call's ordering.
 pub type RuleId = usize;
 
-/// Status snapshot source for the Tunnels dialog (one event per
-/// transition; `Active` carries the live count, not per-connection spam).
+/// A rule's forwarding state, reported once per transition; `Active`
+/// carries the live connection count.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ForwardState {
     Listening,
@@ -118,11 +115,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl ForwardEngine {
-    /// Production constructor: channels open on `connection` via
-    /// direct-tcpip. The engine holds the `Arc`; dropping the engine does
-    /// NOT stop forwarding — call [`stop`](ForwardEngine::stop) so
-    /// listeners close deterministically (aborted tasks die with it, but
-    /// only `stop` emits the terminal `Stopped` snapshot).
+    /// An engine opening direct-tcpip channels on `connection`. Dropping it
+    /// does not stop forwarding: call [`stop`](ForwardEngine::stop), which
+    /// also emits the final `Stopped` events.
     pub fn new(connection: Arc<SshConnection>, events: mpsc::Sender<ForwardEvent>) -> Self {
         let opener: ChannelOpener = Arc::new(move |host: String, port: u16| {
             let conn = Arc::clone(&connection);
@@ -191,7 +186,7 @@ impl ForwardEngine {
         }
         if !matches!(rule.kind, ForwardKind::Local) {
             eprintln!(
-                "Wayterm: forward rule {id}: {:?} forwards are v2 (doc 11) — skipped",
+                "Wayterm: forward rule {id}: {:?} forwards are v2 (doc 04) — skipped",
                 rule.kind,
             );
             return self.inner.emit(id, ForwardState::Stopped);
@@ -237,7 +232,7 @@ impl ForwardEngine {
 /// the listener itself is a local socket and stays up; the reconnect
 /// driver replaces the whole engine on a fresh connection `Arc`.
 async fn serve_rule(inner: Arc<EngineInner>, id: RuleId, rule: ForwardRule) {
-    // An empty bind means loopback, never 0.0.0.0: doc 06's example binds
+    // An empty bind means loopback, never 0.0.0.0: doc 09's example binds
     // 127.0.0.1, and a tunnel that silently listens on every interface
     // would be a safety hole, not a convenience.
     let bind_addr = match rule.bind_addr.trim() {

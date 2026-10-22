@@ -1,4 +1,4 @@
-//! Display-free tests for the SFTP sidebar's model layer (doc 09).
+//! Display-free tests for the SFTP sidebar's model layer (doc 07).
 //!
 //! Everything exercised here is pure: row mapping, column formatting, the
 //! toolbar enable/disable rules, the `text/uri-list` fallback, the pending
@@ -129,7 +129,7 @@ fn toolbar_is_fully_disabled_without_a_connection() {
     assert_eq!(
         toolbar_state(Some(&selection), false, true),
         ToolbarState::DISABLED,
-        "doc 09 §Availability: no client, no operations"
+        "doc 07 §Availability: no client, no operations"
     );
 }
 
@@ -395,7 +395,7 @@ fn detached_view_is_empty_disabled_and_starts_at_the_home_path() {
     assert_eq!(view.path, "");
     assert_eq!(view.current_path(), START_PATH);
     assert_eq!(view.toolbar(), ToolbarState::DISABLED);
-    assert!(view.shown, "doc 09 starts with the sidebar shown");
+    assert!(view.shown, "doc 07 starts with the sidebar shown");
 }
 
 #[test]
@@ -573,18 +573,18 @@ fn sidebar_messages_name_the_condition_they_report() {
     assert!(NOT_CONNECTED.contains("SSH connection"));
     assert!(
         SESSION_ENDED.contains("reconnect"),
-        "doc 09 asks for a prompt"
+        "doc 07 asks for a prompt"
     );
     assert!(!COMMAND_FAILED.is_empty());
     assert!(
         JUMPED_UNAVAILABLE.contains("jumped"),
-        "a jumped tab must show the v1 limitation, not a spinner"
+        "a jumped tab must show the jump limitation, not a spinner"
     );
 }
 
 #[test]
 fn jumped_sessions_show_the_limitation_instead_of_attaching() {
-    // Doc 11 v1: no SFTP task ever starts over a jumped connection.
+    // No SFTP task ever starts over a jumped connection (doc 04 §Limitations).
     let mut view = SftpView::detached();
     view.mark_jump_unsupported();
     assert!(!view.connected);

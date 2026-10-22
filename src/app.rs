@@ -58,7 +58,7 @@ fn build_ui(app: &gtk4::Application) {
     let store =
         Rc::new(SessionStore::open(&default_db_path()).expect("failed to open session store"));
 
-    // Compiled-in defaults first, then the user's customized rows (doc 07).
+    // Compiled-in defaults first, then the user's customized rows (doc 11).
     let mut hotkeys = HotkeyEngine::new();
     match hotkeys.load_from_db(&store) {
         Ok(report) if !report.applied.is_empty() || !report.skipped.is_empty() => eprintln!(
