@@ -60,12 +60,14 @@ printf 'wayterm-cwd:%s\n' "$dir"
 /// so a probe never keeps a released connection alive.
 #[derive(Clone, Debug)]
 pub struct ShellCwdProbe {
+    /// Weak, so a probe never keeps a released connection alive.
     connection: Weak<SshConnection>,
     /// The tab's tmux session (`wayterm-<name>`), or `None` for a plain shell.
     tmux_session: Option<String>,
 }
 
 impl ShellCwdProbe {
+    /// A probe on `connection`; `tmux_session` for a tmux tab.
     pub fn new(connection: &Arc<SshConnection>, tmux_session: Option<String>) -> Self {
         Self {
             connection: Arc::downgrade(connection),
@@ -84,6 +86,7 @@ impl ShellCwdProbe {
         reply_rx
     }
 
+    /// Ask once; `None` when the remote gives no answer.
     pub async fn run(&self) -> Option<String> {
         let connection = self.connection.upgrade()?;
         let script = probe_script(self.tmux_session.as_deref());

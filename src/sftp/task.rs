@@ -14,7 +14,9 @@ use tokio_util::sync::CancellationToken;
 use crate::sftp::commands::{DirEntry, Progress, SftpCommand};
 use crate::transport::connection::SshConnection;
 
+/// Bytes per read/write chunk in a transfer.
 const TRANSFER_BUF_SIZE: usize = 32 * 1024;
+/// Depth of the command channel.
 const COMMAND_QUEUE: usize = 32;
 
 /// Handle to one SFTP task; clones share it. When the last clone drops,
@@ -22,7 +24,9 @@ const COMMAND_QUEUE: usize = 32;
 /// stays with the supervisor.
 #[derive(Clone)]
 pub struct SftpClient {
+    /// Into the task.
     tx: mpsc::Sender<SftpCommand>,
+    /// Source of transfer ids.
     next_transfer_id: Arc<AtomicU64>,
 }
 
@@ -42,6 +46,7 @@ impl SftpClient {
         self.next_transfer_id.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Send `cmd`, waiting for room.
     pub async fn request(&self, cmd: SftpCommand) -> Result<(), SendError<SftpCommand>> {
         self.tx.send(cmd).await
     }
@@ -111,6 +116,7 @@ where
     lock(&transfers).cancel_all();
 }
 
+/// Lock the registry, ignoring poison.
 fn lock(registry: &Mutex<TransferRegistry>) -> std::sync::MutexGuard<'_, TransferRegistry> {
     registry.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -210,10 +216,12 @@ fn spawn_transfer<F, Fut>(
 /// Cancellation tokens of the running transfers, by id.
 #[derive(Default)]
 struct TransferRegistry {
+    /// Cancel tokens of running transfers.
     active: HashMap<u64, CancellationToken>,
 }
 
 impl TransferRegistry {
+    /// Track `transfer_id`; its token stops it.
     fn register(&mut self, transfer_id: u64) -> CancellationToken {
         let token = CancellationToken::new();
         self.active.insert(transfer_id, token.clone());
@@ -228,10 +236,12 @@ impl TransferRegistry {
             .is_some()
     }
 
+    /// Forget a finished transfer.
     fn finish(&mut self, transfer_id: u64) {
         self.active.remove(&transfer_id);
     }
 
+    /// Stop every running transfer.
     fn cancel_all(&mut self) {
         self.active.drain().for_each(|(_, token)| token.cancel());
     }
@@ -298,6 +308,7 @@ async fn copy_with_progress(
     }
 }
 
+/// Copy `remote_path` to `local_path` in chunks, reporting progress, until done or cancelled.
 async fn download_file(
     sftp: &SftpSession,
     remote_path: &str,
