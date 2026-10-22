@@ -41,7 +41,7 @@ Highlights:
 - **Host keys:** temp `known_hosts` files — unknown, matching, mismatched,
   `accept-new`, `off`, hashed entries.
 - **Wiring:** `FakeBackend` drives the pump, bridge and drain
-  (`src/ui/terminal_tab/tests.rs`, `tests/local_serial_flow.rs`).
+  (`src/ui/tabs/terminal_tab/tests.rs`, `tests/local_serial_flow.rs`).
 - **Reconnect:** the policy and driver against tokio's paused clock, so the
   backoff curve is asserted in virtual time (`tests/reconnect.rs`).
 - **Hotkeys:** registry, conflict rules, the default table's invariants,

@@ -8,10 +8,10 @@ the status bar and the tray. SSH specifics are in doc 04, local shell and
 serial in doc 06, RDP and VNC in doc 08.
 
 Code: `src/transport/types.rs`, `factory.rs`, `reconnect.rs` (display-free);
-`src/ui/tab.rs` and `src/ui/tab/` (per-type connect flows),
-`terminal_tab.rs`, `tab_resilience.rs`, `session_ended.rs`, `tab_label.rs`,
-`tab_actions.rs`, `host_picker.rs`, `tab_state.rs`, `tab_restore.rs`,
-`status_bar.rs`, `tray.rs`.
+`src/ui/tabs/` — `mod.rs` (the page core), the per-type connect flows,
+`terminal_tab.rs`, `resilience.rs`, `ended.rs`, `label.rs`, `actions.rs`,
+`state.rs`, `restore.rs`; `src/ui/dialogs/host_picker.rs`,
+`src/ui/status_bar.rs`, `src/ui/tray.rs`.
 
 ## Tab kinds
 
@@ -20,10 +20,10 @@ area:
 
 | Session type | Page | Connect flow |
 |---|---|---|
-| SSH | terminal + SFTP sidebar (shown in the side dock, doc 07) | `ui::tab::ssh`: dial through the supervisor, then the terminal |
-| Local shell, serial | terminal | `ui::tab::local`: nothing to dial |
-| VNC | framebuffer view | `ui::vnc_tab` (doc 08 §VNC) |
-| RDP | embedded xfreerdp window | `ui::rdp_tab` (doc 08 §RDP) |
+| SSH | terminal + SFTP sidebar (shown in the side dock, doc 07) | `ui::tabs::ssh`: dial through the supervisor, then the terminal |
+| Local shell, serial | terminal | `ui::tabs::local`: nothing to dial |
+| VNC | framebuffer view | `ui::tabs::vnc` (doc 08 §VNC) |
+| RDP | embedded xfreerdp window | `ui::tabs::rdp` (doc 08 §RDP) |
 
 The first page is **Home** ("Welcome to Wayterm"). It is shown only while
 it is the sole page, is never closed or renamed, and no tab action counts
@@ -83,7 +83,7 @@ crash the app.
 
 ## Wiring
 
-`TerminalTab` (`src/ui/terminal_tab.rs`) wires one transport to one
+`TerminalTab` (`src/ui/tabs/terminal_tab.rs`) wires one transport to one
 backend with three tasks, each crossing the GTK/tokio boundary once
 (doc 01 §Threading model):
 
@@ -111,7 +111,7 @@ before reading its rows and columns, never a hardcoded 80×24.
 
 ## Connect flow
 
-`start_connect` (`src/ui/tab.rs`) runs for a new tab, Retry, and every
+`start_connect` (`src/ui/tabs/mod.rs`) runs for a new tab, Retry, and every
 reconnect:
 
 1. It bumps the page's **generation**. Each attempt is tagged with it, so
@@ -120,11 +120,11 @@ reconnect:
 2. It stops the old forward engine and closes the old terminal.
 3. It hands the page to its type's flow (§Tab kinds).
 
-A terminal flow ends in `finish_connect` (`src/ui/tab/terminal.rs`):
+A terminal flow ends in `finish_connect` (`src/ui/tabs/terminal.rs`):
 create the backend (doc 02 §Backend selection) and apply its color scheme,
 splice the macro input tap between terminal and pump (doc 12
 §Recording), wire the `TerminalTab`, register the tab as live with
-`tab_resilience`, start the page's state drain, hand an SSH connection to
+`tabs::resilience`, start the page's state drain, hand an SSH connection to
 the forward engine and the SFTP sidebar, follow the terminal title, and
 take focus.
 
@@ -132,7 +132,7 @@ Focus: a connect the user started takes focus; a reconnect only takes it
 back if nothing else holds it, so it never pulls focus out of the SFTP
 sidebar or the session tree.
 
-Every page shows one of the shared status views (`src/ui/tab/views.rs`):
+Every page shows one of the shared status views (`src/ui/tabs/views.rs`):
 connecting (with Cancel), disconnected, or an error with Retry and Close
 Tab.
 
@@ -177,7 +177,7 @@ through the supervisor, so a tmux session reattaches.
   while one runs does nothing); `disconnect` cancels its token.
 
 `transport::reconnect` holds the policy and driver, display-free and
-tested against paused time; `ui::tab_resilience` holds the dialogs, the
+tested against paused time; `ui::tabs::resilience` holds the dialogs, the
 window actions and the registry of live tabs.
 
 ### Session end
@@ -186,11 +186,11 @@ When the shell exits on its own (`exit`, logout, a detached tmux) the
 reader emits `SessionEnded`. Nothing reconnects and no alert is posted.
 The tab reads as disconnected (closing it does not ask), and the terminal
 keeps its scrollback and adds a notice: `r` reconnects (a fresh connect,
-as Retry), `q` closes the tab (`ui::session_ended`).
+as Retry), `q` closes the tab (`ui::tabs::ended`).
 
 ## Tab labels
 
-A label is the session name plus a close button (`src/ui/tab_label.rs`).
+A label is the session name plus a close button (`src/ui/tabs/label.rs`).
 Its title follows a state machine: placeholder (the session name) → set
 (the terminal's window title) → renamed (by the user). Once renamed,
 terminal titles no longer change it; a blank terminal title falls back to
@@ -201,13 +201,13 @@ the session name. Double-clicking the name, or `rename_tab`, opens a
 
 The tab bar itself is part of the window layout (doc 01 §Tab bar): a "+"
 tab after the last tab opens a local shell, and overflowing tabs scroll.
-The tab actions (`src/ui/tab_actions.rs`, doc 11 §Handlers) are
+The tab actions (`src/ui/tabs/actions.rs`, doc 11 §Handlers) are
 `new_tab`, `close_tab`, `next_tab`/`prev_tab` (wrapping round),
 `goto_tab_1` … `goto_tab_9`, and `rename_tab`; Home never counts.
 
 ## New Tab
 
-`new_tab` opens a modal host picker (`src/ui/host_picker.rs`). "Local
+`new_tab` opens a modal host picker (`src/ui/dialogs/host_picker.rs`). "Local
 shell" comes first and is selected; every saved session follows in the
 session tree's order, under its folders, all expanded, with the tree's
 icons. Up and Down move between hosts (folders are headings, never
@@ -223,12 +223,12 @@ The tab bar's "+" skips the picker and opens a local shell at once.
 ## Restoring tabs
 
 The open tabs are saved as one JSON array in the `open_tabs` settings row
-(`src/ui/tab_state.rs`): per tab its session id (or none), label,
+(`src/ui/tabs/state.rs`): per tab its session id (or none), label,
 creation time and position. Only identity is stored, never a credential
 or connection detail. Missing fields default and unknown ones are
 ignored, so lists from older and newer builds both restore.
 
-`TabPersistence` (`src/ui/tab_restore.rs`) saves on tab open, close and
+`TabPersistence` (`src/ui/tabs/restore.rs`) saves on tab open, close and
 rename, debounced by 2 s so a rename is one write, and once more on exit.
 At launch it reopens the saved tabs in order (by position, then age, then
 session id) and focuses the last one. Restored session tabs connect as

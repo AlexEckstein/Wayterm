@@ -11,9 +11,9 @@ a release blocker, not a feature gap.
 
 Code: `src/transport/` — `connection.rs` (`SshConnection`, the russh
 handler), `supervisor.rs` (the pool), `ssh.rs` (`SSHTransport`),
-`hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`; `src/ui/tab/ssh.rs` (the
-SSH connect flow), `hostkey_dialog.rs`, `auth_dialog.rs`,
-`tunnels_dialog/`.
+`hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`; `src/ui/tabs/ssh.rs` (the
+SSH connect flow), `src/ui/dialogs/` — `hostkey.rs`, `auth.rs`,
+`tunnels/`.
 
 ## Connection supervisor
 
@@ -117,7 +117,7 @@ key rejected, auth failure and cancel are distinct outcomes in the UI.
 Secrets are `Zeroizing`, never logged, never in SQLite; failure reasons
 name the method and never contain a credential.
 
-The challenge dialog (`src/ui/auth_dialog.rs`) is one UI for password
+The challenge dialog (`src/ui/dialogs/auth.rs`) is one UI for password
 prompts, key passphrases and keyboard-interactive rounds; answers are
 never logged or trimmed.
 
@@ -201,7 +201,7 @@ The SSH tab's connect flow owns one `ForwardEngine` per live connection
 ### Tunnels dialog
 
 The header bar's **Tunnels…** button opens the current session tab's
-Tunnels dialog (`src/ui/tunnels_dialog.rs`): one row per rule with its
+Tunnels dialog (`src/ui/dialogs/tunnels.rs`): one row per rule with its
 kind, bind, remote, Enabled toggle and live status. While the tab is
 connected, toggling Enabled applies to the engine at once; offline, the
 dialog still opens for editing and every status reads "no active
@@ -227,7 +227,7 @@ Re-verify these when bumping a dependency; these APIs have moved before.
 - **The changed-key warning is never shown.** A changed key is rejected
   without a prompt, as it must be, but the tab shows the rejection as a
   plain connection error; the warning dialog that explains the risk and
-  the `ssh-keygen -R` remedy (`hostkey_dialog::prompt_changed`) exists
+  the `ssh-keygen -R` remedy (`dialogs::hostkey::prompt_changed`) exists
   but nothing calls it.
 - Host certificates are rejected; there is no CA support.
 - The `off` policy has no badge in the UI.

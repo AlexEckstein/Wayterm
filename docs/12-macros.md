@@ -3,7 +3,7 @@
 A macro is what was typed into a terminal tab, pauses included, saved
 under a name, editable, and played back into any terminal tab. Code:
 `src/macros/` (model, recording, notation, playback) and
-`src/ui/macros_panel.rs`, `src/ui/macro_editor.rs` (the side dock's
+`src/ui/panels/macros_panel.rs`, `src/ui/panels/macro_editor.rs` (the side dock's
 Macros panel, doc 01 §Side dock, and the editor).
 
 ## Model
@@ -20,7 +20,7 @@ pure pause. A macro's duration is the sum of its pauses.
 
 `InputTap::wrap` splices a relay between a terminal's event channel and
 its transport pump on every connect
-(`ui::tab::terminal::finish_connect`). Every `TerminalEvent` passes
+(`ui::tabs::terminal::finish_connect`). Every `TerminalEvent` passes
 through unchanged and in order; the relay awaits room in the pump's
 channel, so backpressure still reaches the backend's queue (doc 02
 §Backpressure). While a recording is armed, each `DataOut`

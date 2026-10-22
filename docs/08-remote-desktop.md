@@ -7,8 +7,8 @@ connect flow, engine and widget, and publishes the same `TransportState`s
 to the status bar.
 
 Code: `src/rdp/` (xfreerdp process, certificate trust; display-free),
-`src/ui/rdp_tab.rs` and `src/ui/rdp_tab/` (embedding, dialogs);
-`src/vnc/` (RFB engine, framebuffer; display-free), `src/ui/vnc_tab.rs`.
+`src/ui/tabs/rdp.rs` and `src/ui/tabs/rdp/` (embedding, dialogs);
+`src/vnc/` (RFB engine, framebuffer; display-free), `src/ui/tabs/vnc.rs`.
 
 ## Tabs
 
