@@ -18,31 +18,47 @@ use crate::ui::widgets::{confirm, set_data, set_margins, window_of, wrapped_labe
 
 /// Root widget data key: the panel keeps itself alive with its widgets.
 const PANEL_KEY: &str = "wayterm-macros-panel";
+/// Stack page shown when there are no macros.
 const EMPTY: &str = "empty";
+/// Stack page with the list.
 const LIST: &str = "list";
+/// Why Record or Play did nothing.
 const NEEDS_TERMINAL: &str = "Open a connected terminal tab (SSH, local shell or serial) first.";
 
 /// The panel. Clones share it.
 #[derive(Clone)]
 pub struct MacrosPanel {
+    /// State shared with the signal handlers.
     inner: Rc<PanelInner>,
 }
 
+/// The panel's widgets and state.
 struct PanelInner {
+    /// The panel's root widget.
     root: gtk4::Box,
+    /// Where macros are saved.
     store: Rc<SessionStore>,
+    /// The window's tabs, for the current terminal.
     notebook: gtk4::Notebook,
+    /// The list or the empty note.
     stack: gtk4::Stack,
+    /// One row per macro.
     list: gtk4::ListBox,
+    /// Record / Stop.
     record: IconButton,
+    /// Play / Stop.
     play: IconButton,
+    /// Edit the selected macro.
     edit: gtk4::Button,
+    /// Delete the selected macro.
     delete: gtk4::Button,
+    /// Notes for the user.
     status: gtk4::Label,
     /// The listed macros, in row order.
     macros: RefCell<Vec<Macro>>,
     /// The tap of the tab being recorded.
     recording: RefCell<Option<InputTap>>,
+    /// The running playback, if any.
     playing: RefCell<Option<Playback>>,
 }
 
@@ -125,6 +141,7 @@ impl MacrosPanel {
         panel
     }
 
+    /// The panel's widget.
     pub fn widget(&self) -> &gtk4::Widget {
         self.inner.root.upcast_ref()
     }
@@ -153,6 +170,7 @@ impl MacrosPanel {
 }
 
 impl PanelInner {
+    /// Wire the buttons and the list.
     fn connect_signals(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         self.record.button.connect_clicked(move |_| {
@@ -195,6 +213,7 @@ impl PanelInner {
         });
     }
 
+    /// Reload the list from the store, selecting `select`.
     fn refresh(&self, select: Option<i64>) {
         let macros = self.store.list_macros().unwrap_or_else(|err| {
             eprintln!("Wayterm: failed to load macros: {err}");
@@ -214,6 +233,7 @@ impl PanelInner {
         self.update_buttons();
     }
 
+    /// The selected macro, if any.
     fn selected(&self) -> Option<Macro> {
         let index = self.list.selected_row()?.index();
         self.macros
@@ -222,6 +242,7 @@ impl PanelInner {
             .cloned()
     }
 
+    /// Enable and relabel the buttons for the current state.
     fn update_buttons(&self) {
         let recording = self.recording.borrow().is_some();
         let playing = self.playing.borrow().is_some();
@@ -243,11 +264,13 @@ impl PanelInner {
         self.delete.set_sensitive(selected);
     }
 
+    /// Show `text` in the status line.
     fn set_status(&self, text: &str) {
         self.status.set_text(text);
         self.status.set_visible(!text.is_empty());
     }
 
+    /// Start or stop recording.
     fn toggle_record(self: &Rc<Self>) {
         if self.recording.borrow().is_some() {
             self.finish_recording();
@@ -256,6 +279,7 @@ impl PanelInner {
         }
     }
 
+    /// Arm the current tab's tap; `false` without a terminal.
     fn start_recording(&self) -> bool {
         let Some(tap) = SessionTab::active_input_tap(&self.notebook) else {
             self.set_status(NEEDS_TERMINAL);
@@ -271,6 +295,7 @@ impl PanelInner {
         true
     }
 
+    /// Disarm the tap and return its steps.
     fn stop_recording(&self) -> Option<Vec<MacroStep>> {
         let tap = self.recording.borrow_mut().take()?;
         self.set_status("");
@@ -300,6 +325,7 @@ impl PanelInner {
         }
     }
 
+    /// Start or stop playing the selected macro.
     fn toggle_play(self: &Rc<Self>) {
         // Taken first: `stop` reports back through `on_done`, which
         // clears the slot too.
@@ -336,6 +362,7 @@ impl PanelInner {
         self.update_buttons();
     }
 
+    /// Open the editor on the selected macro.
     fn edit_selected(&self) {
         let Some(current) = self.selected() else {
             return;
@@ -350,6 +377,7 @@ impl PanelInner {
         }
     }
 
+    /// Delete the selected macro after confirmation.
     fn delete_selected(self: &Rc<Self>) {
         let Some(m) = self.selected() else {
             return;
@@ -392,12 +420,16 @@ fn macro_row(m: &Macro) -> gtk4::Box {
 
 /// A button showing an icon and a label, both changeable.
 struct IconButton {
+    /// The button.
     button: gtk4::Button,
+    /// Its icon.
     image: gtk4::Image,
+    /// Its text.
     label: gtk4::Label,
 }
 
 impl IconButton {
+    /// A button showing `icon` and `text`.
     fn new(icon: &str, text: &str) -> Self {
         let image = gtk4::Image::from_icon_name(icon);
         let label = gtk4::Label::new(Some(text));
@@ -414,6 +446,7 @@ impl IconButton {
         }
     }
 
+    /// Change the icon and text.
     fn set(&self, icon: &str, text: &str) {
         self.image.set_icon_name(Some(icon));
         self.label.set_text(text);

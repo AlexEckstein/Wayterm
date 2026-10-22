@@ -109,6 +109,7 @@ pub fn decode(text: &str) -> Result<Vec<u8>, NotationError> {
     Ok(bytes)
 }
 
+/// Append `<name>` to `text`.
 fn push_token(text: &mut String, name: &str) {
     text.push('<');
     text.push_str(name);
@@ -160,6 +161,7 @@ fn token_bytes(name: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// `text` without `prefix`, matched case-insensitively.
 fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
     let head = text.get(..prefix.len())?;
     head.eq_ignore_ascii_case(prefix)

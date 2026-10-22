@@ -11,11 +11,12 @@ pub struct MacroStep {
     /// The pause before the keys, in milliseconds.
     pub delay_ms: u32,
     /// The bytes the terminal sent for the keystroke — bytes, not key
-    /// names (doc 12 §Bytes, not keys, not keys). Empty is a pure pause.
+    /// names (doc 12 §Bytes, not keys). Empty is a pure pause.
     pub keys: Vec<u8>,
 }
 
 impl MacroStep {
+    /// The pause as a `Duration`.
     pub fn delay(&self) -> Duration {
         Duration::from_millis(self.delay_ms.into())
     }
@@ -26,7 +27,9 @@ impl MacroStep {
 pub struct Macro {
     /// The row id; 0 until stored.
     pub id: i64,
+    /// Display name.
     pub name: String,
+    /// The steps, in order.
     pub steps: Vec<MacroStep>,
 }
 
@@ -42,6 +45,7 @@ impl Macro {
     }
 }
 
+/// A macro's duration: the sum of its pauses.
 pub fn total_delay(steps: &[MacroStep]) -> Duration {
     steps.iter().map(MacroStep::delay).sum()
 }
@@ -72,6 +76,7 @@ pub fn steps_to_json(steps: &[MacroStep]) -> serde_json::Result<String> {
     serde_json::to_string(steps)
 }
 
+/// Decode the `macros.steps` column.
 pub fn steps_from_json(json: &str) -> serde_json::Result<Vec<MacroStep>> {
     serde_json::from_str(json)
 }
