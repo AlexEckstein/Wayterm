@@ -20,8 +20,11 @@ use crate::ui::widgets::set_margins;
 
 /// Stack names of the pages, in sidebar order.
 pub const GENERAL_PAGE: &str = "general";
+/// Stack name of the Credentials page.
 pub const CREDENTIALS_PAGE: &str = "credentials";
+/// Stack name of the Keyboard Shortcuts page.
 pub const SHORTCUTS_PAGE: &str = "keyboard-shortcuts";
+/// Stack name of the Backup / Restore page.
 pub const BACKUP_PAGE: &str = "backup-restore";
 
 /// The settings window (unpresented), opened on the page named `page` (a
