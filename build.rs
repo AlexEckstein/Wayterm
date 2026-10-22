@@ -1,6 +1,6 @@
 //! Compiles the built-in tree icons (`assets/tree-icons`, doc 09 §Icons)
-//! and the app icon (`assets/icons`, doc 14 §App icon) into GResource bundles that
-//! `ui::icons` embeds, and — with the `backend-ghostty` feature only —
+//! and the app icon (`assets/icons`, doc 14 §App icon) into GResource
+//! bundles that `ui::icons` embeds, and — with the `backend-ghostty` feature only —
 //! links libghostty-vt (doc 02).
 
 use std::path::PathBuf;

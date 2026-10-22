@@ -49,7 +49,7 @@ cc = { version = "1", optional = true }
 [features]
 # Experimental second terminal backend over libghostty-vt (doc 02).
 # Off by default; needs the pinned library built locally
-# (docs/plans/phase10-pin.md).
+# (doc 02 §libghostty-vt pin).
 backend-ghostty = ["dep:cc"]
 
 # VTE vs libghostty-vt parse throughput (doc 02 §Benchmark). A plain
