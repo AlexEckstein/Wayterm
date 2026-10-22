@@ -18,9 +18,13 @@ use crate::transport::types::TransportError;
 /// An auth method, as reported in [`AuthOutcome::Failed`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthMethodKind {
+    /// `SSH_AUTH_SOCK` identities.
     Agent,
+    /// A key file.
     PublicKey,
+    /// A password.
     Password,
+    /// Server challenges.
     KeyboardInteractive,
 }
 
@@ -35,14 +39,18 @@ impl fmt::Display for AuthMethodKind {
     }
 }
 
+/// How the auth chain ended.
 #[derive(Debug)]
 pub enum AuthOutcome {
+    /// Authenticated.
     Success,
     /// Every attempted method failed. `methods_remaining` lists the methods
     /// the chain never attempted (not configured), so a method's absence
     /// proves it was tried and rejected.
     Failed {
+        /// The last method's failure.
         reason: String,
+        /// Methods never attempted.
         methods_remaining: Vec<AuthMethodKind>,
     },
     /// The user cancelled a prompt.
@@ -52,7 +60,9 @@ pub enum AuthOutcome {
 /// One prompt of a keyboard-interactive round.
 #[derive(Clone, Debug)]
 pub struct ChallengePrompt {
+    /// The text the server shows.
     pub prompt: String,
+    /// `false` masks the answer.
     pub echo: bool,
 }
 
@@ -62,11 +72,17 @@ pub type ChallengeResponder = Arc<dyn Fn(&[ChallengePrompt]) -> Option<Vec<Strin
 
 /// What the chain may try; absent fields skip their method.
 pub struct AuthConfig {
+    /// Key file to offer.
     pub key_path: Option<String>,
+    /// Its passphrase, if known up front.
     pub key_passphrase: Option<Zeroizing<Vec<u8>>>,
+    /// Password, if known up front.
     pub password: Option<Zeroizing<Vec<u8>>>,
+    /// Offer agent identities.
     pub try_agent: bool,
+    /// Answer keyboard-interactive rounds.
     pub try_keyboard_interactive: bool,
+    /// Answers challenges and re-prompts; `None` skips them.
     pub challenge_responder: Option<ChallengeResponder>,
 }
 
@@ -176,7 +192,9 @@ pub async fn authenticate_chain(
 
 /// A cancelled prompt aborts the whole chain; a failure falls through.
 enum KbdAuthError {
+    /// A prompt was dismissed.
     Cancelled,
+    /// The method failed; the chain falls through.
     Failed(String),
 }
 
@@ -206,7 +224,7 @@ async fn try_agent_auth(
         return Err("agent has no identities".into());
     }
     for identity in identities {
-        // Certificate identities are not supported yet.
+        // Certificate identities are not supported.
         let AgentIdentity::PublicKey { key, .. } = identity else {
             continue;
         };
@@ -223,6 +241,7 @@ async fn try_agent_auth(
     Ok(false)
 }
 
+/// Try the key at `path`; asks for a passphrase only if it is encrypted.
 async fn try_key_auth(
     handle: &mut Handle<AppClientHandler>,
     username: &str,
@@ -243,6 +262,7 @@ async fn try_key_auth(
     Ok(result.success())
 }
 
+/// Try the password; a wrong one is re-prompted once.
 async fn try_password_auth(
     handle: &mut Handle<AppClientHandler>,
     username: &str,

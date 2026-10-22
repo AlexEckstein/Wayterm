@@ -253,8 +253,8 @@ pub(super) fn on_connect(
         return;
     };
     if session.jump_session_id.is_some() {
-        // Doc 04 v1: no SFTP task runs over a jumped connection; the
-        // sidebar shows the limitation instead of attaching.
+        // No SFTP task runs over a jumped connection (doc 04
+        // §Limitations): the sidebar says so instead of attaching.
         sidebar.show_jump_placeholder();
     } else {
         sidebar.follow_new_shell(ShellCwdProbe::new(&conn, session.tmux_remote_name()));

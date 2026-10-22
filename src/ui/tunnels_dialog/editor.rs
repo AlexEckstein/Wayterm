@@ -17,24 +17,33 @@ use super::status_source::{ForwardState, ForwardStatusSource, RuleId};
 use crate::store::model::ForwardRule;
 use crate::ui::widgets::{dim_label, set_margins};
 
-/// The Tunnels dialog's side of each row: a status cell, the v2 note, and
+/// The Tunnels dialog's side of each row: a status cell, the unsupported-kind
+/// note, and
 /// an Enabled toggle that drives the engine through `source` — `None`
 /// offline, which leaves the engine controls insensitive.
 #[derive(Clone)]
 pub(crate) struct Live {
+    /// The live engine; `None` while offline.
     pub(crate) source: Option<Arc<dyn ForwardStatusSource>>,
 }
 
 /// One editable rule.
 pub(crate) struct RuleRow {
+    /// Local, Remote or Dynamic.
     pub(crate) kind: gtk4::DropDown,
+    /// Bind address; blank means loopback.
     bind: gtk4::Entry,
+    /// Bind port.
     bind_port: gtk4::Entry,
+    /// Remote host.
     remote: gtk4::Entry,
+    /// Remote port.
     remote_port: gtk4::Entry,
+    /// Whether the rule is saved enabled.
     pub(crate) enabled: gtk4::CheckButton,
     /// The live status cell (Tunnels dialog only).
     pub(crate) status: Option<gtk4::Label>,
+    /// Set by Remove: the row stays, hidden, so positions never shift.
     removed: Rc<Cell<bool>>,
 }
 
@@ -65,8 +74,11 @@ impl RuleRow {
 /// The rows of one editor in a `ListBox`. Clones share them.
 #[derive(Clone)]
 pub(crate) struct RuleEditor {
+    /// One row per rule.
     list: gtk4::ListBox,
+    /// The rows, by position.
     rows: Rc<RefCell<Vec<RuleRow>>>,
+    /// The Tunnels dialog's live cells; `None` in the session dialog.
     live: Option<Live>,
 }
 
@@ -82,6 +94,7 @@ impl RuleEditor {
         }
     }
 
+    /// The list widget.
     pub(crate) fn widget(&self) -> &gtk4::ListBox {
         &self.list
     }
@@ -117,7 +130,7 @@ impl RuleEditor {
 
     /// Append a row for `draft`; `state` is what the engine last reported
     /// for it (live rows only). Only Local converts on save: Remote and
-    /// Dynamic stay selectable so the v2 refusal is visible.
+    /// Dynamic stay selectable so their refusal is visible.
     pub(crate) fn add(&self, draft: &ForwardRuleDraft, state: Option<&ForwardState>) {
         let rule_id = self.rows.borrow().len();
         let kind = gtk4::DropDown::builder()
@@ -179,7 +192,7 @@ impl RuleEditor {
 }
 
 /// Append the Tunnels dialog's cells to `hbox` and wire them: the status
-/// cell, the v2 note, and the engine toggle, sensitive only for a Local
+/// cell, the unsupported-kind note, and the engine toggle, sensitive only for a Local
 /// rule while online — re-armed whenever the kind changes (doc 04).
 fn live_cells(
     hbox: &gtk4::Box,
@@ -219,6 +232,7 @@ fn live_cells(
     status
 }
 
+/// A text entry with `placeholder`, `width` characters wide.
 fn entry(text: &str, placeholder: &str, width: i32) -> gtk4::Entry {
     gtk4::Entry::builder()
         .text(text)

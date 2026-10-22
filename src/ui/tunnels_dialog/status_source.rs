@@ -8,12 +8,9 @@
 //! [`EngineStatusBridge`] serves it from a live engine, [`FakeStatusSource`]
 //! from tests.
 //!
-//! GTK discipline follows `tab.rs`: status travels on a
-//! `tokio::sync::mpsc` unbounded channel whose receiver is drained by a
-//! `MainContext::spawn_local` future (`while let Some … = rx.recv().await`),
-//! and `send` never blocks — so there is no `blocking_recv` on the UI path
-//! and no lock held across `.await` (the dialog keeps no async fns at all).
-//! `set_rule_enabled` queues the request and returns.
+//! Status travels on an unbounded channel drained by a main-context
+//! future, so nothing on the UI path blocks; `set_rule_enabled` queues the
+//! request and returns.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -43,12 +40,17 @@ pub trait ForwardStatusSource: Send + Sync {
 /// behavior proof: drive it with [`Self::emit`] from any thread, read the
 /// toggle requests back with [`Self::toggles`].
 pub struct FakeStatusSource {
+    /// States, subscribers and recorded toggles.
     inner: Mutex<FakeInner>,
 }
 
+/// A [`FakeStatusSource`]'s state.
 struct FakeInner {
+    /// Each rule's current state.
     states: Vec<ForwardState>,
+    /// Subscribers to notify.
     senders: Vec<UnboundedSender<ForwardEvent>>,
+    /// Every toggle request, in order.
     toggles: Vec<(RuleId, bool)>,
 }
 
@@ -135,8 +137,11 @@ impl ForwardStatusSource for FakeStatusSource {
 /// awaits at all — fan-out uses `send` on unbounded channels, and the
 /// engine's controls never block).
 pub struct EngineStatusBridge {
+    /// The engine toggles go to.
     engine: ForwardEngine,
+    /// The last state of each rule, for the initial paint.
     states: Mutex<HashMap<RuleId, ForwardState>>,
+    /// Open subscriptions.
     senders: Mutex<Vec<UnboundedSender<ForwardEvent>>>,
 }
 

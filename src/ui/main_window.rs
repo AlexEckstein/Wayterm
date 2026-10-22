@@ -291,11 +291,9 @@ fn auto_hide_home(notebook: &gtk4::Notebook, home: &gtk4::Label) {
     notebook.connect_page_removed(move |notebook, _, _| sync(notebook));
 }
 
-/// `win.tunnels` (Phase 11): the current tab's Tunnels dialog. It always
-/// opens — with no engine (not connected, non-SSH, or no tab at all it is
-/// a no-op) the dialog is the offline fallback: rules editable, live cells
-/// reading "no active connection". A connected SSH tab passes its page's
-/// live status source instead of `None`; the dialog already speaks it.
+/// `win.tunnels`: the current session tab's Tunnels dialog, live when the
+/// tab's forward engine is armed, offline otherwise (no tab: no-op). OK
+/// saves the rules to the session row.
 fn install_tunnels_action(
     window: &gtk4::ApplicationWindow,
     notebook: &gtk4::Notebook,

@@ -1,27 +1,24 @@
 //! Local port-forward engine (doc 04 §Port forwarding).
 //!
-//! The engine is owned by THE CALLER (the connect flow / reconnect driver
-//! — a later wiring step), not by the connection: build one
-//! [`ForwardEngine`] per live [`SshConnection`] with
-//! [`ForwardEngine::new`], [`start`](ForwardEngine::start) it with the
-//! session's rules, and on reconnect [`stop`](ForwardEngine::stop) the old
-//! engine and start a fresh one on the new connection `Arc`. Listeners die
-//! with the connection; they never migrate across it.
+//! The engine is owned by the caller (the SSH tab's connect flow), not by
+//! the connection: one [`ForwardEngine`] per live [`SshConnection`],
+//! [`start`](ForwardEngine::start)ed with the session's rules; every
+//! (re)connect [`stop`](ForwardEngine::stop)s the old engine and starts a
+//! fresh one on the new connection `Arc`. Listeners never migrate across
+//! connections.
 //!
 //! Per enabled [`ForwardKind::Local`](crate::store::model::ForwardKind)
 //! rule the engine binds one `TcpListener`; each accepted connection opens
 //! one direct-tcpip channel to the rule's remote and pipes both directions
 //! with `copy_bidirectional`. A refused remote closes only the accepted
 //! socket (reported as [`ForwardState::LastFailed`]); the listener keeps
-//! serving. `Remote`/`Dynamic` rules are v2 (doc 04): they are skipped with
-//! one report line each and a [`ForwardState::Stopped`] event so the status
-//! snapshot stays honest.
+//! serving. `Remote`/`Dynamic` rules are not supported (doc 04
+//! §Limitations): each is skipped with one log line and a
+//! [`ForwardState::Stopped`] event, so the status snapshot stays honest.
 //!
-//! Testability: the accept/copy/shutdown core runs against a
-//! `ChannelOpener` closure, so unit tests inject an in-process fake while
-//! [`ForwardEngine::new`] wires the real `SshConnection` path (covered by
-//! `tests/forward_sshd.rs`). `SshConnection` itself stays concrete — no
-//! new generics on any protected seam.
+//! The accept/copy/shutdown core runs against a `ChannelOpener` closure:
+//! unit tests inject an in-process fake, [`ForwardEngine::new`] the real
+//! direct-tcpip path (`tests/forward_sshd.rs`).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -44,20 +41,26 @@ use crate::transport::types::TransportError;
 /// `start()` call's ordering.
 pub type RuleId = usize;
 
-/// Status snapshot source for the Tunnels dialog (one event per
-/// transition; `Active` carries the live count, not per-connection spam).
+/// A rule's forwarding state, reported once per transition; `Active`
+/// carries the live connection count.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ForwardState {
+    /// The listener is bound and idle.
     Listening,
+    /// `conns` forwarded connections are open.
     Active { conns: u32 },
+    /// The last connection could not open its channel.
     LastFailed { error: String },
+    /// Not serving (disabled, not Local, or stopped).
     Stopped,
 }
 
 /// One status transition for one rule.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ForwardEvent {
+    /// Position of the rule in the last `start`.
     pub rule_id: RuleId,
+    /// Its new state.
     pub state: ForwardState,
 }
 
@@ -69,6 +72,7 @@ pub(crate) trait DuplexStream: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> DuplexStream for T {}
 /// Pinned so the object is `Unpin` and `copy_bidirectional`-compatible.
 pub(crate) type BoxStream = Pin<Box<dyn DuplexStream>>;
+/// An opener's pending channel.
 pub(crate) type OpenerFuture =
     Pin<Box<dyn Future<Output = Result<BoxStream, TransportError>> + Send>>;
 /// `(remote_host, remote_port) -> channel stream`. `Send + Sync` so one
@@ -81,13 +85,19 @@ pub(crate) type ChannelOpener = Arc<dyn Fn(String, u16) -> OpenerFuture + Send +
 /// need a tokio runtime.
 #[derive(Clone)]
 pub struct ForwardEngine {
+    /// Shared by every clone.
     inner: Arc<EngineInner>,
 }
 
+/// The engine's state, shared with its tasks.
 struct EngineInner {
+    /// Opens one channel per accepted connection.
     opener: ChannelOpener,
+    /// Status events for the Tunnels dialog.
     events: mpsc::Sender<ForwardEvent>,
+    /// The rules of the last `start`, by position.
     rules: Mutex<Vec<ForwardRule>>,
+    /// Serving rules by id.
     tasks: Mutex<HashMap<RuleId, RuleTasks>>,
 }
 
@@ -101,28 +111,30 @@ impl EngineInner {
 
 /// One serving rule: its listener and the connections it accepted.
 struct RuleTasks {
+    /// Accepts connections for the rule.
     listener: JoinHandle<()>,
+    /// One copy task per accepted connection.
     conns: Vec<JoinHandle<()>>,
 }
 
 impl RuleTasks {
+    /// Abort the listener and every connection.
     fn abort(self) {
         self.listener.abort();
         self.conns.iter().for_each(JoinHandle::abort);
     }
 }
 
+/// Lock, ignoring poison.
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     // A poisoned lock still guards a consistent map.
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl ForwardEngine {
-    /// Production constructor: channels open on `connection` via
-    /// direct-tcpip. The engine holds the `Arc`; dropping the engine does
-    /// NOT stop forwarding — call [`stop`](ForwardEngine::stop) so
-    /// listeners close deterministically (aborted tasks die with it, but
-    /// only `stop` emits the terminal `Stopped` snapshot).
+    /// An engine opening direct-tcpip channels on `connection`. Dropping it
+    /// does not stop forwarding: call [`stop`](ForwardEngine::stop), which
+    /// also emits the final `Stopped` events.
     pub fn new(connection: Arc<SshConnection>, events: mpsc::Sender<ForwardEvent>) -> Self {
         let opener: ChannelOpener = Arc::new(move |host: String, port: u16| {
             let conn = Arc::clone(&connection);
@@ -134,6 +146,7 @@ impl ForwardEngine {
         Self::with_opener(opener, events)
     }
 
+    /// An engine whose channels come from `opener` (tests inject a fake).
     pub(crate) fn with_opener(opener: ChannelOpener, events: mpsc::Sender<ForwardEvent>) -> Self {
         Self {
             inner: Arc::new(EngineInner {
@@ -185,6 +198,7 @@ impl ForwardEngine {
         self.stop_all(true);
     }
 
+    /// Serve one rule, unless it is disabled or not Local.
     fn start_rule(&self, id: RuleId, rule: &ForwardRule) {
         if !rule.enabled {
             return self.inner.emit(id, ForwardState::Stopped);
@@ -223,6 +237,7 @@ impl ForwardEngine {
         }
     }
 
+    /// Abort every rule; `announce` emits `Stopped` for each.
     fn stop_all(&self, announce: bool) {
         let ids: Vec<RuleId> = lock(&self.inner.tasks).keys().copied().collect();
         for id in ids {

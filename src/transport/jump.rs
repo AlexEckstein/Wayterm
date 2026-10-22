@@ -6,14 +6,11 @@
 //! style). Each hop authenticates on its own; host-key verification runs on
 //! the inner hop through the same [`AppClientHandler`] path, never skipped.
 //!
-//! Shape: [`dial_with_jump`] is the config-level entry the connect flow
-//! calls (it resolves both hops from their [`SessionConfig`] rows, checks
-//! depth, dials the jump hop through the supervisor, then hands the live
-//! jump connection to [`dial_via_jump`]). [`dial_via_jump`] takes an
-//! already-connected jump [`SshConnection`], which keeps it testable
-//! against a single sshd and keeps the supervisor pool out of the inner
-//! (stream-backed) connection — the inner connection is intentionally NOT
-//! pooled, so the caller owns the returned [`SshConnection`] outright.
+//! [`dial_with_jump`] is the connect flow's entry: it resolves both hops
+//! from their rows, checks depth, dials the jump hop through the
+//! supervisor, and hands it to [`dial_via_jump`], which runs the target
+//! over the live jump connection (testable against one sshd). The inner
+//! connection is never pooled: the caller owns it outright.
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -199,8 +196,11 @@ pub(crate) fn ssh_w_argv(jump: &ConnectParams, target_host: &str, target_port: u
 /// the stream drops and the child is killed. Auth material never touches
 /// the child (see [`ssh_w_argv`]).
 struct SshWStream {
+    /// Write half: bytes to the target.
     stdin: ChildStdin,
+    /// Read half: bytes from the target.
     stdout: ChildStdout,
+    /// Killed when the stream drops.
     child: Child,
 }
 
@@ -213,6 +213,7 @@ impl std::fmt::Debug for SshWStream {
 }
 
 impl SshWStream {
+    /// Run `ssh -W target:port [user@]jump`, piped.
     async fn spawn(
         jump: &ConnectParams,
         target_host: &str,

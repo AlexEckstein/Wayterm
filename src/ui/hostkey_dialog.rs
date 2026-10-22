@@ -15,12 +15,16 @@ pub const UNKNOWN_BUTTONS: [&str; 2] = ["Reject", "Accept"];
 /// A changed key can never be accepted with one click.
 pub const CHANGED_BUTTONS: [&str; 1] = ["Reject"];
 
+/// Which host-key dialog to show.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostKeyNotice {
+    /// A host not in known_hosts (Accept / Cancel).
     Unknown,
+    /// A key that differs from known_hosts (no accept).
     Changed,
 }
 
+/// The dialog's headline for `notice`.
 pub fn notice_headline(facts: &HostKeyFacts, notice: HostKeyNotice) -> String {
     let host = &facts.host;
     match notice {

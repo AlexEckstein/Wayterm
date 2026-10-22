@@ -14,7 +14,9 @@ use crate::ui::widgets::{ok_cancel_row, set_margins, wrapped_label, Modal};
 /// One dialog row: its label and whether the entry echoes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChallengeField {
+    /// The prompt text.
     pub label: String,
+    /// `false` masks the entry.
     pub echo: bool,
 }
 
@@ -32,6 +34,7 @@ pub fn field_specs(prompts: &[ChallengePrompt]) -> Vec<ChallengeField> {
         .collect()
 }
 
+/// The window title for a challenge from session `name`.
 pub fn window_title(name: &str) -> String {
     format!("Authentication required: {name}")
 }
