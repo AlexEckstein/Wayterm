@@ -34,6 +34,57 @@ fn session_type_wire_formats() {
 }
 
 #[test]
+fn default_ports_per_type() {
+    assert_eq!(SessionType::SSH.default_port(), Some(22));
+    assert_eq!(SessionType::RDP.default_port(), Some(3389));
+    assert_eq!(SessionType::VNC.default_port(), Some(5900));
+    // Serial names a device, local names a shell: no network port.
+    assert_eq!(SessionType::Serial.default_port(), None);
+    assert_eq!(SessionType::LocalShell.default_port(), None);
+}
+
+/// The types that are not SSH, for the SSH-only capabilities.
+const NOT_SSH: [SessionType; 4] = [
+    SessionType::RDP,
+    SessionType::VNC,
+    SessionType::Serial,
+    SessionType::LocalShell,
+];
+
+#[test]
+fn only_ssh_sessions_get_a_sidebar() {
+    assert!(SessionType::SSH.supports_sftp(), "doc 09 §Availability");
+    for other in NOT_SSH {
+        assert!(!other.supports_sftp(), "{other:?} must not get a sidebar");
+    }
+}
+
+#[test]
+fn only_ssh_sessions_can_be_jump_hosts() {
+    assert!(SessionType::SSH.can_be_jump_host(), "doc 11 §Jump hosts");
+    for other in NOT_SSH {
+        assert!(
+            !other.can_be_jump_host(),
+            "{other:?} must not be a jump host"
+        );
+    }
+}
+
+#[test]
+fn only_ssh_sessions_store_a_password_on_save() {
+    assert!(
+        SessionType::SSH.stores_password_on_save(),
+        "doc 06 §Credential Storage"
+    );
+    for other in NOT_SSH {
+        assert!(
+            !other.stores_password_on_save(),
+            "{other:?} has no checkbox"
+        );
+    }
+}
+
+#[test]
 fn auth_method_wire_formats() {
     // Doc 06 `sessions.auth_method` column: 'password', 'key', 'agent',
     // 'keyboard-interactive', 'none'.

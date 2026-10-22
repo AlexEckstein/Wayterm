@@ -20,6 +20,45 @@ pub enum SessionType {
     LocalShell,
 }
 
+/// What each protocol supports. Every match is exhaustive, so a new type
+/// must answer each question before it compiles.
+impl SessionType {
+    /// The protocol's registered port; serial and local sessions have none.
+    pub fn default_port(&self) -> Option<u16> {
+        match self {
+            Self::SSH => Some(22),
+            Self::RDP => Some(3389),
+            Self::VNC => Some(5900),
+            Self::Serial | Self::LocalShell => None,
+        }
+    }
+
+    /// Only SSH sessions get an SFTP sidebar (doc 09 §Availability).
+    pub fn supports_sftp(&self) -> bool {
+        match self {
+            Self::SSH => true,
+            Self::RDP | Self::VNC | Self::Serial | Self::LocalShell => false,
+        }
+    }
+
+    /// Only an SSH session can be another's jump host (doc 11 §Jump hosts).
+    pub fn can_be_jump_host(&self) -> bool {
+        match self {
+            Self::SSH => true,
+            Self::RDP | Self::VNC | Self::Serial | Self::LocalShell => false,
+        }
+    }
+
+    /// Whether the session dialog offers to save a typed password to the
+    /// keyring (doc 06 §Credential Storage, "Store on save").
+    pub fn stores_password_on_save(&self) -> bool {
+        match self {
+            Self::SSH => true,
+            Self::RDP | Self::VNC | Self::Serial | Self::LocalShell => false,
+        }
+    }
+}
+
 /// `sessions.auth_method`: `password`, `key`, `agent`,
 /// `keyboard-interactive`, `none`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -145,16 +145,6 @@ pub(super) fn auth_index_for(method: Option<&AuthMethod>) -> u32 {
     }
 }
 
-/// The protocol's registered port; serial and local sessions have none.
-pub fn default_port_for(session_type: &SessionType) -> Option<u16> {
-    match session_type {
-        SessionType::SSH => Some(22),
-        SessionType::RDP => Some(3389),
-        SessionType::VNC => Some(5900),
-        SessionType::Serial | SessionType::LocalShell => None,
-    }
-}
-
 /// `WIDTHxHEIGHT` → `(width, height)`; `None` (stored as NULL) when empty
 /// or malformed.
 pub fn parse_resolution(text: &str) -> Option<(u32, u32)> {
@@ -197,7 +187,7 @@ pub fn jump_missing_label(id: i64) -> String {
 pub fn jump_candidates(peers: &[SessionConfig], self_id: i64) -> Vec<&SessionConfig> {
     peers
         .iter()
-        .filter(|s| s.session_type == SessionType::SSH && s.id != self_id)
+        .filter(|s| s.session_type.can_be_jump_host() && s.id != self_id)
         .collect()
 }
 
@@ -214,7 +204,7 @@ pub fn jump_error(peers: &[SessionConfig], self_id: i64, desired: Option<i64>) -
             jump_missing_label(id)
         ));
     };
-    if peer.session_type != SessionType::SSH {
+    if !peer.session_type.can_be_jump_host() {
         return Some(format!(
             "“{}” is not an SSH session — only SSH sessions can be jump hosts.",
             peer.name
@@ -354,7 +344,7 @@ pub fn config_from_fields(
         .checked_sub(1)
         .and_then(|i| folders.get(i))
         .map(|f| f.id);
-    let port = default_port_for(&session_type).map(|default| {
+    let port = session_type.default_port().map(|default| {
         u16::try_from(fields.port)
             .ok()
             .filter(|p| *p > 0)
