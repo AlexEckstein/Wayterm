@@ -15,6 +15,7 @@ use crate::store::model::{AuthMethod, SessionConfig, SshOptions};
 /// `Include` nesting limit.
 const MAX_INCLUDE_DEPTH: usize = 5;
 
+/// Scan `text`; `Include` paths resolve against `base_dir` (normally `~/.ssh`).
 pub fn parse(text: &str, base_dir: Option<&Path>) -> Parsed {
     let mut scanner = Scanner {
         base_dir: base_dir.map(Path::to_path_buf),
@@ -36,18 +37,26 @@ enum Context {
     Match,
 }
 
+/// Scanner state while reading one config and its includes.
 #[derive(Default)]
 struct Scanner {
+    /// Where relative `Include`s resolve.
     base_dir: Option<PathBuf>,
+    /// `$HOME`, for `~/` paths.
     home: Option<PathBuf>,
+    /// Sessions so far.
     sessions: Vec<SessionConfig>,
+    /// Session index by alias.
     by_name: HashMap<String, usize>,
     /// Raw `ProxyJump` per session, resolved in [`Scanner::finish`].
     proxy_jump: Vec<Option<String>>,
     /// Canonical paths of the `Include` chain being read.
     include_stack: Vec<PathBuf>,
+    /// `Match` blocks skipped, for the report.
     match_blocks: usize,
+    /// Options outside any `Host`, for the report.
     global_options: usize,
+    /// Warnings and counts.
     report: ImportReport,
 }
 
@@ -84,6 +93,7 @@ impl Scanner {
         context
     }
 
+    /// Start a `Host` block: one session per exact alias, templates for wildcards.
     fn host_line(&mut self, patterns: &[String]) -> Context {
         if patterns.is_empty() {
             self.report
@@ -193,6 +203,7 @@ impl Scanner {
         }
     }
 
+    /// The file an `Include` argument names, if it can be read.
     fn resolve_include(&mut self, arg: &str) -> Option<PathBuf> {
         if let Some(rest) = arg.strip_prefix("~/") {
             match &self.home {
@@ -252,6 +263,7 @@ impl Scanner {
         matches
     }
 
+    /// Read one included file in `context`, depth-capped and cycle-safe.
     fn include_file(&mut self, path: &Path, context: Context) {
         let shown = path.display();
         if self.include_stack.len() >= MAX_INCLUDE_DEPTH {
@@ -289,6 +301,7 @@ impl Scanner {
         self.include_stack.pop();
     }
 
+    /// Resolve jump hosts and build the result.
     fn finish(mut self) -> Parsed {
         for index in 0..self.sessions.len() {
             let Some(target) = self.proxy_jump[index].take() else {
@@ -412,6 +425,7 @@ fn split_args(text: &str) -> Vec<String> {
     args
 }
 
+/// Expand a leading `~/` with `home`.
 fn expand_tilde(path: &str, home: Option<&Path>) -> String {
     match (path.strip_prefix("~/"), home) {
         (Some(rest), Some(home)) => home.join(rest).to_string_lossy().into_owned(),

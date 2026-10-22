@@ -1,5 +1,4 @@
-//! The Backup / Restore settings page (doc 10): one
-//! row per import source with a file picker, and an Export button. The
+//! The Backup / Restore settings page (doc 10): one row per import source with a file picker, and an Export button. The
 //! work is `crate::transfer`'s; this page picks files, confirms, and
 //! reports. The page is also offered once on first run
 //! ([`take_first_run_offer`]).
@@ -195,9 +194,13 @@ pub fn page(store: Rc<SessionStore>, on_import: Rc<dyn Fn()>) -> gtk4::Widget {
 /// What the page's buttons act on.
 #[derive(Clone)]
 struct Ctx {
+    /// The store imports write to and exports read.
     store: Rc<SessionStore>,
+    /// Runs after a successful import (refreshes the tree).
     on_import: Rc<dyn Fn()>,
+    /// A widget in the page, to find the window.
     anchor: gtk4::Widget,
+    /// The result line.
     status: gtk4::Label,
 }
 
@@ -207,6 +210,7 @@ impl Ctx {
         self.anchor.root().and_downcast()
     }
 
+    /// Pick a file for `source` and import it, after confirmation.
     fn choose_and_import(&self, source: ImportSource, label: &str) {
         let dialog = gtk4::FileDialog::builder()
             .title(format!("Import from {label}"))
@@ -259,6 +263,7 @@ impl Ctx {
         );
     }
 
+    /// Pick a destination and write the JSON export.
     fn export(&self) {
         let json = match export_json(&self.store) {
             Ok(json) => json,
