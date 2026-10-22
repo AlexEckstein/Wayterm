@@ -1,4 +1,4 @@
-//! A session's chain in priority order (doc 11 §CredentialManager) and the
+//! A session's chain in priority order (doc 05) and the
 //! prompt's wording. Display-free: the UI supplies the dialog that asks.
 
 use std::sync::Arc;

@@ -342,7 +342,7 @@ async fn upload_file(
     Ok(transferred)
 }
 
-/// Directories first, then case-insensitive alphabetical (doc 09).
+/// Directories first, then case-insensitive alphabetical (doc 07).
 fn sort_entries(entries: &mut [DirEntry]) {
     entries.sort_by(|a, b| {
         b.is_dir

@@ -24,7 +24,7 @@ const WRITE_STALL_LIMIT: Duration = Duration::from_secs(5);
 /// How long `disconnect` waits for the reader to notice its cancel token.
 const READER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// The port settings of one session, mapped from the doc 06 vocabulary.
+/// The port settings of one session, mapped from the doc 09 vocabulary.
 #[derive(Clone, Debug, PartialEq)]
 struct PortSettings {
     device: String,
@@ -71,7 +71,7 @@ fn unsupported(field: &str, value: impl std::fmt::Display) -> TransportError {
     TransportError::ConnectionFailed(format!("unsupported {field} '{value}'"))
 }
 
-/// `mark` and `space` are doc 06 vocabulary, but `serialport` 4.10 has no
+/// `mark` and `space` are doc 09 vocabulary, but `serialport` 4.10 has no
 /// such parity: they fail rather than open the port with the wrong frame.
 fn map_parity(value: &str) -> Result<Parity, TransportError> {
     match value {
@@ -112,8 +112,8 @@ fn map_stop_bits(value: u8) -> Result<StopBits, TransportError> {
     }
 }
 
-/// Serial console transport over the `serialport` crate (doc 04 §Local and
-/// serial transports). Reads block, so the reader runs on tokio's blocking
+/// Serial console transport over the `serialport` crate (doc 06
+/// §Serial). Reads block, so the reader runs on tokio's blocking
 /// pool; `resize` is a no-op because a serial line has no window size.
 pub struct SerialTransport {
     /// The row's port settings, or why it has none: mapped once, reported

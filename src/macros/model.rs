@@ -11,7 +11,7 @@ pub struct MacroStep {
     /// The pause before the keys, in milliseconds.
     pub delay_ms: u32,
     /// The bytes the terminal sent for the keystroke — bytes, not key
-    /// names (doc 12 §Bytes, not keys). Empty is a pure pause.
+    /// names (doc 12 §Bytes, not keys, not keys). Empty is a pure pause.
     pub keys: Vec<u8>,
 }
 

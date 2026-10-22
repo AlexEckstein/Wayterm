@@ -154,7 +154,7 @@ fn tabs_are_tracked_per_session() {
     assert_eq!(tab_state(2), TransportState::Disconnected);
 }
 
-// ── Confirm-before-close (doc 04 §Lifecycle, setting `confirm_close`) ───────
+// ── Confirm-before-close (doc 03 §Lifecycle, setting `confirm_close`) ───────
 
 #[test]
 fn a_connected_tab_asks_before_close_when_the_setting_is_on() {
@@ -273,7 +273,7 @@ async fn reconnect_really_runs_the_connect_closure() {
 
     activate_reconnect(Some(SESSION), None, None);
 
-    // The driver waits doc 04's 1s rung before its first attempt; the
+    // The driver waits doc 03's 1s rung before its first attempt; the
     // test's own sleep drives the paused clock past it.
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -440,7 +440,7 @@ fn the_registry_resets_cleanly_between_windows() {
     assert!(reconnect_on_drop_setting());
 }
 
-// ── Tab close teardown (doc 04: "Tab close: cancel token → pump task
+// ── Tab close teardown (doc 03: "Tab close: cancel token → pump task
 // exits → transport.disconnect()") ───────────────────────────────────────────
 
 #[test]
@@ -475,7 +475,7 @@ fn teardown_forgets_the_transport() {
 
 #[test]
 fn teardown_stops_an_in_flight_reconnect_loop() {
-    // Doc 04 allows unlimited attempts "while the tab is open" — so a
+    // Doc 03 allows unlimited attempts "while the tab is open" — so a
     // closed tab must not keep a driver looping.
     let _guard = fresh();
     let token = CancellationToken::new();
@@ -605,7 +605,7 @@ async fn reconnect_after_disconnect_runs_on_a_fresh_token() {
     );
 }
 
-// ── ConnectionLost (the state drain's half of doc 04 §Lifecycle) ────────────
+// ── ConnectionLost (the state drain's half of doc 03 §Lifecycle) ────────────
 
 #[tokio::test(start_paused = true)]
 async fn connection_lost_auto_reconnects_on_the_tabs_state_channel() {

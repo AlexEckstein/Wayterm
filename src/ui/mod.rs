@@ -1,4 +1,4 @@
-//! GTK4 user interface (docs 01, 07, 09, 12).
+//! GTK4 user interface (docs 01, 11, 07, 12).
 
 pub mod appearance;
 pub mod auth_dialog;

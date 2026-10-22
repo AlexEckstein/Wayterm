@@ -1,9 +1,9 @@
 //! SSH tabs (doc 04): validate the row, show "Connecting…", get a shared
 //! connection from the window's supervisor — directly or through the jump
-//! host (doc 11 §Jump hosts) — while prompts run on the GTK thread and the
+//! host (doc 04 §Jump hosts) — while prompts run on the GTK thread and the
 //! dial waits on a blocking-pool thread. Once connected, the page arms the
-//! forward engine (doc 11 §Port forwarding) and attaches its SFTP sidebar
-//! (doc 09) to the same connection.
+//! forward engine (doc 04 §Port forwarding) and attaches its SFTP sidebar
+//! (doc 07) to the same connection.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -43,7 +43,7 @@ const SSH_PAGE_KEY: &str = "wayterm-ssh-page";
 /// Engine event channel capacity: status snapshots, never blocking.
 const FWD_EVENT_BUF: usize = 64;
 /// After Enter, how long the terminal must stay quiet before the SFTP
-/// sidebar asks where the shell is (doc 09 §Following the shell).
+/// sidebar asks where the shell is (doc 07 §Following the shell).
 const PROBE_QUIET: Duration = Duration::from_millis(300);
 
 /// What an SSH page keeps beside its [`PageState`](super::PageState).
@@ -128,7 +128,7 @@ pub(super) fn start(
         port,
         username,
     };
-    // Jump sessions dial through their bastion (doc 11 §Jump hosts): the
+    // Jump sessions dial through their bastion (doc 04 §Jump hosts): the
     // dial closure below is the only branch that differs, and everything
     // downstream receives the same `Arc<SshConnection>`.
     // The prompt closures block until the user answers, so the dial must
@@ -139,7 +139,7 @@ pub(super) fn start(
         else {
             return;
         };
-        // Each hop authenticates as its own session (doc 11).
+        // Each hop authenticates as its own session (doc 04).
         let jump_auth = hop_auth(&jump_cfg, store.as_deref());
         // Plain data: the blocking pool owns this copy (`Rc` is not `Send`).
         let target: SessionConfig = (**session).clone();
@@ -180,7 +180,7 @@ pub(super) fn start(
     });
 }
 
-/// How the hop `session` describes authenticates (doc 11): its stored
+/// How the hop `session` describes authenticates (doc 04): its stored
 /// method, its own credential chain, a prompt-backed host-key check under
 /// its own policy — else the global one, or strict when the page has no
 /// store to read that from — and the challenge dialog.
@@ -197,7 +197,7 @@ fn hop_auth(session: &SessionConfig, store: Option<&SessionStore>) -> HopAuth {
     }
 }
 
-/// Whether `session` dials through a bastion (doc 11 §Jump hosts): SSH
+/// Whether `session` dials through a bastion (doc 04 §Jump hosts): SSH
 /// with a jump host set. VNC, RDP, local and serial dispatch elsewhere, so
 /// this only ever fires for SSH.
 fn uses_jump_dial(session: &SessionConfig) -> bool {
@@ -237,7 +237,7 @@ fn resolve_jump_session(store: &SessionStore, jump_id: i64) -> Result<SessionCon
 
 /// The connected half of the flow, after the terminal is wired: arm the
 /// forward engine on every connect, so a redial re-establishes the same
-/// rules on the fresh connection (doc 11 §Port forwarding), and attach the
+/// rules on the fresh connection (doc 04 §Port forwarding), and attach the
 /// sidebar to the same connection.
 pub(super) fn on_connect(
     notebook: &gtk4::Notebook,
@@ -252,7 +252,7 @@ pub(super) fn on_connect(
         return;
     };
     if session.jump_session_id.is_some() {
-        // Doc 11 v1: no SFTP task runs over a jumped connection; the
+        // Doc 04 v1: no SFTP task runs over a jumped connection; the
         // sidebar shows the limitation instead of attaching.
         sidebar.show_jump_placeholder();
     } else {
@@ -270,12 +270,12 @@ pub(super) fn on_connect(
 
 /// The rules the forward engine arms on `finish_connect`: the session's
 /// current set, so every redial re-enters with the same rules and a
-/// reconnect re-establishes them with no separate hook (doc 11).
+/// reconnect re-establishes them with no separate hook (doc 04).
 fn forward_rules_for(session: &SessionConfig) -> Vec<ForwardRule> {
     session.forward_rules.clone().unwrap_or_default()
 }
 
-/// Arm the caller-owned forward engine for a fresh connection (doc 11
+/// Arm the caller-owned forward engine for a fresh connection (doc 04
 /// §Port forwarding): start the session's rules — the engine spawns its
 /// listeners and never blocks — and bridge the event stream into the
 /// page's live status source for the Tunnels dialog. Replaces any engine
@@ -329,7 +329,7 @@ pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     side_dock::sidebar_replaced(notebook);
 }
 
-/// Keep the page's SFTP sidebar on the shell's working directory (doc 09
+/// Keep the page's SFTP sidebar on the shell's working directory (doc 07
 /// §Following the shell): VTE reports OSC 7 as `current-directory-uri`,
 /// and after each command — Enter, then [`PROBE_QUIET`] without output —
 /// the sidebar may ask the remote instead. The sidebar is looked up each

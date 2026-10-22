@@ -1,5 +1,5 @@
 //! Local shell transport: the user's shell on a `forkpty` pseudo-terminal
-//! (doc 04 §Local and serial transports).
+//! (doc 06).
 
 use std::ffi::{CString, OsStr, OsString};
 use std::io;

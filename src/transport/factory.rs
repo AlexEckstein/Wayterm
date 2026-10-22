@@ -1,4 +1,4 @@
-//! [`create_transport`]: session type → transport (doc 04 §Transport Factory).
+//! [`create_transport`]: session type → transport (doc 03 §Transport factory).
 
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use crate::transport::serial::SerialTransport;
 use crate::transport::ssh::SSHTransport;
 use crate::transport::types::{Transport, TransportError, TransportEvent};
 
-/// Transport factory (doc 04 §Transport Factory). Unsupported session types
+/// Transport factory (doc 03 §Transport factory). Unsupported session types
 /// are errors, never panics — a malformed row must not crash the app.
 pub fn create_transport(
     config: &SessionConfig,

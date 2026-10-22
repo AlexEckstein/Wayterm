@@ -1,5 +1,5 @@
-//! Action registry + conflict-detection tests (doc 07 §"Action
-//! Registry", §"Conflict Detection").
+//! Action registry + conflict-detection tests (doc 11 §Action
+//! registry, §Conflict detection).
 //!
 //! The five conflict rules are asserted individually *and* as a full
 //! context matrix, because the de-confliction of the default table
@@ -65,7 +65,7 @@ fn empty_registry() {
     assert_eq!(registry.context_of("new_tab"), None);
 }
 
-/// Doc 07's `rebind`, transcribed: swap the key, flip the flag.
+/// Doc 11's `rebind`, transcribed: swap the key, flip the flag.
 #[test]
 fn rebind_sets_key_and_clears_is_default() {
     let mut registry = registry_with_defaults();
@@ -335,7 +335,7 @@ fn can_co_fire_is_reflexive_and_symmetric() {
     }
 }
 
-/// Doc 07: "overriding clears (unbinds) the loser".
+/// Doc 11: "overriding clears (unbinds) the loser".
 #[test]
 fn override_unbinds_the_loser() {
     let mut registry = registry_with_defaults();
@@ -500,7 +500,7 @@ fn reset_to_default_unknown_action_errors() {
     );
 }
 
-/// The persistence path (doc 07 §"Persistence"): apply to the current
+/// The persistence path (doc 11 §Persistence): apply to the current
 /// binding, honoring the stored `enabled` flag, with no conflict check —
 /// a stored layout was resolved when it was made.
 #[test]
@@ -563,7 +563,7 @@ fn ordered_actions_follows_the_doc_table_order() {
         .copied()
         .take_while(|id| registry.action(id).unwrap().context == ActionContext::Global)
         .collect();
-    assert_eq!(globals.len(), 20, "20 global actions in doc 07's table");
+    assert_eq!(globals.len(), 20, "20 global actions in doc 11's table");
     // Within a context, ids sort; the first global is close_tab.
     assert_eq!(globals[0], "close_tab");
     assert_eq!(

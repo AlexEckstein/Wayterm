@@ -188,7 +188,7 @@ impl MainWindow {
         tab_resilience::install_connection_actions(&window, move || {
             crate::ui::tab::current_tab_id(&for_actions)
         });
-        // Every chord comes from the engine (doc 07 §Dispatch), checked
+        // Every chord comes from the engine (doc 11 §Dispatch), checked
         // against its context at each key press. Terminal shortcuts fire
         // whenever the current tab has a terminal, unless the user is
         // typing elsewhere.
@@ -313,7 +313,7 @@ fn install_tunnels_action(
 }
 
 /// The window actions for the view, the session tree and the SFTP sidebar
-/// (doc 07 §Handlers). Session-tree and SFTP actions act on what their
+/// (doc 11 §Handlers). Session-tree and SFTP actions act on what their
 /// panel shows; the engine fires them only while focus is in that panel.
 fn install_view_actions(
     window: &gtk4::ApplicationWindow,
@@ -368,7 +368,7 @@ fn install_view_actions(
     }
 }
 
-/// `toggle_sftp` (doc 09) switches the dock to the SFTP panel, or back
+/// `toggle_sftp` (doc 07) switches the dock to the SFTP panel, or back
 /// from it, and is disabled on pages without a sidebar — which is how
 /// non-SSH tabs hide the toggle. Its chord is the hotkey engine's.
 fn install_toggle_sftp(
@@ -431,7 +431,7 @@ pub(super) mod gtk_tests {
         }
     }
 
-    /// Every action in doc 07's table has a window action behind it and a
+    /// Every action in doc 11's table has a window action behind it and a
     /// shortcut in the window's dispatcher; the tab actions move between
     /// tabs; terminal shortcuts keep firing with focus off the terminal;
     /// the tab bar's "+" opens a local shell; and a local-shell tab

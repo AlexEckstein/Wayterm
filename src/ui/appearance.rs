@@ -1,5 +1,5 @@
 //! The app follows the desktop's light or dark theme (doc 02 §Color
-//! schemes): the window chrome and every live terminal.
+//! schemes, doc 13 §Window theme): the window chrome and every live terminal.
 //!
 //! Terminals get their scheme ([`color_scheme::resolve`]) as they are
 //! created ([`apply_to`]); a change of the global `default_color_scheme`

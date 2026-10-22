@@ -1,7 +1,7 @@
 //! Duplicate tabs: a session opened while a tab for it is already open
 //! gets a second, independent tab. Two tabs running `tmux new -A` on one
 //! name would attach to the same tmux session, so the duplicate connects
-//! without tmux and a notice says so (doc 04 §Tmux Session Persistence).
+//! without tmux and a notice says so (doc 04 §Tmux session persistence).
 
 use std::rc::Rc;
 
@@ -11,7 +11,7 @@ use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
 use crate::ui::widgets::{button_row, set_margins, wrapped_label};
 
-/// Settings row (doc 06): the notice shows unless this is off.
+/// Settings row (doc 13 §Settings rows): the notice shows unless this is off.
 pub const TMUX_NOTICE_SETTING: &str = "duplicate_tmux_notice";
 
 pub const TMUX_NOTICE_DETAIL: &str = "Multiple tabs of the same session bookmark cannot use \

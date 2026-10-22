@@ -1,4 +1,4 @@
-//! The tokio half of the SFTP sidebar (doc 09). The GTK side holds an
+//! The tokio half of the SFTP sidebar (doc 07). The GTK side holds an
 //! [`SftpClient`], sends [`SftpCommand`]s over a bounded channel, and awaits
 //! the oneshot replies on the main loop; it never touches `russh-sftp`.
 //!
@@ -9,7 +9,7 @@
 //! their own tasks so `Cancel` and browsing stay responsive.
 //!
 //! [`ShellCwdProbe`] is not SFTP: it asks the remote where the tab's shell
-//! is, so the sidebar can follow it (doc 09 §Following the shell).
+//! is, so the sidebar can follow it (doc 07 §Following the shell).
 
 pub mod commands;
 pub mod shell_cwd;

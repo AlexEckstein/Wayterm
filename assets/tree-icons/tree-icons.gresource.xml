@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The built-in tree icons and the side dock's icons (doc 06 §Icons),
+<!-- The built-in tree icons and the side dock's icons (doc 09 §Icons),
      compiled by build.rs. -->
 <gresources>
   <gresource prefix="/com/alex-eckstein/wayterm/icons/scalable/actions">

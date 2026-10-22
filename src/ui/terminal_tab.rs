@@ -1,5 +1,5 @@
 //! [`TerminalTab`]: the wiring between one transport and one terminal
-//! backend (doc 04 §Wiring).
+//! backend (doc 03 §Wiring).
 //!
 //! Three tasks per tab, each crossing the GTK/tokio boundary once:
 //!
@@ -176,7 +176,7 @@ impl TerminalTab {
         &self.description
     }
 
-    /// Cancel both tasks and wait for them (doc 04 §Lifecycle). The pump gets
+    /// Cancel both tasks and wait for them (doc 03 §Lifecycle). The pump gets
     /// `CLOSE_JOIN_TIMEOUT` to disconnect before it is aborted. Idempotent.
     pub async fn close(&mut self) {
         self.cancel.cancel();

@@ -1,4 +1,4 @@
-//! Credential lookup (doc 11 §CredentialManager): keyring → Bitwarden (when
+//! Credential lookup (doc 05): keyring → Bitwarden (when
 //! enabled) → prompt → store-if-checked. Secrets are `Zeroizing<Vec<u8>>`
 //! and are never logged, `Debug`-printed, or written to SQLite.
 
@@ -78,7 +78,7 @@ impl CredentialSource for PromptSource {
 /// id-less connect would otherwise share one entry.
 pub const LIVE_CONNECT_SESSION_ID: &str = "_live_connect";
 
-/// libsecret schema and application id (doc 06 §Credential Storage);
+/// libsecret schema and application id (doc 05);
 /// changing either orphans stored credentials.
 const SCHEMA: &str = "com.alex-eckstein.wayterm.Session";
 const APPLICATION: &str = "com.alex-eckstein.wayterm";
@@ -185,7 +185,7 @@ impl KeyringBackend for Oo7Backend {
 }
 
 /// The OS keyring (libsecret schema `com.alex-eckstein.wayterm.Session`,
-/// doc 06) for one saved session. Lookups key on the session id, then fall
+/// doc 05) for one saved session. Lookups key on the session id, then fall
 /// back to the session name (items made by other tools); an unreachable
 /// keyring is a miss, so the prompt source answers.
 pub struct KeyringSource {
@@ -312,8 +312,8 @@ pub fn bitwarden_item_name(session_name: &str) -> String {
     format!("wayterm/{session_name}")
 }
 
-/// Read-only source backed by the Bitwarden CLI (doc 11 §Credential
-/// sources): one `bw get password` per lookup, nothing cached. The vault
+/// Read-only source backed by the Bitwarden CLI (doc 05
+/// §Bitwarden): one `bw get password` per lookup, nothing cached. The vault
 /// session key comes from `BW_SESSION` at construction and reaches the
 /// child through its environment only — argv is world-readable in
 /// `/proc/<pid>/cmdline`.

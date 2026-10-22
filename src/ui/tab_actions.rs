@@ -1,4 +1,4 @@
-//! The tab window actions (doc 07 §Handlers): `new_tab` (the host
+//! The tab window actions (doc 11 §Handlers): `new_tab` (the host
 //! picker), `close_tab`, `next_tab` / `prev_tab`, `goto_tab_1` …
 //! `goto_tab_9`, and `rename_tab`. The Home page never counts as a tab:
 //! it is hidden beside open sessions and is not closed or renamed. The

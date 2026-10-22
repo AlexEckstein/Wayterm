@@ -1,4 +1,4 @@
-//! Keeping the open-tab list saved and reopening it at launch (doc 10
+//! Keeping the open-tab list saved and reopening it at launch (doc 03 §Restoring tabs
 //! Phase 4). [`super::tab_state`] owns the format and every display-free
 //! decision; this is the notebook side.
 //!

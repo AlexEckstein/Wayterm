@@ -244,7 +244,7 @@ fn a_type_change_drops_the_old_types_hidden_columns() {
     assert_eq!(config.host_key_policy, None);
     assert_eq!(config.ssh_options, None);
     assert_eq!(config.rdp_options, None);
-    assert!(config.rdp_compression, "a new RDP row compresses (doc 06)");
+    assert!(config.rdp_compression, "a new RDP row compresses (doc 09)");
     assert_eq!(config.font_family.as_deref(), Some("Fira Code"));
 }
 
@@ -418,7 +418,7 @@ fn typed_port_is_dropped_for_serial_and_local() {
 }
 
 // ---------------------------------------------------------------------------
-// Serial group (doc 06 `serial_*` columns)
+// Serial group (doc 09 `serial_*` columns)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -535,7 +535,7 @@ fn every_serial_dropdown_index_maps_to_a_documented_value() {
 }
 
 // ---------------------------------------------------------------------------
-// RDP group (doc 06 `rdp_*` columns)
+// RDP group (doc 09 `rdp_*` columns)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -558,7 +558,7 @@ fn rdp_fields_map_to_rdp_columns() {
     assert_eq!(config.rdp_width, Some(1920));
     assert_eq!(config.rdp_height, Some(1080));
     assert_eq!(config.rdp_color_depth, Some(24));
-    // Doc 06's schema default for rdp_compression is 1 (on) and the dialog
+    // Doc 09's schema default for rdp_compression is 1 (on) and the dialog
     // exposes no compression widget.
     assert!(config.rdp_compression);
 }
@@ -622,7 +622,7 @@ fn resolution_formatting_round_trips() {
 }
 
 // ---------------------------------------------------------------------------
-// Local shell group (doc 06 `local_*` columns)
+// Local shell group (doc 09 `local_*` columns)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -652,7 +652,7 @@ fn local_fields_map_to_local_columns() {
 fn vnc_session_stores_no_secret_and_no_dialog_payload() {
     let folders = sample_folders();
     // Every other group is filled in to prove none of it leaks into a VNC
-    // row; the VNC password is a keyring secret (docs 06/11) and the dialog
+    // row; the VNC password is a keyring secret (doc 05) and the dialog
     // has no field for it.
     let fields = DialogFields {
         type_index: TYPE_INDEX_VNC,
@@ -726,7 +726,7 @@ fn ssh_session_with_filled_groups_stores_only_common_fields() {
 }
 
 // ---------------------------------------------------------------------------
-// tmux persistence (doc 04 §Tmux Session Persistence)
+// tmux persistence (doc 04 §Tmux session persistence)
 //
 // The checkbox and the name Entry live in the SSH group, but doc 04 scopes
 // the feature to SSH rather than making the columns SSH-only, so the flag is
@@ -862,7 +862,7 @@ fn tmux_unticked_stores_no_name_but_keeps_the_flag_off() {
 fn tmux_flag_on_a_serial_session_is_stored_but_ignored() {
     let folders = sample_folders();
     // Doc 04 scopes tmux to SSH: a serial row may carry the flag (the
-    // columns are common in doc 06 and the dialog keeps one checkbox), but
+    // columns are common in doc 09 and the dialog keeps one checkbox), but
     // `tmux_session_suffix` — the only thing the SSH factory consults — gates
     // on the type, and no serial transport exists to read it anyway.
     let fields = DialogFields {
@@ -912,7 +912,7 @@ fn tmux_name_for_dialog_prefers_the_stored_name_over_the_session_name() {
 }
 
 // ---------------------------------------------------------------------------
-// Jump hosts (doc 11, depth ≤ 1) + forward rules (doc 06 `forward_rules`)
+// Jump hosts (doc 04, depth ≤ 1) + forward rules (doc 09 `forward_rules`)
 // ---------------------------------------------------------------------------
 
 fn ssh_peer(id: i64, name: &str, jump: Option<i64>) -> SessionConfig {

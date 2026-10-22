@@ -225,7 +225,7 @@ async fn auth_failure_returns_failed_with_methods_remaining() {
     }
 }
 
-// ---- SFTP (doc 09) ----
+// ---- SFTP (doc 07) ----
 
 #[tokio::test]
 async fn sftp_list_dir_returns_seeded_home() {
@@ -467,7 +467,7 @@ async fn sftp_command_errors_after_connection_disconnect() {
     drop(client);
 }
 
-// ---- Following the shell (doc 09) ----
+// ---- Following the shell (doc 07) ----
 
 /// Key auth when the fixture has a key, so the probe tests also run
 /// against a password-less local sshd.

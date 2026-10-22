@@ -1,4 +1,4 @@
-//! Display-free pixel buffer for the VNC engine (doc 08 §VNC, doc 04
+//! Display-free pixel buffer for the VNC engine (doc 08 §VNC, doc 01
 //! §Threading model).
 //!
 //! `VncPixels` is plain `Vec<u32>` so it is `Send` and lives on the engine

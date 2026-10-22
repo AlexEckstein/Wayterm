@@ -1,4 +1,4 @@
-//! Session-tree icons (doc 06): every icon is an icon name, drawn through
+//! Session-tree icons (doc 09): every icon is an icon name, drawn through
 //! the GTK icon theme. Wayterm ships its own symbolic set (servers, racks,
 //! databases, UPS, network gear, …) compiled into the binary as a
 //! GResource (`assets/tree-icons`, `build.rs`), so the defaults and the

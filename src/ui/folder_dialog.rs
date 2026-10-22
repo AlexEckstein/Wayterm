@@ -1,4 +1,4 @@
-//! The Edit Folder dialog: a folder's name and icon (doc 06).
+//! The Edit Folder dialog: a folder's name and icon (doc 09).
 
 use gtk4::prelude::*;
 

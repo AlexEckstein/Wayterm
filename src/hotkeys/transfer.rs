@@ -1,4 +1,4 @@
-//! Hotkey layouts as JSON, for sharing between machines (doc 07
+//! Hotkey layouts as JSON, for sharing between machines (doc 11
 //! §Persistence). Only deviations from the defaults are exported, so an
 //! import onto a newer build keeps that build's defaults; entries for
 //! unknown actions are skipped and reported, never an error.

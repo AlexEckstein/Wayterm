@@ -16,7 +16,7 @@ full auth chain, the SFTP sidebar, hotkeys, tab restore and a tray icon,
 local shell and serial tabs, VNC and RDP tabs, tmux persistence,
 import/export and packaging, jump hosts with local port forwarding, and
 keystroke macros.
-Doc 10 lists the known gaps in each phase and what comes next.
+Doc ??10 lists the known gaps in each phase and what comes next.
 
 ## Build and test
 

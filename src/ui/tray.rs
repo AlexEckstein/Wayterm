@@ -1,4 +1,4 @@
-//! Tray icon and disconnect notifications (doc 10 Phase 4).
+//! Tray icon and disconnect notifications (doc 03 §Tray Phase 4).
 //!
 //! The icon is a StatusNotifierItem over D-Bus via `ksni` (pure Rust,
 //! tokio-native); notifications go through `gio::Notification`. Without a

@@ -1,4 +1,4 @@
-//! Host-key dialogs (doc 11 §Host Key Verification): the OpenSSH-style
+//! Host-key dialogs (doc 04 §Host key verification): the OpenSSH-style
 //! prompt for an unknown host, and the MITM warning for a changed key,
 //! which has no accept button at all.
 

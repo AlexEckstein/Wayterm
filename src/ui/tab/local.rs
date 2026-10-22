@@ -1,6 +1,5 @@
 //! Local shell and serial tabs: nothing to dial or authenticate — no
-//! supervisor, host key or credential machinery (doc 04 §Local and serial
-//! transports). The transport starts when the terminal is wired.
+//! supervisor, host key or credential machinery (doc 06). The transport starts when the terminal is wired.
 
 use std::rc::Rc;
 

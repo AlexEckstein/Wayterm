@@ -1,4 +1,4 @@
-//! The session dialog: create or edit a [`SessionConfig`] (doc 06).
+//! The session dialog: create or edit a [`SessionConfig`] (doc 09).
 //!
 //! [`config_from_fields`] (in `model`) holds all of the mapping and is
 //! display-free; the GTK part only gathers [`DialogFields`]. Choosing a type reveals that
@@ -8,7 +8,7 @@
 //!
 //! For the password method the SSH group also takes a password, kept only
 //! long enough to hand to the keyring when "Save password to keyring" is
-//! checked — the session row never holds it (doc 06 §Credential Storage).
+//! checked — the session row never holds it (doc 05).
 //!
 //! The tmux entry shows the full remote name (`wayterm-<suffix>`), which
 //! is what `tmux list-sessions` prints; the row stores the bare suffix.
@@ -523,7 +523,7 @@ impl SessionDialog {
         ssh.span(&tmux);
         let tmux_name = ssh.entry("tmux session:", "wayterm-<session name>");
 
-        // Jump host (doc 11): one ProxyJump hop through another SSH
+        // Jump host (doc 04): one ProxyJump hop through another SSH
         // session. Depth>1 choices stay listed but are refused with an
         // inline message; a stale stored id shows the missing entry.
         let (jump_labels, jump_ids, jump_selected) =
@@ -531,7 +531,7 @@ impl SessionDialog {
         let jump = ssh.dropdown("Jump host:", &jump_labels);
         jump.set_selected(jump_selected);
         jump.set_tooltip_text(Some(
-            "The SSH session to connect through (one ProxyJump hop, doc 11). Depth > 1 is refused.",
+            "The SSH session to connect through (one ProxyJump hop, doc 04). Depth > 1 is refused.",
         ));
         let jump_message = error_label();
         if let Some(message) = jump_error(peers, self_id, current_jump) {
@@ -572,7 +572,7 @@ impl SessionDialog {
             });
         }
 
-        // Forward rules (doc 11 §Port forwarding): the same drafts the
+        // Forward rules (doc 04 §Port forwarding): the same drafts the
         // Tunnels dialog edits for a connected session.
         ssh.span(&dim_label(
             "Port forwards (Local starts at connect; Remote/Dynamic are v2):",

@@ -4,12 +4,12 @@
 //! and to assistive technology.
 //!
 //! The SFTP panel follows the notebook: every SSH tab keeps its own
-//! [`SftpSidebar`] (doc 09), and the panel hosts the current tab's, or a
+//! [`SftpSidebar`] (doc 07), and the panel hosts the current tab's, or a
 //! placeholder for tabs without one. A sidebar counts as shown — and a
 //! deferred SFTP channel opens — only once the panel has it in view.
 //!
 //! The Macros panel is the window's [`MacrosPanel`](super::macros_panel)
-//! (doc 12). `toggle_session_tree` can hide the panel (doc 07 §Handlers);
+//! (doc 12). `toggle_session_tree` can hide the panel (doc 11 §Handlers);
 //! picking any tab shows it again. [`DockPage`] and [`toggle_target`] are
 //! display-free.
 
@@ -166,7 +166,7 @@ impl SideDock {
     }
 
     /// The SFTP panel: the `sftp` shortcuts fire while focus is inside it
-    /// (doc 07 §Dispatch).
+    /// (doc 11 §Dispatch).
     pub fn sftp_panel(&self) -> &gtk4::Widget {
         self.inner.sftp.stack.upcast_ref()
     }
@@ -184,7 +184,7 @@ impl SideDock {
         self.inner.show_panel();
     }
 
-    /// `toggle_sftp` (doc 09): to the SFTP panel, or back from it; a
+    /// `toggle_sftp` (doc 07): to the SFTP panel, or back from it; a
     /// hidden panel comes back on SFTP.
     pub fn toggle_sftp(&self) {
         let target = if self.inner.stack.is_visible() {
@@ -195,7 +195,7 @@ impl SideDock {
         self.select(target);
     }
 
-    /// `toggle_session_tree` (doc 07): hide the panel while it shows
+    /// `toggle_session_tree` (doc 11): hide the panel while it shows
     /// Sessions, otherwise show it on Sessions. `true` when Sessions is now
     /// in view (the caller moves focus into the tree).
     pub fn toggle_sessions(&self) -> bool {

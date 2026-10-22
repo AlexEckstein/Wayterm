@@ -1,5 +1,5 @@
 //! The challenge-response dialog: one generic credential UI for password
-//! fallback, key passphrases, and keyboard-interactive rounds (doc 11).
+//! fallback, key passphrases, and keyboard-interactive rounds (doc 04).
 //! Prompts with `echo == false` get a masked entry. Answers are never
 //! logged or trimmed.
 

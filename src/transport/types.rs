@@ -1,4 +1,4 @@
-//! The byte-stream [`Transport`] trait and its vocabulary (doc 04).
+//! The byte-stream [`Transport`] trait and its vocabulary (doc 03).
 
 use std::io;
 use std::sync::{Arc, Mutex};

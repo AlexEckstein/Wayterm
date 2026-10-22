@@ -96,7 +96,7 @@ use x11::*;
 
 /// The RDP default port (display `:0`-style: 3389).
 pub const DEFAULT_PORT: u16 = 3389;
-/// Password secret type in the credential chain (doc 06 naming).
+/// Password secret type in the credential chain (doc 05).
 const PASSWORD_SECRET: &str = "rdp_password";
 /// Page data key for the process slot.
 const ENGINE_KEY: &str = "wayterm-rdp-engine";
@@ -130,7 +130,7 @@ struct Attempt {
     notebook: gtk4::Notebook,
     /// Weak: every timer and task of the attempt holds one, and a strong
     /// ref would keep a closed page alive — with its [`EngineSlot`], so our
-    /// xfreerdp would outlive the tab (doc 04 §Lifecycle).
+    /// xfreerdp would outlive the tab (doc 03 §Lifecycle).
     page: glib::WeakRef<gtk4::Widget>,
     session: Rc<SessionConfig>,
     /// Trimmed, as the dial uses it.

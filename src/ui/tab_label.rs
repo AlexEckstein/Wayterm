@@ -1,5 +1,5 @@
 //! The tab label: session name plus close button; double-click renames
-//! (doc 10 Phase 4).
+//! (doc 03 §Tab labels Phase 4).
 //!
 //! Each label carries a [`TabTitle`]: placeholder (the session name) →
 //! set (a title from the terminal) → renamed (by the user). Once renamed,

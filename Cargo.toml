@@ -37,7 +37,7 @@ vnc-rs = "0.6"
 x11rb = "0.14"
 gdk4-x11 = "0.11"
 serde_yaml_ng = "0.10"
-# Secret Service / Flatpak portal keyring (doc 06 §Credential Storage).
+# Secret Service / Flatpak portal keyring (doc 05).
 oo7 = "0.6"
 pollster = "1.0"
 
@@ -47,12 +47,12 @@ pollster = "1.0"
 cc = { version = "1", optional = true }
 
 [features]
-# Experimental second terminal backend over libghostty-vt (docs 02, 03, 05).
+# Experimental second terminal backend over libghostty-vt (doc 02).
 # Off by default; needs the pinned library built locally
 # (docs/plans/phase10-pin.md).
 backend-ghostty = ["dep:cc"]
 
-# VTE vs libghostty-vt parse throughput (doc 03 §Benchmark). A plain
+# VTE vs libghostty-vt parse throughput (doc 02 §Benchmark). A plain
 # `harness = false` loop: a bench framework would be a dev-dependency built
 # into every default test build, feature or not.
 [[bench]]
@@ -64,8 +64,8 @@ required-features = ["backend-ghostty"]
 des = "0.9"
 tempfile = "3"
 # test-util enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,
-# which the reconnect driver's backoff tests use to assert the doc 04 curve
-# against virtual time (doc 04 §Lifecycle & Cancellation).
+# which the reconnect driver's backoff tests use to assert the doc 03 curve
+# against virtual time (doc 03 §Lifecycle).
 tokio = { version = "1", features = ["test-util"] }
 
 [package.metadata.deb]

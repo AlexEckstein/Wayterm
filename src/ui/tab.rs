@@ -1,9 +1,9 @@
-//! Session tabs (doc 04): the page core every tab type shares, and the
+//! Session tabs (doc 03): the page core every tab type shares, and the
 //! dispatch to each type's connect flow.
 //!
 //! A tab's page holds the session's area: a terminal for SSH, local and
 //! serial (`terminal`), the remote desktop for VNC and RDP (`vnc_tab`,
-//! `rdp_tab`). An SSH page also owns an SFTP sidebar (doc 09) — per tab,
+//! `rdp_tab`). An SSH page also owns an SFTP sidebar (doc 07) — per tab,
 //! since each browses its own connection — which the side dock's SFTP panel
 //! shows while the tab is current (`side_dock`). State a type needs beyond
 //! the core lives in that type's own struct on the page (`ssh`, `terminal`).
@@ -13,7 +13,7 @@
 //! to its [`TabType`]'s flow: `ssh` dials through the window's supervisor,
 //! `local` starts the terminal directly, and both finish in `terminal`.
 //!
-//! Reconnecting (doc 04 §Lifecycle): every streaming tab registers as a
+//! Reconnecting (doc 03 §Lifecycle): every streaming tab registers as a
 //! [`LiveTab`](tab_resilience::LiveTab) whose connect closure redials
 //! through the same machinery. One state drain per page feeds the registry,
 //! the status bar and the disconnect alert; on `ConnectionLost` it starts
@@ -146,10 +146,10 @@ pub struct SessionTab;
 
 impl SessionTab {
     /// Open a new tab for `session`, even when one is already open, and
-    /// start connecting. A duplicate drops tmux (doc 04 §Tmux Session
-    /// Persistence) and tells the user so, unless they opted out. Returns
+    /// start connecting. A duplicate drops tmux (doc 04 §Tmux
+    /// session persistence) and tells the user so, unless they opted out. Returns
     /// the page widget. `store` is kept on the page so the connect flow can
-    /// resolve the session's jump host at dial time (doc 11 §Jump hosts).
+    /// resolve the session's jump host at dial time (doc 04 §Jump hosts).
     pub fn open(
         notebook: &gtk4::Notebook,
         session: &SessionConfig,
@@ -343,7 +343,7 @@ pub(crate) fn page_store(page: &gtk4::Widget) -> Option<Rc<SessionStore>> {
 // ---------------------------------------------------------------------------
 
 /// Closing a page by any path tears its registry entry down, so no
-/// reconnect loop outlives its tab (doc 04 §Lifecycle), and the tab left
+/// reconnect loop outlives its tab (doc 03 §Lifecycle), and the tab left
 /// current gets the keyboard focus the closed one held. Once per notebook.
 fn install_teardown_on_remove(notebook: &gtk4::Notebook) {
     if data::<bool>(notebook, TEARDOWN_HOOK_KEY).is_some() {
@@ -442,7 +442,7 @@ fn page_content(session: &Rc<SessionConfig>) -> gtk4::Widget {
     page
 }
 
-/// The tab label; closing asks first when the transport is live (doc 04
+/// The tab label; closing asks first when the transport is live (doc 03
 /// §Lifecycle, `confirm_close`).
 fn build_tab_label(
     notebook: &gtk4::Notebook,
@@ -461,7 +461,7 @@ fn build_tab_label(
 }
 
 /// Close `page` as its close button does: a session tab asks first while
-/// its transport is live (doc 04 §Lifecycle, `confirm_close`); any other
+/// its transport is live (doc 03 §Lifecycle, `confirm_close`); any other
 /// page goes at once. The `close_tab` action's path too.
 pub(crate) fn request_close_page(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     let Some(tab_id) = tab_id_of(page) else {

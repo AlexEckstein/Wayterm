@@ -1,4 +1,4 @@
-//! The status bar: connection state, host, and time connected (doc 10
+//! The status bar: connection state, host, and time connected (doc 03 §Status bar
 //! Phase 2). [`status_view_from`] decides what to show; [`StatusBar`]
 //! only renders it. Which tab drives it is the window's business.
 

@@ -1,4 +1,4 @@
-//! The New Tab host picker (doc 07 §New Tab): "Local shell" first and
+//! The New Tab host picker (doc 03 §New Tab): "Local shell" first and
 //! selected, then every saved session under its folders, all expanded, in
 //! the session tree's order. Up/Down moves between hosts — folders are
 //! headings, never selected — Return or a double-click opens the host in a

@@ -1,4 +1,4 @@
-//! Hotkey engine (doc 07): the action registry, trigger parsing, the
+//! Hotkey engine (doc 11): the action registry, trigger parsing, the
 //! conflict rules, the default table, and SQLite/JSON persistence. All of
 //! it is display-free except [`parse_trigger`], which hands accelerator
 //! strings to GTK.

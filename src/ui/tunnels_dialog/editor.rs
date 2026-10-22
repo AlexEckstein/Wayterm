@@ -180,7 +180,7 @@ impl RuleEditor {
 
 /// Append the Tunnels dialog's cells to `hbox` and wire them: the status
 /// cell, the v2 note, and the engine toggle, sensitive only for a Local
-/// rule while online — re-armed whenever the kind changes (doc 11).
+/// rule while online — re-armed whenever the kind changes (doc 04).
 fn live_cells(
     hbox: &gtk4::Box,
     live: &Live,

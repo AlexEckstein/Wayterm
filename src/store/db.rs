@@ -1,4 +1,4 @@
-//! SQLite persistence for folders, sessions, hotkeys, settings (doc 06),
+//! SQLite persistence for folders, sessions, hotkeys, settings (doc 09),
 //! and macros (doc 12). No credential material ever passes through this
 //! layer.
 
@@ -15,7 +15,7 @@ use crate::macros::model::{steps_from_json, steps_to_json, Macro};
 use crate::store::model::{Folder, HostKeyPolicy, SessionConfig};
 use crate::ui::tab_state::{self, TabState};
 
-/// The settings row holding the global host-key policy (doc 06).
+/// The settings row holding the global host-key policy (doc 09).
 pub const HOST_KEY_POLICY_SETTING: &str = "host_key_policy";
 
 /// A SQLite-backed store of session folders and saved sessions. Not
@@ -197,7 +197,7 @@ impl SessionStore {
 
     /// User-customized hotkey rows (`is_default = 0`), oldest first. Seeded
     /// `is_default = 1` rows never load over the compiled-in defaults
-    /// (doc 07 §Persistence).
+    /// (doc 11 §Persistence).
     pub fn load_custom_hotkeys(&self) -> rusqlite::Result<Vec<CustomHotkeyRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT action, key_sequence, enabled FROM hotkeys \
@@ -266,7 +266,7 @@ impl SessionStore {
         flag_enabled(self.setting(key).as_deref())
     }
 
-    /// The global host-key policy (doc 11), which a session without its
+    /// The global host-key policy (doc 04), which a session without its
     /// own follows. A missing, unreadable or unknown row is strict.
     pub fn host_key_policy(&self) -> HostKeyPolicy {
         match self
@@ -290,7 +290,7 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Persist the open-tab list (doc 10 Phase 4) as one JSON settings row —
+    /// Persist the open-tab list (doc 03 §Restoring tabs) as one JSON settings row —
     /// it is always read and written whole. `[]` is stored, not deleted, so
     /// "no tabs open" is remembered too. Tab identity only, no credentials.
     pub fn save_open_tabs(&self, tabs: &[TabState]) -> rusqlite::Result<()> {
@@ -408,7 +408,7 @@ fn placeholders(count: usize) -> String {
 }
 
 /// [`SESSION_COLUMNS`]' values for `config`. Enum and struct columns hold
-/// their serde JSON (doc 06); `type` included, which is why it is stored
+/// their serde JSON (doc 09); `type` included, which is why it is stored
 /// quoted.
 fn session_values(c: &SessionConfig) -> rusqlite::Result<[Value; SESSION_COLUMN_COUNT]> {
     Ok([
@@ -482,7 +482,7 @@ fn optional_json_column<T: serde::de::DeserializeOwned>(
         .transpose()
 }
 
-/// Schema v1 — doc 06 §Database Schema verbatim, plus `IF NOT EXISTS`.
+/// Schema v1 — doc 09 §Schema, plus `IF NOT EXISTS`.
 const MIGRATION_001: &str = r#"
 -- Session folders for tree organization
 CREATE TABLE IF NOT EXISTS folders (
@@ -517,9 +517,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     ssh_options     TEXT,                     -- JSON: compression, keepalive, etc.
     jump_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
                                               -- ProxyJump-style hop: this session connects
-                                              -- THROUGH the referenced session (doc 11).
+                                              -- THROUGH the referenced session (doc 04).
                                               -- v1: max depth 1, enforced in UI + connect logic.
-    forward_rules   TEXT,                     -- JSON array, doc 11 §Port forwarding:
+    forward_rules   TEXT,                     -- JSON array, doc 04 §Port forwarding:
                                               -- [{type:"local", bind:"127.0.0.1:8080",
                                               --   remote_host:"web1.lan", remote_port:80, enabled:true}]
 
@@ -611,7 +611,7 @@ CREATE TABLE IF NOT EXISTS rdp_trust (
 );
 "#;
 
-/// Schema v3 — `sessions.icon` (doc 06). `CREATE TABLE IF NOT EXISTS`
+/// Schema v3 — `sessions.icon` (doc 09). `CREATE TABLE IF NOT EXISTS`
 /// leaves an existing table alone, and `ADD COLUMN` has no `IF NOT
 /// EXISTS`, so the column is added only where it is missing.
 fn migrate_003(conn: &Connection) -> rusqlite::Result<()> {
@@ -621,7 +621,7 @@ fn migrate_003(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Schema v4 — drop `sessions.notes` (doc 06). A database created before
+/// Schema v4 — drop `sessions.notes` (doc 09). A database created before
 /// v4 still has the column; one created since never did.
 fn migrate_004(conn: &Connection) -> rusqlite::Result<()> {
     if has_column(conn, "sessions", "notes")? {
@@ -650,11 +650,11 @@ CREATE TABLE IF NOT EXISTS macros (
 );
 "#;
 
-/// First-run seed (doc 06 §Default Data). The hotkey rows are
-/// informational (`is_default = 1` rows never load); doc 07's table in
+/// First-run seed (doc 13 §Settings rows). The hotkey rows are
+/// informational (`is_default = 1` rows never load); doc 11's table in
 /// `hotkeys::defaults` is the source of truth.
 const SEED_DEFAULTS: &str = r#"
--- Default hotkeys — MUST stay in sync with doc 07's default-actions table.
+-- Default hotkeys — MUST stay in sync with doc 11's default-actions table.
 -- (These rows are the seed data for is_default=1; user rebinding writes
 -- is_default=0 rows which override at load time.)
 INSERT INTO hotkeys (action, key_sequence, context, is_default) VALUES

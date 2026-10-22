@@ -15,7 +15,7 @@
 //! the store roundtrip stays intact.
 //!
 //! Remote/Dynamic rows render with a v2 note and never arm an engine
-//! control (doc 11 §Limitations); only Local rows start listeners.
+//! control (doc 04 §Limitations); only Local rows start listeners.
 
 pub mod editor;
 pub mod model;

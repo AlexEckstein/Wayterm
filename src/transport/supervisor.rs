@@ -1,6 +1,6 @@
 //! [`ConnectionSupervisor`]: one authenticated SSH session per
 //! (host, port, username), shared by every consumer and disconnected after
-//! the last one releases it (doc 04 §Connection Supervisor).
+//! the last one releases it (doc 04 §Connection supervisor).
 
 use std::collections::hash_map::Entry as MapEntry;
 use std::collections::HashMap;
@@ -116,7 +116,7 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
     }
 }
 
-/// How one hop authenticates (doc 11 §Flow): the method, where its secrets
+/// How one hop authenticates (doc 04 §Authentication): the method, where its secrets
 /// come from, the host-key check, and who answers challenges. Each hop of
 /// a jumped connection brings its own.
 pub struct HopAuth {
@@ -151,7 +151,7 @@ impl ConnectionSupervisor<SshConnection> {
 }
 
 /// Wrap a fresh russh handle in an [`SshConnection`] and run the auth chain
-/// on it (doc 11 §Flow), disconnecting on failure. Shared by the direct
+/// on it (doc 04 §Authentication), disconnecting on failure. Shared by the direct
 /// dial above and the jump dial (`transport::jump`), which arrives with a
 /// handle built over a direct-tcpip channel instead of a TCP socket.
 pub(crate) async fn authenticated(
@@ -175,7 +175,7 @@ pub(crate) async fn authenticated(
     Ok(conn)
 }
 
-/// A rejected host key is its own outcome (doc 11), not a connect failure.
+/// A rejected host key is its own outcome (doc 04), not a connect failure.
 pub(crate) fn connect_error(host: &str, err: HandlerError) -> TransportError {
     match err {
         HandlerError::HostKeyRejected(_) | HandlerError::Ssh(russh::Error::UnknownKey) => {

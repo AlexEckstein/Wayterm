@@ -1,6 +1,6 @@
 //! The Credentials settings page: the Bitwarden source's switch and CLI
-//! path, and whether the keyring and the CLI answer (doc 11 §Credential
-//! sources). Every change is saved at once; the chain reads the rows at
+//! path, and whether the keyring and the CLI answer (doc 05
+//! §Credential sources). Every change is saved at once; the chain reads the rows at
 //! each connect.
 //!
 //! The settings rows and the probe classification are display-free;

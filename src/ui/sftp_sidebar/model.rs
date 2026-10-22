@@ -20,15 +20,15 @@ const PARENT_ICON: &str = "⬆";
 
 /// Inline error shown while no SSH connection backs the sidebar.
 pub const NOT_CONNECTED: &str = "SFTP needs a live SSH connection";
-/// Doc 11 v1: no SFTP task runs over a jumped connection, so the sidebar
+/// Doc 04 v1: no SFTP task runs over a jumped connection, so the sidebar
 /// shows this instead of attaching.
 pub const JUMPED_UNAVAILABLE: &str = "SFTP is not available for jumped sessions yet";
-/// Doc 09: a dead SFTP task is observable as an errored reply.
+/// Doc 07: a dead SFTP task is observable as an errored reply.
 pub const SESSION_ENDED: &str = "SFTP session ended — reconnect?";
 /// The command could not be queued at all (task gone, channel closed).
 pub const COMMAND_FAILED: &str = "SFTP command could not be queued";
 
-/// Settings row (doc 06): open the sidebar's SFTP channel when an SSH tab
+/// Settings row (doc 13 §Settings rows): open the sidebar's SFTP channel when an SSH tab
 /// connects, and bring the side dock's SFTP panel forward. Off, the
 /// sidebar starts hidden and attaches on its first show, so no channel
 /// opens for a sidebar nobody looks at.
@@ -193,7 +193,7 @@ pub fn failed_status(label: &str, err: &str) -> String {
     format!("{label} — failed: {err}")
 }
 
-/// Button sensitivity: doc 09's six toolbar buttons plus Cancel.
+/// Button sensitivity: doc 07's six toolbar buttons plus Cancel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToolbarState {
     pub upload: bool,
@@ -272,7 +272,7 @@ fn split_file_uri(uri: &str) -> Option<(&str, String)> {
 }
 
 /// Reads the shell's working directory from the terminal's OSC 7 reports
-/// (`file://host/path`, doc 09 §Following the shell).
+/// (`file://host/path`, doc 07 §Following the shell).
 ///
 /// The first report pins the host: a nested `ssh` inside the session
 /// reports another one, and its paths mean nothing to this session's SFTP
@@ -400,7 +400,7 @@ impl SftpView {
         self.error = None;
     }
 
-    /// A jumped connection (doc 11 v1): no SFTP task is ever started over
+    /// A jumped connection (doc 04 v1): no SFTP task is ever started over
     /// it — the view keeps the limitation as its inline error and the
     /// toolbar stays disabled.
     pub fn mark_jump_unsupported(&mut self) {

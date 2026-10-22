@@ -1,4 +1,4 @@
-//! Trigger parsing and key capture (doc 07 §Trigger Parsing).
+//! Trigger parsing and key capture (doc 11 §Trigger parsing).
 //!
 //! Bindings are stored in canonical UI format (`"Ctrl+Shift+T"`: modifiers
 //! in [`MODS`] order, a letter upper-case, `ISO_Left_Tab` as `Tab`), so

@@ -1,5 +1,5 @@
-//! Host-key verification against `~/.ssh/known_hosts` (doc 11 §Host Key
-//! Verification).
+//! Host-key verification against `~/.ssh/known_hosts` (doc 04
+//! §Host key verification).
 
 use std::fmt;
 use std::path::{Path, PathBuf};

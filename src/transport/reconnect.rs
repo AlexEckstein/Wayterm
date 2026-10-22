@@ -1,4 +1,4 @@
-//! Reconnect policy and driver (doc 04 §Lifecycle & Cancellation),
+//! Reconnect policy and driver (doc 03 §Lifecycle),
 //! display-free so the whole retry loop is testable against paused time.
 //! The GTK half (prompt dialog, window actions) is `ui::tab_resilience`.
 //!

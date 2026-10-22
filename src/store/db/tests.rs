@@ -1,8 +1,8 @@
-//! Schema, seed, pragma, and CRUD tests for [`SessionStore`] (doc 06).
+//! Schema, seed, pragma, and CRUD tests for [`SessionStore`] (doc 09).
 //!
 //! Every constant asserted here — table names, index names, seed row
-//! counts, `host_key_policy=strict` — comes from doc 06 §"Database
-//! Schema" and §"Default Data". The CRUD tests lock the foreign-key
+//! counts, `host_key_policy=strict` — comes from doc 09 §Schema
+//! and doc 13 §Settings rows. The CRUD tests lock the foreign-key
 //! behaviors the schema declares (`folders.parent_id ON DELETE
 //! CASCADE`, `sessions.folder_id ON DELETE SET NULL`). Treat any
 //! change as a schema break.
@@ -16,7 +16,7 @@ use crate::macros::MacroStep;
 
 use super::*;
 
-/// Names of the `type='table'` rows `open` must create (doc 06).
+/// Names of the `type='table'` rows `open` must create (doc 09).
 const TABLES: &[&str] = &[
     "folders",
     "sessions",
@@ -27,7 +27,7 @@ const TABLES: &[&str] = &[
     "macros",
 ];
 
-/// Names of the indexes `open` must create (doc 06 §"Database Schema").
+/// Names of the indexes `open` must create (doc 09 §Schema).
 const INDEXES: &[&str] = &[
     "idx_sessions_folder",
     "idx_sessions_type",
@@ -42,7 +42,7 @@ impl SessionStore {
     /// `type` names from `sqlite_master` for the given `type`,
     /// excluding SQLite's internal `sqlite_*` objects (e.g.
     /// `sqlite_sequence`, auto-created by the AUTOINCREMENT columns
-    /// doc 06's schema uses, and `sqlite_autoindex_*`).
+    /// doc 09's schema uses, and `sqlite_autoindex_*`).
     fn schema_objects(&self, type_: &str) -> HashSet<String> {
         let conn = &self.conn;
         let mut stmt = conn
@@ -133,7 +133,7 @@ fn seed_defaults_present() {
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::open(dir.path().join("wayterm.db").as_path()).unwrap();
 
-    // Doc 06 §"Default Data": 28 hotkeys, 10 settings.
+    // Doc 13 §Settings rows: 28 hotkeys, 10 settings.
     assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM hotkeys"), 28);
     assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM settings"), 10);
 
@@ -147,8 +147,8 @@ fn seed_defaults_present() {
         28
     );
 
-    // Doc 06 pins the global host-key default; per-session override
-    // happens via sessions.host_key_policy (doc 11).
+    // Doc 09 pins the global host-key default; per-session override
+    // happens via sessions.host_key_policy (doc 04).
     assert_eq!(
         store.setting("host_key_policy").as_deref(),
         Some("strict"),

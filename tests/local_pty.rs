@@ -1,5 +1,5 @@
-//! `LocalTransport` against a real `forkpty` + `/bin/bash` (doc 04
-//! §Local and serial transports; doc 10 Phase 5: a local shell runs
+//! `LocalTransport` against a real `forkpty` + `/bin/bash` (doc 06
+//! §Local shell; doc 15: a local shell runs
 //! commands).
 
 use std::time::Duration;

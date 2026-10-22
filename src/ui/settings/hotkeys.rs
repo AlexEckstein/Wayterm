@@ -1,11 +1,11 @@
-//! The Keyboard Shortcuts settings page (doc 07 §Settings UI): every action
+//! The Keyboard Shortcuts settings page (doc 11 §Settings page): every action
 //! with its binding, a Capture button that records the next chord, and Reset.
 //!
 //! [`SettingsView`] is the display-free logic (rows, capture formatting,
 //! conflicts, rebind-then-save); the GTK functions only render it. A
 //! captured chord that is taken raises "… is already bound to 'X'.
 //! Override?"; overriding unbinds the loser. Every change is saved at once.
-//! A `ListBox` stands in for doc 07's `ColumnView`: same columns, far less
+//! A `ListBox` stands in for doc 11's `ColumnView`: same columns, far less
 //! machinery for a fixed 37-row table.
 
 use std::cell::RefCell;

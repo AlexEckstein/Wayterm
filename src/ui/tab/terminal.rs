@@ -2,7 +2,7 @@
 //! measure the real grid, wire the [`TerminalTab`], and keep the page's
 //! state channel, which feeds the registry, the status bar and the
 //! disconnect alert and starts the reconnect driver on `ConnectionLost`
-//! (doc 04 §Lifecycle).
+//! (doc 03 §Lifecycle).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -243,7 +243,7 @@ fn spawn_state_forward(
 
 /// Replay the page's transport events into the registry, its status and
 /// views, and the disconnect alert; on `ConnectionLost`, start the reconnect
-/// driver per policy (doc 04 §Lifecycle). `SessionEnded` neither alerts nor
+/// driver per policy (doc 03 §Lifecycle). `SessionEnded` neither alerts nor
 /// reconnects.
 fn spawn_state_drain(
     notebook: &gtk4::Notebook,
@@ -298,7 +298,7 @@ fn spawn_state_drain(
     });
 }
 
-/// The registered tab's connect closure (doc 04: every attempt is a fresh
+/// The registered tab's connect closure (doc 03: every attempt is a fresh
 /// connect through the supervisor, so tmux reattaches). It runs on the
 /// driver's tokio task, so it only hops to the main context, where the page
 /// is rewired through [`start_connect`] with a new generation, and awaits

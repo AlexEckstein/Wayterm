@@ -1,4 +1,4 @@
-//! The session's credential chain (doc 11 §CredentialManager) with the
+//! The session's credential chain (doc 05) with the
 //! challenge dialog as its prompt. The chain's order and wording are
 //! display-free, in `transport::credentials`.
 
@@ -11,7 +11,7 @@ use crate::ui::auth_dialog::{self, ChallengePrompt};
 use crate::ui::settings::credentials::CredentialSettings;
 
 /// Keyring first, then Bitwarden when enabled, then a one-field challenge
-/// dialog (doc 11 §CredentialManager), for saved session `session_id`. The
+/// dialog (doc 05), for saved session `session_id`. The
 /// settings come from `store`; without one (a page opened with no store)
 /// Bitwarden stays off.
 // used by ui::vnc_tab, ui::rdp_tab and ui::session_tree

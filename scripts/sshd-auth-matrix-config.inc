@@ -1,4 +1,4 @@
-# Base sshd config for the server-gated auth-method matrix (doc 11 §Testing Strategy, item 3).
+# Base sshd config for the server-gated auth-method matrix (doc 15, item 3).
 #
 # Rendered by scripts/auth-matrix-sshd.sh — one throwaway instance PER MODE, on
 # its own port, from its own rendered copy. The system sshd on port 22 and
@@ -24,7 +24,7 @@ PidFile $WAYTERM_SSHD_RUN/sshd.pid
 AllowUsers $WAYTERM_SSHD_USER
 PermitRootLogin no
 
-# Required by the keyboard-interactive:pam mode (doc 11 §Auth methods).
+# Required by the keyboard-interactive:pam mode (doc 04 §Authentication).
 UsePAM yes
 
 AuthorizedKeysFile .ssh/authorized_keys

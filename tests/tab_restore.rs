@@ -1,4 +1,4 @@
-//! Integration tests for the tab-persistence store seam (doc 10 Phase 4,
+//! Integration tests for the tab-persistence store seam (doc 03 §Restoring tabs Phase 4,
 //! "Remember open tabs on exit, restore on launch").
 //!
 //! [`wayterm::ui::tab_state`] unit-tests the wire format itself; this file
@@ -205,7 +205,7 @@ fn saving_an_empty_list_clears_the_row_but_keeps_it() {
 
 #[test]
 fn saving_tabs_leaves_the_doc06_seed_settings_alone() {
-    // The row is an upsert into a table doc 06 already populates. A
+    // The row is an upsert into a table doc 09 already populates. A
     // missing key qualifier would happily wipe the defaults.
     let files = file_store();
     files
@@ -221,7 +221,7 @@ fn saving_tabs_leaves_the_doc06_seed_settings_alone() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(policy, "strict", "doc 06's seeded default must survive");
+    assert_eq!(policy, "strict", "doc 09's seeded default must survive");
 
     let seeded: i64 = conn
         .query_row(
@@ -232,7 +232,7 @@ fn saving_tabs_leaves_the_doc06_seed_settings_alone() {
         .unwrap();
     assert_eq!(
         seeded, 10,
-        "doc 06 seeds 10 settings (doc 06 §Default Data)"
+        "doc 09 seeds 10 settings (doc 13 §Settings rows)"
     );
 }
 
@@ -388,14 +388,14 @@ fn a_tab_whose_session_was_deleted_keeps_its_id() {
 }
 
 // ---------------------------------------------------------------------------
-// Doc 06's rule: nothing secret reaches this row
+// Doc 05's rule: nothing secret reaches this row
 // ---------------------------------------------------------------------------
 
 #[test]
 fn the_row_contains_no_connection_details() {
     // Only tab identity belongs here: a host, username, or port in this
     // row would put connection details in a second, unencrypted place,
-    // and doc 06 keeps credentials in the OS keyring only.
+    // and doc 05 keeps credentials in the OS keyring only.
     let files = file_store();
     let session_id = files
         .store

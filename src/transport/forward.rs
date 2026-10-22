@@ -1,4 +1,4 @@
-//! Local port-forward engine (doc 11 §Port forwarding).
+//! Local port-forward engine (doc 04 §Port forwarding).
 //!
 //! The engine is owned by THE CALLER (the connect flow / reconnect driver
 //! — a later wiring step), not by the connection: build one
@@ -13,7 +13,7 @@
 //! one direct-tcpip channel to the rule's remote and pipes both directions
 //! with `copy_bidirectional`. A refused remote closes only the accepted
 //! socket (reported as [`ForwardState::LastFailed`]); the listener keeps
-//! serving. `Remote`/`Dynamic` rules are v2 (doc 11): they are skipped with
+//! serving. `Remote`/`Dynamic` rules are v2 (doc 04): they are skipped with
 //! one report line each and a [`ForwardState::Stopped`] event so the status
 //! snapshot stays honest.
 //!
@@ -191,7 +191,7 @@ impl ForwardEngine {
         }
         if !matches!(rule.kind, ForwardKind::Local) {
             eprintln!(
-                "Wayterm: forward rule {id}: {:?} forwards are v2 (doc 11) — skipped",
+                "Wayterm: forward rule {id}: {:?} forwards are v2 (doc 04) — skipped",
                 rule.kind,
             );
             return self.inner.emit(id, ForwardState::Stopped);
@@ -237,7 +237,7 @@ impl ForwardEngine {
 /// the listener itself is a local socket and stays up; the reconnect
 /// driver replaces the whole engine on a fresh connection `Arc`.
 async fn serve_rule(inner: Arc<EngineInner>, id: RuleId, rule: ForwardRule) {
-    // An empty bind means loopback, never 0.0.0.0: doc 06's example binds
+    // An empty bind means loopback, never 0.0.0.0: doc 09's example binds
     // 127.0.0.1, and a tunnel that silently listens on every interface
     // would be a safety hole, not a convenience.
     let bind_addr = match rule.bind_addr.trim() {
