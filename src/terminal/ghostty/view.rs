@@ -340,7 +340,12 @@ impl GhosttyView {
                 };
                 let at = self.imp().pointer.get();
                 let event = self.mouse_event(ffi::MOUSE_PRESS, button, state, at);
-                shared.input(shared.engine.encode_mouse(&event).repeat(count));
+                let report = shared.engine.encode_mouse(&event);
+                // One report per chunk, as VTE sends them: the macro
+                // recorder skips reports chunk by chunk (doc 12).
+                for _ in 0..count {
+                    shared.input(report.clone());
+                }
             }
             Route::Arrows => {
                 let keysym = if rows < 0 { ARROW_UP } else { ARROW_DOWN };
@@ -808,6 +813,7 @@ mod tests {
 #[cfg(test)]
 mod ghostty_display {
     use super::*;
+    use crate::macros::recorder::is_pointer_or_focus_report;
     use crate::terminal::{
         create_terminal, install_backend_preference, BackendKind, GhosttyBackend, TerminalBackend,
     };
@@ -891,13 +897,12 @@ mod ghostty_display {
         view: &GhosttyView,
         rx: &mut mpsc::Receiver<TerminalEvent>,
     ) {
-        let mut sent = || -> Vec<u8> {
+        let mut chunks = || -> Vec<Vec<u8>> {
             std::iter::from_fn(|| rx.try_recv().ok())
                 .filter_map(|e| match e {
                     TerminalEvent::DataOut(bytes) => Some(bytes),
                     _ => None,
                 })
-                .flatten()
                 .collect()
         };
         let none = gdk::ModifierType::empty();
@@ -919,7 +924,7 @@ mod ghostty_display {
         for line in 0..200 {
             backend.write(format!("line {line}\r\n").as_bytes());
         }
-        sent();
+        chunks();
 
         // No tracking: a drag selects and the wheel scrolls, sending nothing.
         view.press(none, at(0, 0));
@@ -929,7 +934,7 @@ mod ghostty_display {
         let bottom = top_row();
         view.wheel(-1.0, gdk::ScrollUnit::Wheel, none);
         assert_ne!(top_row(), bottom);
-        assert_eq!(sent(), b"");
+        assert_eq!(chunks().concat(), b"");
         backend.scroll_to_bottom();
 
         // Tracking with SGR: press, drag and release are reported, nothing
@@ -940,11 +945,19 @@ mod ghostty_display {
         view.drag_to(none, at(3, 1));
         view.release(none, at(3, 1));
         assert_eq!(engine(), None);
-        assert_eq!(sent(), b"\x1b[<0;2;2M\x1b[<32;4;2M\x1b[<0;4;2m");
+        let reports = chunks();
+        assert_eq!(reports.concat(), b"\x1b[<0;2;2M\x1b[<32;4;2M\x1b[<0;4;2m");
+        // Each report is a chunk of its own, which macro recording skips.
+        assert_eq!(reports.len(), 3);
+        assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
         view.hover(none, at(0, 0));
-        assert_eq!(sent(), b"", "1002 reports no bare motion");
+        assert_eq!(chunks().concat(), b"", "1002 reports no bare motion");
         view.wheel(-1.0, gdk::ScrollUnit::Wheel, none);
-        assert_eq!(sent(), b"\x1b[<64;1;1M".repeat(3));
+        assert_eq!(
+            chunks(),
+            vec![b"\x1b[<64;1;1M".to_vec(); 3],
+            "a report per chunk"
+        );
         assert_eq!(top_row(), bottom, "the viewport stays put");
 
         // Shift keeps the drag and the wheel local.
@@ -954,24 +967,26 @@ mod ghostty_display {
         assert!(engine().is_some_and(|text| !text.is_empty()));
         view.wheel(-1.0, gdk::ScrollUnit::Wheel, shift);
         assert_ne!(top_row(), bottom);
-        assert_eq!(sent(), b"");
+        assert_eq!(chunks().concat(), b"");
         backend.scroll_to_bottom();
 
         // Alternate screen, no tracking: the wheel sends arrow keys.
         backend.write(b"\x1b[?1002l\x1b[?1006l\x1b[?1049h");
         view.wheel(1.0, gdk::ScrollUnit::Wheel, none);
-        assert_eq!(sent(), b"\x1b[B".repeat(3));
+        assert_eq!(chunks().concat(), b"\x1b[B".repeat(3));
         backend.write(b"\x1b[?1007l");
         view.wheel(1.0, gdk::ScrollUnit::Wheel, none);
-        assert_eq!(sent(), b"", "no alternate scroll");
+        assert_eq!(chunks().concat(), b"", "no alternate scroll");
         backend.write(b"\x1b[?1049l");
 
         // Focus changes only with mode 1004.
         view.focus_changed(true);
-        assert_eq!(sent(), b"");
+        assert_eq!(chunks().concat(), b"");
         backend.write(b"\x1b[?1004h");
         view.focus_changed(false);
         view.focus_changed(true);
-        assert_eq!(sent(), b"\x1b[O\x1b[I");
+        let reports = chunks();
+        assert_eq!(reports.concat(), b"\x1b[O\x1b[I");
+        assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
     }
 }
