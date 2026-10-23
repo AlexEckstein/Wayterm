@@ -17,11 +17,7 @@ use crate::ui::dialogs::folder::FolderDialog;
 use crate::ui::dialogs::session::{collect_folders, collect_peer_sessions, SessionDialog};
 use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
 use crate::ui::tabs::credential_manager;
-use crate::ui::widgets::{confirm, data, prompt_text, set_data, set_margins, window_of};
-
-/// Indents a row without a disclosure arrow by the arrow's width (GTK's
-/// default theme gives it half), so its name lines up with its siblings'.
-const STYLE: &str = ".session-tree treeexpander indent { -gtk-icon-size: 16px; }";
+use crate::ui::widgets::{confirm, data, prompt_text, set_data, window_of};
 
 /// One row of the tree, in display order.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -140,20 +136,14 @@ impl SessionTree {
             .build();
         let list_view = gtk4::ListView::builder()
             .model(&selection)
-            .css_classes(["session-tree"])
             .vexpand(true)
             .hexpand(true)
             .build();
-        install_style(&list_view.display());
-        // Rows fit the width (long names ellipsize), so a sideways scroll
-        // never hides the arrows and icons.
         let scroll = gtk4::ScrolledWindow::builder()
             .child(&list_view)
-            .hscrollbar_policy(gtk4::PolicyType::Never)
             .vexpand(true)
             .hexpand(true)
             .build();
-        set_margins(&scroll, 4);
         let popover = gtk4::PopoverMenu::from_model(None::<&gio::MenuModel>);
         popover.set_parent(&scroll);
         // The scrolled window only unparents the children it knows about.
@@ -751,20 +741,6 @@ fn drop_target(
     drop
 }
 
-/// Put [`STYLE`] on `display` (once per process).
-fn install_style(display: &gdk::Display) {
-    static INSTALL: std::sync::Once = std::sync::Once::new();
-    INSTALL.call_once(|| {
-        let provider = gtk4::CssProvider::new();
-        provider.load_from_string(STYLE);
-        gtk4::style_context_add_provider_for_display(
-            display,
-            &provider,
-            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-    });
-}
-
 /// Row widgets: an expander (indent and disclosure arrow) around the
 /// icon and name. Every row drags itself and is a drop target that moves
 /// the dragged row into the row's folder (a folder row's own, a session
@@ -1077,82 +1053,34 @@ pub(in crate::ui) mod gtk_tests {
         assert_eq!(store.get_folder(b).unwrap().parent_id, None);
     }
 
-    /// Under GTK's default theme, a session's name starts where its
-    /// sibling folder's does, at the root and nested; a long name
-    /// ellipsizes instead of making the tree scroll sideways.
-    pub(in crate::ui) fn rows_line_up_and_fit_the_width() {
-        let settings = gtk4::Settings::default().expect("settings");
-        let theme = settings.gtk_theme_name();
-        settings.set_gtk_theme_name(Some("Default"));
-
+    /// A long name ellipsizes: the rows fit the tree, and the tree stays
+    /// as narrow as its window.
+    pub(in crate::ui) fn a_long_name_ellipsizes() {
         let store = Rc::new(SessionStore::in_memory().unwrap());
-        let session = |name: &str, folder_id| crate::store::model::SessionConfig {
-            name: name.to_string(),
-            folder_id,
-            ..Default::default()
-        };
-        let outer = store.insert_folder("outer", None).unwrap();
-        let inner = store.insert_folder("inner", Some(outer)).unwrap();
-        store.insert_session(&session("deep", Some(inner))).unwrap();
         store
-            .insert_session(&session("nested", Some(outer)))
-            .unwrap();
-        store.insert_session(&session("root", None)).unwrap();
-        store
-            .insert_session(&session(&"long".repeat(40), None))
+            .insert_session(&crate::store::model::SessionConfig {
+                name: "long".repeat(40),
+                ..Default::default()
+            })
             .unwrap();
         let tree = SessionTree::new(store, |_| {});
         tree.refresh();
-        tree.tree_model.row(0).unwrap().set_expanded(true);
         let window = gtk4::Window::new();
         window.set_default_size(300, 300);
         window.set_child(Some(&tree.widget()));
         window.present();
-
-        let label_x = |name: &str| {
-            let mut expanders = Vec::new();
-            let mut stack = vec![tree.list_view.clone().upcast::<gtk4::Widget>()];
-            while let Some(widget) = stack.pop() {
-                if let Ok(expander) = widget.clone().downcast::<gtk4::TreeExpander>() {
-                    expanders.push(expander);
-                }
-                let mut child = widget.first_child();
-                while let Some(next) = child {
-                    child = next.next_sibling();
-                    stack.push(next);
-                }
-            }
-            let label = expanders
-                .into_iter()
-                .filter_map(|expander| expander.child()?.last_child())
-                .filter_map(|label| label.downcast::<gtk4::Label>().ok())
-                .find(|label| label.text() == name)?;
-            (label.width() > 0)
-                .then(|| label.compute_point(&tree.list_view, &gtk4::graphene::Point::zero()))
-                .flatten()
-                .map(|point| point.x())
-        };
+        let hadjustment = tree.scroll.hadjustment();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while ["outer", "inner", "nested", "root"]
-            .iter()
-            .any(|name| label_x(name).is_none())
-        {
+        while hadjustment.page_size() == 0.0 {
             assert!(
                 std::time::Instant::now() < deadline,
-                "timed out: rows laid out"
+                "timed out: tree laid out"
             );
             glib::MainContext::default().iteration(false);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-
-        let [outer_x, inner_x, nested_x, root_x] =
-            ["outer", "inner", "nested", "root"].map(label_x);
-        let hadjustment = tree.scroll.hadjustment();
         let (rows_width, visible_width) = (hadjustment.upper(), hadjustment.page_size());
-        settings.set_gtk_theme_name(theme.as_deref());
         window.destroy();
-        assert_eq!(root_x, outer_x, "root session vs root folder");
-        assert_eq!(nested_x, inner_x, "nested session vs nested folder");
         assert!(
             rows_width <= visible_width,
             "rows {rows_width}px wide in a {visible_width}px tree"
