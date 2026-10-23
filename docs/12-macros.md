@@ -31,10 +31,10 @@ chunk is also timestamped into a `Recorder`:
 - the first chunk gets no pause: the time before it is the user reaching
   the terminal;
 - a chunk within the same millisecond as the previous one joins its step;
-- mouse and focus reports are skipped — VTE sends them through the same
-  channel once an application enables them (tmux, vim, htop), each as a
-  chunk of its own: `CSI I`/`CSI O`, and X10, SGR and urxvt mouse
-  encodings.
+- mouse and focus reports are skipped — VTE and Ghostty send them through
+  the same channel once an application enables them (tmux, vim, htop),
+  each as a chunk of its own: `CSI I`/`CSI O`, and X10, SGR and urxvt
+  mouse encodings.
 
 The relay sees whatever the backend sends, so recording needs nothing
 from the backend: pastes are recorded as one step, and a macro played
