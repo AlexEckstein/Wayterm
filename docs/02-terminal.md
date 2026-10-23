@@ -216,7 +216,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   and links `libghostty-vt.a` statically; nothing beyond libc is needed.
 - **`Engine`.** The safe owner of one terminal, with no display: VT
   parsing, resize with reflow, scrollback limit, viewport scrolling,
-  selection, plain-text export, key and paste encoding, and a viewport
+  selection, plain-text export, key, paste, mouse and focus encoding, the
+  mouse modes a program set, and a viewport
   snapshot with colors resolved to RGB. Effects raised while parsing —
   replies to queries (device attributes, status reports), BEL, OSC 0/2
   titles — come back from the `write` that raised them and leave as
@@ -229,11 +230,31 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   its own column, so wide glyphs keep the grid aligned. A changed
   allocation resizes the grid and sends `SizeChange` once per new grid.
 - **Input.** Keys go through libghostty-vt's key encoder, so cursor-key
-  and Kitty keyboard modes apply. A primary-button drag selects. The wheel
-  scrolls three rows per notch, adding up the fractional steps of
-  high-resolution wheels and touchpads (pixel deltas count by cell
-  height). Shift+PageUp/PageDown scroll a page and Shift+Home/End jump to
-  the top and bottom, as in VTE, instead of reaching the remote side.
+  and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
+  Shift+Home/End jump to the top and bottom, as in VTE, instead of
+  reaching the remote side. Each mouse event goes one of three ways
+  (`route` in `view.rs`, read from the terminal's modes per event):
+  - **Reported** while the program tracks the mouse (mode 9, 1000, 1002
+    or 1003): primary-button presses, drags and releases, motion, and the
+    wheel (as buttons 4 and 5) go through libghostty-vt's mouse encoder,
+    which the terminal's modes also give its format — X10 bytes unless
+    the program picked SGR (1006), UTF-8, urxvt or SGR-pixels — and which
+    drops what the tracking mode does not report. A reported press
+    selects nothing. Each report is a `DataOut` chunk of its own, so
+    macro recording skips it (doc 12 §Recording).
+  - **Arrow keys** for the wheel on the alternate screen (1047 or 1049)
+    under alternate scroll (mode 1007, on until the program resets it),
+    when no tracking mode is set: Up or Down per row, in the cursor-key
+    mode's form.
+  - **Local** otherwise: a primary-button drag selects, and the wheel
+    scrolls the viewport.
+
+  Holding Shift keeps a press, its drag and the wheel local even while
+  the program tracks the mouse. The wheel counts three rows per notch,
+  adding up the fractional steps of high-resolution wheels and touchpads
+  (pixel deltas count by cell height); a reported or arrow-key wheel
+  sends one report or key per row. With mode 1004 set, keyboard focus
+  entering and leaving the widget sends `CSI I` and `CSI O`.
 - **Backend.** Events go through the same never-blocking sender as VTE's
   (§Backpressure). `send_input` and `paste` queue `DataOut` like a key
   press, so macros work unchanged; `paste` is bracketed when the program
@@ -343,7 +364,7 @@ two runs agreeing within 10%:
 - **VTE:** no opacity; no Kitty graphics.
 - **Ghostty:** no search, color schemes, opacity, URL detection or image
   drawing (`features()` says so, and the UI hides them); no input method
-  or compose support; only a grapheme's base codepoint is drawn; no mouse
-  reporting or alternate scroll, so the wheel does nothing in full-screen
-  programs (less, vim, tmux) where VTE forwards it. CI does not build
-  libghostty-vt, so the feature is checked locally only.
+  or compose support; only a grapheme's base codepoint is drawn; mouse
+  reporting covers the primary button and the wheel only, so middle and
+  right clicks and horizontal scrolling never reach the program. CI does
+  not build libghostty-vt, so the feature is checked locally only.
