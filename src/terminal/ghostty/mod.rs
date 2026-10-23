@@ -5,7 +5,8 @@
 //!   libghostty-vt C API (doc 02 §libghostty-vt pin).
 //! - [`engine::Engine`] owns one terminal safely and needs no display.
 //! - [`view::GhosttyView`] is the GTK4 widget that paints the engine's
-//!   grid snapshot and turns keys, mouse drags, and wheel turns into input.
+//!   grid snapshot and turns keys, mouse, wheel and focus events into
+//!   input or local selection and scrolling.
 //! - [`GhosttyBackend`] puts them behind [`TerminalBackend`].
 
 pub mod engine;
