@@ -54,17 +54,21 @@ struct StatusRouter {
 
 impl StatusRouter {
     fn push(&mut self, page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
-        let current = self
-            .notebook
-            .current_page()
-            .and_then(|num| self.notebook.nth_page(Some(num)));
-        if current.as_ref() == Some(page) {
+        if current_page(&self.notebook).as_ref() == Some(page) {
             self.show(page, state, host, port);
         }
     }
 
-    /// Show `page`'s state as the current page's. `switch-page` calls this
-    /// directly: GTK emits it before the notebook makes `page` current.
+    /// Show the current page's last published state; Home's is
+    /// Disconnected. Runs whenever the current page changes or a page goes.
+    fn refresh(&mut self) {
+        let Some(page) = current_page(&self.notebook) else {
+            return;
+        };
+        let status = SessionTab::page_status(&page).unwrap_or_default();
+        self.show(&page, status.state, &status.host, status.port);
+    }
+
     fn show(&mut self, page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
         if self.last.as_ref() == Some(&(page.clone(), state.clone())) {
             return;
@@ -142,13 +146,15 @@ impl MainWindow {
             status_bar: status_bar.clone(),
             last: None,
         }));
+        // Not switch-page: GTK emits it before the page becomes current.
+        // These two fire after, so the router reads the notebook as it is
+        // (after `auto_hide_home` has brought Home back, too).
         let for_switch = router.clone();
-        notebook.connect_switch_page(move |_, page, _| {
-            let status = SessionTab::page_status(page).unwrap_or_default();
-            for_switch
-                .borrow_mut()
-                .show(page, status.state, &status.host, status.port);
+        notebook.connect_notify_local(Some("page"), move |_, _| {
+            for_switch.borrow_mut().refresh();
         });
+        let for_close = router.clone();
+        notebook.connect_page_removed(move |_, _, _| for_close.borrow_mut().refresh());
 
         let tunnels_button = gtk4::Button::with_label("Tunnels…");
         tunnels_button.set_action_name(Some("win.tunnels"));
@@ -608,6 +614,14 @@ pub(super) mod gtk_tests {
             act("close_tab");
         }
         assert_eq!(notebook.n_pages(), 1);
+        assert_eq!(status_text(&window), "Disconnected");
+        // The closed tabs' transports wind down in the background; none of
+        // that reaches the bar.
+        let settled = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < settled {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(status_text(&window), "Disconnected");
         act("close_tab");
         assert_eq!(notebook.n_pages(), 1, "Home stays");

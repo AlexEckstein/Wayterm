@@ -244,8 +244,9 @@ disconnected or failed), the state text with the endpoint ("Connected to
 example.com:22"), and the time connected (`m:ss`, `h:mm:ss` from an hour
 on) while connected. Local and serial tabs show the transport's
 description (shell path, `device@baud`) instead of a host. Each page keeps
-its last published state, replayed when it becomes current; the window's
-status router shows only the current page's updates.
+its last published state; the window's status router shows only the
+current page's updates, and replays the current page's state whenever the
+current page changes or a tab closes (Home reads Disconnected).
 
 ## Tray
 
