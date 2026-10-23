@@ -58,6 +58,7 @@ mod gtk_tests {
         super::panels::session_tree::gtk_tests::rows_nest_expand_and_select();
         super::panels::session_tree::gtk_tests::moving_a_session_keeps_folders_open();
         super::panels::session_tree::gtk_tests::moving_a_folder_refuses_cycles();
+        super::panels::session_tree::gtk_tests::rows_line_up_and_fit_the_width();
         super::panels::sftp_sidebar::gtk_tests::listing_renders_and_selection_drives_toolbar();
         super::panels::sftp_sidebar::gtk_tests::follow_checkbox_toggles_following();
         super::panels::side_dock::gtk_tests::icon_tabs_switch_the_panel();
