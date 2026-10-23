@@ -179,12 +179,8 @@ The side dock's Sessions panel (`src/ui/panels/session_tree.rs`): every folder
 and saved session, depth first — at each level folders first, then
 sessions — each with its icon.
 
-- **Layout:** a session's name starts where its sibling folders' names
-  do: the tree pins the gap left for a missing disclosure arrow to 16 px,
-  the arrow's width in GTK's default theme and Breeze (the default
-  theme's own gap is 8 px). Rows always fit the panel's width, so it
-  never scrolls sideways; a long name ends in "…" and shows whole in its
-  tooltip.
+- **Long names** end in "…" when the panel is too narrow, and show
+  whole in their tooltip.
 - **Context menu** (right-click): New Folder, Edit Folder, Delete Folder
   on folders; New Session, Edit Session, Clone Session, Delete Session on
   sessions. Deletes ask first.
@@ -285,5 +281,3 @@ and a reset to the default.
   restores can set them.
 - `hotkeys` has no `UNIQUE (action, context)`, which is why the seed runs
   only once.
-- A theme whose disclosure arrows are wider than 16 px puts sessions
-  that much left of their sibling folders.
