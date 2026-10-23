@@ -7,7 +7,7 @@ use std::ffi::{c_char, c_int, c_void};
 use std::ptr::NonNull;
 
 use super::ffi;
-pub use super::ffi::{WtCell as Cell, WtFrame as FrameInfo};
+pub use super::ffi::{WtCell as Cell, WtFrame as FrameInfo, WtMouse as MouseEvent};
 
 /// What the terminal asked for while processing bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,6 +25,31 @@ pub enum Scroll {
     Bottom,
     /// Rows; up is negative.
     By(isize),
+}
+
+/// The mouse tracking mode a program enabled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tracking {
+    /// Mode 9: presses only.
+    X10,
+    /// Mode 1000: presses and releases.
+    Normal,
+    /// Mode 1002: also motion with a button held.
+    Button,
+    /// Mode 1003: all motion.
+    Any,
+}
+
+/// The terminal modes that decide where a mouse event goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MouseModes {
+    /// `None` without mouse tracking.
+    pub tracking: Option<Tracking>,
+    /// Mode 1007, on until a program resets it: on the alternate screen
+    /// the wheel sends arrow keys.
+    pub alt_scroll: bool,
+    /// Mode 1047 or 1049.
+    pub alt_screen: bool,
 }
 
 /// A snapshot of the viewport, reused between frames.
@@ -258,6 +283,48 @@ impl Engine {
         })
     }
 
+    fn dec_mode(&self, value: u16) -> bool {
+        // SAFETY: valid terminal.
+        unsafe { ffi::wt_ghostty_dec_mode(self.ptr(), value) }
+    }
+
+    /// The program's mouse modes; with several tracking modes set, the
+    /// one reporting the most wins.
+    pub fn mouse_modes(&self) -> MouseModes {
+        let tracking = [
+            (1003, Tracking::Any),
+            (1002, Tracking::Button),
+            (1000, Tracking::Normal),
+            (9, Tracking::X10),
+        ]
+        .into_iter()
+        .find(|&(mode, _)| self.dec_mode(mode))
+        .map(|(_, tracking)| tracking);
+        MouseModes {
+            tracking,
+            alt_scroll: self.dec_mode(1007),
+            alt_screen: self.dec_mode(1047) || self.dec_mode(1049),
+        }
+    }
+
+    /// One mouse event, encoded for the terminal's tracking mode and
+    /// format (X10, SGR, …); empty when the mode does not report it.
+    pub fn encode_mouse(&self, event: &MouseEvent) -> Vec<u8> {
+        Self::encoded(|out, cap, written| {
+            // SAFETY: valid terminal; `event` is borrowed for the call.
+            unsafe { ffi::wt_ghostty_encode_mouse(self.ptr(), event, out, cap, written) }
+        })
+    }
+
+    /// A focus change as the program asked for it (mode 1004); empty when
+    /// it did not.
+    pub fn encode_focus(&self, gained: bool) -> Vec<u8> {
+        Self::encoded(|out, cap, written| {
+            // SAFETY: valid terminal.
+            unsafe { ffi::wt_ghostty_encode_focus(self.ptr(), gained, out, cap, written) }
+        })
+    }
+
     /// Refresh `frame` from the terminal's viewport.
     pub fn snapshot(&self, frame: &mut Frame) -> bool {
         for _ in 0..2 {
@@ -412,6 +479,144 @@ mod tests {
         assert_eq!(engine.encode_paste("a\nb"), b"a\rb");
         engine.write(b"\x1b[?2004h");
         assert_eq!(engine.encode_paste("a\nb"), b"\x1b[200~a\nb\x1b[201~");
+    }
+
+    /// A mouse event over a 20×5 grid of 10×20-pixel cells, at the centre
+    /// of cell `(col, row)`.
+    fn mouse(action: u32, button: u32, mods: u32, (col, row): (u16, u16)) -> MouseEvent {
+        MouseEvent {
+            action,
+            button,
+            mods,
+            x: f32::from(col) * 10.0 + 5.0,
+            y: f32::from(row) * 20.0 + 10.0,
+            width: 200,
+            height: 100,
+            cell_w: 10,
+            cell_h: 20,
+            any_pressed: u32::from(action != ffi::MOUSE_RELEASE && button == ffi::BUTTON_LEFT),
+        }
+    }
+
+    #[test]
+    fn mouse_modes_report_tracking_alt_scroll_and_the_alt_screen() {
+        let engine = engine();
+        // libghostty-vt starts with alternate scroll on.
+        let start = MouseModes {
+            tracking: None,
+            alt_scroll: true,
+            alt_screen: false,
+        };
+        assert_eq!(engine.mouse_modes(), start);
+        engine.write(b"\x1b[?1007l");
+        assert!(!engine.mouse_modes().alt_scroll);
+        engine.write(b"\x1b[?9h");
+        assert_eq!(engine.mouse_modes().tracking, Some(Tracking::X10));
+        engine.write(b"\x1b[?1000h");
+        assert_eq!(engine.mouse_modes().tracking, Some(Tracking::Normal));
+        engine.write(b"\x1b[?1002h");
+        assert_eq!(engine.mouse_modes().tracking, Some(Tracking::Button));
+        engine.write(b"\x1b[?1003h");
+        assert_eq!(engine.mouse_modes().tracking, Some(Tracking::Any));
+        engine.write(b"\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l\x1b[?1007h");
+        let modes = engine.mouse_modes();
+        assert_eq!(modes.tracking, None);
+        assert!(modes.alt_scroll && !modes.alt_screen);
+        engine.write(b"\x1b[?1049h");
+        assert!(engine.mouse_modes().alt_screen);
+        engine.write(b"\x1b[?1049l\x1b[?1047h");
+        assert!(engine.mouse_modes().alt_screen);
+        engine.write(b"\x1b[?1047l");
+        assert!(!engine.mouse_modes().alt_screen);
+    }
+
+    #[test]
+    fn sgr_mouse_reports_press_release_wheel_and_modifiers() {
+        let engine = engine();
+        engine.write(b"\x1b[?1000h\x1b[?1006h");
+        let press = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_LEFT, 0, (3, 2));
+        // SGR: CSI < button ; column ; row, 1-based; M presses, m releases.
+        assert_eq!(engine.encode_mouse(&press), b"\x1b[<0;4;3M");
+        let release = mouse(ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&release), b"\x1b[<0;4;3m");
+        // Normal tracking (1000) reports no motion.
+        let motion = mouse(ffi::MOUSE_MOTION, ffi::BUTTON_LEFT, 0, (4, 2));
+        assert_eq!(engine.encode_mouse(&motion), b"");
+        // The wheel is buttons 4 and 5, codes 64 and 65.
+        let up = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_UP, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&up), b"\x1b[<64;1;1M");
+        let down = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_DOWN, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&down), b"\x1b[<65;1;1M");
+        // Shift adds 4, Ctrl 16.
+        let mods = mouse(
+            ffi::MOUSE_PRESS,
+            ffi::BUTTON_LEFT,
+            ffi::MOD_SHIFT | ffi::MOD_CTRL,
+            (0, 0),
+        );
+        assert_eq!(engine.encode_mouse(&mods), b"\x1b[<20;1;1M");
+    }
+
+    #[test]
+    fn button_tracking_reports_drags_and_any_tracking_bare_motion() {
+        let engine = engine();
+        engine.write(b"\x1b[?1002h\x1b[?1006h");
+        // Motion adds 32 to the button code.
+        let drag = mouse(ffi::MOUSE_MOTION, ffi::BUTTON_LEFT, 0, (4, 2));
+        assert_eq!(engine.encode_mouse(&drag), b"\x1b[<32;5;3M");
+        let hover = mouse(ffi::MOUSE_MOTION, ffi::BUTTON_NONE, 0, (4, 2));
+        assert_eq!(engine.encode_mouse(&hover), b"", "1002 needs a button");
+        engine.write(b"\x1b[?1003h");
+        // No button is code 3, plus 32 for motion.
+        assert_eq!(engine.encode_mouse(&hover), b"\x1b[<35;5;3M");
+    }
+
+    #[test]
+    fn without_sgr_the_mouse_uses_the_x10_byte_format() {
+        let engine = engine();
+        engine.write(b"\x1b[?1000h");
+        // CSI M, then button, column and row as 32 + value (1-based).
+        let press = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_LEFT, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&press), b"\x1b[M $#");
+        // Legacy releases do not say which button: code 3.
+        let release = mouse(ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&release), b"\x1b[M#$#");
+    }
+
+    #[test]
+    fn x10_mode_reports_presses_only_and_no_tracking_reports_nothing() {
+        let engine = engine();
+        let press = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_LEFT, ffi::MOD_SHIFT, (0, 0));
+        assert_eq!(engine.encode_mouse(&press), b"");
+        engine.write(b"\x1b[?9h");
+        // X10 carries no modifiers.
+        assert_eq!(engine.encode_mouse(&press), b"\x1b[M !!");
+        let release = mouse(ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&release), b"");
+        let wheel = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_UP, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&wheel), b"");
+    }
+
+    #[test]
+    fn pixels_past_the_grid_count_as_its_last_cell() {
+        let engine = engine();
+        engine.write(b"\x1b[?1000h\x1b[?1006h");
+        // The widget is 7 pixels wider and taller than the 20×5 grid.
+        let mut press = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_LEFT, 0, (0, 0));
+        (press.width, press.height, press.x, press.y) = (207, 107, 204.0, 105.0);
+        assert_eq!(engine.encode_mouse(&press), b"\x1b[<0;20;5M");
+    }
+
+    #[test]
+    fn focus_events_only_when_the_program_asks() {
+        let engine = engine();
+        assert_eq!(engine.encode_focus(true), b"");
+        assert_eq!(engine.encode_focus(false), b"");
+        engine.write(b"\x1b[?1004h");
+        assert_eq!(engine.encode_focus(true), b"\x1b[I");
+        assert_eq!(engine.encode_focus(false), b"\x1b[O");
+        engine.write(b"\x1b[?1004l");
+        assert_eq!(engine.encode_focus(true), b"");
     }
 
     #[test]
