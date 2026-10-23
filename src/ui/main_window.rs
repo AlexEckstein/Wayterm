@@ -58,9 +58,14 @@ impl StatusRouter {
             .notebook
             .current_page()
             .and_then(|num| self.notebook.nth_page(Some(num)));
-        if current.as_ref() != Some(page) {
-            return;
+        if current.as_ref() == Some(page) {
+            self.show(page, state, host, port);
         }
+    }
+
+    /// Show `page`'s state as the current page's. `switch-page` calls this
+    /// directly: GTK emits it before the notebook makes `page` current.
+    fn show(&mut self, page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
         if self.last.as_ref() == Some(&(page.clone(), state.clone())) {
             return;
         }
@@ -142,7 +147,7 @@ impl MainWindow {
             let status = SessionTab::page_status(page).unwrap_or_default();
             for_switch
                 .borrow_mut()
-                .push(page, status.state, &status.host, status.port);
+                .show(page, status.state, &status.host, status.port);
         });
 
         let tunnels_button = gtk4::Button::with_label("Tunnels…");
@@ -420,6 +425,18 @@ pub(super) mod gtk_tests {
             .find(|w| w.is_visible() && w.title().as_deref() == Some(title))
     }
 
+    /// The status bar's text: the last label in the window's bottom row.
+    fn status_text(window: &gtk4::ApplicationWindow) -> String {
+        window
+            .child()
+            .and_then(|root| root.last_child())
+            .and_then(|bar| bar.last_child())
+            .and_downcast::<gtk4::Label>()
+            .expect("the status label")
+            .text()
+            .to_string()
+    }
+
     fn spin_until(what: &str, done: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !done() {
@@ -577,11 +594,21 @@ pub(super) mod gtk_tests {
         assert_eq!(current_session_id(&notebook), Some(LOCAL_SHELL_ID));
         assert!(toplevel("New Tab").is_none(), "the picker stays shut");
 
-        // Close Tab closes tabs, never Home.
+        // The status bar follows the current tab. Close Tab closes tabs,
+        // never Home, and with no tabs left the status bar reads
+        // Disconnected again.
+        spin_until("the new shell shows as connected", || {
+            status_text(&window).starts_with("Connected")
+        });
+        act("goto_tab_3");
+        spin_until("the box session's shell shows", || {
+            status_text(&window).starts_with("Connected to /bin/sh")
+        });
         for _ in 0..4 {
             act("close_tab");
         }
         assert_eq!(notebook.n_pages(), 1);
+        assert_eq!(status_text(&window), "Disconnected");
         act("close_tab");
         assert_eq!(notebook.n_pages(), 1, "Home stays");
 
