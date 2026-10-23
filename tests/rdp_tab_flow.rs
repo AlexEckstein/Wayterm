@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use wayterm::rdp::{build_args, CERT_ARG_PREFIX};
 use wayterm::store::model::{RdpOptions, SessionConfig, SessionType};
-use wayterm::ui::rdp_tab::{
+use wayterm::ui::tabs::rdp::{
     changed_cert_text, freerdp_too_old_text, spec_from_session, unknown_cert_text, warn_below,
     DEFAULT_PORT,
 };

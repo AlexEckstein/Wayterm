@@ -4,7 +4,7 @@
 //! engine here owns a child process and an event stream instead of a byte
 //! stream, mirroring how `vnc` stays display-free (doc 08 §VNC). The GTK
 //! embedding (reparenting xfreerdp into a container widget) lives in
-//! `ui::rdp_tab`; everything here is tokio-side and `Send`.
+//! `ui::tabs::rdp`; everything here is tokio-side and `Send`.
 //!
 //! - [`cert`]: TOFU trust resolver over the `rdp_trust` store table.
 //! - [`process`]: argv builder, binary probe, and the child wrapper.

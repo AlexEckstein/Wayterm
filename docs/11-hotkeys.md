@@ -137,7 +137,7 @@ table has one.
   §Reconnect).
 - `new_session`: the session dialog for a new session (doc 09 §Session
   dialog).
-- Terminal actions (`src/ui/terminal_actions.rs`): on the current tab's
+- Terminal actions (`src/ui/tabs/terminal_actions.rs`): on the current tab's
   terminal; the two searches open its search popover (doc 02 §Terminal
   actions).
 - Session-tree actions act on the selected row, like its context menu:

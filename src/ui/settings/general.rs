@@ -28,7 +28,9 @@ use crate::terminal::{
     BackendKind, SchemeChoice, DEFAULT_BACKEND_SETTING, DEFAULT_COLOR_SCHEME_SETTING,
     GHOSTTY_COMPILED,
 };
-use crate::ui::{appearance, sftp_sidebar, tab, tab_resilience, tray};
+use crate::ui::panels::sftp_sidebar;
+use crate::ui::tabs::{self, resilience};
+use crate::ui::{appearance, tray};
 
 // ---------------------------------------------------------------------------
 // Display-free data layer
@@ -46,12 +48,12 @@ pub struct Toggle {
 /// The switches, in page order.
 pub const TOGGLES: [Toggle; 4] = [
     Toggle {
-        key: tab_resilience::CONFIRM_CLOSE_SETTING,
+        key: resilience::CONFIRM_CLOSE_SETTING,
         title: "Confirm before closing a connected tab",
         subtitle: "Ask before closing a tab whose connection is live.",
     },
     Toggle {
-        key: tab_resilience::RECONNECT_ON_DROP_SETTING,
+        key: resilience::RECONNECT_ON_DROP_SETTING,
         title: "Reconnect automatically",
         subtitle: "Retry a dropped connection on its own. Off: ask before each attempt.",
     },
@@ -85,8 +87,8 @@ pub fn save(store: &SessionStore, key: &str, on: bool) -> rusqlite::Result<()> {
 /// The settings rows behind every "Do not show me again" check box; a new
 /// notice adds its row here so "Clear all reminders" covers it.
 pub const REMINDERS: [&str; 2] = [
-    tab::TMUX_NOTICE_SETTING,
-    tab_resilience::CONFIRM_CLOSE_NOTICE_SETTING,
+    tabs::TMUX_NOTICE_SETTING,
+    resilience::CONFIRM_CLOSE_NOTICE_SETTING,
 ];
 
 pub const CLEAR_REMINDERS_TITLE: &str = "Clear all reminders";
@@ -145,9 +147,9 @@ pub fn save_color_scheme(store: &SessionStore, choice: SchemeChoice) -> rusqlite
 /// after every change. `minimize_to_tray` needs no push: the close handler
 /// reads it at each close.
 pub fn apply(store: &SessionStore) {
-    tab_resilience::install_settings(
-        store.flag(tab_resilience::CONFIRM_CLOSE_SETTING),
-        store.flag(tab_resilience::RECONNECT_ON_DROP_SETTING),
+    resilience::install_settings(
+        store.flag(resilience::CONFIRM_CLOSE_SETTING),
+        store.flag(resilience::RECONNECT_ON_DROP_SETTING),
     );
     sftp_sidebar::install_settings(store.flag(sftp_sidebar::SFTP_ON_CONNECT_SETTING));
     crate::terminal::install_backend_preference(backend(store));

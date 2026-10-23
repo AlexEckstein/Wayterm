@@ -5,7 +5,7 @@ panel (doc 01 §Side dock): navigate, upload, download, delete, rename,
 create folders, drag files in, and follow the shell's working directory.
 
 Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe),
-`src/ui/sftp_sidebar.rs` (the GTK half), `src/ui/sftp_sidebar/model.rs`
+`src/ui/panels/sftp_sidebar.rs` (the GTK half), `src/ui/panels/sftp_sidebar/model.rs`
 (its display-free model).
 
 ## Layout

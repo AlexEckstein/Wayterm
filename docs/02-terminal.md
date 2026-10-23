@@ -11,7 +11,7 @@ Two kinds of backend fit behind it:
   draws it in its own GTK widget.
 
 Code: `src/terminal/` (backends, color schemes), `src/backpressure.rs`
-(the never-blocking sender), `src/ui/terminal_actions.rs` (copy, paste,
+(the never-blocking sender), `src/ui/tabs/terminal_actions.rs` (copy, paste,
 search), `src/ui/appearance.rs` (applying color schemes).
 
 ## The trait
@@ -142,7 +142,7 @@ unlimited scrollback reads up to 100 000 lines.
 
 ## Terminal actions
 
-`src/ui/terminal_actions.rs` registers the terminal-context window
+`src/ui/tabs/terminal_actions.rs` registers the terminal-context window
 actions (doc 11 §Default actions) on the current tab's backend: copy,
 paste (from the clipboard), select all, clear, and the two searches.
 Both searches open a popover anchored to the terminal: Enter finds the

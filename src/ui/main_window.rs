@@ -16,17 +16,17 @@ use crate::store::SessionStore;
 use crate::transport::connection::SshConnection;
 use crate::transport::supervisor::ConnectionSupervisor;
 use crate::transport::types::TransportState;
-use crate::ui::macros_panel::MacrosPanel;
-use crate::ui::session_tree::SessionTree;
-use crate::ui::sftp_sidebar::SftpButton;
-use crate::ui::side_dock::SideDock;
+use crate::ui::dialogs::tunnels;
+use crate::ui::panels::macros_panel::MacrosPanel;
+use crate::ui::panels::session_tree::SessionTree;
+use crate::ui::panels::sftp_sidebar::SftpButton;
+use crate::ui::panels::side_dock::SideDock;
 use crate::ui::status_bar::StatusBar;
-use crate::ui::tab::{current_page, SessionTab};
-use crate::ui::tab_restore::TabPersistence;
+use crate::ui::tabs::restore::TabPersistence;
+use crate::ui::tabs::{self, terminal_actions};
+use crate::ui::tabs::{current_page, SessionTab};
 use crate::ui::widgets::{data, set_data};
-use crate::ui::{
-    appearance, settings, tab_actions, tab_bar, tab_resilience, terminal_actions, tunnels_dialog,
-};
+use crate::ui::{appearance, settings};
 
 /// Window data keys.
 pub(crate) const SUPERVISOR_KEY: &str = "wayterm-connection-supervisor";
@@ -100,7 +100,7 @@ impl MainWindow {
         let home = gtk4::Label::new(Some("Welcome to Wayterm"));
         notebook.append_page(&home, Some(&gtk4::Label::new(Some("Home"))));
         auto_hide_home(&notebook, &home);
-        tab_bar::install(&notebook, &store);
+        tabs::bar::install(&notebook, &store);
 
         appearance::track(&notebook);
         settings::general::apply(&store);
@@ -182,11 +182,11 @@ impl MainWindow {
         install_toggle_sftp(&window, &notebook, &dock);
         install_tunnels_action(&window, &notebook, &store);
         terminal_actions::install(&window, &notebook);
-        tab_actions::install(&window, &notebook, home.upcast_ref(), &store);
+        tabs::actions::install(&window, &notebook, home.upcast_ref(), &store);
         install_view_actions(&window, &notebook, &dock, &session_tree);
         let for_actions = notebook.clone();
-        tab_resilience::install_connection_actions(&window, move || {
-            crate::ui::tab::current_tab_id(&for_actions)
+        tabs::resilience::install_connection_actions(&window, move || {
+            crate::ui::tabs::current_tab_id(&for_actions)
         });
         // Every chord comes from the engine (doc 11 §Dispatch), checked
         // against its context at each key press. Terminal shortcuts fire
@@ -289,17 +289,17 @@ fn install_tunnels_action(
     notebook: &gtk4::Notebook,
     store: &Rc<SessionStore>,
 ) {
-    let action = gio::SimpleAction::new(tunnels_dialog::TUNNELS_ACTION, None);
+    let action = gio::SimpleAction::new(tunnels::TUNNELS_ACTION, None);
     let (notebook, store, parent) = (notebook.clone(), store.clone(), window.clone());
     action.connect_activate(move |_, _| {
-        let Some(id) = crate::ui::tab::current_session_id(&notebook) else {
+        let Some(id) = crate::ui::tabs::current_session_id(&notebook) else {
             return;
         };
         let Ok(mut config) = store.get_session(id) else {
             return;
         };
         let source = SessionTab::current_forward_source(&notebook);
-        let dialog = tunnels_dialog::TunnelsDialog::new(parent.upcast_ref(), &config, source);
+        let dialog = tunnels::TunnelsDialog::new(parent.upcast_ref(), &config, source);
         if let Some(rules) = dialog.run() {
             config.forward_rules = if rules.is_empty() { None } else { Some(rules) };
             if let Err(err) = store.update_session(&config) {
@@ -394,9 +394,9 @@ pub(super) mod gtk_tests {
 
     use super::*;
     use crate::hotkeys::DEFAULT_ACTIONS;
-    use crate::ui::host_picker::LOCAL_SHELL_ID;
-    use crate::ui::tab::current_session_id;
-    use crate::ui::tab_state::TabState;
+    use crate::ui::dialogs::host_picker::LOCAL_SHELL_ID;
+    use crate::ui::tabs::current_session_id;
+    use crate::ui::tabs::state::TabState;
 
     /// The first `T` at or below `widget`, depth first.
     fn find<T: IsA<gtk4::Widget>>(widget: &gtk4::Widget) -> Option<T> {
@@ -444,7 +444,7 @@ pub(super) mod gtk_tests {
         app.register(None::<&gio::Cancellable>).expect("register");
         let store = Rc::new(SessionStore::in_memory().expect("in-memory store"));
         store
-            .set_setting(tab_resilience::CONFIRM_CLOSE_SETTING, "0")
+            .set_setting(tabs::resilience::CONFIRM_CLOSE_SETTING, "0")
             .unwrap();
         store
             .set_setting(settings::backup::IMPORT_OFFERED_KEY, "1")
@@ -590,6 +590,6 @@ pub(super) mod gtk_tests {
         }
         window.destroy();
         // Leave the process-wide settings as the other widget tests expect.
-        tab_resilience::install_settings(true, true);
+        tabs::resilience::install_settings(true, true);
     }
 }

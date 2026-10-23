@@ -5,8 +5,8 @@
 use wayterm::hotkeys::{ActionContext, DEFAULT_ACTIONS};
 use wayterm::terminal::fake::{FakeBackend, Interaction};
 use wayterm::terminal::{TerminalBackend, VteBackend};
-use wayterm::ui::tab_label::{TabTitle, TabTitleState};
-use wayterm::ui::terminal_actions::{
+use wayterm::ui::tabs::label::{TabTitle, TabTitleState};
+use wayterm::ui::tabs::terminal_actions::{
     initial_search_reverse, route_terminal_action, TerminalAction, TerminalActionInputs,
     TERMINAL_ACTIONS,
 };

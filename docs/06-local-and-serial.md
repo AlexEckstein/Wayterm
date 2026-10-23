@@ -3,7 +3,7 @@
 Two byte-stream transports with nothing to dial or authenticate: no
 supervisor, host key or credential machinery. Both open as terminal tabs
 through the transport factory (doc 03 §Transport factory); the connect
-flow (`src/ui/tab/local.rs`) starts the terminal directly. They have no
+flow (`src/ui/tabs/local.rs`) starts the terminal directly. They have no
 SFTP sidebar, and the status bar shows the transport's description
 instead of a host.
 

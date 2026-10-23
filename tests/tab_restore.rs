@@ -2,7 +2,7 @@
 //! §Restoring tabs): open tabs are remembered on exit and restored on
 //! launch.
 //!
-//! [`wayterm::ui::tab_state`] unit-tests the wire format itself; this file
+//! [`wayterm::ui::tabs::state`] unit-tests the wire format itself; this file
 //! covers the other half of the contract — that the list actually lands in
 //! SQLite and comes back out the way a relaunched app needs it, through the
 //! same constructors the UI uses, against two kinds of store:
@@ -17,7 +17,7 @@
 use rusqlite::Connection;
 use wayterm::store::model::{SessionConfig, SessionType};
 use wayterm::store::SessionStore;
-use wayterm::ui::tab_state::{sorted_for_restore, TabState};
+use wayterm::ui::tabs::state::{sorted_for_restore, TabState};
 
 /// A store on a real file, plus the path it lives at (for the tests that
 /// need a second, non-`SessionStore` connection onto the same database).

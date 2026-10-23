@@ -27,7 +27,7 @@ which tab drives the status bar (doc 03 §Status bar). The header bar holds
 ### Side dock
 
 A column of icon-only tabs on the window's left edge
-(`src/ui/side_dock.rs`), MobaXterm style. Each names itself in a tooltip
+(`src/ui/panels/side_dock.rs`), MobaXterm style. Each names itself in a tooltip
 and as its accessible label, and picks the panel beside the notebook:
 
 | Tab | Panel |
@@ -43,7 +43,7 @@ beside the tree icons (doc 09 §Icons), so a tab never draws blank.
 
 ### Tab bar
 
-The notebook's tab bar (`src/ui/tab_bar.rs`) ends in a "+" drawn as a
+The notebook's tab bar (`src/ui/tabs/bar.rs`) ends in a "+" drawn as a
 tab, right after the last tab, that opens a local shell (doc 03 §New Tab).
 GtkNotebook stretches its tab strip over the whole header, so the bar has
 two layouts, picked after every frame: while the tabs fit, the strip takes
@@ -118,7 +118,7 @@ These are module boundaries; changing one is an orchestration decision
 | `transfer` | session import and export | 10 |
 | `hotkeys` | action registry, conflicts, defaults, triggers, persistence | 11 |
 | `macros` | macro model, recorder, input tap, key notation, playback | 12 |
-| `ui` | the window, side dock, tabs, dialogs, session tree, SFTP sidebar, macros panel and editor, settings, tray, appearance | 01, 03, 07, 09, 11, 12, 13 |
+| `ui` | the window, settings, status bar, tray, appearance; `ui::tabs` (tab pages, connect flows, lifecycle, labels, restore), `ui::dialogs`, `ui::panels` (side dock, session tree, SFTP sidebar, macros panel and editor) | 01, 03, 07, 09, 11, 12, 13 |
 
 ## Documents
 

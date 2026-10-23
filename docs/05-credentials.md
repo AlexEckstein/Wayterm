@@ -7,9 +7,9 @@ never include secrets.
 
 Code: `src/transport/credentials.rs` (sources, the chain),
 `src/transport/credentials/chain.rs` (chain order, prompt wording),
-`src/ui/tab/credentials.rs` (the chain per tab), `src/ui/settings/credentials.rs`
-(the Settings page), `src/ui/session_dialog.rs` (save on OK),
-`src/ui/session_tree.rs` (delete with the session).
+`src/ui/tabs/credentials.rs` (the chain per tab), `src/ui/settings/credentials.rs`
+(the Settings page), `src/ui/dialogs/session.rs` (save on OK),
+`src/ui/panels/session_tree.rs` (delete with the session).
 
 ## Credential chain
 

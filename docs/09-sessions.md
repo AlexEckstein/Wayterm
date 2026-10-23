@@ -6,8 +6,8 @@ their icons. Credentials never live here (doc 05); the settings rows in the
 same database are doc 13 §Settings rows.
 
 Code: `src/store/` (`db.rs` the store, `model.rs` the row types),
-`src/ui/session_tree.rs`, `src/ui/session_dialog.rs` and
-`session_dialog/model.rs`, `src/ui/folder_dialog.rs`, `src/ui/icons.rs`.
+`src/ui/panels/session_tree.rs`, `src/ui/dialogs/session.rs` and
+`session/model.rs`, `src/ui/dialogs/folder.rs`, `src/ui/icons.rs`.
 
 ## Database
 
@@ -175,7 +175,7 @@ RDP 3389, VNC 5900; serial and local have none.
 
 ## Session tree
 
-The side dock's Sessions panel (`src/ui/session_tree.rs`): every folder
+The side dock's Sessions panel (`src/ui/panels/session_tree.rs`): every folder
 and saved session, depth first — at each level folders first, then
 sessions — each with its icon.
 
@@ -201,8 +201,8 @@ sessions — each with its icon.
 
 ## Session dialog
 
-`src/ui/session_dialog.rs` creates or edits one `SessionConfig`.
-`config_from_fields` (`session_dialog/model.rs`) holds all of the mapping
+`src/ui/dialogs/session.rs` creates or edits one `SessionConfig`.
+`config_from_fields` (`session/model.rs`) holds all of the mapping
 and is display-free; the GTK part only gathers `DialogFields`.
 
 - Common fields: name, type, folder, host, port (0 = the type's default),
@@ -227,7 +227,7 @@ and is display-free; the GTK part only gathers `DialogFields`.
 ## Folders
 
 Folders nest without a depth limit. New Folder asks for a name; **Edit
-Folder** (`src/ui/folder_dialog.rs`) edits its name and icon.
+Folder** (`src/ui/dialogs/folder.rs`) edits its name and icon.
 
 ## Icons
 

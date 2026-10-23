@@ -74,7 +74,7 @@ pub trait TerminalBackend {
 }
 
 /// A backend plus the receiver for the events it emits; the receiver goes
-/// to the transport pump ([`TerminalTab`](crate::ui::terminal_tab::TerminalTab)).
+/// to the transport pump ([`TerminalTab`](crate::ui::tabs::terminal_tab::TerminalTab)).
 pub struct TerminalHandle {
     pub backend: Arc<dyn TerminalBackend>,
     pub events: mpsc::Receiver<TerminalEvent>,
