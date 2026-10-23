@@ -176,3 +176,5 @@ disabled.
   reports `$PWD`, so a symlinked directory may show under its target's
   name.
 - No file browser for local-shell tabs.
+- Dragged narrower than the sidebar needs, the SFTP panel is cut off on
+  the left (doc 01 §Side dock).

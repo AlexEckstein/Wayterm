@@ -179,6 +179,8 @@ The side dock's Sessions panel (`src/ui/panels/session_tree.rs`): every folder
 and saved session, depth first — at each level folders first, then
 sessions — each with its icon.
 
+- **Long names** end in "…" when the panel is too narrow, and show
+  whole in their tooltip.
 - **Context menu** (right-click): New Folder, Edit Folder, Delete Folder
   on folders; New Session, Edit Session, Clone Session, Delete Session on
   sessions. Deletes ask first.

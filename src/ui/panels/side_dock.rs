@@ -113,6 +113,7 @@ impl SideDock {
     ) -> Self {
         let sftp = SftpPanel::new();
         let stack = gtk4::Stack::new();
+        stack.set_hhomogeneous(false);
         stack.set_hexpand(true);
         stack.set_vexpand(true);
         for page in DockPage::ALL {
@@ -421,6 +422,23 @@ pub(in crate::ui) mod gtk_tests {
         for _ in 0..10 {
             glib::MainContext::default().iteration(false);
         }
+    }
+
+    /// The panel needs only the width of the page it shows, so a narrow
+    /// Sessions panel is never pushed under the strip by a wider page.
+    pub(in crate::ui) fn the_panel_is_as_wide_as_its_page() {
+        let notebook = gtk4::Notebook::new();
+        let tree = gtk4::Label::new(Some("tree"));
+        tree.set_size_request(50, -1);
+        let macros = gtk4::Label::new(Some("macros"));
+        macros.set_size_request(400, -1);
+        let dock = SideDock::new(&tree, &macros, &notebook);
+        let min_width = || dock.panel().measure(gtk4::Orientation::Horizontal, -1).0;
+
+        assert_eq!(dock.current(), DockPage::Sessions);
+        assert!(min_width() < 400, "Sessions needs {}px", min_width());
+        dock.inner.tabs[1].1.emit_clicked();
+        assert!(min_width() >= 400, "Macros needs {}px", min_width());
     }
 
     /// One icon-only tab per panel, named by its tooltip; a tab switches

@@ -37,8 +37,10 @@ and as its accessible label, and picks the panel beside the notebook:
 | SFTP | the current tab's SFTP sidebar, or a placeholder on tabs without one (doc 07 §Layout) |
 
 The strip sits outside the paned, so dragging the panel shut never hides
-the tabs. A click on the active tab collapses the panel, giving the
-notebook the width, and moves focus into the current terminal;
+the tabs. The panel needs only the width of the page it shows, so a
+wider page never pushes a narrow Sessions panel under the strip. A click
+on the active tab collapses the panel, giving the notebook the width,
+and moves focus into the current terminal;
 `toggle_session_tree` collapses it the same way (doc 11 §Handlers). No
 tab shows active while the panel is collapsed, and picking any tab brings
 it back on that tab's panel. Its icons ship in the binary

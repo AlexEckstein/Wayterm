@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gtk4::prelude::*;
-use gtk4::{gdk, gio, glib};
+use gtk4::{gdk, gio, glib, pango};
 
 use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
@@ -754,7 +754,12 @@ fn row_factory(tree: &SessionTree) -> gtk4::SignalListItemFactory {
         };
         let content = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
         content.append(&gtk4::Image::new());
-        content.append(&gtk4::Label::builder().xalign(0.0).build());
+        content.append(
+            &gtk4::Label::builder()
+                .xalign(0.0)
+                .ellipsize(pango::EllipsizeMode::End)
+                .build(),
+        );
         let expander = gtk4::TreeExpander::builder().child(&content).build();
         set_data(&expander, LIST_ITEM_KEY, item.downgrade());
 
@@ -815,6 +820,7 @@ fn row_factory(tree: &SessionTree) -> gtk4::SignalListItemFactory {
         }
         if let Some(label) = content.last_child().and_downcast::<gtk4::Label>() {
             label.set_text(&node.name);
+            label.set_tooltip_text(Some(&node.name));
         }
     });
     factory.connect_unbind(|_, item| {
@@ -1045,5 +1051,43 @@ pub(in crate::ui) mod gtk_tests {
         assert!(tree.move_to(Dragged::Folder(b), None));
         settle();
         assert_eq!(store.get_folder(b).unwrap().parent_id, None);
+    }
+
+    /// A long name ellipsizes: the rows fit the tree, and the tree stays
+    /// as narrow as its window.
+    pub(in crate::ui) fn a_long_name_ellipsizes() {
+        let store = Rc::new(SessionStore::in_memory().unwrap());
+        store
+            .insert_session(&crate::store::model::SessionConfig {
+                name: "long".repeat(40),
+                ..Default::default()
+            })
+            .unwrap();
+        let tree = SessionTree::new(store, |_| {});
+        tree.refresh();
+        let window = gtk4::Window::new();
+        window.set_default_size(300, 300);
+        window.set_child(Some(&tree.widget()));
+        window.present();
+        let hadjustment = tree.scroll.hadjustment();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while hadjustment.page_size() == 0.0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out: tree laid out"
+            );
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let (rows_width, visible_width) = (hadjustment.upper(), hadjustment.page_size());
+        window.destroy();
+        assert!(
+            rows_width <= visible_width,
+            "rows {rows_width}px wide in a {visible_width}px tree"
+        );
+        assert!(
+            visible_width <= 300.0,
+            "the long name widened the tree to {visible_width}px"
+        );
     }
 }

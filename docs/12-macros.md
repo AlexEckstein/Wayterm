@@ -148,5 +148,7 @@ logged.
   and macros are not part of the session import/export (doc 10).
 - Steps are bytes, so a macro replays the bytes as recorded even if the
   terminal's keyboard mode has changed since (§Bytes, not keys).
+- Dragged narrower than the panel needs, the Macros panel
+  is cut off on the left (doc 01 §Side dock).
 
 Tests are listed in doc 15 §Macros.
