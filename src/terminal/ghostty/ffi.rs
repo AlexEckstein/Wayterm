@@ -5,7 +5,8 @@
 
 use std::ffi::{c_char, c_int, c_void};
 
-/// Opaque `WtGhostty`: a terminal plus its render state and key encoder.
+/// Opaque `WtGhostty`: a terminal plus its render state and its key and
+/// mouse encoders.
 #[repr(C)]
 pub struct WtGhostty {
     _private: [u8; 0],
@@ -31,6 +32,15 @@ pub const MOD_SHIFT: u32 = 1 << 0;
 pub const MOD_CTRL: u32 = 1 << 1;
 pub const MOD_ALT: u32 = 1 << 2;
 pub const MOD_SUPER: u32 = 1 << 3;
+
+pub const MOUSE_PRESS: u32 = 0;
+pub const MOUSE_RELEASE: u32 = 1;
+pub const MOUSE_MOTION: u32 = 2;
+
+pub const BUTTON_NONE: u32 = 0;
+pub const BUTTON_LEFT: u32 = 1;
+pub const BUTTON_WHEEL_UP: u32 = 4;
+pub const BUTTON_WHEEL_DOWN: u32 = 5;
 
 /// One grid cell, colors resolved to RGB.
 #[repr(C)]
@@ -72,6 +82,28 @@ pub struct WtKey {
     /// The text the key produces, UTF-8, not NUL-terminated.
     pub utf8: *const c_char,
     pub utf8_len: usize,
+}
+
+/// One mouse event for the encoder.
+#[repr(C)]
+pub struct WtMouse {
+    /// `MOUSE_*`.
+    pub action: u32,
+    /// `BUTTON_*`.
+    pub button: u32,
+    /// `MOD_*` bits.
+    pub mods: u32,
+    /// Position in widget pixels.
+    pub x: f32,
+    pub y: f32,
+    /// The widget's size in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// One cell in pixels.
+    pub cell_w: u32,
+    pub cell_h: u32,
+    /// Non-zero while a button is held, this event's included.
+    pub any_pressed: u32,
 }
 
 pub type EffectFn =
@@ -124,6 +156,21 @@ extern "C" {
     pub fn wt_ghostty_encode_key(
         g: *mut WtGhostty,
         key: *const WtKey,
+        out: *mut c_char,
+        cap: usize,
+        written: *mut usize,
+    ) -> c_int;
+    pub fn wt_ghostty_dec_mode(g: *mut WtGhostty, value: u16) -> bool;
+    pub fn wt_ghostty_encode_focus(
+        g: *mut WtGhostty,
+        gained: bool,
+        out: *mut c_char,
+        cap: usize,
+        written: *mut usize,
+    ) -> c_int;
+    pub fn wt_ghostty_encode_mouse(
+        g: *mut WtGhostty,
+        mouse: *const WtMouse,
         out: *mut c_char,
         cap: usize,
         written: *mut usize,

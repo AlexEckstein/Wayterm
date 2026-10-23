@@ -45,6 +45,30 @@ typedef struct {
   size_t utf8_len;
 } WtKey;
 
+/* Mouse actions and buttons for wt_ghostty_encode_mouse (mirrored in
+ * ffi.rs). */
+#define WT_MOUSE_PRESS 0
+#define WT_MOUSE_RELEASE 1
+#define WT_MOUSE_MOTION 2
+#define WT_BUTTON_NONE 0
+#define WT_BUTTON_LEFT 1
+#define WT_BUTTON_WHEEL_UP 4
+#define WT_BUTTON_WHEEL_DOWN 5
+
+/* One mouse event for wt_ghostty_encode_mouse. */
+typedef struct {
+  uint32_t action; /* WT_MOUSE_* */
+  uint32_t button; /* WT_BUTTON_* */
+  uint32_t mods;   /* WT_MOD_* */
+  float x;         /* widget pixels */
+  float y;
+  uint32_t width; /* widget size in pixels */
+  uint32_t height;
+  uint32_t cell_w; /* cell size in pixels */
+  uint32_t cell_h;
+  uint32_t any_pressed; /* a button is held, this event's included */
+} WtMouse;
+
 typedef void (*WtEffectFn)(void *userdata, int kind, const uint8_t *data,
                            size_t len);
 
@@ -77,6 +101,8 @@ typedef struct {
   GhosttyRenderStateRowCells cells;
   GhosttyKeyEncoder encoder;
   GhosttyKeyEvent key_event;
+  GhosttyMouseEncoder mouse_encoder;
+  GhosttyMouseEvent mouse_event;
   WtEffectFn effect;
   void *userdata;
 } WtGhostty;
@@ -107,6 +133,8 @@ static void on_title(GhosttyTerminal t, void *ud) {
 
 void wt_ghostty_free(WtGhostty *g) {
   if (!g) return;
+  ghostty_mouse_event_free(g->mouse_event);
+  ghostty_mouse_encoder_free(g->mouse_encoder);
   ghostty_key_event_free(g->key_event);
   ghostty_key_encoder_free(g->encoder);
   ghostty_render_state_row_cells_free(g->cells);
@@ -125,7 +153,9 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
           GHOSTTY_SUCCESS ||
       ghostty_render_state_row_cells_new(NULL, &g->cells) != GHOSTTY_SUCCESS ||
       ghostty_key_encoder_new(NULL, &g->encoder) != GHOSTTY_SUCCESS ||
-      ghostty_key_event_new(NULL, &g->key_event) != GHOSTTY_SUCCESS) {
+      ghostty_key_event_new(NULL, &g->key_event) != GHOSTTY_SUCCESS ||
+      ghostty_mouse_encoder_new(NULL, &g->mouse_encoder) != GHOSTTY_SUCCESS ||
+      ghostty_mouse_event_new(NULL, &g->mouse_event) != GHOSTTY_SUCCESS) {
     wt_ghostty_free(g);
     return NULL;
   }
@@ -257,6 +287,84 @@ int wt_ghostty_encode_paste(WtGhostty *g, char *text, size_t len, char *out,
   return ghostty_paste_encode(text, len, bracketed, out, cap, written);
 }
 
+/* Whether DEC private mode `value` is set (9, 1000, 1004, 1049, …). */
+bool wt_ghostty_dec_mode(WtGhostty *g, uint16_t value) {
+  GhosttyTerminalModeConfig mode = {.mode = ghostty_mode_new(value, false)};
+  return ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_MODE,
+                              &mode) == GHOSTTY_SUCCESS &&
+         mode.value;
+}
+
+/* Encode a focus change; nothing (written = 0) unless the program enabled
+ * focus events (mode 1004). */
+int wt_ghostty_encode_focus(WtGhostty *g, bool gained, char *out, size_t cap,
+                            size_t *written) {
+  *written = 0;
+  if (!wt_ghostty_dec_mode(g, 1004)) return GHOSTTY_SUCCESS;
+  return ghostty_focus_encode(gained ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST,
+                              out, cap, written);
+}
+
+static GhosttyMods mods_from_wt(uint32_t mods) {
+  GhosttyMods m = 0;
+  if (mods & WT_MOD_SHIFT) m |= GHOSTTY_MODS_SHIFT;
+  if (mods & WT_MOD_CTRL) m |= GHOSTTY_MODS_CTRL;
+  if (mods & WT_MOD_ALT) m |= GHOSTTY_MODS_ALT;
+  if (mods & WT_MOD_SUPER) m |= GHOSTTY_MODS_SUPER;
+  return m;
+}
+
+/* Encode one mouse event for the terminal's current tracking mode and
+ * format (X10, SGR, …); nothing (written = 0) when the mode does not
+ * report it. Pixels right of and below the grid count as padding. */
+int wt_ghostty_encode_mouse(WtGhostty *g, const WtMouse *mouse, char *out,
+                            size_t cap, size_t *written) {
+  uint16_t cols = 1, rows = 1;
+  wt_ghostty_size(g, &cols, &rows);
+  uint32_t cell_w = mouse->cell_w ? mouse->cell_w : 1;
+  uint32_t cell_h = mouse->cell_h ? mouse->cell_h : 1;
+  uint32_t grid_w = cell_w * cols, grid_h = cell_h * rows;
+  GhosttyMouseEncoderSize size = {
+      .size = sizeof(GhosttyMouseEncoderSize),
+      .screen_width = mouse->width > grid_w ? mouse->width : grid_w,
+      .screen_height = mouse->height > grid_h ? mouse->height : grid_h,
+      .cell_width = cell_w,
+      .cell_height = cell_h,
+  };
+  size.padding_right = size.screen_width - grid_w;
+  size.padding_bottom = size.screen_height - grid_h;
+  bool any_pressed = mouse->any_pressed != 0;
+
+  ghostty_mouse_encoder_setopt_from_terminal(g->mouse_encoder, g->terminal);
+  ghostty_mouse_encoder_setopt(g->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
+                               &size);
+  ghostty_mouse_encoder_setopt(g->mouse_encoder,
+                               GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
+                               &any_pressed);
+
+  GhosttyMouseAction action = GHOSTTY_MOUSE_ACTION_PRESS;
+  if (mouse->action == WT_MOUSE_RELEASE) action = GHOSTTY_MOUSE_ACTION_RELEASE;
+  if (mouse->action == WT_MOUSE_MOTION) action = GHOSTTY_MOUSE_ACTION_MOTION;
+  ghostty_mouse_event_set_action(g->mouse_event, action);
+  switch (mouse->button) {
+    case WT_BUTTON_LEFT:
+      ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_LEFT);
+      break;
+    case WT_BUTTON_WHEEL_UP:
+      ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_FOUR);
+      break;
+    case WT_BUTTON_WHEEL_DOWN:
+      ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_FIVE);
+      break;
+    default: ghostty_mouse_event_clear_button(g->mouse_event); break;
+  }
+  ghostty_mouse_event_set_mods(g->mouse_event, mods_from_wt(mouse->mods));
+  ghostty_mouse_event_set_position(
+      g->mouse_event, (GhosttyMousePosition){.x = mouse->x, .y = mouse->y});
+  return ghostty_mouse_encoder_encode(g->mouse_encoder, g->mouse_event, out,
+                                      cap, written);
+}
+
 /* X11/GDK keysym → physical key, for the keys the encoder treats
  * specially. Printable keys outside this table go out as their text. */
 static GhosttyKey key_from_keysym(uint32_t sym) {
@@ -300,12 +408,7 @@ static GhosttyKey key_from_keysym(uint32_t sym) {
  * Kitty keyboard flags, …). */
 int wt_ghostty_encode_key(WtGhostty *g, const WtKey *key, char *out,
                           size_t cap, size_t *written) {
-  uint32_t mods = key->mods;
-  GhosttyMods m = 0;
-  if (mods & WT_MOD_SHIFT) m |= GHOSTTY_MODS_SHIFT;
-  if (mods & WT_MOD_CTRL) m |= GHOSTTY_MODS_CTRL;
-  if (mods & WT_MOD_ALT) m |= GHOSTTY_MODS_ALT;
-  if (mods & WT_MOD_SUPER) m |= GHOSTTY_MODS_SUPER;
+  GhosttyMods m = mods_from_wt(key->mods);
 
   ghostty_key_encoder_setopt_from_terminal(g->encoder, g->terminal);
   ghostty_key_event_set_action(g->key_event, GHOSTTY_KEY_ACTION_PRESS);
