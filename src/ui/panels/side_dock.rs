@@ -9,9 +9,10 @@
 //! deferred SFTP channel opens — only once the panel has it in view.
 //!
 //! The Macros panel is the window's [`MacrosPanel`](super::macros_panel)
-//! (doc 12). `toggle_session_tree` can hide the panel (doc 11 §Handlers);
-//! picking any tab shows it again. [`DockPage`] and [`toggle_target`] are
-//! display-free.
+//! (doc 12). A click on the active tab collapses the panel, leaving the
+//! strip, as `toggle_session_tree` can (doc 11 §Handlers); no tab shows
+//! active while it is collapsed, and picking any tab shows it again.
+//! [`DockPage`] and [`toggle_target`] are display-free.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -97,6 +98,9 @@ struct DockInner {
     current: Cell<DockPage>,
     /// The last panel other than SFTP, where `toggle_sftp` returns.
     previous: Cell<DockPage>,
+    /// Set by a tab's activation, so the click that caused it does not
+    /// also count as a click on the active tab.
+    switched: Cell<bool>,
 }
 
 impl SideDock {
@@ -147,6 +151,7 @@ impl SideDock {
             sftp,
             current: Cell::new(DockPage::Sessions),
             previous: Cell::new(DockPage::Sessions),
+            switched: Cell::new(false),
         });
         inner.connect_signals(notebook);
         inner.host(current_page(notebook).as_ref());
@@ -181,6 +186,7 @@ impl SideDock {
         if let Some((_, button)) = self.inner.tabs.iter().find(|(p, _)| *p == page) {
             button.set_active(true);
         }
+        self.inner.switched.set(false);
         self.inner.show_panel();
     }
 
@@ -200,7 +206,7 @@ impl SideDock {
     /// in view (the caller moves focus into the tree).
     pub fn toggle_sessions(&self) -> bool {
         if self.inner.stack.is_visible() && self.current() == DockPage::Sessions {
-            self.inner.stack.set_visible(false);
+            self.inner.hide_panel();
             false
         } else {
             self.select(DockPage::Sessions);
@@ -215,14 +221,28 @@ impl DockInner {
             let (page, weak) = (*page, Rc::downgrade(self));
             button.connect_toggled(move |button| {
                 if let (true, Some(inner)) = (button.is_active(), weak.upgrade()) {
+                    inner.switched.set(true);
                     inner.on_selected(page);
                 }
             });
-            // Even the active tab's click: it brings a hidden panel back.
-            let weak = Rc::downgrade(self);
+            // Runs after the toggle: a click that switched panels shows the
+            // panel, a click on the active tab collapses it.
+            let (weak, notebook) = (Rc::downgrade(self), notebook.downgrade());
             button.connect_clicked(move |_| {
-                if let Some(inner) = weak.upgrade() {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                if inner.switched.replace(false) || !inner.stack.is_visible() {
                     inner.show_panel();
+                    return;
+                }
+                inner.hide_panel();
+                // The collapsed panel took focus with it.
+                let terminal = notebook
+                    .upgrade()
+                    .and_then(|n| SessionTab::active_terminal(&n));
+                if let Some(terminal) = terminal {
+                    terminal.widget().grab_focus();
                 }
             });
         }
@@ -242,6 +262,14 @@ impl DockInner {
                 inner.host(current_page(notebook).as_ref());
             }
         });
+    }
+
+    /// Collapse the panel to the strip, no tab active, until a tab is picked.
+    fn hide_panel(&self) {
+        self.stack.set_visible(false);
+        for (_, button) in &self.tabs {
+            button.set_active(false);
+        }
     }
 
     /// Show a hidden panel; SFTP, if current, comes into view.
@@ -396,7 +424,8 @@ pub(in crate::ui) mod gtk_tests {
     }
 
     /// One icon-only tab per panel, named by its tooltip; a tab switches
-    /// the panel, and `toggle_sftp` goes to SFTP and back.
+    /// the panel, a click on the active tab collapses it, and
+    /// `toggle_sftp` goes to SFTP and back.
     pub(in crate::ui) fn icon_tabs_switch_the_panel() {
         let notebook = gtk4::Notebook::new();
         let tree = gtk4::Label::new(Some("tree"));
@@ -422,7 +451,7 @@ pub(in crate::ui) mod gtk_tests {
             Some(tree.upcast_ref())
         );
 
-        tabs[1].1.set_active(true);
+        tabs[1].1.emit_clicked();
         assert_eq!(dock.current(), DockPage::Macros);
         assert_eq!(visible().as_deref(), Some("macros"));
         assert_eq!(
@@ -431,6 +460,24 @@ pub(in crate::ui) mod gtk_tests {
         );
         assert!(!tabs[0].1.is_active(), "one tab at a time");
 
+        let panel_shown = || dock.panel().is_visible();
+        let none_active = || tabs.iter().all(|(_, button)| !button.is_active());
+        tabs[1].1.emit_clicked();
+        assert!(!panel_shown(), "a click on the active tab collapses it");
+        assert!(none_active());
+        assert!(dock.strip().is_visible(), "the tabs stay");
+        tabs[1].1.emit_clicked();
+        assert!(panel_shown(), "and a second click brings it back");
+        assert_eq!(dock.current(), DockPage::Macros);
+        assert!(tabs[1].1.is_active());
+        tabs[1].1.emit_clicked();
+        tabs[0].1.emit_clicked();
+        assert!(panel_shown(), "any tab brings it back");
+        assert_eq!(dock.current(), DockPage::Sessions);
+        tabs[1].1.emit_clicked();
+        assert!(panel_shown(), "a switching click never collapses");
+        assert_eq!(dock.current(), DockPage::Macros);
+
         dock.toggle_sftp();
         assert_eq!(visible().as_deref(), Some("sftp"));
         assert!(tabs[2].1.is_active());
@@ -438,14 +485,15 @@ pub(in crate::ui) mod gtk_tests {
         assert_eq!(dock.current(), DockPage::Macros, "back where it came from");
 
         // `toggle_session_tree`: to Sessions, then hide, then back.
-        let panel_shown = || dock.panel().is_visible();
         assert!(dock.toggle_sessions());
         assert_eq!(dock.current(), DockPage::Sessions);
         assert!(!dock.toggle_sessions());
         assert!(!panel_shown(), "a second toggle hides the panel");
+        assert!(none_active());
         tabs[0].1.emit_clicked();
-        assert!(panel_shown(), "a click on the active tab brings it back");
-        dock.inner.stack.set_visible(false);
+        assert!(panel_shown(), "a click on the tab brings it back");
+        assert!(tabs[0].1.is_active());
+        dock.inner.hide_panel();
         dock.toggle_sftp();
         assert!(panel_shown());
         assert_eq!(
@@ -453,7 +501,7 @@ pub(in crate::ui) mod gtk_tests {
             DockPage::Sftp,
             "a hidden panel returns on SFTP"
         );
-        dock.inner.stack.set_visible(false);
+        dock.inner.hide_panel();
         assert!(dock.toggle_sessions(), "a hidden panel returns on Sessions");
         assert!(panel_shown());
     }
@@ -514,11 +562,11 @@ pub(in crate::ui) mod gtk_tests {
         dock.select(DockPage::Sessions);
         reveal_sftp(&notebook, local.upcast_ref());
         assert_eq!(dock.current(), DockPage::Sessions, "a background tab");
-        dock.inner.stack.set_visible(false);
+        dock.inner.hide_panel();
         reveal_sftp(&notebook, ssh.upcast_ref());
         assert_eq!(dock.current(), DockPage::Sessions, "the panel stays hidden");
         assert!(!dock.panel().is_visible());
-        dock.inner.stack.set_visible(true);
+        dock.select(DockPage::Sessions);
         reveal_sftp(&notebook, ssh.upcast_ref());
         assert_eq!(dock.current(), DockPage::Sftp);
 

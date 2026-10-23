@@ -130,7 +130,8 @@ table has one.
   from (doc 07 §Layout).
 - `toggle_session_tree`: hides the dock's panel while it shows Sessions;
   otherwise shows the panel on Sessions and moves focus into the tree.
-  Picking any dock tab brings a hidden panel back; while it is hidden,
+  A click on the active dock tab hides the panel too, and picking any
+  dock tab brings a hidden panel back; while it is hidden,
   `sftp_on_connect` leaves it hidden.
 - `toggle_fullscreen`: the window's fullscreen state.
 - `reconnect`, `disconnect`: the current tab's connection (doc 03
