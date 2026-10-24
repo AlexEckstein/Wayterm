@@ -297,23 +297,23 @@ update this section and the comment in `build.rs` together.
 | | |
 |---|---|
 | Upstream | <https://github.com/ghostty-org/ghostty> |
-| Commit | `22fa134a07f5749edd9e92c6bc17d8aaf61843be` (2026-10-15) |
-| Zig | 0.16.0 (`minimum_zig_version` in upstream `build.zig.zon`) |
+| Commit | `22f100c6367045bb5fc86172f837047dee2f7670` (2026-10-23) |
+| Zig | 0.17.0 (`minimum_zig_version` in upstream `build.zig.zon`) |
 | Library version | `0.1.0-dev` (upstream pkg-config) |
 
 Build it outside the Wayterm checkout:
 
 ```sh
-# Zig 0.16.0, user-local (sha256 from ziglang.org/download/index.json:
-# 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00)
-curl -LO https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-tar -xJf zig-x86_64-linux-0.16.0.tar.xz -C ~/.local/zig
-ln -s ~/.local/zig/zig-x86_64-linux-0.16.0/zig ~/.local/bin/zig
+# Zig 0.17.0, user-local (sha256 from ziglang.org/download/index.json:
+# 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026)
+curl -LO https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+tar -xJf zig-x86_64-linux-0.17.0.tar.xz -C ~/.local/zig
+ln -sf ~/.local/zig/zig-x86_64-linux-0.17.0/zig ~/.local/bin/zig
 
 git clone https://github.com/ghostty-org/ghostty.git ghostty-build
 cd ghostty-build
-git checkout --detach 22fa134a07f5749edd9e92c6bc17d8aaf61843be
-zig build -Demit-lib-vt -Doptimize=ReleaseFast --prefix "$PWD/out"
+git checkout --detach 22f100c6367045bb5fc86172f837047dee2f7670
+zig build -Demit-lib-vt -Doptimize=fast --prefix "$PWD/out"
 ```
 
 `zig build` fetches upstream's own hash-pinned dependencies into
@@ -366,15 +366,15 @@ until a final OSC 2 title shows it processed everything, so its figure
 includes the main-loop scheduling of its input processing, which is what a
 tab sees.
 
-Pinned commit `22fa134a`, release build, AMD Ryzen 9 3900X, VTE 0.80.1,
+Pinned commit `22f100c6`, release build, AMD Ryzen 5 PRO 4650U, VTE 0.84.1,
 two runs agreeing within 10%:
 
 | Corpus | libghostty-vt MiB/s | VTE MiB/s | Ratio |
 |---|---|---|---|
-| plain text lines | 664 | 99 | 6.7× |
-| SGR colors (16, 256, truecolor) | 84 | 54 | 1.5× |
-| cursor-addressed redraws (`top`-like) | 251 | 129 | 2.0× |
-| multi-byte UTF-8 (CJK, accents, emoji) | 237 | 54 | 4.4× |
+| plain text lines | 420 | 64 | 6.5× |
+| SGR colors (16, 256, truecolor) | 54 | 31 | 1.7× |
+| cursor-addressed redraws (`top`-like) | 174 | 83 | 2.1× |
+| multi-byte UTF-8 (CJK, accents, emoji) | 143 | 32 | 4.4× |
 
 ## Limitations
 
