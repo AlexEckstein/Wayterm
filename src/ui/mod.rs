@@ -9,6 +9,7 @@ pub mod panels;
 pub mod settings;
 pub mod status_bar;
 pub mod tabs;
+pub mod translucency;
 pub mod tray;
 pub mod widgets;
 pub use main_window::MainWindow;
@@ -79,6 +80,7 @@ mod gtk_tests {
         super::tabs::gtk_tests::terminals_follow_the_color_scheme_and_system_theme();
         super::appearance::gtk_tests::user_css_reloads_when_its_files_change();
         super::appearance::gtk_tests::the_chrome_follows_the_desktop_preference();
+        super::translucency::gtk_tests::a_translucent_terminal_clears_the_window_under_it();
         super::tabs::vnc::gtk_tests::vnc_view_draws_and_routes_input();
         super::tabs::rdp::gtk_tests::rdp_embed_builds_and_tracks();
         super::tabs::rdp::gtk_tests::rdp_child_follows_the_area_and_dies_with_the_page();

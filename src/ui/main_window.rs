@@ -25,6 +25,7 @@ use crate::ui::status_bar::StatusBar;
 use crate::ui::tabs::restore::TabPersistence;
 use crate::ui::tabs::{self, terminal_actions};
 use crate::ui::tabs::{current_page, SessionTab};
+use crate::ui::translucency::{self, CHROME_CLASS};
 use crate::ui::widgets::{data, set_data};
 use crate::ui::{appearance, settings};
 
@@ -90,6 +91,17 @@ pub(crate) fn route_status(
     }
 }
 
+/// `children` in a box that keeps the theme's background, margins
+/// included, while the window drops its own (doc 02 §Opacity).
+fn chrome(orientation: gtk4::Orientation, children: &[&gtk4::Widget]) -> gtk4::Box {
+    let chrome = gtk4::Box::new(orientation, 0);
+    chrome.add_css_class(CHROME_CLASS);
+    for child in children {
+        chrome.append(*child);
+    }
+    chrome
+}
+
 pub struct MainWindow {
     window: gtk4::ApplicationWindow,
 }
@@ -108,6 +120,7 @@ impl MainWindow {
         tabs::bar::install(&notebook, &store);
 
         appearance::track(&notebook);
+        translucency::install();
         settings::general::apply(&store);
 
         let session_tree = {
@@ -131,9 +144,12 @@ impl MainWindow {
         paned.set_hexpand(true);
         // The strip stays outside the paned, so dragging the panel shut
         // never hides the tabs.
+        let separator = gtk4::Separator::new(gtk4::Orientation::Vertical);
         let body = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-        body.append(dock.strip());
-        body.append(&gtk4::Separator::new(gtk4::Orientation::Vertical));
+        body.append(&chrome(
+            gtk4::Orientation::Horizontal,
+            &[dock.strip(), separator.upcast_ref()],
+        ));
         body.append(&paned);
 
         let status_bar = Rc::new(StatusBar::new());
@@ -164,11 +180,12 @@ impl MainWindow {
         header.set_margin_end(8);
         header.append(&tunnels_button);
         header.append(&settings_button);
+        dock.panel().add_css_class(CHROME_CLASS);
 
         let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        root.append(&header);
+        root.append(&chrome(gtk4::Orientation::Vertical, &[header.upcast_ref()]));
         root.append(&body);
-        root.append(status_bar.widget());
+        root.append(&chrome(gtk4::Orientation::Vertical, &[status_bar.widget()]));
 
         let window = gtk4::ApplicationWindow::builder()
             .application(app)
@@ -430,6 +447,7 @@ pub(super) mod gtk_tests {
         window
             .child()
             .and_then(|root| root.last_child())
+            .and_then(|row| row.first_child())
             .and_then(|bar| bar.last_child())
             .and_downcast::<gtk4::Label>()
             .expect("the status label")
