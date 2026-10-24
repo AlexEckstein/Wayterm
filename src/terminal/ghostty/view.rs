@@ -824,7 +824,9 @@ mod ghostty_display {
     use crate::macros::recorder::is_pointer_or_focus_report;
     use crate::terminal::{
         create_terminal, install_backend_preference, BackendKind, GhosttyBackend, TerminalBackend,
+        TRANSLUCENT_CLASS,
     };
+    use crate::ui::translucency::gtk_tests::alpha_at;
     use tokio::sync::mpsc;
 
     /// The view paints a frame, reports its grid once allocated, and turns
@@ -855,6 +857,22 @@ mod ghostty_display {
             "{events:?}"
         );
         assert_eq!(view.imp().frame.borrow().row_text(0).trim_end(), "hello");
+
+        // Opacity fades the default background only.
+        backend.write(b"\r\n\x1b[41m  \x1b[0m");
+        backend.set_opacity(0.5);
+        assert!(view.has_css_class(TRANSLUCENT_CLASS));
+        // The paintable reads the last frame drawn: let the clock tick.
+        for _ in 0..50 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let (cell_w, cell_h) = view.cell_size();
+        let faded = alpha_at(&view, view.width() - 2, view.height() - 2);
+        assert!((120..=135).contains(&faded), "default background {faded}");
+        assert_eq!(alpha_at(&view, cell_w / 2, cell_h + cell_h / 2), 255);
+        backend.set_opacity(1.0);
+        assert!(!view.has_css_class(TRANSLUCENT_CLASS));
 
         assert!(view.key(gdk::Key::a, gdk::ModifierType::empty()));
         assert_eq!(
