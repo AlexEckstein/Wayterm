@@ -12,7 +12,8 @@ Two kinds of backend fit behind it:
 
 Code: `src/terminal/` (backends, color schemes), `src/backpressure.rs`
 (the never-blocking sender), `src/ui/tabs/terminal_actions.rs` (copy, paste,
-search), `src/ui/appearance.rs` (applying color schemes).
+search), `src/ui/appearance.rs` (applying color schemes),
+`src/ui/translucency.rs` (the window under a translucent terminal).
 
 ## The trait
 
@@ -131,7 +132,11 @@ flow control (doc 01 §Threading model).
   scrollback.
 - **SIXEL** is reported from the runtime VTE version (≥ 0.62), never
   hardcoded. VTE has no Kitty graphics.
-- **Opacity** is a no-op: the GTK4 binding has no `set_opacity`.
+- **Opacity** is the default background's alpha
+  (`set_color_background`), kept across scheme changes (§Opacity).
+  VTE's own stylesheet paints the widget's CSS background under the
+  cells, so a display-wide rule above its priority clears it while the
+  widget is translucent.
 
 ### Scrollback
 
@@ -187,6 +192,26 @@ created, and again for every open terminal when the global row changes
 (Settings' "Default color scheme") or the desktop theme does. Backends
 without color schemes (Ghostty) ignore the call. The window chrome follows
 the same preference (doc 13 §Window theme).
+
+## Opacity
+
+`set_opacity` takes 0 (clear) to 1 (opaque); values outside are clamped
+and NaN counts as opaque. Only the terminal's default background fades:
+cells a program colors, the selection and the cursor stay opaque, as in
+GNOME Terminal. Text is always opaque.
+
+A backend's widget carries the `wayterm-translucent` CSS class while its
+opacity is below 1. The desktop shows through only if nothing under the
+terminal paints, so `src/ui/translucency.rs` follows each tab's terminal
+widget (`follow`, from the connect flow): while a translucent terminal is
+mapped — a notebook maps only its current page — its window carries
+`wayterm-see-through`, which clears the window's background and the
+notebook's page area. The chrome around the tabs (the header row, the
+dock strip and panel, the status bar) carries `wayterm-chrome` and keeps
+the theme's background. Switching to another tab, closing the tab or
+setting opacity back to 1 restores the window. A new part of the window
+outside the tabs needs `wayterm-chrome`, or it goes see-through with the
+window.
 
 ## Window titles
 
@@ -260,7 +285,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   press, so macros work unchanged; `paste` is bracketed when the program
   enabled mode 2004. `clear` and `reset` both fully reset, as VTE's
   `clear` does. `set_size` resizes the grid and makes it the widget's
-  natural size.
+  natural size. `set_opacity` paints the frame's background rectangle
+  with that alpha; colored cell runs stay opaque (§Opacity).
 
 ### libghostty-vt pin
 
@@ -356,13 +382,17 @@ two runs agreeing within 10%:
   `default_font_family`, `default_font_size`, `default_opacity` and
   `scrollback_limit` rows and the per-session `font_family`, `font_size`
   and `opacity` columns are stored, but no tab reads them: terminals use
-  the backend's own defaults.
+  the backend's own defaults. Both backends implement `set_opacity`
+  (§Opacity), but nothing calls it yet.
+- **Opacity needs a compositor.** Every Wayland session has one; on X11
+  without a compositing manager the cleared areas draw dark instead of
+  showing the desktop.
 - **The per-session `terminal_backend` override is not read:**
   `create_terminal()` follows the global row only.
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
-- **VTE:** no opacity; no Kitty graphics.
-- **Ghostty:** no search, color schemes, opacity, URL detection or image
+- **VTE:** no Kitty graphics.
+- **Ghostty:** no search, color schemes, URL detection or image
   drawing (`features()` says so, and the UI hides them); no input method
   or compose support; only a grapheme's base codepoint is drawn; mouse
   reporting covers the primary button and the wheel only, so middle and
