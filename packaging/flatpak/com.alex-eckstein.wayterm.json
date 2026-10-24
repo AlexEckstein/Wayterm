@@ -1,0 +1,74 @@
+{
+  "id": "com.alex-eckstein.wayterm",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "47",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "wayterm",
+  "finish-args": [
+    "--share=ipc",
+    "--share=network",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--device=dri",
+    "--socket=pulseaudio",
+    "--talk-name=org.freedesktop.secrets",
+    "--filesystem=home"
+  ],
+  "modules": [
+    {
+      "name": "vte",
+      "buildsystem": "meson",
+      "config-opts": [
+        "-Dgtk3=false",
+        "-Dgtk4=true",
+        "-Dgir=false",
+        "-Dvapi=false",
+        "-Dglade=false",
+        "-Ddocs=false",
+        "-D_systemd=false"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://download.gnome.org/sources/vte/0.78/vte-0.78.7.tar.xz",
+          "sha256": "6fd1edc332d9f9519ce4c0f07135fdf72d64dfd990dc4fabc6ce91b1b7e83dd0"
+        }
+      ]
+    },
+    {
+      "name": "wayterm",
+      "buildsystem": "simple",
+      "build-options": {
+        "append-path": "/usr/lib/sdk/rust-stable/bin",
+        "build-args": [
+          "--share=network"
+        ],
+        "env": {
+          "CARGO_HOME": "/run/build/wayterm/cargo"
+        }
+      },
+      "build-commands": [
+        "cargo build --release --locked",
+        "install -Dm755 target/release/wayterm /app/bin/wayterm",
+        "install -Dm644 packaging/desktop/com.alex-eckstein.wayterm.desktop /app/share/applications/com.alex-eckstein.wayterm.desktop",
+        "install -Dm644 packaging/metainfo/com.alex-eckstein.wayterm.appdata.xml /app/share/metainfo/com.alex-eckstein.wayterm.appdata.xml",
+        "install -Dm644 assets/icons/scalable/apps/com.alex-eckstein.wayterm.svg /app/share/icons/hicolor/scalable/apps/com.alex-eckstein.wayterm.svg",
+        "for s in 64 128 256; do install -Dm644 assets/icons/hicolor/${s}x${s}/apps/com.alex-eckstein.wayterm.png /app/share/icons/hicolor/${s}x${s}/apps/com.alex-eckstein.wayterm.png; done"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../..",
+          "skip": [
+            "target",
+            ".flatpak-builder",
+            "build-dir"
+          ]
+        }
+      ]
+    }
+  ]
+}

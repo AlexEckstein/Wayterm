@@ -1,0 +1,89 @@
+[package]
+name = "wayterm"
+version = "0.1.0"
+edition = "2021"
+description = "An open source, multi-protocol connection manager and terminal for Linux"
+license = "MIT"
+
+[lib]
+name = "wayterm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wayterm"
+path = "src/main.rs"
+
+[dependencies]
+gtk4 = { version = "0.11", features = ["v4_14"] }
+# v0_72 unlocks `text_range_format` (full-buffer scrollback extraction,
+# doc 02 §Scrollback). Requires VTE >= 0.72 at runtime — the GTK4 VTE
+# package only exists from Debian bookworm / Ubuntu 23.04 on, both ≥ 0.72.
+vte4 = { version = "0.10", features = ["v0_70", "v0_72"] }
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+russh = "0.64"
+async-trait = "0.1"
+tokio-util = "0.7"
+zeroize = "1"
+sha2 = "0.11"
+thiserror = "2"
+russh-sftp = "3.0"
+ksni = "0.3"
+libc = "0.2"
+serialport = { version = "4.10.1", default-features = false }
+vnc-rs = "0.6"
+x11rb = "0.14"
+gdk4-x11 = "0.11"
+serde_yaml_ng = "0.10"
+# Secret Service / Flatpak portal keyring (doc 05).
+oo7 = "0.6"
+pollster = "1.0"
+
+[build-dependencies]
+# Compiles the libghostty-vt shim (src/terminal/ghostty/shim.c); only with
+# the backend-ghostty feature.
+cc = { version = "1", optional = true }
+
+[features]
+# Experimental second terminal backend over libghostty-vt (doc 02).
+# Off by default; needs the pinned library built locally
+# (doc 02 §libghostty-vt pin).
+backend-ghostty = ["dep:cc"]
+
+# VTE vs libghostty-vt parse throughput (doc 02 §Benchmark). A plain
+# `harness = false` loop: a bench framework would be a dev-dependency built
+# into every default test build, feature or not.
+[[bench]]
+name = "terminal_parse"
+harness = false
+required-features = ["backend-ghostty"]
+
+[dev-dependencies]
+des = "0.9"
+tempfile = "3"
+# test-util enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,
+# which the reconnect driver's backoff tests use to assert the doc 03 curve
+# against virtual time (doc 03 §Lifecycle).
+tokio = { version = "1", features = ["test-util"] }
+
+[package.metadata.deb]
+maintainer = "Alex Eckstein <alexceckstein@gmail.com>"
+section = "net"
+priority = "optional"
+extended-description = """\
+An open source, multi-protocol connection manager and terminal for Linux, \
+in the spirit of MobaXterm but built for a desktop that already has the \
+tools: saved sessions in a tree, tabbed SSH terminals with an SFTP sidebar, \
+local shell and serial tabs, embedded RDP and VNC tabs, and configurable \
+hotkeys."""
+assets = [
+    ["target/release/wayterm", "usr/bin/", "755"],
+    ["packaging/desktop/com.alex-eckstein.wayterm.desktop", "usr/share/applications/", "644"],
+    ["packaging/metainfo/com.alex-eckstein.wayterm.appdata.xml", "usr/share/metainfo/", "644"],
+    ["assets/icons/scalable/apps/com.alex-eckstein.wayterm.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["assets/icons/hicolor/64x64/apps/com.alex-eckstein.wayterm.png", "usr/share/icons/hicolor/64x64/apps/", "644"],
+    ["assets/icons/hicolor/128x128/apps/com.alex-eckstein.wayterm.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+    ["assets/icons/hicolor/256x256/apps/com.alex-eckstein.wayterm.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+]

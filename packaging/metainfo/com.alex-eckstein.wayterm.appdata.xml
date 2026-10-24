@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.alex-eckstein.wayterm</id>
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Wayterm</name>
+  <summary>An open source, multi-protocol connection manager and terminal for Linux</summary>
+  <description>
+    <p>
+      An open source, multi-protocol connection manager and terminal for
+      Linux, in the spirit of MobaXterm but built for a desktop that already
+      has the tools: saved sessions in a tree, tabbed SSH terminals with an
+      SFTP sidebar, local shell and serial tabs, embedded RDP and VNC tabs,
+      and configurable hotkeys.
+    </p>
+  </description>
+  <developer id="com.alex-eckstein">
+    <name>Alex Eckstein</name>
+  </developer>
+  <url type="homepage">https://github.com/AlexEckstein/Wayterm</url>
+  <launchable type="desktop-id">com.alex-eckstein.wayterm.desktop</launchable>
+  <provides>
+    <binary>wayterm</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" type="stable" date="2026-10-11">
+      <description>
+        <p>First packaged release; see GitHub for details.</p>
+      </description>
+    </release>
+  </releases>
+</component>

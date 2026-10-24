@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # weekly cargo audit (Fri 09:17 UTC, off-peak)
+    - cron: "17 9 * * 5"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  detect:
+    name: Detect project structure
+    runs-on: ubuntu-latest
+    outputs:
+      has_rust: ${{ steps.detect.outputs.has_rust }}
+      has_lock: ${{ steps.detect.outputs.has_lock }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Which components exist
+        id: detect
+        run: |
+          if [ -f Cargo.toml ]; then
+            echo "has_rust=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "has_rust=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -f Cargo.lock ]; then
+            echo "has_lock=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "has_lock=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  docs:
+    name: Docs — cross-reference check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate relative links across design docs
+        run: |
+          python3 - <<'EOF'
+          import os, re, sys
+
+          md_files = []
+          for root, _, files in os.walk("."):
+              if ".git" in root:
+                  continue
+              for f in files:
+                  if f.endswith(".md"):
+                      md_files.append(os.path.join(root, f))
+
+          # relative markdown links: [text](target.md) or [text](target.md#anchor)
+          link_re = re.compile(r"\[[^\]]*\]\(([^)]+?)(?:#[^)]*)?\)")
+          broken = []
+          for src in md_files:
+              text = open(src, encoding="utf-8").read()
+              for m in link_re.finditer(text):
+                  target = m.group(1)
+                  if target.startswith(("http://", "https://", "mailto:", "#")):
+                      continue
+                  resolved = os.path.normpath(os.path.join(os.path.dirname(src), target))
+                  if not os.path.exists(resolved):
+                      broken.append(f"{src}: -> {target}")
+
+          if broken:
+              print("BROKEN LINKS:")
+              print("\n".join(broken))
+              sys.exit(1)
+          print(f"OK: all relative links resolve across {len(md_files)} markdown files")
+          EOF
+
+  rust:
+    name: Rust fmt / clippy / test (+ sshd)
+    runs-on: ubuntu-latest
+    needs: [detect]
+    # job-level hashFiles() is unavailable before checkout, hence `detect`
+    if: needs.detect.outputs.has_rust == 'true'
+    env:
+      # Full debug info makes each GTK test binary ~280 MB, and the ~20 of
+      # them filled the runner's disk (`ld` bus errors, "No space left on
+      # device"). Line tables keep file:line in panics and backtraces.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      # Preinstalled toolchains this job never uses take well over 10 GB.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Install GTK4 / VTE build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev libvte-2.91-gtk4-dev \
+            libsqlite3-dev libsecret-1-dev \
+            openssh-server
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Unit, display-free integration, and doc tests; the sshd-gated suites
+      # skip themselves until SSH_TEST_* is provisioned below.
+      - name: Tests
+        run: cargo test
+
+      # ── Transport integration tests against a real sshd (doc 15) ──
+      - name: Provision test sshd
+        run: |
+          sudo useradd -m -s /bin/bash wayterm-test
+          PASS=$(openssl rand -hex 16)
+          echo "wayterm-test:$PASS" | sudo chpasswd
+          sudo ssh-keygen -A
+          sudo mkdir -p /home/wayterm-test/.ssh
+          ssh-keygen -t ed25519 -N "" -f "$HOME/test_key" -C wayterm-ci
+          sudo cp "$HOME/test_key.pub" /home/wayterm-test/.ssh/authorized_keys
+          sudo chown -R wayterm-test:wayterm-test /home/wayterm-test/.ssh
+          sudo chmod 700 /home/wayterm-test/.ssh
+          sudo chmod 600 /home/wayterm-test/.ssh/authorized_keys
+          sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
+          sudo systemctl start sshd 2>/dev/null || sudo service ssh start
+          # Export for the test step via GITHUB_ENV (ephemeral, throwaway creds)
+          echo "SSH_TEST_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "SSH_TEST_PORT=22"        >> "$GITHUB_ENV"
+          echo "SSH_TEST_USER=wayterm-test" >> "$GITHUB_ENV"
+          echo "SSH_TEST_PASSWORD=$PASS" >> "$GITHUB_ENV"
+          echo "SSH_TEST_KEY_PATH=$HOME/test_key" >> "$GITHUB_ENV"
+          chmod 600 "$HOME/test_key"
+
+      - name: Integration tests (real sshd)
+        run: cargo test --test transport_sshd -- --test-threads=1
+
+  audit:
+    name: Cargo audit (weekly advisory sweep)
+    runs-on: ubuntu-latest
+    needs: [detect]
+    if: github.event_name == 'schedule' && needs.detect.outputs.has_lock == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
