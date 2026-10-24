@@ -81,8 +81,10 @@ drag moves, folder cycles), SFTP sidebar, side dock, host picker, macro
 editor and panel (record and play through a real VTE), icons, folder
 dialog, Settings window, tab focus and close behavior, a local-shell tab
 that connects and closes, color schemes and the system theme, the user
-stylesheet reload, the VNC view, RDP embedding, the tab bar's "+", and that
-every shortcut has a window action.
+stylesheet reload, terminal opacity (the rendered alpha of a VTE terminal
+and of the window under it, across tab switches), the VNC view, RDP
+embedding, the tab bar's "+", and that every shortcut has a window
+action.
 
 Other ignored display tests: VTE scrollback extraction
 (`tests/terminal_polish.rs`) and the Ghostty widget

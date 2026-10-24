@@ -32,6 +32,7 @@ use crate::ui::tabs::ended::{self, EndedChoice};
 use crate::ui::tabs::label;
 use crate::ui::tabs::resilience;
 use crate::ui::tabs::terminal_tab::TerminalTab;
+use crate::ui::translucency;
 use crate::ui::tray;
 use crate::ui::widgets::{centered_label, data, data_or_default, window_of};
 
@@ -78,6 +79,7 @@ pub(super) async fn finish_connect(
     let backend = handle.backend.clone();
     appearance::apply_to(&*backend, session.color_scheme.as_deref());
     let widget = backend.widget();
+    translucency::follow(&widget);
     set_terminal_area(page, &widget);
     for _ in 0..ALLOC_WAIT_STEPS {
         if widget.width() > 0 && widget.height() > 0 {

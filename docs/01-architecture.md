@@ -22,7 +22,10 @@ map; each feature has its own doc (§Documents).
 `src/ui/main_window.rs` builds it and owns the window-wide connection
 supervisor (doc 04 §Connection supervisor) and the router that decides
 which tab drives the status bar (doc 03 §Status bar). The header bar holds
-**Tunnels…** (doc 04 §Tunnels dialog) and **Settings** (doc 13).
+**Tunnels…** (doc 04 §Tunnels dialog) and **Settings** (doc 13). The
+header row, the dock and the status bar carry `wayterm-chrome`, so they
+stay opaque when the window clears its background under a translucent
+terminal (doc 02 §Opacity).
 
 ### Side dock
 
@@ -123,7 +126,7 @@ These are module boundaries; changing one is an orchestration decision
 | `transfer` | session import and export | 10 |
 | `hotkeys` | action registry, conflicts, defaults, triggers, persistence | 11 |
 | `macros` | macro model, recorder, input tap, key notation, playback | 12 |
-| `ui` | the window, settings, status bar, tray, appearance; `ui::tabs` (tab pages, connect flows, lifecycle, labels, restore), `ui::dialogs`, `ui::panels` (side dock, session tree, SFTP sidebar, macros panel and editor) | 01, 03, 07, 09, 11, 12, 13 |
+| `ui` | the window, settings, status bar, tray, appearance, translucency; `ui::tabs` (tab pages, connect flows, lifecycle, labels, restore), `ui::dialogs`, `ui::panels` (side dock, session tree, SFTP sidebar, macros panel and editor) | 01, 03, 07, 09, 11, 12, 13 |
 
 ## Documents
 

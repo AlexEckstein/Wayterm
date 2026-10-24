@@ -19,7 +19,9 @@ use gtk4::prelude::*;
 use gtk4::{pango, Widget};
 use tokio::sync::mpsc;
 
-use super::backend::{TerminalBackend, TerminalEvent, TerminalFeatures};
+use super::backend::{
+    clamp_opacity, mark_translucent, TerminalBackend, TerminalEvent, TerminalFeatures,
+};
 use super::vte::EventSender;
 use engine::{Effect, Engine, Scroll};
 use view::GhosttyView;
@@ -126,8 +128,11 @@ impl TerminalBackend for GhosttyBackend {
         self.view.set_font(font_desc);
     }
 
-    /// A no-op, as for VTE.
-    fn set_opacity(&self, _opacity: f64) {}
+    fn set_opacity(&self, opacity: f64) {
+        let opacity = clamp_opacity(opacity);
+        self.view.set_opacity(opacity as f32);
+        mark_translucent(&self.view, opacity);
+    }
 
     fn set_scrollback_limit(&self, lines: u32) {
         self.engine()

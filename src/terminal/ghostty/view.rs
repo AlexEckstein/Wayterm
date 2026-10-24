@@ -45,6 +45,8 @@ mod imp {
         pub(super) shared: RefCell<Option<Rc<Shared>>>,
         pub(super) frame: RefCell<Frame>,
         pub(super) font: RefCell<Option<pango::FontDescription>>,
+        /// The default background's alpha; colored cells stay opaque.
+        pub(super) opacity: Cell<f32>,
         /// Cell size in pixels; recomputed after a font change.
         pub(super) cell: Cell<Option<(i32, i32)>>,
         /// The grid asked for by `set_size`: the natural size.
@@ -105,6 +107,7 @@ impl GhosttyView {
         let view: Self = glib::Object::new();
         let imp = view.imp();
         imp.requested.set(shared.engine.size());
+        imp.opacity.set(1.0);
         imp.shared.replace(Some(shared));
         view.set_focusable(true);
         view.set_hexpand(true);
@@ -122,6 +125,11 @@ impl GhosttyView {
         self.imp().font.replace(Some(font.clone()));
         self.imp().cell.set(None);
         self.queue_resize();
+        self.queue_draw();
+    }
+
+    pub(super) fn set_opacity(&self, opacity: f32) {
+        self.imp().opacity.set(opacity);
         self.queue_draw();
     }
 
@@ -447,7 +455,7 @@ impl GhosttyView {
         let (cell_w, cell_h) = self.cell_size();
         let (cw, ch) = (cell_w as f32, cell_h as f32);
         snapshot.append_color(
-            &rgba(info.bg, 1.0),
+            &rgba(info.bg, self.imp().opacity.get()),
             &graphene::Rect::new(0.0, 0.0, self.width() as f32, self.height() as f32),
         );
 
@@ -816,7 +824,9 @@ mod ghostty_display {
     use crate::macros::recorder::is_pointer_or_focus_report;
     use crate::terminal::{
         create_terminal, install_backend_preference, BackendKind, GhosttyBackend, TerminalBackend,
+        TRANSLUCENT_CLASS,
     };
+    use crate::ui::translucency::gtk_tests::alpha_at;
     use tokio::sync::mpsc;
 
     /// The view paints a frame, reports its grid once allocated, and turns
@@ -847,6 +857,22 @@ mod ghostty_display {
             "{events:?}"
         );
         assert_eq!(view.imp().frame.borrow().row_text(0).trim_end(), "hello");
+
+        // Opacity fades the default background only.
+        backend.write(b"\r\n\x1b[41m  \x1b[0m");
+        backend.set_opacity(0.5);
+        assert!(view.has_css_class(TRANSLUCENT_CLASS));
+        // The paintable reads the last frame drawn: let the clock tick.
+        for _ in 0..50 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let (cell_w, cell_h) = view.cell_size();
+        let faded = alpha_at(&view, view.width() - 2, view.height() - 2);
+        assert!((120..=135).contains(&faded), "default background {faded}");
+        assert_eq!(alpha_at(&view, cell_w / 2, cell_h + cell_h / 2), 255);
+        backend.set_opacity(1.0);
+        assert!(!view.has_css_class(TRANSLUCENT_CLASS));
 
         assert!(view.key(gdk::Key::a, gdk::ModifierType::empty()));
         assert_eq!(

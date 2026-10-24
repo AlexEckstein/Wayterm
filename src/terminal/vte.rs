@@ -5,7 +5,10 @@ use tokio::sync::mpsc;
 use vte4::prelude::*;
 use vte4::Terminal as VteTerminal;
 
-use super::backend::{TerminalBackend, TerminalEvent, TerminalFeatures};
+use super::backend::{
+    clamp_opacity, mark_translucent, TerminalBackend, TerminalEvent, TerminalFeatures,
+    TRANSLUCENT_CLASS,
+};
 use super::color_scheme::{self, Rgb};
 use crate::backpressure::IdleSender;
 
@@ -14,6 +17,10 @@ pub struct VteBackend {
     terminal: VteTerminal,
     /// The queue `commit` feeds, for input `feed_child` cannot carry.
     input: EventSender,
+    /// The scheme's default background, painted at `opacity`; `None` keeps
+    /// VTE's own until a scheme is set.
+    background: Cell<Option<Rgb>>,
+    opacity: Cell<f64>,
 }
 
 impl VteBackend {
@@ -52,8 +59,50 @@ impl VteBackend {
             }
         });
 
-        Self { terminal, input }
+        clear_css_background_when_translucent();
+        Self {
+            terminal,
+            input,
+            background: Cell::new(None),
+            opacity: Cell::new(1.0),
+        }
     }
+
+    /// The default background at the current opacity. VTE fades only this
+    /// color: cells a program colors stay opaque.
+    fn apply_background(&self) {
+        let mut background = match self.background.get() {
+            Some(rgb) => rgba(rgb),
+            None => self.terminal.color_background_for_draw(),
+        };
+        background.set_alpha(self.opacity.get() as f32);
+        self.terminal.set_color_background(&background);
+    }
+}
+
+/// VTE's own stylesheet paints the widget's CSS background under the
+/// cells; a translucent terminal drops it. Added once per process, above
+/// VTE's priority.
+fn clear_css_background_when_translucent() {
+    thread_local! {
+        static INSTALLED: Cell<bool> = const { Cell::new(false) };
+    }
+    if INSTALLED.get() {
+        return;
+    }
+    let Some(display) = gdk::Display::default() else {
+        return;
+    };
+    let provider = gtk4::CssProvider::new();
+    provider.load_from_string(&format!(
+        "vte-terminal.{TRANSLUCENT_CLASS} {{ background: none; }}"
+    ));
+    gtk4::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    INSTALLED.set(true);
 }
 
 /// How every GTK backend sends its events: never blocking the main
@@ -141,14 +190,20 @@ impl TerminalBackend for VteBackend {
         self.terminal.set_color_bold(None);
         self.terminal.set_color_highlight(None);
         self.terminal.set_color_highlight_foreground(None);
+        self.background.set(Some(scheme.background));
+        self.apply_background();
     }
 
     fn set_font(&self, font_desc: &pango::FontDescription) {
         self.terminal.set_font(Some(font_desc));
     }
 
-    /// A no-op: the GTK4 VTE binding has no `set_opacity`.
-    fn set_opacity(&self, _opacity: f64) {}
+    fn set_opacity(&self, opacity: f64) {
+        let opacity = clamp_opacity(opacity);
+        self.opacity.set(opacity);
+        self.apply_background();
+        mark_translucent(&self.terminal, opacity);
+    }
 
     fn set_scrollback_limit(&self, lines: u32) {
         self.terminal.set_scrollback_lines(lines.into());
