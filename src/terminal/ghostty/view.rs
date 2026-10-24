@@ -45,6 +45,8 @@ mod imp {
         pub(super) shared: RefCell<Option<Rc<Shared>>>,
         pub(super) frame: RefCell<Frame>,
         pub(super) font: RefCell<Option<pango::FontDescription>>,
+        /// The default background's alpha; colored cells stay opaque.
+        pub(super) opacity: Cell<f32>,
         /// Cell size in pixels; recomputed after a font change.
         pub(super) cell: Cell<Option<(i32, i32)>>,
         /// The grid asked for by `set_size`: the natural size.
@@ -105,6 +107,7 @@ impl GhosttyView {
         let view: Self = glib::Object::new();
         let imp = view.imp();
         imp.requested.set(shared.engine.size());
+        imp.opacity.set(1.0);
         imp.shared.replace(Some(shared));
         view.set_focusable(true);
         view.set_hexpand(true);
@@ -122,6 +125,11 @@ impl GhosttyView {
         self.imp().font.replace(Some(font.clone()));
         self.imp().cell.set(None);
         self.queue_resize();
+        self.queue_draw();
+    }
+
+    pub(super) fn set_opacity(&self, opacity: f32) {
+        self.imp().opacity.set(opacity);
         self.queue_draw();
     }
 
@@ -447,7 +455,7 @@ impl GhosttyView {
         let (cell_w, cell_h) = self.cell_size();
         let (cw, ch) = (cell_w as f32, cell_h as f32);
         snapshot.append_color(
-            &rgba(info.bg, 1.0),
+            &rgba(info.bg, self.imp().opacity.get()),
             &graphene::Rect::new(0.0, 0.0, self.width() as f32, self.height() as f32),
         );
 

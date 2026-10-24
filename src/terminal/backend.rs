@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use gtk4::prelude::*;
 use gtk4::{pango, Widget};
 use tokio::sync::mpsc;
 
@@ -71,6 +72,29 @@ pub trait TerminalBackend {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
     fn description(&self) -> &str;
+}
+
+/// The CSS class a backend's widget carries while its default background
+/// is translucent; the window clears its own background under it (doc 02
+/// §Opacity).
+pub const TRANSLUCENT_CLASS: &str = "wayterm-translucent";
+
+/// `opacity` as a backend applies it: clamped to `0..=1`, NaN opaque.
+pub(super) fn clamp_opacity(opacity: f64) -> f64 {
+    if opacity.is_nan() {
+        1.0
+    } else {
+        opacity.clamp(0.0, 1.0)
+    }
+}
+
+/// Add or drop [`TRANSLUCENT_CLASS`] on `widget` for a clamped `opacity`.
+pub(super) fn mark_translucent(widget: &impl IsA<Widget>, opacity: f64) {
+    if opacity < 1.0 {
+        widget.add_css_class(TRANSLUCENT_CLASS);
+    } else {
+        widget.remove_css_class(TRANSLUCENT_CLASS);
+    }
 }
 
 /// A backend plus the receiver for the events it emits; the receiver goes
@@ -189,6 +213,14 @@ mod tests {
         for kind in [BackendKind::Vte, BackendKind::Ghostty] {
             assert_eq!(BackendKind::from_setting(Some(kind.as_setting())), kind);
         }
+    }
+
+    #[test]
+    fn opacity_clamps_to_the_unit_range_and_nan_is_opaque() {
+        assert_eq!(clamp_opacity(0.8), 0.8);
+        assert_eq!(clamp_opacity(-1.0), 0.0);
+        assert_eq!(clamp_opacity(2.0), 1.0);
+        assert_eq!(clamp_opacity(f64::NAN), 1.0);
     }
 
     #[test]
