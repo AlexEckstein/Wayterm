@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icons/scalable/apps/wayterm_full.svg" alt="Wayterm" width="480">
+</p>
+
 # Wayterm
 
 An open source, multi-protocol connection manager and terminal for Linux,
