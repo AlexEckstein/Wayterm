@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icons/scalable/apps/wayterm_full.svg" alt="Wayterm" width="480">
+  <img src="assets/icons/scalable/apps/wayterm_full.svg" alt="Wayterm" width="300">
 </p>
 
 An open source, multi-protocol connection manager and terminal for Linux,
