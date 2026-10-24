@@ -2,8 +2,6 @@
   <img src="assets/icons/scalable/apps/wayterm_full.svg" alt="Wayterm" width="480">
 </p>
 
-# Wayterm
-
 An open source, multi-protocol connection manager and terminal for Linux,
 in the spirit of MobaXterm but built for a desktop that already has the
 tools: saved sessions in a tree, tabbed SSH terminals with an SFTP
