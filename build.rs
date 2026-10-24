@@ -33,8 +33,8 @@ fn compile_resources(source: &str, name: &str) {
 /// libghostty-vt for the `backend-ghostty` feature (doc 02
 /// §GhosttyBackend).
 ///
-/// Pinned upstream: ghostty-org/ghostty @ 22fa134a07f5749edd9e92c6bc17d8aaf61843be
-/// (2026-10-15), built with Zig 0.16.0 — how to rebuild it is in
+/// Pinned upstream: ghostty-org/ghostty @ 22f100c6367045bb5fc86172f837047dee2f7670
+/// (2026-10-23), built with Zig 0.17.0 — how to rebuild it is in
 /// doc 02 §libghostty-vt pin. Bump the pin deliberately, never silently.
 ///
 /// The static library and headers are looked up in
