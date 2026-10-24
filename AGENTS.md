@@ -30,7 +30,9 @@ with a **Limitations** section listing that feature's known gaps.
    Changing a trait signature is an orchestration-level decision: escalate, don't
    improvise.
 3. **No secrets in code, commits, or logs.** Not even test fixtures.
-   Credentials live in the OS keyring only (doc 05).
+   Secrets come only from the credential chain of doc 05 (OS keyring,
+   enabled Bitwarden, prompt) — never in code, SQLite, logs, or plain
+   files.
 4. **No scope creep.** Implement the task as written. Ideas go in the
    report, not the diff.
 5. **Verification is part of the task.** Done means `cargo fmt
@@ -43,6 +45,10 @@ with a **Limitations** section listing that feature's known gaps.
    rebase a branch someone else may have fetched.
 7. **main is trunk.** Never commit directly to main. Work on branches;
    merges to main happen only through the merge protocol below.
+8. **No AI attribution.** Never add "written by Claude" or any other
+   agent or LLM credit, no Co-Authored-By trailer, no tool-generated
+   signature, to commits or PRs. Your contributions are work, not
+   advertisements for AI companies.
 
 ## Branch discipline
 
@@ -70,7 +76,7 @@ with a **Limitations** section listing that feature's known gaps.
 
 ## CI (what "green" means)
 
-`.github/workflows/ci.yml` runs on every push and PR:
+`.github/workflows/ci.yml` runs on pushes to main and on every PR:
 
 - **detect** — checks whether `Cargo.toml`/`Cargo.lock` exist; gates
   the rust and audit jobs.
@@ -113,6 +119,9 @@ src/ui/tabs/     ← tab pages and connect flows, TerminalTab wiring, lifecycle,
 src/ui/dialogs/  ← auth, host key, session, folder, tunnels, host picker (docs 03, 04, 09)
 src/ui/panels/   ← side dock, session tree, SFTP sidebar, macros panel and editor (docs 01, 07, 09, 12)
 tests/           ← integration tests; tests/common is the shared sshd fixture (doc 15)
+benches/         ← cargo benchmarks (terminal output parsing)
+assets/          ← SVG icons (app icon, window mark, session-tree icons)
 packaging/       ← desktop entry, metainfo, Flatpak manifest, AppImage recipe (doc 14)
-scripts/         ← local sshd runners for the integration suites
+scripts/         ← local sshd runners, the auth-method matrix, and the serial
+                   loopback used by the integration suites
 ```
