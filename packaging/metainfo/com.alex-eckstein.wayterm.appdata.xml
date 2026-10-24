@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>com.alex-eckstein.wayterm</id>
   <metadata_license>FSFAP</metadata_license>
-  <project_license>Apache-2.0</project_license>
+  <project_license>MIT</project_license>
   <name>Wayterm</name>
   <summary>An open source, multi-protocol connection manager and terminal for Linux</summary>
   <description>

@@ -8,7 +8,7 @@ tools: saved sessions in a tree, tabbed SSH terminals with an SFTP
 sidebar, local shell and serial tabs, embedded RDP and VNC tabs,
 configurable hotkeys, and keystroke macros.
 
-App id `com.alex-eckstein.wayterm` · [github.com/AlexEckstein/Wayterm](https://github.com/AlexEckstein/Wayterm) · Apache-2.0
+App id `com.alex-eckstein.wayterm` · [github.com/AlexEckstein/Wayterm](https://github.com/AlexEckstein/Wayterm) · MIT
 
 ## Features
 
