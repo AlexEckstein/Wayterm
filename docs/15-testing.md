@@ -20,7 +20,7 @@ on any machine.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push and pull request:
+`.github/workflows/ci.yml` runs on pushes to main and on every PR:
 
 - **docs:** every relative Markdown link resolves.
 - **rust:** `cargo fmt --check`, `cargo clippy --all-targets -D warnings`,
@@ -29,6 +29,9 @@ on any machine.
   and a fresh ed25519 key), exported as `SSH_TEST_*`. Debug info is
   line-tables-only so the GTK test binaries fit the runner's disk.
 - **audit:** a weekly `cargo audit` sweep.
+- **dependabot:** opens weekly update PRs for `cargo` (minor/patch
+  grouped into one PR, majors separate) and for the `github-actions`
+  versions used by the workflows.
 
 ## Unit and display-free tests
 

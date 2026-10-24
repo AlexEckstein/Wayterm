@@ -86,6 +86,9 @@ with a **Limitations** section listing that feature's known gaps.
   test` (sshd-gated suites skip themselves), then a real sshd for
   `tests/transport_sshd.rs` (`SSH_TEST_*` env vars, doc 15 §CI).
 - **audit** — weekly cargo advisory sweep once `Cargo.lock` exists.
+- **dependabot** — `.github/dependabot.yml` opens weekly update PRs:
+  cargo minor/patch grouped into one PR, majors separate; and the
+  github-actions versions the workflows use.
 
 Do not disable or bypass checks to get green. Do not push with
 `--no-verify`. If a check is wrong, fix the check in a PR.
