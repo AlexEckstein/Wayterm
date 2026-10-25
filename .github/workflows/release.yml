@@ -18,7 +18,7 @@ jobs:
   deb:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install GTK4 / VTE build deps
         run: |
@@ -38,7 +38,7 @@ jobs:
       - name: Build .deb
         run: cargo deb --locked
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: deb
           path: target/debian/*.deb
@@ -55,9 +55,9 @@ jobs:
       # No FUSE on the runner.
       APPIMAGE_EXTRACT_AND_RUN: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: deb
           path: dist
@@ -72,7 +72,7 @@ jobs:
           rm -rf wayterm out
           WAYTERM_DEB="$(readlink -f dist/*.deb)" ./pkg2appimage packaging/appimage/wayterm.yml
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: appimage
           path: out/*.AppImage
@@ -84,13 +84,13 @@ jobs:
     needs: [deb, appimage]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
       - name: Create or update the GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           files: |
