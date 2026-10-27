@@ -297,7 +297,7 @@ update this section and the comment in `build.rs` together.
 | | |
 |---|---|
 | Upstream | <https://github.com/ghostty-org/ghostty> |
-| Commit | `22f100c6367045bb5fc86172f837047dee2f7670` (2026-10-23) |
+| Commit | `9ee02ae601d3eec567723287e1c20bd0e9f1489c` (2026-10-26) |
 | Zig | 0.17.0 (`minimum_zig_version` in upstream `build.zig.zon`) |
 | Library version | `0.1.0-dev` (upstream pkg-config) |
 
@@ -312,7 +312,7 @@ ln -sf ~/.local/zig/zig-x86_64-linux-0.17.0/zig ~/.local/bin/zig
 
 git clone https://github.com/ghostty-org/ghostty.git ghostty-build
 cd ghostty-build
-git checkout --detach 22f100c6367045bb5fc86172f837047dee2f7670
+git checkout --detach 9ee02ae601d3eec567723287e1c20bd0e9f1489c
 zig build -Demit-lib-vt -Doptimize=fast --prefix "$PWD/out"
 ```
 
