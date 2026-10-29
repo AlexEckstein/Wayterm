@@ -292,7 +292,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
 
 libghostty-vt has no tagged release and its C API still moves, so the pin
 changes only in a deliberate bump: rebuild, rerun the checks below, and
-update this section and the comment in `build.rs` together.
+update this section, the comment in `build.rs` and the `ghostty` job's
+`env` in `.github/workflows/ci.yml` together; that job fails while its
+commit differs from the other two.
 
 | | |
 |---|---|
@@ -334,7 +336,8 @@ The library is built per machine and never committed. Without it, a build
 with the feature fails in `build.rs` with a pointer here; the default
 build never looks for it. Checks for a pin (doc 15 §Ghostty backend):
 clippy and `cargo test` with `--features backend-ghostty`, the widget
-under xvfb, and the benchmark.
+under xvfb, and the benchmark. CI runs all but the benchmark, building
+the library the same way and caching it per pin (doc 15 §CI).
 
 ## Widget choice
 
@@ -396,5 +399,4 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   drawing (`features()` says so, and the UI hides them); no input method
   or compose support; only a grapheme's base codepoint is drawn; mouse
   reporting covers the primary button and the wheel only, so middle and
-  right clicks and horizontal scrolling never reach the program. CI does
-  not build libghostty-vt, so the feature is checked locally only.
+  right clicks and horizontal scrolling never reach the program.

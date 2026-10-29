@@ -79,12 +79,16 @@ with a **Limitations** section listing that feature's known gaps.
 `.github/workflows/ci.yml` runs on pushes to main and on every PR:
 
 - **detect** — checks whether `Cargo.toml`/`Cargo.lock` exist; gates
-  the rust and audit jobs.
+  the rust, ghostty and audit jobs.
 - **docs** — always runs: validates that relative links across the
   design docs resolve.
 - **rust** — fmt check, clippy `--all-targets -D warnings`, `cargo
   test` (sshd-gated suites skip themselves), then a real sshd for
   `tests/transport_sshd.rs` (`SSH_TEST_*` env vars, doc 15 §CI).
+- **ghostty** — clippy and `cargo test` with `--features
+  backend-ghostty`, then the Ghostty widget test under xvfb, against
+  libghostty-vt built at the pin and cached per pin (doc 02
+  §libghostty-vt pin).
 - **audit** — weekly cargo advisory sweep once `Cargo.lock` exists.
 
 Do not disable or bypass checks to get green. Do not push with
