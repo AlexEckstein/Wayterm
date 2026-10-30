@@ -62,6 +62,13 @@ jobs:
           name: deb
           path: dist
 
+      # What pkg2appimage checks for; ubuntu-latest no longer ships convert.
+      - name: Install pkg2appimage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            imagemagick desktop-file-utils file wget binutils
+
       - name: Fetch pkg2appimage
         run: |
           curl -fsSL -o pkg2appimage "$PKG2APPIMAGE_URL"
