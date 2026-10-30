@@ -1,6 +1,7 @@
 # pkg2appimage recipe. CI-only tooling: the release workflow builds the
 # .deb with cargo-deb first and points WAYTERM_DEB at it; pkg2appimage
-# then resolves the runtime libraries (GTK 4, VTE) from the noble archive.
+# then resolves the runtime libraries (GTK 4, VTE) from the resolute archive,
+# the Ubuntu release `ubuntu-latest` builds the .deb on.
 #
 #   WAYTERM_DEB=$PWD/target/debian/wayterm_<ver>_amd64.deb \
 #     ./pkg2appimage packaging/appimage/wayterm.yml
@@ -8,10 +9,10 @@
 app: wayterm
 
 ingredients:
-  dist: noble
+  dist: resolute
   sources:
-    - deb http://archive.ubuntu.com/ubuntu/ noble main universe
-    - deb http://archive.ubuntu.com/ubuntu/ noble-updates main universe
+    - deb http://archive.ubuntu.com/ubuntu/ resolute main universe
+    - deb http://archive.ubuntu.com/ubuntu/ resolute-updates main universe
   script:
     - cp "${WAYTERM_DEB}" .
   packages:
