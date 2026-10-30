@@ -249,11 +249,15 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   `DataOut`, `Bell` and `TitleChanged`.
 - **`GhosttyView`.** The GTK4 widget. Each frame snapshots the engine and
   paints it with `GtkSnapshot`: one background rectangle per run of equal
-  color, one Pango layout per run of equal style (bold, italic, underline,
+  color, and per run of equal style (bold, italic, underline,
   strikethrough, faint; inverse, the selection and the block cursor swap
-  colors). ASCII runs share a layout; any other character is placed at
-  its own column, so wide glyphs keep the grid aligned. A changed
-  allocation resizes the grid and sends `SizeChange` once per new grid.
+  colors) glyphs that Pango picks and shapes but does not place. The cell
+  is the font's "M" rounded up to whole pixels; each glyph goes at its own
+  cell, not where the font's advances would take it, since those are
+  rarely whole pixels and would drift off the grid along a line. A
+  ligature sits at its first cell. Underline and strikethrough are
+  rectangles across the run, on whole pixels. A changed allocation
+  resizes the grid and sends `SizeChange` once per new grid.
 - **Input.** Keys go through libghostty-vt's key encoder, so cursor-key
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
   Shift+Home/End jump to the top and bottom, as in VTE, instead of
