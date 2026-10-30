@@ -74,10 +74,18 @@ jobs:
           curl -fsSL -o pkg2appimage "$PKG2APPIMAGE_URL"
           chmod +x pkg2appimage
 
+      # pkg2appimage exports LD_LIBRARY_PATH for its own older libraries,
+      # and the host's glib-compile-schemas cannot load against them.
       - name: Build AppImage
         run: |
           rm -rf wayterm out
-          WAYTERM_DEB="$(readlink -f dist/*.deb)" ./pkg2appimage packaging/appimage/wayterm.yml
+          shim="$RUNNER_TEMP/shim"
+          mkdir -p "$shim"
+          printf '#!/bin/sh\nexec env -u LD_LIBRARY_PATH /usr/bin/glib-compile-schemas "$@"\n' \
+            > "$shim/glib-compile-schemas"
+          chmod +x "$shim/glib-compile-schemas"
+          PATH="$shim:$PATH" WAYTERM_DEB="$(readlink -f dist/*.deb)" \
+            ./pkg2appimage packaging/appimage/wayterm.yml
 
       - uses: actions/upload-artifact@v7
         with:
