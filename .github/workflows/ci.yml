@@ -138,7 +138,15 @@ jobs:
           sudo chmod 600 /home/wayterm-test/.ssh/authorized_keys
           sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo sed -i 's/^#*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl start sshd 2>/dev/null || sudo service ssh start
+          # The image may ship sshd already running on its own config, where
+          # `start` is a no-op: restart, then check what sshd will serve.
+          sudo systemctl restart ssh
+          for opt in passwordauthentication kbdinteractiveauthentication; do
+            sudo sshd -T | grep -qx "$opt yes" || {
+              echo "::error::test sshd has $opt off"
+              exit 1
+            }
+          done
           # Export for the test step via GITHUB_ENV (ephemeral, throwaway creds)
           echo "SSH_TEST_HOST=127.0.0.1" >> "$GITHUB_ENV"
           echo "SSH_TEST_PORT=22"        >> "$GITHUB_ENV"
