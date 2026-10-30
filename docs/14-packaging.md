@@ -58,8 +58,9 @@ metainfo and the icons.
 
 `packaging/appimage/wayterm.yml` is a pkg2appimage recipe built from the
 `.deb`: pkg2appimage resolves the runtime libraries (GTK 4, VTE) from the
-Ubuntu noble archive, and the recipe copies the desktop file and the
-256 px icon to the AppImage root.
+Ubuntu resolute (26.04) archive, the release the `.deb` is built on, and
+the recipe copies the desktop file and the 256 px icon to the AppImage
+root.
 
 ```sh
 WAYTERM_DEB=$PWD/target/debian/wayterm_<ver>_amd64.deb \
@@ -85,10 +86,10 @@ file transfers). Inside the sandbox the keyring source uses the portal
 ## Release
 
 `.github/workflows/release.yml` runs on a `v*` tag push: it builds the
-`.deb` with `cargo-deb` on Ubuntu 24.04, builds the AppImage from it with a
-pinned pkg2appimage, and attaches both to the GitHub Release for that tag.
-A manual run (`workflow_dispatch`) builds the artifacts without
-releasing.
+`.deb` with `cargo-deb` on `ubuntu-latest` (Ubuntu 26.04, as CI uses),
+builds the AppImage from it with a pinned pkg2appimage, and attaches both
+to the GitHub Release for that tag. A manual run (`workflow_dispatch`)
+builds the artifacts without releasing.
 
 ## Limitations
 
@@ -99,3 +100,10 @@ releasing.
   is not verified.
 - Packages are built without `backend-ghostty`.
 - The AppImage and `.deb` target x86_64 only.
+- The AppImage bundles GTK 4 and GLib from Ubuntu 26.04, which need
+  glibc 2.43, so it does not run on Ubuntu 24.04 or Debian 13. The
+  `.deb` uses the system's libraries and needs only what its `Depends`
+  names (libc6 2.39 at 0.1.0).
+- The recipe names its archive (`resolute`) while the workflow follows
+  `ubuntu-latest`: when GitHub moves `ubuntu-latest` to a newer Ubuntu,
+  the recipe must move with it.
