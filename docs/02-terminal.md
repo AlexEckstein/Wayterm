@@ -404,3 +404,13 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   or compose support; only a grapheme's base codepoint is drawn; mouse
   reporting covers the primary button and the wheel only, so middle and
   right clicks and horizontal scrolling never reach the program.
+- **Ghostty text:** box-drawing and block characters come from the font,
+  so a line of them shows faint seams wherever the cell is wider than
+  the glyph, as it is at the default font. Once font settings apply
+  (first item above), three more gaps show: the cell is measured from
+  "M" alone, so a proportional font, or any glyph wider than "M",
+  overlaps the next cell; ligatures are drawn as the font shapes them,
+  at their first cell, and nothing turns them off; and a font change
+  that keeps the grid's columns and rows does not give libghostty-vt the
+  new cell size in pixels, so the size reports a program can ask for
+  stay stale until the grid next changes.
