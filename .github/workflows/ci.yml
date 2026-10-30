@@ -138,7 +138,15 @@ jobs:
           sudo chmod 600 /home/wayterm-test/.ssh/authorized_keys
           sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo sed -i 's/^#*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
-          sudo systemctl start sshd 2>/dev/null || sudo service ssh start
+          # The image may ship sshd already running on its own config, where
+          # `start` is a no-op: restart, then check what sshd will serve.
+          sudo systemctl restart ssh
+          for opt in passwordauthentication kbdinteractiveauthentication; do
+            sudo sshd -T | grep -qx "$opt yes" || {
+              echo "::error::test sshd has $opt off"
+              exit 1
+            }
+          done
           # Export for the test step via GITHUB_ENV (ephemeral, throwaway creds)
           echo "SSH_TEST_HOST=127.0.0.1" >> "$GITHUB_ENV"
           echo "SSH_TEST_PORT=22"        >> "$GITHUB_ENV"
@@ -149,6 +157,89 @@ jobs:
 
       - name: Integration tests (real sshd)
         run: cargo test --test transport_sshd -- --test-threads=1
+
+  ghostty:
+    name: Ghostty backend clippy / test (+ xvfb)
+    runs-on: ubuntu-latest
+    needs: [detect]
+    if: needs.detect.outputs.has_rust == 'true'
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      # The libghostty-vt pin (doc 02 §libghostty-vt pin); a bump changes
+      # it here, in build.rs and in the doc together.
+      GHOSTTY_COMMIT: 9ee02ae601d3eec567723287e1c20bd0e9f1489c
+      ZIG_VERSION: 0.17.0
+      ZIG_SHA256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/checkout@v7
+
+      - name: Check the pin matches build.rs and doc 02
+        run: |
+          for f in build.rs docs/02-terminal.md; do
+            grep -q "$GHOSTTY_COMMIT" "$f" || {
+              echo "::error file=$f::does not pin libghostty-vt at $GHOSTTY_COMMIT like ci.yml"
+              exit 1
+            }
+          done
+
+      - name: Install GTK4 / VTE build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev libvte-2.91-gtk4-dev \
+            libsqlite3-dev libsecret-1-dev \
+            xvfb
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Built once per pin into build.rs's default location; Zig and
+      # upstream's dependencies are only downloaded on a cache miss.
+      - name: Cache libghostty-vt
+        id: libghostty-vt
+        uses: actions/cache@v6
+        with:
+          path: third_party/libghostty-vt
+          key: libghostty-vt-${{ runner.os }}-${{ env.GHOSTTY_COMMIT }}-zig-${{ env.ZIG_VERSION }}
+
+      - name: Build libghostty-vt
+        if: steps.libghostty-vt.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          tarball="zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          curl -fsSLO "https://ziglang.org/download/$ZIG_VERSION/$tarball"
+          echo "$ZIG_SHA256  $tarball" | sha256sum -c -
+          tar -xJf "$tarball"
+          git init -q ghostty
+          git -C ghostty fetch -q --depth 1 https://github.com/ghostty-org/ghostty.git "$GHOSTTY_COMMIT"
+          git -C ghostty checkout -q --detach FETCH_HEAD
+          cd ghostty
+          "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION/zig" build \
+            -Demit-lib-vt -Doptimize=fast --prefix "$RUNNER_TEMP/ghostty-out"
+          vt="$GITHUB_WORKSPACE/third_party/libghostty-vt"
+          mkdir -p "$vt/lib"
+          cp -r "$RUNNER_TEMP/ghostty-out/include" "$vt/"
+          cp "$RUNNER_TEMP/ghostty-out/lib/libghostty-vt.a" "$vt/lib/"
+
+      - name: Clippy with backend-ghostty (deny warnings)
+        run: cargo clippy --all-targets --features backend-ghostty -- -D warnings
+
+      - name: Tests with backend-ghostty
+        run: cargo test --features backend-ghostty
+
+      - name: Ghostty widget test (xvfb)
+        run: xvfb-run -a cargo test --features backend-ghostty -- --ignored ghostty_display
 
   audit:
     name: Cargo audit (weekly advisory sweep)

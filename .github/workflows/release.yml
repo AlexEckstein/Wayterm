@@ -16,7 +16,7 @@ env:
 
 jobs:
   deb:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
@@ -46,7 +46,7 @@ jobs:
           overwrite: true
 
   appimage:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     needs: [deb]
     env:
       # pkg2appimage publishes only a `continuous` tag; the asset name
@@ -62,15 +62,30 @@ jobs:
           name: deb
           path: dist
 
+      # What pkg2appimage checks for; ubuntu-latest no longer ships convert.
+      - name: Install pkg2appimage tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            imagemagick desktop-file-utils file wget binutils
+
       - name: Fetch pkg2appimage
         run: |
           curl -fsSL -o pkg2appimage "$PKG2APPIMAGE_URL"
           chmod +x pkg2appimage
 
+      # pkg2appimage exports LD_LIBRARY_PATH for its own older libraries,
+      # and the host's glib-compile-schemas cannot load against them.
       - name: Build AppImage
         run: |
           rm -rf wayterm out
-          WAYTERM_DEB="$(readlink -f dist/*.deb)" ./pkg2appimage packaging/appimage/wayterm.yml
+          shim="$RUNNER_TEMP/shim"
+          mkdir -p "$shim"
+          printf '#!/bin/sh\nexec env -u LD_LIBRARY_PATH /usr/bin/glib-compile-schemas "$@"\n' \
+            > "$shim/glib-compile-schemas"
+          chmod +x "$shim/glib-compile-schemas"
+          PATH="$shim:$PATH" WAYTERM_DEB="$(readlink -f dist/*.deb)" \
+            ./pkg2appimage packaging/appimage/wayterm.yml
 
       - uses: actions/upload-artifact@v7
         with:
@@ -80,7 +95,7 @@ jobs:
           overwrite: true
 
   release:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     needs: [deb, appimage]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:

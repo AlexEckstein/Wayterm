@@ -28,6 +28,12 @@ on any machine.
   own sshd on port 22 with a throwaway `wayterm-test` user (random password
   and a fresh ed25519 key), exported as `SSH_TEST_*`. Debug info is
   line-tables-only so the GTK test binaries fit the runner's disk.
+- **ghostty:** clippy, `cargo test` and the Ghostty widget test under
+  xvfb, all with `--features backend-ghostty` (§Ghostty backend). It
+  builds libghostty-vt at the pin as doc 02 §libghostty-vt pin does and
+  caches it per pin, so Zig and upstream's dependencies are downloaded
+  only after a bump. It fails first if its pinned commit differs from
+  `build.rs` or doc 02.
 - **audit:** a weekly `cargo audit` sweep.
 - **dependabot:** opens weekly update PRs for `cargo` (minor/patch
   grouped into one PR, majors separate) and for the `github-actions`
@@ -173,12 +179,16 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a \
 cargo bench --features backend-ghostty      # doc 02 §Benchmark
 ```
 
+CI runs all but the benchmark (§CI).
+
 ## Limitations
 
 - CI runs only `transport_sshd` against its sshd; `connect_flow`,
   `tmux_persistence`, `reconnect_sshd`, `forward_sshd` and `jump_sshd`
   need only that same sshd but run locally only.
-- CI does not run the widget tests, and does not build `backend-ghostty`.
+- Of the display tests, CI runs only the Ghostty widget: the widget
+  suite (`ui::gtk_tests::widgets`) and the VTE scrollback test
+  (`tests/terminal_polish.rs`) run locally only, as does the benchmark.
 - `jump_sshd` dials through `dial_via_jump` while the test itself holds
   the jump connection, so the app's path — where nothing holds the jump
   hop after the dial (doc 04 §Limitations) — is not exercised.
