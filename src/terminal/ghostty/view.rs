@@ -1,11 +1,12 @@
 //! [`GhosttyView`]: the GTK4 widget that draws a libghostty-vt grid.
 //!
 //! Each frame snapshots the engine's viewport and paints it with
-//! `GtkSnapshot`: one background rectangle per run of equal colors, one
-//! Pango layout per run of equal style. ASCII runs share a layout; any
-//! other character gets its own, anchored to its column, so wide glyphs
-//! never shift the rest of the row. Only a grapheme's base codepoint is
-//! drawn.
+//! `GtkSnapshot`: one background rectangle per run of equal colors, and
+//! for each run of equal style, glyphs that Pango picks and shapes but
+//! does not place: each goes at its own cell, since the font's advances
+//! are rarely the whole-pixel cell width and would drift off the grid.
+//! Underline and strikethrough are drawn as rectangles. Only a grapheme's
+//! base codepoint is drawn.
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
@@ -22,7 +23,7 @@ use std::rc::Rc;
 use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::{gdk, glib, graphene, pango};
+use gtk4::{gdk, glib, graphene, gsk, pango};
 
 use super::engine::{Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll};
 use super::ffi;
@@ -47,8 +48,8 @@ mod imp {
         pub(super) font: RefCell<Option<pango::FontDescription>>,
         /// The default background's alpha; colored cells stay opaque.
         pub(super) opacity: Cell<f32>,
-        /// Cell size in pixels; recomputed after a font change.
-        pub(super) cell: Cell<Option<(i32, i32)>>,
+        /// The cell's metrics; recomputed after a font change.
+        pub(super) metrics: Cell<Option<Metrics>>,
         /// The grid asked for by `set_size`: the natural size.
         pub(super) requested: Cell<(u16, u16)>,
         /// The last grid reported as `SizeChange`, as `(cols, rows)`.
@@ -123,7 +124,7 @@ impl GhosttyView {
 
     pub(super) fn set_font(&self, font: &pango::FontDescription) {
         self.imp().font.replace(Some(font.clone()));
-        self.imp().cell.set(None);
+        self.imp().metrics.set(None);
         self.queue_resize();
         self.queue_draw();
     }
@@ -152,17 +153,45 @@ impl GhosttyView {
             .unwrap_or_else(|| pango::FontDescription::from_string(DEFAULT_FONT))
     }
 
-    /// One cell in whole pixels, measured from the font's "M".
-    fn cell_size(&self) -> (i32, i32) {
-        if let Some(cell) = self.imp().cell.get() {
-            return cell;
+    /// The cell, measured from the font's "M", and where its text sits.
+    fn metrics(&self) -> Metrics {
+        if let Some(metrics) = self.imp().metrics.get() {
+            return metrics;
         }
+        let font = self.font();
         let layout = self.create_pango_layout(Some("M"));
-        layout.set_font_description(Some(&self.font()));
+        layout.set_font_description(Some(&font));
         let (w, h) = layout.pixel_size();
-        let cell = (w.max(1), h.max(1));
-        self.imp().cell.set(Some(cell));
-        cell
+        let baseline = pixels(layout.baseline());
+        let font_metrics = self.pango_context().metrics(Some(&font), None);
+        // Whole pixels, so the lines stay sharp.
+        let line = |position, thickness| {
+            (
+                (baseline - pixels(position)).round(),
+                pixels(thickness).round().max(1.0),
+            )
+        };
+        let metrics = Metrics {
+            width: w.max(1),
+            height: h.max(1),
+            baseline,
+            underline: line(
+                font_metrics.underline_position(),
+                font_metrics.underline_thickness(),
+            ),
+            strike: line(
+                font_metrics.strikethrough_position(),
+                font_metrics.strikethrough_thickness(),
+            ),
+        };
+        self.imp().metrics.set(Some(metrics));
+        metrics
+    }
+
+    /// One cell in whole pixels.
+    fn cell_size(&self) -> (i32, i32) {
+        let metrics = self.metrics();
+        (metrics.width, metrics.height)
     }
 
     /// Match the grid to the allocation and report a changed grid once.
@@ -452,8 +481,8 @@ impl GhosttyView {
             return;
         }
         let info = frame.info;
-        let (cell_w, cell_h) = self.cell_size();
-        let (cw, ch) = (cell_w as f32, cell_h as f32);
+        let metrics = self.metrics();
+        let (cw, ch) = (metrics.width as f32, metrics.height as f32);
         snapshot.append_color(
             &rgba(info.bg, self.imp().opacity.get()),
             &graphene::Rect::new(0.0, 0.0, self.width() as f32, self.height() as f32),
@@ -482,40 +511,121 @@ impl GhosttyView {
                 }
             }
 
-            // Text: ASCII runs of one style share a layout.
+            // Text: one run per style, each glyph at its own cell.
             let mut col = 0;
             while col < cells.len() {
                 let start = col;
-                let mut text = String::from(cells[col].ch);
-                col += 1;
-                if cells[start].ch.is_ascii() {
-                    while col < cells.len()
-                        && cells[col].ch.is_ascii()
-                        && cells[col].same_style(&cells[start])
-                    {
-                        text.push(cells[col].ch);
-                        col += 1;
-                    }
+                let mut text = String::new();
+                while col < cells.len() && cells[col].same_style(&cells[start]) {
+                    text.push(cells[col].ch);
+                    col += 1;
                 }
                 let style = &cells[start];
                 if style.flags & ffi::CELL_INVISIBLE != 0 || text.trim().is_empty() {
                     continue;
                 }
-                let layout = self.create_pango_layout(Some(&text));
-                layout.set_font_description(Some(&style.font(&font)));
-                layout.set_attributes(style.attributes().as_ref());
-                snapshot.save();
-                snapshot.translate(&graphene::Point::new(start as f32 * cw, y));
                 let alpha = if style.flags & ffi::CELL_FAINT != 0 {
                     0.6
                 } else {
                     1.0
                 };
-                snapshot.append_layout(&layout, &rgba(style.fg, alpha));
-                snapshot.restore();
+                let color = rgba(style.fg, alpha);
+                let x = start as f32 * cw;
+                let baseline = graphene::Point::new(x, y + metrics.baseline);
+                self.draw_glyphs(snapshot, &text, &style.font(&font), &color, &baseline);
+                let width = (col - start) as f32 * cw;
+                for (flag, (top, thickness)) in [
+                    (ffi::CELL_UNDERLINE, metrics.underline),
+                    (ffi::CELL_STRIKE, metrics.strike),
+                ] {
+                    if style.flags & flag != 0 {
+                        let line = graphene::Rect::new(x, y + top, width, thickness);
+                        snapshot.append_color(&color, &line);
+                    }
+                }
             }
         }
     }
+
+    /// Draw `text`, one character per cell, from a point on the baseline.
+    /// Pango picks and shapes the glyphs; [`pin_glyphs`] places them.
+    fn draw_glyphs(
+        &self,
+        snapshot: &gtk4::Snapshot,
+        text: &str,
+        font: &pango::FontDescription,
+        color: &gdk::RGBA,
+        baseline: &graphene::Point,
+    ) {
+        let cell = self.metrics().width * pango::SCALE;
+        let mut column = vec![0; text.len()];
+        for (col, (byte, _)) in text.char_indices().enumerate() {
+            column[byte] = col;
+        }
+        let attrs = pango::AttrList::new();
+        attrs.insert(pango::AttrFontDesc::new(font));
+        let length = i32::try_from(text.len()).unwrap_or(i32::MAX);
+        for item in pango::itemize(&self.pango_context(), text, 0, length, &attrs, None) {
+            let offset = item.offset() as usize;
+            let item_text = &text[offset..offset + item.length() as usize];
+            let mut glyphs = pango::GlyphString::new();
+            pango::shape_full(item_text, Some(text), item.analysis(), &mut glyphs);
+            let columns: Vec<usize> = glyphs
+                .log_clusters()
+                .iter()
+                .map(|&byte| column[offset + byte as usize])
+                .collect();
+            let advances: Vec<i32> = glyphs
+                .glyph_info()
+                .iter()
+                .map(|glyph| glyph.geometry().width())
+                .collect();
+            let offsets = pin_glyphs(&columns, &advances, cell);
+            for (glyph, x) in glyphs.glyph_info_mut().iter_mut().zip(offsets) {
+                let geometry = glyph.geometry_mut();
+                geometry.set_x_offset(x + geometry.x_offset());
+                geometry.set_width(0);
+            }
+            let font = item.analysis().font();
+            if let Some(node) = gsk::TextNode::new(&font, &glyphs, color, baseline) {
+                snapshot.append_node(node);
+            }
+        }
+    }
+}
+
+/// Each glyph's x, in Pango units from its run's start, that puts it at
+/// its cell: `columns[i]` is the column of glyph `i`'s cluster and
+/// `advances[i]` its natural width. Glyphs of one cluster (a base and its
+/// marks) keep their spacing from its first glyph; no advance carries over
+/// to the next cell.
+fn pin_glyphs(columns: &[usize], advances: &[i32], cell: i32) -> Vec<i32> {
+    let mut cluster = None;
+    let mut pen = 0;
+    columns
+        .iter()
+        .zip(advances)
+        .map(|(&col, &advance)| {
+            if cluster.replace(col) != Some(col) {
+                pen = 0;
+            }
+            let x = col as i32 * cell + pen;
+            pen += advance;
+            x
+        })
+        .collect()
+}
+
+/// A cell's size in whole pixels, and where its text sits: the baseline,
+/// and the underline and strikethrough as `(top, thickness)`, in pixels
+/// down from the cell's top.
+#[derive(Clone, Copy, Debug)]
+struct Metrics {
+    width: i32,
+    height: i32,
+    baseline: f32,
+    underline: (f32, f32),
+    strike: (f32, f32),
 }
 
 /// One cell as painted: colors after inverse/selection/cursor swaps.
@@ -573,20 +683,6 @@ impl Painted {
             font.set_style(pango::Style::Italic);
         }
         font
-    }
-
-    fn attributes(&self) -> Option<pango::AttrList> {
-        if self.flags & (ffi::CELL_UNDERLINE | ffi::CELL_STRIKE) == 0 {
-            return None;
-        }
-        let attrs = pango::AttrList::new();
-        if self.flags & ffi::CELL_UNDERLINE != 0 {
-            attrs.insert(pango::AttrInt::new_underline(pango::Underline::Single));
-        }
-        if self.flags & ffi::CELL_STRIKE != 0 {
-            attrs.insert(pango::AttrInt::new_strikethrough(true));
-        }
-        Some(attrs)
     }
 }
 
@@ -678,6 +774,10 @@ fn rgba([r, g, b]: [u8; 3], alpha: f32) -> gdk::RGBA {
         f32::from(b) / 255.0,
         alpha,
     )
+}
+
+fn pixels(pango_units: i32) -> f32 {
+    pango_units as f32 / pango::SCALE as f32
 }
 
 /// Non-negative pixels for the engine's size reports.
@@ -811,6 +911,32 @@ mod tests {
         let ctrl_shift = shift | gdk::ModifierType::CONTROL_MASK;
         assert_eq!(scroll_key(gdk::Key::Page_Up, ctrl_shift, 24), None);
     }
+
+    #[test]
+    fn glyphs_sit_at_their_cells_whatever_the_font_advances() {
+        // 9.6-pixel glyphs on a 10-pixel grid.
+        let advance = 96 * pango::SCALE / 10;
+        let cell = 10 * pango::SCALE;
+        assert_eq!(
+            pin_glyphs(&[0, 1, 2, 70], &[advance; 4], cell),
+            vec![0, cell, 2 * cell, 70 * cell]
+        );
+        // Right-to-left items list their glyphs in visual order.
+        assert_eq!(
+            pin_glyphs(&[2, 1, 0], &[advance; 3], cell),
+            vec![2 * cell, cell, 0]
+        );
+        // A ligature covers two cells; the next glyph starts after them.
+        assert_eq!(
+            pin_glyphs(&[0, 2], &[2 * advance, advance], cell),
+            vec![0, 2 * cell]
+        );
+        // A base and its mark share a cluster: the mark keeps its place.
+        assert_eq!(
+            pin_glyphs(&[0, 0, 1], &[advance, 0, advance], cell),
+            vec![0, advance, cell]
+        );
+    }
 }
 
 /// The widget check needs a display. It is its own test, not part of
@@ -827,6 +953,7 @@ mod ghostty_display {
         TRANSLUCENT_CLASS,
     };
     use crate::ui::translucency::gtk_tests::alpha_at;
+    use std::ops::Range;
     use tokio::sync::mpsc;
 
     /// The view paints a frame, reports its grid once allocated, and turns
@@ -907,6 +1034,7 @@ mod ghostty_display {
             TerminalEvent::DataOut(b"ls\r".to_vec())
         );
         mouse_routing(&backend, &view, &mut rx);
+        glyphs_on_the_grid(&backend, &view);
         window.close();
 
         // The factory follows the installed preference; VTE is the default.
@@ -1014,5 +1142,61 @@ mod ghostty_display {
         let reports = chunks();
         assert_eq!(reports.concat(), b"\x1b[O\x1b[I");
         assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
+    }
+
+    /// Glyphs, the cursor and text lines sit on the cell grid, however far
+    /// the font's advances are from the whole-pixel cell width.
+    fn glyphs_on_the_grid(backend: &GhosttyBackend, view: &GhosttyView) {
+        let metrics = view.metrics();
+        let (cw, ch) = (metrics.width as usize, metrics.height as usize);
+        backend.reset();
+        let (cols, _) = view.shared().unwrap().engine.size();
+        let n = usize::from(cols) - 2;
+        backend.write("M".repeat(n).as_bytes());
+        let inked = render(view);
+        for col in 0..n {
+            assert!(
+                inked(col * cw..(col + 1) * cw, 0..ch),
+                "M {col} left its cell"
+            );
+        }
+        // The cursor block comes right after the last M, then nothing.
+        assert!(inked(n * cw..(n + 1) * cw, 0..ch));
+        assert!(!inked((n + 1) * cw..(n + 2) * cw, 0..ch));
+
+        // Lines cross the blank cells of their runs: cells 1-2 underlined,
+        // 6-7 struck through.
+        backend.write(b"\r\n\x1b[4ma  b\x1b[24m \x1b[9m_  _\x1b[0m");
+        let inked = render(view);
+        for (top, cells) in [(metrics.underline.0, [1, 2]), (metrics.strike.0, [6, 7])] {
+            let y = ch + top as usize;
+            for col in cells {
+                let x = col * cw + cw / 2;
+                assert!(inked(x..x + 1, y..y + 1), "no line in cell {col}");
+            }
+        }
+    }
+
+    /// Paint the view now; the result tells whether any pixel in a box
+    /// differs from the background.
+    fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool {
+        let (width, height) = (view.width(), view.height());
+        let snapshot = gtk4::Snapshot::new();
+        view.paint(&snapshot);
+        let renderer = view.native().and_then(|n| n.renderer()).unwrap();
+        let bounds = graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+        let texture = renderer.render_texture(snapshot.to_node().unwrap(), Some(&bounds));
+        let stride = width as usize * 4;
+        let mut pixels = vec![0; stride * height as usize];
+        texture.download(&mut pixels, stride);
+        let at = move |x: usize, y: usize| -> [u8; 4] {
+            let i = y * stride + x * 4;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+        let background = at(width as usize - 1, height as usize - 1);
+        move |xs, ys| {
+            xs.flat_map(|x| ys.clone().map(move |y| (x, y)))
+                .any(|(x, y)| at(x, y) != background)
+        }
     }
 }
