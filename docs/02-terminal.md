@@ -245,8 +245,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   mouse modes a program set, and a viewport
   snapshot with colors resolved to RGB. Effects raised while parsing —
   replies to queries (device attributes, status reports), BEL, OSC 0/2
-  titles — come back from the `write` that raised them and leave as
-  `DataOut`, `Bell` and `TitleChanged`.
+  titles, OSC 7 directories — come back from the `write` that raised them
+  and leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
+  the view's directory hook instead.
 - **`GhosttyView`.** The GTK4 widget. Each frame snapshots the engine and
   paints it with `GtkSnapshot`: one background rectangle per run of equal
   color, and per run of equal style (bold, italic, underline,
@@ -290,7 +291,11 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   enabled mode 2004. `clear` and `reset` both fully reset, as VTE's
   `clear` does. `set_size` resizes the grid and makes it the widget's
   natural size. `set_opacity` paints the frame's background rectangle
-  with that alpha; colored cell runs stay opaque (§Opacity).
+  with that alpha; colored cell runs stay opaque (§Opacity). The view's
+  `connect_input`, `connect_output` and `connect_directory` hooks stand
+  in for VTE's `commit`, `contents-changed` and
+  `current-directory-uri-changed` signals, which the SFTP sidebar
+  follows the shell by (doc 07 §Following the shell).
 
 ### libghostty-vt pin
 

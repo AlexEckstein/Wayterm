@@ -16,6 +16,8 @@ pub enum Effect {
     Pty(Vec<u8>),
     Bell,
     Title(String),
+    /// The directory the shell reported, raw: a `file://` URI for OSC 7.
+    Pwd(String),
 }
 
 /// Where [`Engine::scroll`] moves the viewport.
@@ -104,6 +106,7 @@ unsafe extern "C" fn on_effect(userdata: *mut c_void, kind: c_int, data: *const 
         ffi::EFFECT_PTY => Effect::Pty(bytes.to_vec()),
         ffi::EFFECT_BELL => Effect::Bell,
         ffi::EFFECT_TITLE => Effect::Title(String::from_utf8_lossy(bytes).into_owned()),
+        ffi::EFFECT_PWD => Effect::Pwd(String::from_utf8_lossy(bytes).into_owned()),
         _ => return,
     };
     if let Ok(mut effects) = effects.try_borrow_mut() {
@@ -418,6 +421,15 @@ mod tests {
             "a primary DA reply: {effects:?}"
         );
         assert!(engine.write(b"plain").is_empty());
+    }
+
+    #[test]
+    fn an_osc_7_report_raises_the_raw_uri() {
+        let engine = engine();
+        assert_eq!(
+            engine.write(b"\x1b]7;file://box/srv/my%20site\x07"),
+            vec![Effect::Pwd("file://box/srv/my%20site".into())]
+        );
     }
 
     #[test]

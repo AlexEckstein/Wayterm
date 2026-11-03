@@ -24,6 +24,8 @@ use super::{
 use crate::sftp::ShellCwdProbe;
 use crate::store::model::{ForwardRule, HostKeyPolicy, SessionConfig};
 use crate::store::SessionStore;
+#[cfg(feature = "backend-ghostty")]
+use crate::terminal::ghostty::view::GhosttyView;
 use crate::transport::connection::SshConnection;
 use crate::transport::forward::{ForwardEngine, ForwardEvent};
 use crate::transport::hostkey::HostKeyVerifier;
@@ -332,61 +334,151 @@ pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
 }
 
 /// Keep the page's SFTP sidebar on the shell's working directory (doc 07
-/// §Following the shell): VTE reports OSC 7 as `current-directory-uri`,
-/// and after each command — Enter, then [`PROBE_QUIET`] without output —
-/// the sidebar may ask the remote instead. The sidebar is looked up each
-/// time, since a redial replaces it.
+/// §Following the shell): the terminal's OSC 7 reports, and after each
+/// command — Enter, then [`PROBE_QUIET`] without output — a probe. The tab
+/// connects to the widget directly: VTE's signals, or the Ghostty view's
+/// matching hooks. The sidebar is looked up each time, since a redial
+/// replaces it.
 pub(super) fn follow_terminal_directory(page: &gtk4::Widget, terminal: &gtk4::Widget) {
-    let Some(vte) = terminal.downcast_ref::<vte4::Terminal>() else {
-        return;
-    };
-    let page = page.downgrade();
-    let follower = RefCell::new(DirectoryFollower::default());
-    let for_report = page.clone();
-    vte.connect_current_directory_uri_changed(move |term| {
-        let (Some(page), Some(uri)) = (for_report.upgrade(), term.current_directory_uri()) else {
-            return;
-        };
-        let Some(path) = follower.borrow_mut().report(&uri) else {
-            return;
-        };
-        if let Some(sidebar) = sidebar_of(&page) {
-            sidebar.follow_shell(path);
-        }
-    });
-
-    let armed = Rc::new(Cell::new(false));
-    let for_commit = Rc::clone(&armed);
-    vte.connect_commit(move |_, text, _| {
-        if text.contains(['\r', '\n']) {
-            for_commit.set(true);
-        }
-    });
-    let quiet: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
-    vte.connect_contents_changed(move |_| {
-        if !armed.get() {
-            return;
-        }
-        if let Some(pending) = quiet.take() {
-            pending.remove();
-        }
-        let (page, armed, fired) = (page.clone(), Rc::clone(&armed), Rc::clone(&quiet));
-        let source = glib::timeout_add_local_once(PROBE_QUIET, move || {
-            // A fired source must not be removed again.
-            fired.take();
-            armed.set(false);
-            if let Some(sidebar) = page.upgrade().and_then(|page| sidebar_of(&page)) {
+    let (for_report, for_command) = (page.downgrade(), page.downgrade());
+    let shell = Rc::new(ShellWatch::new(
+        PROBE_QUIET,
+        move |path| {
+            if let Some(sidebar) = for_report.upgrade().and_then(|page| sidebar_of(&page)) {
+                sidebar.follow_shell(path);
+            }
+        },
+        move || {
+            if let Some(sidebar) = for_command.upgrade().and_then(|page| sidebar_of(&page)) {
                 sidebar.probe_shell();
             }
+        },
+    ));
+    if let Some(vte) = terminal.downcast_ref::<vte4::Terminal>() {
+        let (reports, inputs, outputs) = (shell.clone(), shell.clone(), shell.clone());
+        vte.connect_current_directory_uri_changed(move |term| {
+            if let Some(uri) = term.current_directory_uri() {
+                reports.reported(&uri);
+            }
         });
-        *quiet.borrow_mut() = Some(source);
-    });
+        vte.connect_commit(move |_, text, _| inputs.input(text.as_bytes()));
+        vte.connect_contents_changed(move |_| outputs.output());
+    }
+    #[cfg(feature = "backend-ghostty")]
+    if let Some(view) = terminal.downcast_ref::<GhosttyView>() {
+        let (reports, inputs, outputs) = (shell.clone(), shell.clone(), shell.clone());
+        view.connect_directory(move |uri| reports.reported(uri));
+        view.connect_input(move |data| inputs.input(data));
+        view.connect_output(move || outputs.output());
+    }
+}
+
+/// One terminal's shell, watched for the sidebar: reports go through a
+/// [`DirectoryFollower`] to `report`, and each command, Enter and then
+/// `quiet` without output, calls `command`.
+struct ShellWatch {
+    quiet: Duration,
+    follower: RefCell<DirectoryFollower>,
+    report: Box<dyn Fn(String)>,
+    command: Box<dyn Fn()>,
+    /// Enter was typed; the output after it starts the quiet wait.
+    armed: Cell<bool>,
+    pending: RefCell<Option<glib::SourceId>>,
+}
+
+impl ShellWatch {
+    fn new(
+        quiet: Duration,
+        report: impl Fn(String) + 'static,
+        command: impl Fn() + 'static,
+    ) -> Self {
+        Self {
+            quiet,
+            follower: RefCell::default(),
+            report: Box::new(report),
+            command: Box::new(command),
+            armed: Cell::new(false),
+            pending: RefCell::default(),
+        }
+    }
+
+    fn reported(&self, uri: &str) {
+        let path = self.follower.borrow_mut().report(uri);
+        if let Some(path) = path {
+            (self.report)(path);
+        }
+    }
+
+    fn input(&self, data: &[u8]) {
+        if data.iter().any(|byte| matches!(byte, b'\r' | b'\n')) {
+            self.armed.set(true);
+        }
+    }
+
+    fn output(self: &Rc<Self>) {
+        if !self.armed.get() {
+            return;
+        }
+        if let Some(pending) = self.pending.take() {
+            pending.remove();
+        }
+        let watch = Rc::downgrade(self);
+        let source = glib::timeout_add_local_once(self.quiet, move || {
+            let Some(watch) = watch.upgrade() else {
+                return;
+            };
+            // A fired source must not be removed again.
+            watch.pending.take();
+            watch.armed.set(false);
+            (watch.command)();
+        });
+        *self.pending.borrow_mut() = Some(source);
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
     use crate::store::model::{ForwardKind, SessionType};
+    use crate::ui::dialogs::auth::tests::acquire_default_ctx;
+
+    #[test]
+    fn a_command_is_probed_once_its_output_goes_quiet() {
+        let _owned = acquire_default_ctx();
+        let ctx = glib::MainContext::default();
+        let quiet = Duration::from_millis(10);
+        let spin = |until: &dyn Fn() -> bool, limit: Duration| {
+            let end = Instant::now() + limit;
+            while !until() && Instant::now() < end {
+                ctx.iteration(false);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let probes = Rc::new(Cell::new(0));
+        let count = Rc::clone(&probes);
+        let shell = Rc::new(ShellWatch::new(
+            quiet,
+            |_| {},
+            move || count.set(count.get() + 1),
+        ));
+
+        shell.input(b"cd /tmp");
+        shell.output();
+        spin(&|| false, quiet * 5);
+        assert_eq!(probes.get(), 0, "no Enter, no command");
+
+        shell.input(b"\r");
+        shell.output();
+        shell.output();
+        spin(&|| probes.get() > 0, Duration::from_secs(2));
+        assert_eq!(probes.get(), 1);
+
+        shell.output();
+        spin(&|| false, quiet * 5);
+        assert_eq!(probes.get(), 1, "output after the probe is no new command");
+    }
 
     #[test]
     fn jump_dial_needs_ssh_with_a_jump_host() {

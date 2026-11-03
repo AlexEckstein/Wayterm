@@ -13,6 +13,7 @@ pub mod engine;
 pub mod ffi;
 pub mod view;
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
@@ -33,17 +34,53 @@ const INITIAL_GRID: (u16, u16) = (80, 24);
 struct Shared {
     engine: Engine,
     events: EventSender,
+    watchers: Watchers,
+}
+
+/// What the tab follows the shell by (doc 07 §Following the shell), as
+/// VTE's `commit`, `contents-changed` and `current-directory-uri-changed`
+/// signals; connected through [`GhosttyView`].
+#[derive(Default)]
+struct Watchers {
+    input: WatchList<InputWatch>,
+    output: WatchList<dyn Fn()>,
+    directory: WatchList<dyn Fn(&str)>,
+}
+
+type InputWatch = dyn Fn(&[u8]);
+type WatchList<F> = RefCell<Vec<Rc<F>>>;
+
+/// A copy of the list, so a watcher may connect another while it runs.
+fn each<F: ?Sized>(list: &WatchList<F>) -> Vec<Rc<F>> {
+    list.borrow().clone()
 }
 
 impl Shared {
-    /// Forward an engine effect as a terminal event.
+    /// Forward an engine effect as a terminal event; a reported directory
+    /// goes to the watchers instead.
     fn emit(&self, effects: Vec<Effect>) {
         for effect in effects {
-            self.events.send(match effect {
+            let event = match effect {
                 Effect::Pty(reply) => TerminalEvent::DataOut(reply),
                 Effect::Bell => TerminalEvent::Bell,
                 Effect::Title(title) => TerminalEvent::TitleChanged(title),
-            });
+                Effect::Pwd(dir) => {
+                    for watch in each(&self.watchers.directory) {
+                        watch(&dir);
+                    }
+                    continue;
+                }
+            };
+            self.events.send(event);
+        }
+    }
+
+    /// Output from the remote side.
+    fn output(&self, data: &[u8]) {
+        let effects = self.engine.write(data);
+        self.emit(effects);
+        for watch in each(&self.watchers.output) {
+            watch();
         }
     }
 
@@ -51,6 +88,9 @@ impl Shared {
     fn input(&self, data: Vec<u8>) {
         if !data.is_empty() {
             self.engine.scroll(Scroll::Bottom);
+            for watch in each(&self.watchers.input) {
+                watch(&data);
+            }
             self.events.send(TerminalEvent::DataOut(data));
         }
     }
@@ -71,6 +111,7 @@ impl GhosttyBackend {
         let shared = Rc::new(Shared {
             engine,
             events: EventSender::new(event_tx),
+            watchers: Watchers::default(),
         });
         let view = GhosttyView::new(shared.clone());
         Some(Self { shared, view })
@@ -87,8 +128,7 @@ impl TerminalBackend for GhosttyBackend {
     }
 
     fn write(&self, data: &[u8]) {
-        let effects = self.engine().write(data);
-        self.shared.emit(effects);
+        self.shared.output(data);
         self.view.queue_draw();
     }
 

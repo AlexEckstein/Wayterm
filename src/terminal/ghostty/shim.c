@@ -19,6 +19,7 @@
 #define WT_EFFECT_PTY 1   /* bytes the terminal answers with (DA, DSR, …) */
 #define WT_EFFECT_BELL 2
 #define WT_EFFECT_TITLE 3 /* the new title, UTF-8 */
+#define WT_EFFECT_PWD 4   /* the reported directory, raw (OSC 7: a URI) */
 
 /* Cell flags (mirrored in ffi.rs). */
 #define WT_CELL_BOLD (1u << 0)
@@ -120,15 +121,20 @@ static void on_bell(GhosttyTerminal t, void *ud) {
   if (g->effect) g->effect(g->userdata, WT_EFFECT_BELL, NULL, 0);
 }
 
-static void on_title(GhosttyTerminal t, void *ud) {
-  WtGhostty *g = ud;
-  GhosttyString title = {0};
-  if (ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_TITLE, &title) !=
-      GHOSTTY_SUCCESS)
-    return;
+static void emit_string(GhosttyTerminal t, WtGhostty *g,
+                        GhosttyTerminalData data, int kind) {
+  GhosttyString value = {0};
+  if (ghostty_terminal_get(t, data, &value) != GHOSTTY_SUCCESS) return;
   if (g->effect)
-    g->effect(g->userdata, WT_EFFECT_TITLE, (const uint8_t *)title.ptr,
-              title.len);
+    g->effect(g->userdata, kind, (const uint8_t *)value.ptr, value.len);
+}
+
+static void on_title(GhosttyTerminal t, void *ud) {
+  emit_string(t, ud, GHOSTTY_TERMINAL_DATA_TITLE, WT_EFFECT_TITLE);
+}
+
+static void on_pwd(GhosttyTerminal t, void *ud) {
+  emit_string(t, ud, GHOSTTY_TERMINAL_DATA_PWD, WT_EFFECT_PWD);
 }
 
 void wt_ghostty_free(WtGhostty *g) {
@@ -166,6 +172,8 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
                        (const void *)on_bell);
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
                        (const void *)on_title);
+  ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
+                       (const void *)on_pwd);
   return g;
 }
 
