@@ -185,9 +185,10 @@ window actions and the registry of live tabs.
 
 When the shell exits on its own (`exit`, logout, a detached tmux) the
 reader emits `SessionEnded`. Nothing reconnects and no alert is posted.
-The tab reads as disconnected (closing it does not ask), and the terminal
-keeps its scrollback and adds a notice: `r` reconnects (a fresh connect,
-as Retry), `q` closes the tab (`ui::tabs::ended`).
+The tab reads as disconnected (closing it does not ask), its SFTP sidebar
+ends its SFTP task (doc 07 §Layout), and the terminal keeps its scrollback
+and adds a notice: `r` reconnects (a fresh connect, as Retry), `q` closes
+the tab (`ui::tabs::ended`).
 
 ## Tab labels
 

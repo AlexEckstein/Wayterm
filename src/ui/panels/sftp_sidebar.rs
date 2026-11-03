@@ -412,19 +412,27 @@ fn build_sidebar() -> Rc<SidebarInner> {
 }
 
 impl SidebarInner {
-    /// Callbacks only queue work or update the model.
+    /// Callbacks only queue work or update the model. They hold the
+    /// sidebar weakly: they hang on its own widgets, so a strong hold would
+    /// keep it, and its SFTP task, alive after the last handle drops.
     fn connect_signals(self: &Rc<Self>) {
         // Enter in the path bar navigates to what is typed.
-        let for_entry = Rc::clone(self);
-        self.path_entry
-            .connect_activate(move |entry| for_entry.cd(entry.text().to_string()));
+        let weak = Rc::downgrade(self);
+        self.path_entry.connect_activate(move |entry| {
+            if let Some(inner) = weak.upgrade() {
+                inner.cd(entry.text().to_string());
+            }
+        });
 
         // Double-click a directory navigates into it; `..` goes up.
-        let for_row = Rc::clone(self);
+        let weak = Rc::downgrade(self);
         self.column_view.connect_activate(move |_, position| {
-            let row = for_row.model.item(position).and_then(|item| row_of(&item));
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let row = inner.model.item(position).and_then(|item| row_of(&item));
             let target = {
-                let state = for_row.state.borrow();
+                let state = inner.state.borrow();
                 match row {
                     Some(row) if row.is_parent => parent_path(state.current_path()),
                     Some(row) if row.is_dir => Some(join_path(state.current_path(), &row.name)),
@@ -432,66 +440,55 @@ impl SidebarInner {
                 }
             };
             if let Some(target) = target {
-                for_row.cd(target);
+                inner.cd(target);
             }
         });
 
         // Selection drives the toolbar rules (model layer, unit-tested).
-        let for_selection = Rc::clone(self);
+        let weak = Rc::downgrade(self);
         self.selection
             .connect_selected_item_notify(move |selection| {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
                 let picked = selection.selected_item().and_then(|item| row_of(&item));
-                for_selection.state.borrow_mut().select(picked.as_ref());
-                for_selection.render_toolbar();
+                inner.state.borrow_mut().select(picked.as_ref());
+                inner.render_toolbar();
             });
 
-        let for_upload = Rc::clone(self);
-        self.buttons
-            .upload
-            .connect_clicked(move |_| for_upload.choose_upload_files());
+        let buttons = &self.buttons;
+        self.on_click(&buttons.upload, Self::choose_upload_files);
+        self.on_click(&buttons.download, Self::choose_download_target);
+        self.on_click(&buttons.delete, Self::delete_selected);
+        self.on_click(&buttons.rename, Self::rename_selected);
+        self.on_click(&buttons.refresh, Self::refresh);
+        self.on_click(&buttons.mkdir, Self::mkdir);
+        self.on_click(&buttons.cancel, Self::cancel_transfer);
 
-        let for_download = Rc::clone(self);
-        self.buttons
-            .download
-            .connect_clicked(move |_| for_download.choose_download_target());
+        let weak = Rc::downgrade(self);
+        self.follow_check.connect_toggled(move |check| {
+            if let Some(inner) = weak.upgrade() {
+                inner.set_following(check.is_active());
+            }
+        });
+    }
 
-        let for_delete = Rc::clone(self);
-        self.buttons
-            .delete
-            .connect_clicked(move |_| for_delete.delete_selected());
-
-        let for_rename = Rc::clone(self);
-        self.buttons
-            .rename
-            .connect_clicked(move |_| for_rename.rename_selected());
-
-        let for_refresh = Rc::clone(self);
-        self.buttons
-            .refresh
-            .connect_clicked(move |_| for_refresh.refresh());
-
-        let for_mkdir = Rc::clone(self);
-        self.buttons
-            .mkdir
-            .connect_clicked(move |_| for_mkdir.mkdir());
-
-        let for_cancel = Rc::clone(self);
-        self.buttons
-            .cancel
-            .connect_clicked(move |_| for_cancel.cancel_transfer());
-
-        let for_follow = Rc::clone(self);
-        self.follow_check
-            .connect_toggled(move |check| for_follow.set_following(check.is_active()));
+    fn on_click(self: &Rc<Self>, button: &gtk4::Button, action: fn(&Rc<Self>)) {
+        let weak = Rc::downgrade(self);
+        button.connect_clicked(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                action(&inner);
+            }
+        });
     }
 
     /// Uploads from drops: a `GdkFileList` target and a `text/uri-list` one.
     fn connect_drag_drop(self: &Rc<Self>) {
         let files_target =
             gtk4::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
-        let for_files = Rc::clone(self);
+        let weak = Rc::downgrade(self);
         files_target.connect_drop(move |_target, value, _x, _y| {
-            let Ok(list) = value.get::<gdk::FileList>() else {
+            let (Some(inner), Ok(list)) = (weak.upgrade(), value.get::<gdk::FileList>()) else {
                 return false;
             };
             let paths: Vec<String> = list
@@ -503,22 +500,22 @@ impl SidebarInner {
             if paths.is_empty() {
                 return false;
             }
-            for_files.queue_uploads(paths);
+            inner.queue_uploads(paths);
             true
         });
         self.column_view.add_controller(files_target);
 
         let uri_target = gtk4::DropTarget::new(glib::types::Type::STRING, gdk::DragAction::COPY);
-        let for_uris = Rc::clone(self);
+        let weak = Rc::downgrade(self);
         uri_target.connect_drop(move |_target, value, _x, _y| {
-            let Ok(text) = value.get::<String>() else {
+            let (Some(inner), Ok(text)) = (weak.upgrade(), value.get::<String>()) else {
                 return false;
             };
             let paths = parse_uri_list(&text);
             if paths.is_empty() {
                 return false;
             }
-            for_uris.queue_uploads(paths);
+            inner.queue_uploads(paths);
             true
         });
         self.column_view.add_controller(uri_target);
@@ -1013,5 +1010,18 @@ pub(in crate::ui) mod gtk_tests {
         sidebar.set_following(true);
         assert!(inner.follow_check.is_active());
         assert_eq!(sidebar.path_text(), "/var/log", "ticked: catches up");
+    }
+
+    /// Dropping the last handle frees the sidebar, and with it the SFTP
+    /// task's command sender, so the task ends (doc 07 §Connection model).
+    pub(in crate::ui) fn a_dropped_sidebar_is_freed() {
+        for sidebar in [SftpSidebar::new(), SftpSidebar::hidden()] {
+            let inner = Rc::downgrade(&sidebar.inner);
+            drop(sidebar);
+            assert!(
+                inner.upgrade().is_none(),
+                "the sidebar outlived its handles"
+            );
+        }
     }
 }

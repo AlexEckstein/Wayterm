@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use gtk4::glib;
 
-use super::ssh::follow_terminal_directory;
-use super::terminal::{focus_after_connect, focus_terminal, terminal_state};
+use super::ssh::{follow_terminal_directory, mark_sidebar_attached};
+use super::terminal::{focus_after_connect, focus_terminal, show_session_ended, terminal_state};
 use super::*;
 use crate::hotkeys::engine::focus_within;
 use crate::terminal::color_scheme::{Brightness, Rgb, DARK, LIGHT};
@@ -215,6 +215,34 @@ fn sidebar_follows_the_shell_directory(backend_name: &str) {
     assert_eq!(sidebar.path_text(), "/srv/my site", "another host");
     report("file://box/var/log");
     assert_eq!(sidebar.path_text(), "/var/log");
+}
+
+/// The shell exiting lets go of the page's SFTP sidebar: an empty one
+/// takes its place, keeping the follow setting, and the old one is freed
+/// with its SFTP task.
+pub(in crate::ui) fn the_sftp_session_ends_with_the_shell() {
+    let session = SessionConfig {
+        id: 1,
+        name: "ssh-1".into(),
+        session_type: SessionType::SSH,
+        ..Default::default()
+    };
+    let page = page_content(&Rc::new(session));
+    let backend = create_terminal().backend;
+    set_terminal_area(&page, &backend.widget());
+    terminal_state(&page).terminal.replace(Some(backend));
+    let notebook = gtk4::Notebook::new();
+    notebook.append_page(&page, None::<&gtk4::Widget>);
+    let old = SessionTab::sidebar_for_page(&page).expect("an SSH page's sidebar");
+    old.set_following(false);
+    mark_sidebar_attached(&page);
+    let old_widget = old.widget().downgrade();
+    drop(old);
+
+    show_session_ended(&notebook, &page);
+    let new = SessionTab::sidebar_for_page(&page).expect("a sidebar after the end");
+    assert!(old_widget.upgrade().is_none(), "the old sidebar lives on");
+    assert!(!new.is_following(), "the follow setting carries over");
 }
 
 /// The connect flow end to end on a local shell: opening the tab wires
