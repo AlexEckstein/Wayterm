@@ -60,6 +60,9 @@ pub struct Frame {
     pub info: FrameInfo,
     /// Row-major, `info.cols` per row.
     pub cells: Vec<Cell>,
+    /// The clusters of cells holding more than one codepoint, where their
+    /// `grapheme` fields point; grown as needed, never shrunk.
+    pub graphemes: Vec<u32>,
 }
 
 impl Frame {
@@ -70,16 +73,46 @@ impl Frame {
         self.cells.get(row * usize::from(self.info.cols) + col)
     }
 
+    /// A cell's whole grapheme cluster, base codepoint first; empty for an
+    /// empty cell and for the tail of a wide one.
+    pub fn grapheme(&self, row: usize, col: usize) -> &[u32] {
+        let Some(cell) = self.cell(row, col) else {
+            return &[];
+        };
+        match cell.grapheme_len {
+            0 => &[],
+            1 => std::slice::from_ref(&cell.codepoint),
+            len => {
+                let start = cell.grapheme as usize;
+                self.graphemes
+                    .get(start..start + usize::from(len))
+                    .unwrap_or(&[])
+            }
+        }
+    }
+
     /// One viewport row as text, empty cells as spaces.
     pub fn row_text(&self, row: usize) -> String {
-        (0..usize::from(self.info.cols))
-            .filter_map(|col| self.cell(row, col))
-            .map(|cell| {
-                char::from_u32(cell.codepoint)
-                    .filter(|c| *c != '\0')
-                    .unwrap_or(' ')
-            })
-            .collect()
+        let mut text = String::new();
+        for col in 0..usize::from(self.info.cols) {
+            push_cluster(&mut text, self.grapheme(row, col));
+        }
+        text
+    }
+}
+
+/// Append a cell's cluster to `text`, or a space for an empty cell (the
+/// tail of a wide one included), so each cell adds at least one character.
+pub(super) fn push_cluster(text: &mut String, cluster: &[u32]) {
+    let start = text.len();
+    text.extend(
+        cluster
+            .iter()
+            .filter_map(|&c| char::from_u32(c))
+            .filter(|&c| c != '\0'),
+    );
+    if text.len() == start {
+        text.push(' ');
     }
 }
 
@@ -330,21 +363,35 @@ impl Engine {
 
     /// Refresh `frame` from the terminal's viewport.
     pub fn snapshot(&self, frame: &mut Frame) -> bool {
-        for _ in 0..2 {
-            // SAFETY: valid terminal; `cells` has `len` initialized slots.
+        // The cells and then the graphemes may each need to grow once.
+        for _ in 0..3 {
+            let mut graphemes = 0;
+            // SAFETY: valid terminal; `cells` and `graphemes` have `len`
+            // initialized slots each.
             let result = unsafe {
                 ffi::wt_ghostty_snapshot(
                     self.ptr(),
                     &mut frame.info,
                     frame.cells.as_mut_ptr(),
                     frame.cells.len(),
+                    frame.graphemes.as_mut_ptr(),
+                    frame.graphemes.len(),
+                    &mut graphemes,
                 )
             };
             match result {
                 ffi::SUCCESS => return true,
                 ffi::OUT_OF_SPACE => {
                     let needed = usize::from(frame.info.cols) * usize::from(frame.info.rows);
-                    frame.cells.resize(needed, Cell::default());
+                    if frame.cells.len() < needed {
+                        frame.cells.resize(needed, Cell::default());
+                    }
+                    if frame.graphemes.len() < graphemes {
+                        // Doubling, so a count creeping up frame by frame
+                        // costs few second passes.
+                        let grown = graphemes.max(frame.graphemes.len() * 2);
+                        frame.graphemes.resize(grown, 0);
+                    }
                 }
                 _ => return false,
             }
@@ -380,6 +427,15 @@ mod tests {
         let (cell, info) = unsafe { (ffi::wt_ghostty_cell_size(), ffi::wt_ghostty_frame_size()) };
         assert_eq!(std::mem::size_of::<Cell>(), cell);
         assert_eq!(std::mem::size_of::<FrameInfo>(), info);
+        // SAFETY: plain getters.
+        let (grapheme, grapheme_len) = unsafe {
+            (
+                ffi::wt_ghostty_cell_grapheme_offset(),
+                ffi::wt_ghostty_cell_grapheme_len_offset(),
+            )
+        };
+        assert_eq!(std::mem::offset_of!(Cell, grapheme), grapheme);
+        assert_eq!(std::mem::offset_of!(Cell, grapheme_len), grapheme_len);
     }
 
     #[test]
@@ -391,6 +447,98 @@ mod tests {
         assert_eq!(frame.row_text(0).trim_end(), "hello");
         assert_eq!(frame.row_text(1).trim_end(), "world");
         assert_eq!((frame.info.cursor_x, frame.info.cursor_y), (5, 1));
+    }
+
+    /// A cell's cluster as a string; empty for an empty cell.
+    fn cluster(frame: &Frame, row: usize, col: usize) -> String {
+        frame
+            .grapheme(row, col)
+            .iter()
+            .filter_map(|&c| char::from_u32(c))
+            .collect()
+    }
+
+    #[test]
+    fn marks_and_selectors_stay_in_their_base_cell() {
+        let engine = engine();
+        // A decomposed é, ❤ with VS16, Thai ก with SARA I and Devanagari क
+        // with vowel sign U, each followed by a narrow cell; then a wide
+        // CJK character.
+        let clusters = [
+            "e\u{301}",
+            "\u{2764}\u{fe0f}",
+            "\u{e01}\u{e34}",
+            "\u{915}\u{941}",
+        ];
+        let line = format!("{}\u{4e2d}|", clusters.map(|c| format!("{c}|")).concat());
+        engine.write(line.as_bytes());
+        let frame = frame(&engine);
+        for (i, expected) in clusters.into_iter().enumerate() {
+            let col = 2 * i;
+            assert_eq!(cluster(&frame, 0, col), expected);
+            let cell = frame.cell(0, col).unwrap();
+            assert_eq!(usize::from(cell.grapheme_len), expected.chars().count());
+            assert_eq!(Some(cell.codepoint), expected.chars().next().map(u32::from));
+            assert_eq!(cluster(&frame, 0, col + 1), "|", "after {expected:?}");
+        }
+        // The wide character fills its cell; its tail holds nothing.
+        assert_eq!(frame.grapheme(0, 8), [0x4e2d]);
+        assert!(frame.grapheme(0, 9).is_empty());
+        assert_eq!(frame.cell(0, 9).unwrap().grapheme_len, 0);
+        assert_eq!(cluster(&frame, 0, 10), "|");
+        assert_eq!(
+            frame.row_text(0).trim_end(),
+            line.replace('\u{4e2d}', "\u{4e2d} ")
+        );
+    }
+
+    #[test]
+    fn with_grapheme_clustering_a_wide_cluster_takes_a_cell_and_its_tail() {
+        let engine = engine();
+        // Mode 2027: the program asks for Unicode grapheme clustering, so
+        // a ZWJ sequence, a flag and a VS16 emoji each make one wide cell.
+        engine.write(b"\x1b[?2027h");
+        let clusters = [
+            "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+            "\u{1f1e9}\u{1f1ea}",
+            "\u{2764}\u{fe0f}",
+            "\u{4e2d}",
+        ];
+        engine.write(clusters.map(|c| format!("{c}|")).concat().as_bytes());
+        let frame = frame(&engine);
+        for (i, expected) in clusters.into_iter().enumerate() {
+            let col = 3 * i;
+            assert_eq!(cluster(&frame, 0, col), expected);
+            let cell = frame.cell(0, col).unwrap();
+            assert_eq!(usize::from(cell.grapheme_len), expected.chars().count());
+            assert!(
+                frame.grapheme(0, col + 1).is_empty(),
+                "the tail of {expected:?}"
+            );
+            assert_eq!(cluster(&frame, 0, col + 2), "|", "after {expected:?}");
+        }
+    }
+
+    #[test]
+    fn the_cluster_buffer_grows_to_a_full_screen_and_is_reused() {
+        let engine = engine();
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        // Each of the 20×5 cells holds two codepoints.
+        engine.write("e\u{301}".repeat(100).as_bytes());
+        assert!(engine.snapshot(&mut frame));
+        for row in 0..5 {
+            for col in 0..20 {
+                assert_eq!(frame.grapheme(row, col), [0x65, 0x301], "cell {col},{row}");
+            }
+        }
+        // The next frame reuses the buffer; plain cells do not point into it.
+        engine.reset();
+        engine.write("x\u{301}y".as_bytes());
+        assert!(engine.snapshot(&mut frame));
+        assert_eq!(frame.grapheme(0, 0), [u32::from('x'), 0x301]);
+        assert_eq!(frame.grapheme(0, 1), [u32::from('y')]);
+        assert_eq!(frame.row_text(1).trim_end(), "");
     }
 
     #[test]

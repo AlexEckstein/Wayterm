@@ -9,6 +9,7 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,11 +76,15 @@ typedef void (*WtEffectFn)(void *userdata, int kind, const uint8_t *data,
 
 /* One grid cell, colors already resolved to RGB. */
 typedef struct {
-  uint32_t codepoint; /* 0 = empty */
+  uint32_t codepoint; /* the grapheme's base codepoint; 0 = empty */
   uint8_t fg[3];
   uint8_t bg[3];
   uint8_t flags;
-  uint8_t has_bg; /* 0 = default background */
+  uint8_t has_bg;        /* 0 = default background */
+  uint16_t grapheme_len; /* codepoints in the cluster, base included:
+                            0 = empty, 1 = just `codepoint` */
+  uint32_t grapheme;     /* with grapheme_len > 1: where the whole cluster
+                            starts in the snapshot's grapheme buffer */
 } WtCell;
 
 /* Frame-wide state from the render snapshot. */
@@ -433,6 +438,13 @@ int wt_ghostty_encode_key(WtGhostty *g, const WtKey *key, char *out,
 /* ABI checks for the Rust mirrors (ffi.rs tests). */
 size_t wt_ghostty_cell_size(void) { return sizeof(WtCell); }
 size_t wt_ghostty_frame_size(void) { return sizeof(WtFrame); }
+/* The size alone misses a field moved into the padding. */
+size_t wt_ghostty_cell_grapheme_offset(void) {
+  return offsetof(WtCell, grapheme);
+}
+size_t wt_ghostty_cell_grapheme_len_offset(void) {
+  return offsetof(WtCell, grapheme_len);
+}
 
 static void rgb(uint8_t out[3], GhosttyColorRgb c) {
   out[0] = c.r;
@@ -440,11 +452,16 @@ static void rgb(uint8_t out[3], GhosttyColorRgb c) {
   out[2] = c.b;
 }
 
-/* Snapshot the viewport into `cells` (row-major, frame->cols per row).
- * GHOSTTY_OUT_OF_SPACE when `cap` < cols * rows; `frame` is filled first,
- * so the caller can grow the buffer and retry. */
+/* Snapshot the viewport into `cells` (row-major, frame->cols per row),
+ * and the whole cluster of each cell holding more than one codepoint into
+ * `graphemes`, `*graphemes_len` slots in all. GHOSTTY_OUT_OF_SPACE when
+ * `cap` < cols * rows (`frame` is filled first) or the clusters need more
+ * than `graphemes_cap` slots (`*graphemes_len` says how many), so the
+ * caller can grow either buffer and retry. */
 int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
-                        size_t cap) {
+                        size_t cap, uint32_t *graphemes, size_t graphemes_cap,
+                        size_t *graphemes_len) {
+  *graphemes_len = 0;
   int r = ghostty_render_state_update(g->render, g->terminal);
   if (r != GHOSTTY_SUCCESS) return r;
 
@@ -475,6 +492,7 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
   r = ghostty_render_state_get(g->render, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
                                &g->rows);
   if (r != GHOSTTY_SUCCESS) return r;
+  size_t used = 0; /* grapheme slots filled, or needed past the cap */
   size_t y = 0;
   while (y < frame->rows && ghostty_render_state_row_iterator_next(g->rows)) {
     if (ghostty_render_state_row_get(g->rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
@@ -485,17 +503,27 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
     size_t x = 0;
     while (x < cols && ghostty_render_state_row_cells_next(g->cells)) {
       WtCell *cell = &cells[y * cols + x];
+      /* 0 for an empty cell and for the tail of a wide one: a wide
+       * cluster sits whole in its leading cell. */
       uint32_t len = 0;
       ghostty_render_state_row_cells_get(
           g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &len);
-      if (len > 0) {
-        /* Base codepoint only; combining marks are not drawn. */
-        uint32_t cps[16];
-        if (len <= 16 &&
+      if (len == 1) {
+        if (ghostty_render_state_row_cells_get(
+                g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
+                &cell->codepoint) == GHOSTTY_SUCCESS)
+          cell->grapheme_len = 1;
+      } else if (len > 1 && len <= UINT16_MAX) {
+        /* Past the cap only count, so the caller can grow the buffer. */
+        if (used + len <= graphemes_cap &&
             ghostty_render_state_row_cells_get(
                 g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
-                cps) == GHOSTTY_SUCCESS)
-          cell->codepoint = cps[0];
+                graphemes + used) == GHOSTTY_SUCCESS) {
+          cell->codepoint = graphemes[used];
+          cell->grapheme = (uint32_t)used;
+          cell->grapheme_len = (uint16_t)len;
+        }
+        used += len;
       }
       GhosttyColorRgb c;
       if (ghostty_render_state_row_cells_get(
@@ -538,6 +566,8 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
     }
     y++;
   }
+  *graphemes_len = used;
+  if (used > graphemes_cap) return GHOSTTY_OUT_OF_SPACE;
   ghostty_render_state_clean(g->render);
   return GHOSTTY_SUCCESS;
 }
