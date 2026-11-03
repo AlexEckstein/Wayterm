@@ -95,6 +95,14 @@ typedef struct {
   uint8_t cursor_has_rgb;
 } WtFrame;
 
+/* One viewport row's run of search highlight, cells [start, end). */
+typedef struct {
+  uint16_t row;
+  uint16_t start;
+  uint16_t end;
+  uint8_t current; /* part of the selected match */
+} WtSpan;
+
 typedef struct {
   GhosttyTerminal terminal;
   GhosttyRenderState render;
@@ -106,6 +114,15 @@ typedef struct {
   GhosttyMouseEvent mouse_event;
   WtEffectFn effect;
   void *userdata;
+  /* Search: created on first use; idle while `needle` is NULL. */
+  GhosttySearch search;
+  uint8_t *needle; /* the query as typed, compared exactly */
+  size_t needle_len;
+  bool needle_cased; /* has ASCII letters, which libghostty-vt folds */
+  uint8_t *scratch;  /* needle_len bytes, for reading a match back */
+  bool found;        /* the search's selected match equals the needle */
+  GhosttySelection *matches; /* reused buffer for match lists */
+  size_t matches_cap;
 } WtGhostty;
 
 static void on_write_pty(GhosttyTerminal t, void *ud, const uint8_t *data,
@@ -137,8 +154,13 @@ static void on_pwd(GhosttyTerminal t, void *ud) {
   emit_string(t, ud, GHOSTTY_TERMINAL_DATA_PWD, WT_EFFECT_PWD);
 }
 
+void wt_ghostty_search_clear(WtGhostty *g);
+
 void wt_ghostty_free(WtGhostty *g) {
   if (!g) return;
+  wt_ghostty_search_clear(g);
+  ghostty_search_free(g->search);
+  free(g->matches);
   ghostty_mouse_event_free(g->mouse_event);
   ghostty_mouse_encoder_free(g->mouse_encoder);
   ghostty_key_event_free(g->key_event);
@@ -197,7 +219,11 @@ void wt_ghostty_size(WtGhostty *g, uint16_t *cols, uint16_t *rows) {
   ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_ROWS, rows);
 }
 
-void wt_ghostty_reset(WtGhostty *g) { ghostty_terminal_reset(g->terminal); }
+/* A full reset also ends the search: there is nothing left to find. */
+void wt_ghostty_reset(WtGhostty *g) {
+  ghostty_terminal_reset(g->terminal);
+  wt_ghostty_search_clear(g);
+}
 
 int wt_ghostty_set_scrollback_lines(WtGhostty *g, size_t lines) {
   return ghostty_terminal_set(g->terminal,
@@ -280,6 +306,301 @@ int wt_ghostty_select_viewport(WtGhostty *g, uint16_t x0, uint16_t y0,
 
 void wt_ghostty_clear_selection(WtGhostty *g) {
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, NULL);
+}
+
+/* Search runs on a GhosttySearch over the active screen, scrollback
+ * included, driven on the terminal's thread like every call here. Its
+ * selected match is the current one: search state, apart from the
+ * terminal's selection, which search never touches. libghostty-vt matches
+ * ASCII letters case-insensitively and VTE does not, so every match is
+ * read back and compared with the needle as typed. */
+
+/* End the search: the needle goes, the search idles, nothing is lit. */
+void wt_ghostty_search_clear(WtGhostty *g) {
+  if (g->search)
+    ghostty_search_set(g->search, GHOSTTY_SEARCH_OPT_NEEDLE, NULL);
+  free(g->needle);
+  free(g->scratch);
+  g->needle = NULL;
+  g->scratch = NULL;
+  g->needle_len = 0;
+  g->needle_cased = false;
+  g->found = false;
+}
+
+static int set_needle(WtGhostty *g, const uint8_t *needle, size_t len) {
+  uint8_t *copy = malloc(len), *scratch = malloc(len);
+  if (!copy || !scratch) {
+    free(copy);
+    free(scratch);
+    return GHOSTTY_OUT_OF_MEMORY;
+  }
+  memcpy(copy, needle, len);
+  /* Cleared first, so a needle that differs only in case restarts too. */
+  wt_ghostty_search_clear(g);
+  GhosttyString value = {.ptr = copy, .len = len};
+  int r = ghostty_search_set(g->search, GHOSTTY_SEARCH_OPT_NEEDLE, &value);
+  if (r != GHOSTTY_SUCCESS) {
+    free(copy);
+    free(scratch);
+    return r;
+  }
+  g->needle = copy;
+  g->needle_len = len;
+  g->scratch = scratch;
+  for (size_t i = 0; i < len; i++)
+    if ((copy[i] >= 'A' && copy[i] <= 'Z') || (copy[i] >= 'a' && copy[i] <= 'z'))
+      g->needle_cased = true;
+  return GHOSTTY_SUCCESS;
+}
+
+/* Whether a match reads exactly as the needle, case included. */
+static bool exact(WtGhostty *g, const GhosttySelection *match) {
+  if (!g->needle_cased) return true;
+  GhosttyTerminalSelectionFormatOptions opts =
+      GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
+  opts.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+  opts.unwrap = true;
+  opts.trim = false;
+  opts.selection = match;
+  size_t written = 0;
+  return ghostty_terminal_selection_format_buf(g->terminal, opts, g->scratch,
+                                               g->needle_len, &written) ==
+             GHOSTTY_SUCCESS &&
+         written == g->needle_len &&
+         memcmp(g->scratch, g->needle, written) == 0;
+}
+
+/* A match's first and last cell in screen coordinates (row 0 is the
+ * oldest scrollback line), in reading order; `wide` when the last is a
+ * wide character, which covers the next cell too. */
+typedef struct {
+  GhosttyPointCoordinate first;
+  GhosttyPointCoordinate last;
+  bool wide;
+} Extent;
+
+static bool extent(WtGhostty *g, const GhosttySelection *m, Extent *e) {
+  GhosttyPointCoordinate a, b;
+  if (ghostty_terminal_point_from_grid_ref(g->terminal, &m->start,
+                                           GHOSTTY_POINT_TAG_SCREEN,
+                                           &a) != GHOSTTY_SUCCESS ||
+      ghostty_terminal_point_from_grid_ref(g->terminal, &m->end,
+                                           GHOSTTY_POINT_TAG_SCREEN,
+                                           &b) != GHOSTTY_SUCCESS)
+    return false;
+  bool in_order = a.y < b.y || (a.y == b.y && a.x <= b.x);
+  e->first = in_order ? a : b;
+  e->last = in_order ? b : a;
+  GhosttyCell cell = 0;
+  GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+  e->wide = ghostty_grid_ref_cell(in_order ? &m->end : &m->start, &cell) ==
+                GHOSTTY_SUCCESS &&
+            ghostty_cell_get(cell, GHOSTTY_CELL_DATA_WIDE, &wide) ==
+                GHOSTTY_SUCCESS &&
+            wide == GHOSTTY_CELL_WIDE_WIDE;
+  return true;
+}
+
+static bool same_extent(const Extent *a, const Extent *b) {
+  return a->first.x == b->first.x && a->first.y == b->first.y &&
+         a->last.x == b->last.x && a->last.y == b->last.y;
+}
+
+/* The screen row at the top of the viewport. */
+static bool viewport_top(WtGhostty *g, uint32_t *top) {
+  GhosttyPoint p = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
+                    .value = {.coordinate = {.x = 0, .y = 0}}};
+  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  GhosttyPointCoordinate c;
+  if (ghostty_terminal_grid_ref(g->terminal, p, &ref) != GHOSTTY_SUCCESS ||
+      ghostty_terminal_point_from_grid_ref(g->terminal, &ref,
+                                           GHOSTTY_POINT_TAG_SCREEN,
+                                           &c) != GHOSTTY_SUCCESS)
+    return false;
+  *top = c.y;
+  return true;
+}
+
+/* A match list (all, or the viewport's) into g->matches; its length, 0 on
+ * failure. Lists run newest first: bottom of the screen up. */
+static size_t read_matches(WtGhostty *g, GhosttySearchData data) {
+  GhosttySelectionBuffer buf = {.ptr = g->matches, .cap = g->matches_cap};
+  int r = ghostty_search_get(g->search, data, &buf);
+  if (r == GHOSTTY_OUT_OF_SPACE) {
+    GhosttySelection *grown = realloc(g->matches, buf.len * sizeof *grown);
+    if (!grown) return 0;
+    g->matches = grown;
+    g->matches_cap = buf.len;
+    buf = (GhosttySelectionBuffer){.ptr = grown, .cap = buf.len};
+    r = ghostty_search_get(g->search, data, &buf);
+  }
+  return r == GHOSTTY_SUCCESS ? buf.len : 0;
+}
+
+/* The first of the `n` matches in g->matches that starts above screen row
+ * `bound`, or `n`. They are in screen order, so a binary search does. */
+static size_t first_above(WtGhostty *g, size_t n, uint32_t bound) {
+  size_t lo = 0, hi = n;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    Extent e;
+    if (!extent(g, &g->matches[mid], &e) || e.first.y < bound)
+      hi = mid;
+    else
+      lo = mid + 1;
+  }
+  return lo;
+}
+
+/* Where a new search starts, as VTE's does: forward from the top of the
+ * viewport, backward from its bottom, wrapping around. An index into the
+ * match list. */
+static size_t start_index(WtGhostty *g, bool backward) {
+  size_t n = read_matches(g, GHOSTTY_SEARCH_DATA_MATCHES);
+  uint32_t top = 0;
+  uint16_t cols = 0, rows = 0;
+  if (n == 0 || !viewport_top(g, &top)) return 0;
+  wt_ghostty_size(g, &cols, &rows);
+  if (backward) {
+    size_t i = first_above(g, n, top + rows);
+    return i < n ? i : 0;
+  }
+  size_t i = first_above(g, n, top);
+  return i > 0 ? i - 1 : n - 1;
+}
+
+/* Put the selection, which a new search lacks, on match `i` of `total`:
+ * a first SELECT_NEXT selects the newest match, a first SELECT_PREV the
+ * oldest, and each one after that moves by one. */
+static int select_index(WtGhostty *g, size_t i, size_t total) {
+  bool from_newest = i < total - i;
+  GhosttySearchOption step = from_newest ? GHOSTTY_SEARCH_OPT_SELECT_NEXT
+                                         : GHOSTTY_SEARCH_OPT_SELECT_PREV;
+  size_t steps = from_newest ? i : total - 1 - i;
+  int r = GHOSTTY_SUCCESS;
+  for (size_t k = 0; r == GHOSTTY_SUCCESS && k <= steps; k++)
+    r = ghostty_search_set(g->search, step, NULL);
+  return r;
+}
+
+/* Scroll a match the viewport does not show in full to its middle. */
+static void reveal(WtGhostty *g, const GhosttySelection *match) {
+  Extent e;
+  uint32_t top = 0;
+  uint16_t cols = 0, rows = 0;
+  if (!extent(g, match, &e) || !viewport_top(g, &top)) return;
+  wt_ghostty_size(g, &cols, &rows);
+  if (e.first.y >= top && e.last.y < top + rows) return;
+  intptr_t middle = ((intptr_t)e.first.y + (intptr_t)e.last.y) / 2;
+  wt_ghostty_scroll(g, 2, middle - rows / 2 - (intptr_t)top);
+}
+
+/* Select the next match of `needle` (UTF-8 as typed), `backward` toward
+ * older lines, wrapping around through the scrollback, and scroll it into
+ * view. A new needle starts where start_index says; the same one again
+ * moves on from its last match. GHOSTTY_NO_VALUE when nothing matches;
+ * an empty needle ends the search. */
+int wt_ghostty_search(WtGhostty *g, const uint8_t *needle, size_t len,
+                      bool backward) {
+  if (len == 0) {
+    wt_ghostty_search_clear(g);
+    return GHOSTTY_NO_VALUE;
+  }
+  int r;
+  if (!g->search) {
+    r = ghostty_search_new(NULL, &g->search, g->terminal);
+    if (r != GHOSTTY_SUCCESS) return r;
+    /* reveal() scrolls instead, centering the match. */
+    GhosttySearchScroll scroll = GHOSTTY_SEARCH_SCROLL_NONE;
+    ghostty_search_set(g->search, GHOSTTY_SEARCH_OPT_SELECT_SCROLL, &scroll);
+  }
+  if (!g->needle || g->needle_len != len ||
+      memcmp(g->needle, needle, len) != 0) {
+    r = set_needle(g, needle, len);
+    if (r != GHOSTTY_SUCCESS) return r;
+  }
+  r = ghostty_search_run(g->search);
+  if (r != GHOSTTY_SUCCESS) return r;
+  size_t total = 0, index = 0;
+  ghostty_search_get(g->search, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &total);
+  g->found = false;
+  if (total == 0) return GHOSTTY_NO_VALUE;
+
+  /* libghostty-vt's "next" heads for older lines. */
+  GhosttySearchOption step = backward ? GHOSTTY_SEARCH_OPT_SELECT_NEXT
+                                      : GHOSTTY_SEARCH_OPT_SELECT_PREV;
+  if (ghostty_search_get(g->search, GHOSTTY_SEARCH_DATA_SELECTED_INDEX,
+                         &index) == GHOSTTY_SUCCESS)
+    r = ghostty_search_set(g->search, step, NULL);
+  else
+    r = select_index(g, start_index(g, backward), total);
+  /* Each match once at most, passing over those that differ in case. */
+  for (size_t tried = 0; r == GHOSTTY_SUCCESS && tried < total; tried++) {
+    GhosttySelection match = GHOSTTY_INIT_SIZED(GhosttySelection);
+    if (ghostty_search_get(g->search, GHOSTTY_SEARCH_DATA_SELECTED_MATCH,
+                           &match) == GHOSTTY_SUCCESS &&
+        exact(g, &match)) {
+      g->found = true;
+      reveal(g, &match);
+      return GHOSTTY_SUCCESS;
+    }
+    r = ghostty_search_set(g->search, step, NULL);
+  }
+  return r == GHOSTTY_SUCCESS ? GHOSTTY_NO_VALUE : r;
+}
+
+/* Add a span per viewport row the match covers. */
+static void add_spans(const Extent *e, uint32_t top, uint16_t cols,
+                      uint16_t rows, bool current, WtSpan *out, size_t cap,
+                      size_t *len) {
+  uint32_t y = e->first.y > top ? e->first.y : top;
+  for (; y <= e->last.y && y < top + rows; y++) {
+    uint32_t end = y == e->last.y ? e->last.x + 1u + e->wide : cols;
+    if (*len < cap)
+      out[*len] = (WtSpan){
+          .row = (uint16_t)(y - top),
+          .start = y == e->first.y ? e->first.x : 0,
+          .end = (uint16_t)(end < cols ? end : cols),
+          .current = current,
+      };
+    (*len)++;
+  }
+}
+
+/* The search's highlight on the viewport into `out`: a span per row each
+ * match covers, the current match's marked. Feeds the search first, so it
+ * follows terminal changes. `len` is the number of spans; when that is
+ * more than `cap`, GHOSTTY_OUT_OF_SPACE, and only `cap` were written. */
+int wt_ghostty_search_spans(WtGhostty *g, WtSpan *out, size_t cap,
+                            size_t *len) {
+  *len = 0;
+  if (!g->search || !g->needle) return GHOSTTY_SUCCESS;
+  int r = ghostty_search_feed(g->search);
+  if (r != GHOSTTY_SUCCESS) return r;
+  uint32_t top = 0;
+  uint16_t cols = 0, rows = 0;
+  if (!viewport_top(g, &top)) return GHOSTTY_SUCCESS;
+  wt_ghostty_size(g, &cols, &rows);
+
+  Extent current;
+  GhosttySelection match = GHOSTTY_INIT_SIZED(GhosttySelection);
+  bool has_current =
+      g->found &&
+      ghostty_search_get(g->search, GHOSTTY_SEARCH_DATA_SELECTED_MATCH,
+                         &match) == GHOSTTY_SUCCESS &&
+      exact(g, &match) && extent(g, &match, &current);
+  if (has_current) add_spans(&current, top, cols, rows, true, out, cap, len);
+
+  size_t n = read_matches(g, GHOSTTY_SEARCH_DATA_VIEWPORT_MATCHES);
+  for (size_t i = 0; i < n; i++) {
+    Extent e;
+    if (!extent(g, &g->matches[i], &e) || !exact(g, &g->matches[i]) ||
+        (has_current && same_extent(&e, &current)))
+      continue;
+    add_spans(&e, top, cols, rows, false, out, cap, len);
+  }
+  return *len > cap ? GHOSTTY_OUT_OF_SPACE : GHOSTTY_SUCCESS;
 }
 
 /* Encode pasted text for the terminal's current mode (bracketed paste or
@@ -433,6 +754,7 @@ int wt_ghostty_encode_key(WtGhostty *g, const WtKey *key, char *out,
 /* ABI checks for the Rust mirrors (ffi.rs tests). */
 size_t wt_ghostty_cell_size(void) { return sizeof(WtCell); }
 size_t wt_ghostty_frame_size(void) { return sizeof(WtFrame); }
+size_t wt_ghostty_span_size(void) { return sizeof(WtSpan); }
 
 static void rgb(uint8_t out[3], GhosttyColorRgb c) {
   out[0] = c.r;

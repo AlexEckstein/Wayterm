@@ -1,12 +1,12 @@
 //! Raw bindings to `shim.c`, the narrow C layer over libghostty-vt; use
 //! [`Engine`](super::engine::Engine) instead of calling these directly.
-//! The structs mirror `WtCell`/`WtFrame` there; the unit tests check the
-//! sizes against the C compiler's.
+//! The structs mirror `WtCell`/`WtFrame`/`WtSpan` there; the unit tests
+//! check the sizes against the C compiler's.
 
 use std::ffi::{c_char, c_int, c_void};
 
-/// Opaque `WtGhostty`: a terminal plus its render state and its key and
-/// mouse encoders.
+/// Opaque `WtGhostty`: a terminal plus its render state, its key and
+/// mouse encoders, and its search.
 #[repr(C)]
 pub struct WtGhostty {
     _private: [u8; 0],
@@ -14,6 +14,7 @@ pub struct WtGhostty {
 
 pub const SUCCESS: c_int = 0;
 pub const OUT_OF_SPACE: c_int = -3;
+pub const NO_VALUE: c_int = -4;
 
 pub const EFFECT_PTY: c_int = 1;
 pub const EFFECT_BELL: c_int = 2;
@@ -69,6 +70,17 @@ pub struct WtFrame {
     pub bg: [u8; 3],
     pub cursor_rgb: [u8; 3],
     pub cursor_has_rgb: u8,
+}
+
+/// One viewport row's run of search highlight: cells `start..end`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WtSpan {
+    pub row: u16,
+    pub start: u16,
+    pub end: u16,
+    /// Non-zero for the selected match.
+    pub current: u8,
 }
 
 /// One key press for the encoder.
@@ -146,6 +158,19 @@ extern "C" {
         y1: u16,
     ) -> c_int;
     pub fn wt_ghostty_clear_selection(g: *mut WtGhostty);
+    pub fn wt_ghostty_search(
+        g: *mut WtGhostty,
+        needle: *const u8,
+        len: usize,
+        backward: bool,
+    ) -> c_int;
+    pub fn wt_ghostty_search_clear(g: *mut WtGhostty);
+    pub fn wt_ghostty_search_spans(
+        g: *mut WtGhostty,
+        out: *mut WtSpan,
+        cap: usize,
+        len: *mut usize,
+    ) -> c_int;
     pub fn wt_ghostty_encode_paste(
         g: *mut WtGhostty,
         text: *mut c_char,
@@ -189,4 +214,5 @@ extern "C" {
 extern "C" {
     pub fn wt_ghostty_cell_size() -> usize;
     pub fn wt_ghostty_frame_size() -> usize;
+    pub fn wt_ghostty_span_size() -> usize;
 }

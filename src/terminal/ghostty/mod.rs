@@ -146,9 +146,9 @@ impl TerminalBackend for GhosttyBackend {
 
     fn features(&self) -> TerminalFeatures {
         TerminalFeatures {
-            search: false,
+            search: true,
             color_schemes: false,
-            scrollback_search: false,
+            scrollback_search: true,
             url_detection: false,
             sixel_graphics: false,
             // libghostty-vt parses Kitty graphics; the widget draws no
@@ -205,8 +205,13 @@ impl TerminalBackend for GhosttyBackend {
         self.reset();
     }
 
-    /// A no-op: `features().search` is false, so the UI hides it.
-    fn search(&self, _text: &str, _reverse: bool) {}
+    /// Case-sensitive, through the scrollback, wrapping around; the match
+    /// is highlighted and scrolled into view, the selection left alone. An
+    /// empty query clears the highlight.
+    fn search(&self, text: &str, reverse: bool) {
+        self.engine().search(text, reverse);
+        self.view.queue_draw();
+    }
 
     fn scrollback_text(&self) -> Option<String> {
         self.engine().screen_text()

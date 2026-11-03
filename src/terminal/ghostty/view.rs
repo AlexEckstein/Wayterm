@@ -6,7 +6,8 @@
 //! does not place: each goes at its own cell, since the font's advances
 //! are rarely the whole-pixel cell width and would drift off the grid.
 //! Underline and strikethrough are drawn as rectangles. Only a grapheme's
-//! base codepoint is drawn.
+//! base codepoint is drawn. Search matches are lit in Ghostty's colors,
+//! the current one apart, under the selection and the cursor.
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
@@ -15,7 +16,8 @@
 //! tracks the mouse, as arrow keys for the wheel under alternate scroll,
 //! else local, where a primary-button drag selects and the wheel scrolls
 //! the viewport three rows per notch (smooth steps accumulate). Shift
-//! keeps them local. Focus changes are reported when the program asks.
+//! keeps them local. Focus changes are reported when the program asks. A
+//! press or a typed key ends the search, as it clears the selection.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -25,7 +27,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{gdk, glib, graphene, gsk, pango};
 
-use super::engine::{Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll};
+use super::engine::{Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll, Span};
 use super::ffi;
 use super::Shared;
 use crate::terminal::TerminalEvent;
@@ -37,6 +39,11 @@ const WHEEL_ROWS: f64 = 3.0;
 /// The arrow keysyms alternate scroll sends.
 const ARROW_UP: u32 = 0xff52;
 const ARROW_DOWN: u32 = 0xff54;
+/// Search highlight colors, Ghostty's defaults: dark text on yellow, on
+/// orange for the current match.
+const SEARCH_FG: [u8; 3] = [0, 0, 0];
+const SEARCH_BG: [u8; 3] = [0xff, 0xe0, 0x82];
+const SEARCH_CURRENT_BG: [u8; 3] = [0xf2, 0xa5, 0x7e];
 
 mod imp {
     use super::*;
@@ -327,6 +334,7 @@ impl GhosttyView {
         imp.drag.set(Some(route));
         imp.pointer.set(at);
         shared.engine.clear_selection();
+        shared.engine.clear_search();
         if route == Route::Report {
             imp.anchor.set(None);
             self.report(&shared, ffi::MOUSE_PRESS, ffi::BUTTON_LEFT, state, at);
@@ -492,6 +500,7 @@ impl GhosttyView {
             return false;
         }
         shared.engine.clear_selection();
+        shared.engine.clear_search();
         shared.input(bytes);
         self.queue_draw();
         true
@@ -512,11 +521,24 @@ impl GhosttyView {
         );
 
         let font = self.font();
-        for row in 0..usize::from(info.rows) {
+        let (cols, rows) = (usize::from(info.cols), usize::from(info.rows));
+        let marks = search_marks(&shared.engine.search_spans(), cols, rows);
+        for row in 0..rows {
             let y = row as f32 * ch;
-            let cells: Vec<Painted> = (0..usize::from(info.cols))
+            let cells: Vec<Painted> = (0..cols)
                 .filter_map(|col| frame.cell(row, col).map(|cell| (col, cell)))
-                .map(|(col, cell)| Painted::new(&info, cell, is_cursor(&info, row, col)))
+                .map(|(col, cell)| {
+                    let cursor = is_cursor(&info, row, col);
+                    let painted = Painted::new(&info, cell, cursor);
+                    match marks.get(row * cols + col) {
+                        Some(&Some(current))
+                            if !cursor && cell.flags & ffi::CELL_SELECTED == 0 =>
+                        {
+                            painted.searched(current)
+                        }
+                        _ => painted,
+                    }
+                })
                 .collect();
 
             // Backgrounds: one rectangle per run of equal, non-default color.
@@ -693,6 +715,16 @@ impl Painted {
         }
     }
 
+    /// Search highlight colors; `current` for the selected match.
+    fn searched(self, current: bool) -> Self {
+        let bg = if current { SEARCH_CURRENT_BG } else { SEARCH_BG };
+        Self {
+            fg: SEARCH_FG,
+            bg: Some(bg),
+            ..self
+        }
+    }
+
     fn same_style(&self, other: &Self) -> bool {
         self.fg == other.fg && self.flags == other.flags
     }
@@ -782,6 +814,24 @@ fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<S
         gdk::Key::End => Some(Scroll::Bottom),
         _ => None,
     }
+}
+
+/// Per viewport cell, row-major: `Some(current)` where a search match is
+/// lit. Empty without spans.
+fn search_marks(spans: &[Span], cols: usize, rows: usize) -> Vec<Option<bool>> {
+    if spans.is_empty() {
+        return Vec::new();
+    }
+    let mut marks = vec![None; cols * rows];
+    for span in spans.iter().filter(|span| usize::from(span.row) < rows) {
+        let line = usize::from(span.row) * cols;
+        let end = usize::from(span.end).min(cols);
+        let start = usize::from(span.start).min(end);
+        for mark in &mut marks[line + start..line + end] {
+            *mark = Some(span.current != 0 || mark.unwrap_or(false));
+        }
+    }
+    marks
 }
 
 fn is_cursor(info: &FrameInfo, row: usize, col: usize) -> bool {
@@ -933,6 +983,37 @@ mod tests {
         );
         let ctrl_shift = shift | gdk::ModifierType::CONTROL_MASK;
         assert_eq!(scroll_key(gdk::Key::Page_Up, ctrl_shift, 24), None);
+    }
+
+    #[test]
+    fn search_spans_mark_their_cells() {
+        let span = |row, start, end, current| Span {
+            row,
+            start,
+            end,
+            current,
+        };
+        assert_eq!(search_marks(&[], 4, 2), []);
+        let spans = [
+            span(0, 1, 3, 0),
+            span(1, 0, 2, 1),
+            // Clipped to the grid; off it, or empty, nothing.
+            span(1, 3, 9, 0),
+            span(5, 0, 4, 1),
+            span(0, 3, 2, 1),
+        ];
+        let (lit, current) = (Some(false), Some(true));
+        assert_eq!(
+            search_marks(&spans, 4, 2),
+            [None, lit, lit, None, current, current, None, lit]
+        );
+        // The current match wins where matches overlap, in either order.
+        for spans in [
+            [span(0, 0, 2, 0), span(0, 1, 2, 1)],
+            [span(0, 1, 2, 1), span(0, 0, 2, 0)],
+        ] {
+            assert_eq!(search_marks(&spans, 2, 1), [lit, current]);
+        }
     }
 
     #[test]

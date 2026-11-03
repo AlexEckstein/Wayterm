@@ -7,7 +7,7 @@ use std::ffi::{c_char, c_int, c_void};
 use std::ptr::NonNull;
 
 use super::ffi;
-pub use super::ffi::{WtCell as Cell, WtFrame as FrameInfo, WtMouse as MouseEvent};
+pub use super::ffi::{WtCell as Cell, WtFrame as FrameInfo, WtMouse as MouseEvent, WtSpan as Span};
 
 /// What the terminal asked for while processing bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,6 +231,53 @@ impl Engine {
         unsafe { ffi::wt_ghostty_clear_selection(self.ptr()) };
     }
 
+    /// Select the next match of `needle`, `backward` toward older lines,
+    /// and scroll it into view: case-sensitive, through the scrollback,
+    /// wrapping around. A new query starts from the viewport, forward from
+    /// its top and backward from its bottom. `false` when nothing matches;
+    /// an empty needle ends the search. The selection is left alone.
+    pub fn search(&self, needle: &str, backward: bool) -> bool {
+        // SAFETY: valid terminal; the needle is borrowed for the call.
+        let result = unsafe {
+            ffi::wt_ghostty_search(self.ptr(), needle.as_ptr(), needle.len(), backward)
+        };
+        result == ffi::SUCCESS
+    }
+
+    /// End the search; nothing is highlighted until the next one.
+    pub fn clear_search(&self) {
+        // SAFETY: valid terminal.
+        unsafe { ffi::wt_ghostty_search_clear(self.ptr()) };
+    }
+
+    /// The search's highlight on the viewport: a span per row each match
+    /// covers, the selected match's marked `current`. Empty without a
+    /// search. Catches the search up with the terminal first.
+    pub fn search_spans(&self) -> Vec<Span> {
+        let mut spans = Vec::new();
+        let mut needed = 0;
+        for _ in 0..2 {
+            // SAFETY: valid terminal; `spans` has `len` initialized slots.
+            let result = unsafe {
+                ffi::wt_ghostty_search_spans(
+                    self.ptr(),
+                    spans.as_mut_ptr(),
+                    spans.len(),
+                    &mut needed,
+                )
+            };
+            match result {
+                ffi::SUCCESS => {
+                    spans.truncate(needed);
+                    return spans;
+                }
+                ffi::OUT_OF_SPACE => spans.resize(needed, Span::default()),
+                _ => break,
+            }
+        }
+        Vec::new()
+    }
+
     /// Call `encode(out, cap, written)` with a buffer that grows once if the
     /// first attempt reports how much it needs.
     fn encoded(mut encode: impl FnMut(*mut c_char, usize, &mut usize) -> c_int) -> Vec<u8> {
@@ -377,9 +424,16 @@ mod tests {
     #[test]
     fn rust_mirrors_match_the_c_layout() {
         // SAFETY: plain getters.
-        let (cell, info) = unsafe { (ffi::wt_ghostty_cell_size(), ffi::wt_ghostty_frame_size()) };
+        let (cell, info, span) = unsafe {
+            (
+                ffi::wt_ghostty_cell_size(),
+                ffi::wt_ghostty_frame_size(),
+                ffi::wt_ghostty_span_size(),
+            )
+        };
         assert_eq!(std::mem::size_of::<Cell>(), cell);
         assert_eq!(std::mem::size_of::<FrameInfo>(), info);
+        assert_eq!(std::mem::size_of::<Span>(), span);
     }
 
     #[test]
@@ -637,6 +691,187 @@ mod tests {
         engine.write(b"junk");
         engine.reset();
         assert_eq!(frame(&engine).row_text(0).trim(), "");
+    }
+
+    /// 30 lines on a 5-row screen, then the cursor's empty line: lines 0-25
+    /// are scrollback, 26-29 on screen. "Fox" is on lines 3, 12 (both
+    /// scrollback) and 27 (on screen), "fox" on line 20.
+    fn foxes() -> Engine {
+        let engine = engine();
+        for line in 0..30 {
+            let word = match line {
+                3 | 12 | 27 => " Fox",
+                20 => " fox",
+                _ => "",
+            };
+            engine.write(format!("line {line}{word}\r\n").as_bytes());
+        }
+        engine
+    }
+
+    /// The viewport row the selected match is on, as text.
+    fn current_line(engine: &Engine) -> Option<String> {
+        let span = engine.search_spans().into_iter().find(|s| s.current != 0)?;
+        Some(frame(engine).row_text(span.row.into()).trim_end().to_string())
+    }
+
+    /// Search `needle` `steps` times; the line of each selected match.
+    fn walk(engine: &Engine, needle: &str, backward: bool, steps: usize) -> Vec<String> {
+        (0..steps)
+            .map(|_| {
+                assert!(engine.search(needle, backward), "{needle:?} not found");
+                current_line(engine).expect("a highlighted current match")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn forward_search_starts_at_the_viewport_top_and_wraps() {
+        let engine = foxes();
+        assert_eq!(
+            walk(&engine, "Fox", false, 4),
+            ["line 27 Fox", "line 3 Fox", "line 12 Fox", "line 27 Fox"]
+        );
+    }
+
+    #[test]
+    fn backward_search_starts_at_the_viewport_bottom_and_wraps() {
+        let engine = foxes();
+        assert_eq!(
+            walk(&engine, "Fox", true, 4),
+            ["line 27 Fox", "line 12 Fox", "line 3 Fox", "line 27 Fox"]
+        );
+        // Turning around steps back the way it came.
+        assert_eq!(walk(&engine, "Fox", false, 1), ["line 3 Fox"]);
+    }
+
+    #[test]
+    fn search_is_case_sensitive() {
+        let engine = foxes();
+        assert_eq!(
+            walk(&engine, "fox", true, 2),
+            ["line 20 fox", "line 20 fox"]
+        );
+        assert!(!engine.search("FOX", false));
+        assert_eq!(engine.search_spans(), []);
+    }
+
+    #[test]
+    fn a_match_in_the_scrollback_is_scrolled_to_the_middle() {
+        let engine = foxes();
+        let bottom = frame(&engine).row_text(0);
+        assert!(engine.search("line 3 Fox", false));
+        assert_ne!(frame(&engine).row_text(0), bottom, "the viewport moved");
+        let current = Span {
+            row: 2,
+            start: 0,
+            end: 10,
+            current: 1,
+        };
+        assert_eq!(engine.search_spans(), [current]);
+        assert_eq!(frame(&engine).row_text(2).trim_end(), "line 3 Fox");
+    }
+
+    #[test]
+    fn a_visible_match_does_not_scroll() {
+        let engine = foxes();
+        let bottom = frame(&engine).row_text(0);
+        assert!(engine.search("line 28", true));
+        assert_eq!(frame(&engine).row_text(0), bottom);
+    }
+
+    #[test]
+    fn an_empty_query_clears_the_highlight_and_restarts() {
+        let engine = foxes();
+        assert_eq!(
+            walk(&engine, "Fox", true, 2),
+            ["line 27 Fox", "line 12 Fox"]
+        );
+        assert!(!engine.search("", true));
+        assert_eq!(engine.search_spans(), []);
+        // The next search starts again from the viewport, where line 12
+        // sits in the middle: from its bottom, backward, line 12 is next.
+        assert_eq!(walk(&engine, "Fox", true, 1), ["line 12 Fox"]);
+        engine.clear_search();
+        assert_eq!(engine.search_spans(), []);
+    }
+
+    #[test]
+    fn every_visible_match_is_highlighted_and_the_current_one_marked() {
+        let engine = engine();
+        // "Ab" differs in case; "wrapped" wraps from row 1 onto row 2.
+        engine.write(format!("ab Ab ab\r\n{}wrapped", "x".repeat(18)).as_bytes());
+        let span = |row, start, end, current| Span {
+            row,
+            start,
+            end,
+            current,
+        };
+        assert!(engine.search("ab", false));
+        let mut spans = engine.search_spans();
+        spans.sort_by_key(|s| (s.row, s.start));
+        assert_eq!(spans, [span(0, 0, 2, 1), span(0, 6, 8, 0)]);
+        assert!(engine.search("ab", false));
+        let mut spans = engine.search_spans();
+        spans.sort_by_key(|s| (s.row, s.start));
+        assert_eq!(spans, [span(0, 0, 2, 0), span(0, 6, 8, 1)]);
+
+        assert!(engine.search("wrapped", false));
+        let mut spans = engine.search_spans();
+        spans.sort_by_key(|s| (s.row, s.start));
+        assert_eq!(spans, [span(1, 18, 20, 1), span(2, 0, 5, 1)]);
+    }
+
+    #[test]
+    fn a_wide_character_is_highlighted_across_both_cells() {
+        let engine = engine();
+        engine.write("a日本b".as_bytes());
+        assert!(engine.search("日本", false));
+        let span = Span {
+            row: 0,
+            start: 1,
+            end: 5,
+            current: 1,
+        };
+        assert_eq!(engine.search_spans(), [span]);
+    }
+
+    #[test]
+    fn the_selected_match_follows_new_output() {
+        let engine = foxes();
+        assert_eq!(walk(&engine, "Fox", true, 1), ["line 27 Fox"]);
+        for line in 30..40 {
+            engine.write(format!("line {line}\r\n").as_bytes());
+        }
+        // Line 27 scrolled off: nothing current on screen, but the search
+        // goes on from it rather than starting over at the bottom.
+        assert!(engine.search_spans().iter().all(|s| s.current == 0));
+        assert_eq!(walk(&engine, "Fox", true, 1), ["line 12 Fox"]);
+    }
+
+    #[test]
+    fn search_leaves_the_mouse_selection_alone() {
+        let engine = engine();
+        engine.write(b"abc abc");
+        assert!(engine.select((0, 0), (2, 0)));
+        assert!(engine.search("abc", true));
+        assert_eq!(engine.selection_text().as_deref(), Some("abc"));
+        let frame = frame(&engine);
+        let selected = |col| frame.cell(0, col).unwrap().flags & ffi::CELL_SELECTED != 0;
+        assert!(selected(0) && !selected(4));
+        assert!(!engine.search_spans().is_empty());
+        engine.clear_selection();
+        assert!(!engine.search_spans().is_empty(), "the highlight stays");
+    }
+
+    #[test]
+    fn reset_ends_the_search() {
+        let engine = foxes();
+        assert!(engine.search("Fox", true));
+        engine.reset();
+        assert_eq!(engine.search_spans(), []);
+        engine.write(b"Fox");
+        assert_eq!(engine.search_spans(), [], "no search to follow");
     }
 
     #[test]
