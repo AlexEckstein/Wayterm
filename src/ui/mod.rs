@@ -77,6 +77,7 @@ mod gtk_tests {
         super::tabs::gtk_tests::reconnect_does_not_steal_focus();
         super::tabs::gtk_tests::closing_a_tab_focuses_the_next_terminal();
         super::tabs::gtk_tests::sftp_sidebar_follows_the_shell_directory();
+        super::tabs::gtk_tests::the_sftp_session_ends_with_the_shell();
         super::tabs::gtk_tests::a_local_shell_tab_connects_and_closes();
         super::tabs::gtk_tests::terminals_follow_the_color_scheme_and_system_theme();
         super::appearance::gtk_tests::user_css_reloads_when_its_files_change();

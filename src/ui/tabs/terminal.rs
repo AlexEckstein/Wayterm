@@ -406,10 +406,12 @@ fn tab_title(session_name: &str, terminal_title: &str) -> String {
     }
 }
 
-/// The shell exited on its own: keep the terminal and its scrollback, add
-/// the notice, and let `r` reconnect (as Retry does) or `q` close the tab.
-fn show_session_ended(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
+/// The shell exited on its own: end the sidebar's SFTP task, keep the
+/// terminal and its scrollback, add the notice, and let `r` reconnect (as
+/// Retry does) or `q` close the tab.
+pub(super) fn show_session_ended(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     close_terminal(page);
+    ssh::release_sidebar(notebook, page);
     let Some(backend) = existing_terminal_state(page).and_then(|t| t.terminal.borrow().clone())
     else {
         return;

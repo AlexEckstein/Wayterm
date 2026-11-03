@@ -13,7 +13,8 @@ Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe),
 Each SSH tab owns its sidebar, but the tab's page holds only the
 terminal: the side dock's SFTP panel hosts the current tab's sidebar and
 swaps it as the notebook switches tabs. Tabs without one (local, serial,
-RDP, VNC, Home) get a placeholder. A redial replaces the page's sidebar,
+RDP, VNC, Home) get a placeholder. A redial, or the tab's shell exiting
+(doc 03 §Session end), replaces the page's sidebar with an empty one,
 ending the old SFTP task, and the panel hosts the new one.
 
 The sidebar, top to bottom:

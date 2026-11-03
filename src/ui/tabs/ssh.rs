@@ -333,6 +333,13 @@ pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     side_dock::sidebar_replaced(notebook);
 }
 
+/// Mark `page`'s sidebar attached, as [`on_connect`] does, without a
+/// connection.
+#[cfg(test)]
+pub(super) fn mark_sidebar_attached(page: &gtk4::Widget) {
+    ssh_state(page).sidebar_attached.set(true);
+}
+
 /// Keep the page's SFTP sidebar on the shell's working directory (doc 07
 /// §Following the shell): the terminal's OSC 7 reports, and after each
 /// command — Enter, then [`PROBE_QUIET`] without output — a probe. The tab
