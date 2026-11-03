@@ -109,10 +109,12 @@ across a redial), the sidebar shows the directory the tab's shell is in.
 It learns that two ways:
 
 - **OSC 7.** A shell that reports its directory (`file://host/path`,
-  percent-encoded) makes VTE emit `current-directory-uri-changed`; the tab
-  hands the URI to a `DirectoryFollower`. The tab connects to the VTE
-  widget directly, as it does for the window title, so `TerminalBackend`
-  and `TerminalEvent` are unchanged. The first report pins the host:
+  percent-encoded) makes VTE emit `current-directory-uri-changed`, or the
+  Ghostty view call its directory hook (doc 02 §GhosttyBackend); the tab
+  hands the URI to a `DirectoryFollower`. The tab connects to the
+  terminal widget directly, to VTE's signals or the Ghostty view's
+  matching hooks, so `TerminalBackend` and `TerminalEvent` are unchanged.
+  The first report pins the host:
   reports naming another host come from a nested `ssh` inside the
   session, whose paths are not on this connection. This is a heuristic:
   if the session's own shell never reports, the first nested host that

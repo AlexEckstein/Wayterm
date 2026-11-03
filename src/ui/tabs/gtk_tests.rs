@@ -173,8 +173,20 @@ pub(in crate::ui) fn closing_a_tab_focuses_the_next_terminal() {
 }
 
 /// The shell's OSC 7 report moves the page's sidebar — through the real
-/// VTE signal — while a report from another host (a nested ssh) does not.
+/// VTE signal, and the Ghostty view's hook when built — while a report
+/// from another host (a nested ssh) does not.
 pub(in crate::ui) fn sftp_sidebar_follows_the_shell_directory() {
+    sidebar_follows_the_shell_directory("vte");
+    #[cfg(feature = "backend-ghostty")]
+    {
+        use crate::terminal::{install_backend_preference, BackendKind};
+        install_backend_preference(BackendKind::Ghostty);
+        sidebar_follows_the_shell_directory("ghostty");
+        install_backend_preference(BackendKind::Vte);
+    }
+}
+
+fn sidebar_follows_the_shell_directory(backend_name: &str) {
     let session = SessionConfig {
         id: 1,
         name: "ssh-1".into(),
@@ -183,6 +195,7 @@ pub(in crate::ui) fn sftp_sidebar_follows_the_shell_directory() {
     };
     let page = page_content(&Rc::new(session));
     let backend = create_terminal().backend;
+    assert_eq!(backend.name(), backend_name);
     let terminal = backend.widget();
     set_terminal_area(&page, &terminal);
     follow_terminal_directory(&page, &terminal);
