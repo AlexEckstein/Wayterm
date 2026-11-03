@@ -204,6 +204,35 @@ int wt_ghostty_set_scrollback_lines(WtGhostty *g, size_t lines) {
                               GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &lines);
 }
 
+static GhosttyColorRgb rgb_in(const uint8_t c[3]) {
+  return (GhosttyColorRgb){.r = c[0], .g = c[1], .b = c[2]};
+}
+
+/* Make a color scheme the terminal's default colors: `fg`, `bg` and
+ * `cursor` are RGB triples, `ansi` the 16 ANSI colors as 16 of them.
+ * Indices 16-255 keep the built-in palette's xterm color cube and
+ * grayscale ramp. Colors a program set (OSC 4, 10, 11, 12) stay in force;
+ * the next snapshot resolves everything else through the new colors. */
+int wt_ghostty_set_colors(WtGhostty *g, const uint8_t *fg, const uint8_t *bg,
+                          const uint8_t *cursor, const uint8_t *ansi) {
+  GhosttyColorRgb palette[256];
+  ghostty_color_palette_default(palette);
+  for (size_t i = 0; i < 16; i++) palette[i] = rgb_in(ansi + 3 * i);
+  GhosttyColorRgb f = rgb_in(fg), b = rgb_in(bg), c = rgb_in(cursor);
+  int r = ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE,
+                               palette);
+  if (r == GHOSTTY_SUCCESS)
+    r = ghostty_terminal_set(g->terminal,
+                             GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &f);
+  if (r == GHOSTTY_SUCCESS)
+    r = ghostty_terminal_set(g->terminal,
+                             GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &b);
+  if (r == GHOSTTY_SUCCESS)
+    r = ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_COLOR_CURSOR,
+                             &c);
+  return r;
+}
+
 /* where: 0 = top, 1 = bottom, 2 = by `delta` rows (up is negative). */
 void wt_ghostty_scroll(WtGhostty *g, int where, intptr_t delta) {
   GhosttyTerminalScrollViewport s = {0};
