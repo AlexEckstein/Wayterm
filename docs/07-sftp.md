@@ -41,8 +41,8 @@ The sidebar runs over the tab's **shared** `SshConnection` (doc 04
 spawns one SFTP task per sidebar; until then the sidebar is empty with its
 toolbar disabled. The task opens a session channel with the `sftp`
 subsystem and turns it into a `russh_sftp` session on the first command.
-Dropping the last sidebar handle ends the task; the connection stays with
-the supervisor.
+Dropping the last sidebar handle ends the task, once any transfer still
+running has finished; the connection stays with the supervisor.
 
 When it attaches depends on the `sftp_on_connect` setting (on by default,
 doc 13 §Settings rows):

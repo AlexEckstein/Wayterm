@@ -62,6 +62,7 @@ mod gtk_tests {
         super::panels::session_tree::gtk_tests::a_long_name_ellipsizes();
         super::panels::sftp_sidebar::gtk_tests::listing_renders_and_selection_drives_toolbar();
         super::panels::sftp_sidebar::gtk_tests::follow_checkbox_toggles_following();
+        super::panels::sftp_sidebar::gtk_tests::a_dropped_sidebar_is_freed();
         super::panels::side_dock::gtk_tests::icon_tabs_switch_the_panel();
         super::panels::side_dock::gtk_tests::the_panel_is_as_wide_as_its_page();
         super::panels::side_dock::gtk_tests::sftp_panel_follows_the_current_tab();
