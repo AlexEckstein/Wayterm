@@ -5,8 +5,8 @@
 //! for each run of equal style, glyphs that Pango picks and shapes but
 //! does not place: each goes at its own cell, since the font's advances
 //! are rarely the whole-pixel cell width and would drift off the grid.
-//! Underline and strikethrough are drawn as rectangles. Only a grapheme's
-//! base codepoint is drawn.
+//! A cell's whole grapheme cluster is shaped together and sits at that
+//! cell. Underline and strikethrough are drawn as rectangles.
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
@@ -25,7 +25,9 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{gdk, glib, graphene, gsk, pango};
 
-use super::engine::{Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll};
+use super::engine::{
+    push_cluster, Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll,
+};
 use super::ffi;
 use super::Shared;
 use crate::terminal::TerminalEvent;
@@ -514,10 +516,7 @@ impl GhosttyView {
         let font = self.font();
         for row in 0..usize::from(info.rows) {
             let y = row as f32 * ch;
-            let cells: Vec<Painted> = (0..usize::from(info.cols))
-                .filter_map(|col| frame.cell(row, col).map(|cell| (col, cell)))
-                .map(|(col, cell)| Painted::new(&info, cell, is_cursor(&info, row, col)))
-                .collect();
+            let cells = painted_row(&frame, row);
 
             // Backgrounds: one rectangle per run of equal, non-default color.
             let mut col = 0;
@@ -534,15 +533,14 @@ impl GhosttyView {
                 }
             }
 
-            // Text: one run per style, each glyph at its own cell.
+            // Text: one run per style, each cluster at its own cell.
             let mut col = 0;
             while col < cells.len() {
                 let start = col;
-                let mut text = String::new();
                 while col < cells.len() && cells[col].same_style(&cells[start]) {
-                    text.push(cells[col].ch);
                     col += 1;
                 }
+                let (text, columns) = run_text(&cells[start..col]);
                 let style = &cells[start];
                 if style.flags & ffi::CELL_INVISIBLE != 0 || text.trim().is_empty() {
                     continue;
@@ -555,7 +553,14 @@ impl GhosttyView {
                 let color = rgba(style.fg, alpha);
                 let x = start as f32 * cw;
                 let baseline = graphene::Point::new(x, y + metrics.baseline);
-                self.draw_glyphs(snapshot, &text, &style.font(&font), &color, &baseline);
+                self.draw_glyphs(
+                    snapshot,
+                    &text,
+                    &columns,
+                    &style.font(&font),
+                    &color,
+                    &baseline,
+                );
                 let width = (col - start) as f32 * cw;
                 for (flag, (top, thickness)) in [
                     (ffi::CELL_UNDERLINE, metrics.underline),
@@ -570,21 +575,36 @@ impl GhosttyView {
         }
     }
 
-    /// Draw `text`, one character per cell, from a point on the baseline.
-    /// Pango picks and shapes the glyphs; [`pin_glyphs`] places them.
+    /// Draw `text` from a point on the baseline, each byte in the cell
+    /// `columns` gives it (see [`run_text`]).
     fn draw_glyphs(
         &self,
         snapshot: &gtk4::Snapshot,
         text: &str,
+        columns: &[usize],
         font: &pango::FontDescription,
         color: &gdk::RGBA,
         baseline: &graphene::Point,
     ) {
+        self.shape(text, columns, font, |font, glyphs, _| {
+            if let Some(node) = gsk::TextNode::new(font, glyphs, color, baseline) {
+                snapshot.append_node(node);
+            }
+        });
+    }
+
+    /// Shape `text` for `each` Pango item: its font, its glyphs and each
+    /// glyph's column. Pango picks and shapes the glyphs, a cluster's
+    /// together; [`pin_glyphs`] places them at the cell their cluster
+    /// comes from.
+    fn shape(
+        &self,
+        text: &str,
+        columns: &[usize],
+        font: &pango::FontDescription,
+        mut each: impl FnMut(&pango::Font, &pango::GlyphString, &[usize]),
+    ) {
         let cell = self.metrics().width * pango::SCALE;
-        let mut column = vec![0; text.len()];
-        for (col, (byte, _)) in text.char_indices().enumerate() {
-            column[byte] = col;
-        }
         let attrs = pango::AttrList::new();
         attrs.insert(pango::AttrFontDesc::new(font));
         let length = i32::try_from(text.len()).unwrap_or(i32::MAX);
@@ -596,7 +616,7 @@ impl GhosttyView {
             let columns: Vec<usize> = glyphs
                 .log_clusters()
                 .iter()
-                .map(|&byte| column[offset + byte as usize])
+                .map(|&byte| columns[offset + byte as usize])
                 .collect();
             let advances: Vec<i32> = glyphs
                 .glyph_info()
@@ -609,12 +629,35 @@ impl GhosttyView {
                 geometry.set_x_offset(x + geometry.x_offset());
                 geometry.set_width(0);
             }
-            let font = item.analysis().font();
-            if let Some(node) = gsk::TextNode::new(&font, &glyphs, color, baseline) {
-                snapshot.append_node(node);
-            }
+            each(&item.analysis().font(), &glyphs, &columns);
         }
     }
+}
+
+/// A run's text and, for each of its bytes, the column of the cell it
+/// comes from, counted from the run's first cell. A cell adds its whole
+/// cluster, an empty cell or the tail of a wide one a space, so every cell
+/// keeps its column: what follows a wide cluster starts two columns on.
+fn run_text(cells: &[Painted]) -> (String, Vec<usize>) {
+    let mut text = String::new();
+    let mut columns = Vec::new();
+    for (col, cell) in cells.iter().enumerate() {
+        push_cluster(&mut text, cell.cluster);
+        columns.resize(text.len(), col);
+    }
+    (text, columns)
+}
+
+/// One viewport row's cells as painted.
+fn painted_row(frame: &Frame, row: usize) -> Vec<Painted<'_>> {
+    let info = &frame.info;
+    (0..usize::from(info.cols))
+        .filter_map(|col| frame.cell(row, col).map(|cell| (col, cell)))
+        .map(|(col, cell)| {
+            let cursor = is_cursor(info, row, col);
+            Painted::new(info, cell, frame.grapheme(row, col), cursor)
+        })
+        .collect()
 }
 
 /// Each glyph's x, in Pango units from its run's start, that puts it at
@@ -652,8 +695,10 @@ struct Metrics {
 }
 
 /// One cell as painted: colors after inverse/selection/cursor swaps.
-struct Painted {
-    ch: char,
+struct Painted<'a> {
+    /// The cell's grapheme cluster; empty for an empty cell and for the
+    /// tail of a wide one.
+    cluster: &'a [u32],
     fg: [u8; 3],
     /// `None` = the frame background already painted underneath.
     bg: Option<[u8; 3]>,
@@ -668,11 +713,8 @@ const TEXT_FLAGS: u8 = ffi::CELL_BOLD
     | ffi::CELL_FAINT
     | ffi::CELL_INVISIBLE;
 
-impl Painted {
-    fn new(info: &FrameInfo, cell: &GridCell, cursor: bool) -> Self {
-        let ch = char::from_u32(cell.codepoint)
-            .filter(|c| *c != '\0')
-            .unwrap_or(' ');
+impl<'a> Painted<'a> {
+    fn new(info: &FrameInfo, cell: &GridCell, cluster: &'a [u32], cursor: bool) -> Self {
         let swapped =
             (cell.flags & ffi::CELL_INVERSE != 0) ^ (cell.flags & ffi::CELL_SELECTED != 0) ^ cursor;
         let (fg, bg) = if swapped {
@@ -686,7 +728,7 @@ impl Painted {
             (cell.fg, (cell.has_bg != 0).then_some(cell.bg))
         };
         Self {
-            ch,
+            cluster,
             fg,
             bg,
             flags: cell.flags & TEXT_FLAGS,
@@ -936,6 +978,25 @@ mod tests {
     }
 
     #[test]
+    fn a_run_carries_each_cells_whole_cluster_at_its_column() {
+        let engine = super::super::engine::Engine::new(10, 1).expect("engine");
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        // Mode 2027 makes the family one wide cell.
+        engine.write(format!("\x1b[?2027hx{family}e\u{301}y").as_bytes());
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        let (text, columns) = run_text(&painted_row(&frame, 0)[..5]);
+        // The family's tail is a space, so é and y keep their columns.
+        let cells = [("x", 0), (family, 1), (" ", 2), ("e\u{301}", 3), ("y", 4)];
+        assert_eq!(text, cells.map(|(cluster, _)| cluster).concat());
+        let expected: Vec<usize> = cells
+            .iter()
+            .flat_map(|&(cluster, col)| std::iter::repeat_n(col, cluster.len()))
+            .collect();
+        assert_eq!(columns, expected);
+    }
+
+    #[test]
     fn glyphs_sit_at_their_cells_whatever_the_font_advances() {
         // 9.6-pixel glyphs on a 10-pixel grid.
         let advance = 96 * pango::SCALE / 10;
@@ -1058,6 +1119,7 @@ mod ghostty_display {
         );
         mouse_routing(&backend, &view, &mut rx);
         glyphs_on_the_grid(&backend, &view);
+        clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
         window.close();
 
@@ -1227,6 +1289,60 @@ mod ghostty_display {
                 assert!(inked(x..x + 1, y..y + 1), "no line in cell {col}");
             }
         }
+    }
+
+    /// A cell's whole cluster reaches Pango: a ZWJ family shapes to other
+    /// glyphs than its first emoji alone (the family glyph with an emoji
+    /// font, a glyph per codepoint without one), all at the family's cell,
+    /// and the cells after it stay on the grid. Likewise a decomposed é.
+    fn clusters_shape_whole(backend: &GhosttyBackend, view: &GhosttyView) {
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        backend.reset();
+        // Mode 2027 makes the family one wide cell.
+        backend.write(b"\x1b[?2027h");
+        for row in [family, "\u{1f468}", "e\u{301}", "e"] {
+            backend.write(format!("x{row}y\r\n").as_bytes());
+        }
+        let mut frame = Frame::default();
+        assert!(view.shared().unwrap().engine.snapshot(&mut frame));
+        // Each glyph of a row's first four cells: (glyph, column, x).
+        let shaped = |row: usize| {
+            let (text, columns) = run_text(&painted_row(&frame, row)[..4]);
+            let mut glyphs = Vec::new();
+            view.shape(&text, &columns, &view.font(), |_, string, columns| {
+                for (glyph, &col) in string.glyph_info().iter().zip(columns) {
+                    glyphs.push((glyph.glyph(), col, glyph.geometry().x_offset()));
+                }
+            });
+            glyphs
+        };
+        let at = |glyphs: &[(u32, usize, i32)], col: usize| -> Vec<u32> {
+            glyphs
+                .iter()
+                .filter(|&&(_, c, _)| c == col)
+                .map(|&(glyph, ..)| glyph)
+                .collect()
+        };
+
+        let (families, man) = (shaped(0), shaped(1));
+        let cluster = at(&families, 1);
+        assert_ne!(cluster, at(&man, 1), "only the first emoji was shaped");
+        assert!(
+            cluster.len() == 1 || cluster.len() == family.chars().count(),
+            "{cluster:?}"
+        );
+        // x at 0, the family at 1, its tail at 2, y at 3, each on its cell.
+        let cell = view.metrics().width * pango::SCALE;
+        let mut columns: Vec<usize> = families.iter().map(|&(_, col, _)| col).collect();
+        columns.dedup();
+        assert_eq!(columns, [0, 1, 2, 3]);
+        for &(_, col, x) in families.iter().filter(|&&(_, col, _)| col != 1) {
+            assert_eq!(x, col as i32 * cell, "column {col}");
+        }
+
+        let (decomposed, plain) = (shaped(2), shaped(3));
+        assert_ne!(at(&decomposed, 1), at(&plain, 1), "the accent was dropped");
+        assert_eq!(at(&decomposed, 2).len(), 1, "y follows in the next cell");
     }
 
     /// Paint the view now; the result tells whether any pixel in a box
