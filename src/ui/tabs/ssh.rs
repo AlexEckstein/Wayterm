@@ -28,7 +28,7 @@ use crate::transport::connection::SshConnection;
 use crate::transport::forward::{ForwardEngine, ForwardEvent};
 use crate::transport::hostkey::HostKeyVerifier;
 use crate::transport::jump;
-use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor, HopAuth};
+use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor, HopAuth, Keepalive};
 use crate::transport::types::{TransportError, TransportState};
 use crate::ui::dialogs::auth;
 use crate::ui::dialogs::hostkey;
@@ -183,7 +183,8 @@ pub(super) fn start(
 /// How the hop `session` describes authenticates (doc 04): its stored
 /// method, its own credential chain, a prompt-backed host-key check under
 /// its own policy — else the global one, or strict when the page has no
-/// store to read that from — and the challenge dialog.
+/// store to read that from — the challenge dialog, and its stored
+/// keepalives.
 fn hop_auth(session: &SessionConfig, store: Option<&SessionStore>) -> HopAuth {
     let policy = session
         .host_key_policy
@@ -194,6 +195,7 @@ fn hop_auth(session: &SessionConfig, store: Option<&SessionStore>) -> HopAuth {
         creds: credential_manager(session.id, &session.name, store),
         verifier: HostKeyVerifier::new(policy, hostkey::host_key_prompt(), None),
         responder: Some(auth::challenge_responder(session.name.clone())),
+        keepalive: Keepalive::from_options(session.ssh_options.as_ref()),
     }
 }
 

@@ -2,6 +2,7 @@ use super::*;
 use crate::store::model::HostKeyPolicy;
 use crate::transport::credentials::CredentialManager;
 use crate::transport::hostkey::{HostKeyDecision, HostKeyVerifier};
+use crate::transport::supervisor::Keepalive;
 
 fn verifier() -> HostKeyVerifier {
     HostKeyVerifier::new(
@@ -180,6 +181,7 @@ async fn ssh_w_spawn_path_against_a_closed_port() {
         creds: CredentialManager::new(vec![]),
         verifier: verifier(),
         responder: None,
+        keepalive: Keepalive::default(),
     };
     let stream = SshWStream::spawn(&jump, &target.host, target.port)
         .await

@@ -6,10 +6,12 @@ use std::collections::hash_map::Entry as MapEntry;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use russh::client::{self, Config, Handle};
 
+use crate::store::model::SshOptions;
 use crate::transport::auth::ChallengeResponder;
 use crate::transport::connection::{AppClientHandler, AuthMethod, HandlerError, SshConnection};
 use crate::transport::credentials::CredentialManager;
@@ -19,9 +21,9 @@ use crate::transport::types::TransportError;
 /// How often a release monitor checks for the last consumer (short in unit
 /// tests so release assertions stay fast).
 #[cfg(not(test))]
-const MONITOR_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+const MONITOR_POLL: Duration = Duration::from_millis(250);
 #[cfg(test)]
-const MONITOR_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+const MONITOR_POLL: Duration = Duration::from_millis(25);
 
 /// Where to dial, and the pool key: one connection per identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -31,16 +33,22 @@ pub struct ConnectParams {
     pub username: String,
 }
 
-/// What the pool holds: anything it can disconnect once released.
+/// What the pool holds: anything it can disconnect once released, and
+/// tell apart once closed.
 #[async_trait]
 pub trait PooledConnection: Send + Sync + 'static {
     async fn disconnect_now(&self);
+    fn is_closed(&self) -> bool;
 }
 
 #[async_trait]
 impl PooledConnection for SshConnection {
     async fn disconnect_now(&self) {
         let _ = self.disconnect().await;
+    }
+
+    fn is_closed(&self) -> bool {
+        SshConnection::is_closed(self)
     }
 }
 
@@ -71,8 +79,17 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
         }
     }
 
+    /// The pooled connection for `key`. A closed one is evicted instead, so
+    /// the caller dials fresh rather than opening channels on a dead session.
     fn lookup(&self, key: &ConnectParams) -> Option<Arc<T>> {
-        lock_pool(&self.pool).get(key).map(Arc::clone)
+        let mut pool = lock_pool(&self.pool);
+        let conn = pool.get(key)?;
+        if conn.is_closed() {
+            pool.remove(key);
+            None
+        } else {
+            Some(Arc::clone(conn))
+        }
     }
 
     /// Reuse the pooled connection for `key`, else `dial` one. No lock is
@@ -117,13 +134,63 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
 }
 
 /// How one hop authenticates (doc 04 §Authentication): the method, where its secrets
-/// come from, the host-key check, and who answers challenges. Each hop of
-/// a jumped connection brings its own.
+/// come from, the host-key check, and who answers challenges, plus the
+/// keepalives its connection runs. Each hop of a jumped connection brings
+/// its own.
 pub struct HopAuth {
     pub method: AuthMethod,
     pub creds: CredentialManager,
     pub verifier: HostKeyVerifier,
     pub responder: Option<ChallengeResponder>,
+    pub keepalive: Keepalive,
+}
+
+/// SSH keepalives (doc 04 §Keepalives): a probe after `interval` with
+/// nothing from the server, and the session closes once more than `max`
+/// go unanswered. `max` 0 keeps probing but never closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Keepalive {
+    pub interval: Option<Duration>,
+    pub max: usize,
+}
+
+impl Default for Keepalive {
+    fn default() -> Self {
+        Self {
+            interval: Some(Duration::from_secs(15)),
+            max: 3,
+        }
+    }
+}
+
+impl Keepalive {
+    /// A session's stored `ssh_options`, field by field over the default.
+    /// An interval of 0 turns probes off, as OpenSSH's `ServerAliveInterval`.
+    pub fn from_options(options: Option<&SshOptions>) -> Self {
+        let default = Self::default();
+        let Some(options) = options else {
+            return default;
+        };
+        Self {
+            interval: match options.keepalive_interval {
+                None => default.interval,
+                Some(0) => None,
+                Some(secs) => Some(Duration::from_secs(secs.into())),
+            },
+            max: options
+                .keepalive_count
+                .map_or(default.max, |count| count as usize),
+        }
+    }
+}
+
+/// The russh client config for one dial, direct or through a jump host.
+pub(crate) fn client_config(keepalive: Keepalive) -> Arc<Config> {
+    Arc::new(Config {
+        keepalive_interval: keepalive.interval,
+        keepalive_max: keepalive.max,
+        ..Config::default()
+    })
 }
 
 impl ConnectionSupervisor<SshConnection> {
@@ -138,7 +205,7 @@ impl ConnectionSupervisor<SshConnection> {
             let handler =
                 AppClientHandler::new(params.host.clone(), params.port, auth.verifier.clone());
             let handle = client::connect(
-                Arc::new(Config::default()),
+                client_config(auth.keepalive),
                 (params.host.as_str(), params.port),
                 handler,
             )

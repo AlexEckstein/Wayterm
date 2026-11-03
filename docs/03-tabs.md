@@ -161,7 +161,8 @@ forward engine, and focus moves to the tab left current.
 
 ### Reconnect
 
-The reader emits `ConnectionLost` and a tray alert is posted
+The reader emits `ConnectionLost` (over SSH, a silently dead link is
+caught by keepalives, doc 04 §Keepalives) and a tray alert is posted
 (§Tray). With `reconnect_on_drop` on (the default) the reconnect driver
 retries on its own; off, it asks before each attempt ("Reconnect to
 `host`? (attempt N)", No / Reconnect). Every attempt is a fresh connect

@@ -15,14 +15,14 @@
 use std::process::Stdio;
 use std::sync::Arc;
 
-use russh::client::{self, Config};
+use russh::client;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use crate::store::model::{AuthMethod as StoredMethod, SessionConfig};
 use crate::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
 use crate::transport::supervisor::{
-    authenticated, connect_error, ConnectParams, ConnectionSupervisor, HopAuth,
+    authenticated, client_config, connect_error, ConnectParams, ConnectionSupervisor, HopAuth,
 };
 use crate::transport::types::TransportError;
 
@@ -167,7 +167,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let handler = AppClientHandler::new(target.host.clone(), target.port, auth.verifier.clone());
-    let handle = client::connect_stream(Arc::new(Config::default()), stream, handler)
+    let handle = client::connect_stream(client_config(auth.keepalive), stream, handler)
         .await
         .map_err(|err| connect_error(&target.host, err))?;
     authenticated(handle, target, auth).await
