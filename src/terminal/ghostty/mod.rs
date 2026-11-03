@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 use super::backend::{
     clamp_opacity, mark_translucent, TerminalBackend, TerminalEvent, TerminalFeatures,
 };
+use super::color_scheme;
 use super::vte::EventSender;
 use engine::{Effect, Engine, Scroll};
 use view::GhosttyView;
@@ -147,7 +148,7 @@ impl TerminalBackend for GhosttyBackend {
     fn features(&self) -> TerminalFeatures {
         TerminalFeatures {
             search: false,
-            color_schemes: false,
+            color_schemes: true,
             scrollback_search: false,
             url_detection: false,
             sixel_graphics: false,
@@ -161,8 +162,16 @@ impl TerminalBackend for GhosttyBackend {
         }
     }
 
-    /// A no-op: `features().color_schemes` is false.
-    fn set_color_scheme(&self, _name: &str) {}
+    /// A built-in palette by name ([`color_scheme::by_name`]), as in VTE;
+    /// an unknown name leaves the colors as they are. Until the first call
+    /// the engine has libghostty-vt's built-in colors.
+    fn set_color_scheme(&self, name: &str) {
+        let Some(scheme) = color_scheme::by_name(name) else {
+            return;
+        };
+        self.engine().set_color_scheme(scheme);
+        self.view.queue_draw();
+    }
 
     fn set_font(&self, font_desc: &pango::FontDescription) {
         self.view.set_font(font_desc);

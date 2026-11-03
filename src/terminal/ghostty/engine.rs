@@ -8,6 +8,7 @@ use std::ptr::NonNull;
 
 use super::ffi;
 pub use super::ffi::{WtCell as Cell, WtFrame as FrameInfo, WtMouse as MouseEvent};
+use crate::terminal::color_scheme::{ColorScheme, Rgb};
 
 /// What the terminal asked for while processing bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -218,6 +219,32 @@ impl Engine {
         unsafe { ffi::wt_ghostty_set_scrollback_lines(self.ptr(), lines) };
     }
 
+    /// Make `scheme` the default colors: foreground, background, cursor and
+    /// the 16 ANSI colors; 256-color indices 16–255 keep xterm's cube and
+    /// grayscale ramp. The next snapshot resolves through them, cells
+    /// already on screen included; colors a program set stay in force.
+    pub fn set_color_scheme(&self, scheme: &ColorScheme) -> bool {
+        let bytes = |Rgb(r, g, b): Rgb| [r, g, b];
+        let (fg, bg, cursor) = (
+            bytes(scheme.foreground),
+            bytes(scheme.background),
+            bytes(scheme.cursor),
+        );
+        let ansi = scheme.palette.map(bytes);
+        // SAFETY: valid terminal; the shim reads 3 bytes from each color
+        // and 16 × 3 from `ansi`, all live for the call.
+        let result = unsafe {
+            ffi::wt_ghostty_set_colors(
+                self.ptr(),
+                fg.as_ptr(),
+                bg.as_ptr(),
+                cursor.as_ptr(),
+                ansi.as_ptr().cast(),
+            )
+        };
+        result == ffi::SUCCESS
+    }
+
     pub fn scroll(&self, scroll: Scroll) {
         let (place, delta) = match scroll {
             Scroll::Top => (0, 0),
@@ -410,6 +437,7 @@ impl Drop for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::color_scheme::{DARK, LIGHT};
 
     fn engine() -> Engine {
         Engine::new(20, 5).expect("engine")
@@ -554,6 +582,94 @@ mod tests {
         let y = frame.cell(0, 1).unwrap();
         assert_eq!(y.flags, 0);
         assert_eq!(y.has_bg, 0);
+    }
+
+    fn rgb([r, g, b]: [u8; 3]) -> Rgb {
+        Rgb(r, g, b)
+    }
+
+    /// Light and Dark replace libghostty-vt's built-in colors, recolor
+    /// cells already drawn, and leave the 256-color cube and ramp xterm's.
+    #[test]
+    fn a_color_scheme_becomes_the_default_colors() {
+        let engine = engine();
+        // Default text; ANSI red on bright blue; 256-color 196 on 244.
+        engine.write(b"d\x1b[31;104mr\x1b[0m\x1b[38;5;196;48;5;244mx");
+        let built_in = frame(&engine);
+        assert_eq!(built_in.info.cursor_has_rgb, 0);
+        for scheme in [&LIGHT, &DARK] {
+            assert_ne!(rgb(built_in.info.fg), scheme.foreground);
+            assert_ne!(rgb(built_in.info.bg), scheme.background);
+            assert_ne!(rgb(built_in.cell(0, 1).unwrap().fg), scheme.palette[1]);
+            assert_ne!(rgb(built_in.cell(0, 1).unwrap().bg), scheme.palette[12]);
+        }
+
+        for scheme in [&LIGHT, &DARK] {
+            assert!(engine.set_color_scheme(scheme));
+            let frame = frame(&engine);
+            let name = scheme.name;
+            assert_eq!(rgb(frame.info.fg), scheme.foreground, "{name}");
+            assert_eq!(rgb(frame.info.bg), scheme.background, "{name}");
+            assert_eq!(frame.info.cursor_has_rgb, 1, "{name}");
+            assert_eq!(rgb(frame.info.cursor_rgb), scheme.cursor, "{name}");
+            let text = frame.cell(0, 0).unwrap();
+            assert_eq!(rgb(text.fg), scheme.foreground, "{name}");
+            assert_eq!(text.has_bg, 0, "{name}");
+            assert_eq!(rgb(text.bg), scheme.background, "{name}");
+            let ansi = frame.cell(0, 1).unwrap();
+            assert_eq!(rgb(ansi.fg), scheme.palette[1], "{name}");
+            assert_eq!(rgb(ansi.bg), scheme.palette[12], "{name}");
+            let extended = frame.cell(0, 2).unwrap();
+            assert_eq!(extended.fg, [0xff, 0x00, 0x00], "{name}: xterm's 196");
+            assert_eq!(extended.bg, [0x80, 0x80, 0x80], "{name}: xterm's 244");
+        }
+    }
+
+    /// Each of the 16 colors lands at its own index, by SGR 30–37 and
+    /// 90–97 as by `38;5;n`.
+    #[test]
+    fn every_ansi_index_resolves_through_the_scheme() {
+        let palette: [Rgb; 16] = std::array::from_fn(|i| Rgb(i as u8 * 16, 0x40, 0xff - i as u8));
+        let scheme = ColorScheme {
+            name: "Test",
+            palette,
+            ..LIGHT
+        };
+        let engine = Engine::new(40, 5).expect("engine");
+        assert!(engine.set_color_scheme(&scheme));
+        for index in 0..16u8 {
+            let sgr = if index < 8 { 30 + index } else { 82 + index };
+            engine.write(format!("\x1b[{sgr}mA\x1b[38;5;{index}mB\x1b[0m").as_bytes());
+        }
+        let frame = frame(&engine);
+        for (index, color) in palette.into_iter().enumerate() {
+            let fg = |col| rgb(frame.cell(0, col).unwrap().fg);
+            assert_eq!(fg(2 * index), color, "SGR for {index}");
+            assert_eq!(fg(2 * index + 1), color, "38;5;{index}");
+        }
+    }
+
+    /// A reset keeps the scheme; colors a program set (a palette entry,
+    /// the background) survive a scheme change.
+    #[test]
+    fn the_scheme_outlives_a_reset_and_yields_to_program_colors() {
+        let engine = engine();
+        assert!(engine.set_color_scheme(&DARK));
+        engine.reset();
+        engine.write(b"\x1b[31mr");
+        let after_reset = frame(&engine);
+        assert_eq!(rgb(after_reset.info.bg), DARK.background);
+        assert_eq!(rgb(after_reset.cell(0, 0).unwrap().fg), DARK.palette[1]);
+
+        engine.write(b"\x1b]4;1;rgb:12/34/56\x07");
+        assert!(engine.set_color_scheme(&LIGHT));
+        let switched = frame(&engine);
+        assert_eq!(rgb(switched.info.bg), LIGHT.background);
+        assert_eq!(switched.cell(0, 0).unwrap().fg, [0x12, 0x34, 0x56]);
+
+        engine.write(b"\x1b]11;rgb:65/43/21\x07");
+        assert!(engine.set_color_scheme(&DARK));
+        assert_eq!(frame(&engine).info.bg, [0x65, 0x43, 0x21]);
     }
 
     #[test]

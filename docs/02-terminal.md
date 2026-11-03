@@ -188,10 +188,11 @@ theme name stays `Breeze` in dark mode, and the dark flag comes from
 `settings.ini`, which GTK reads once at startup.
 
 `ui::appearance` applies the resolved name when a tab's terminal is
-created, and again for every open terminal when the global row changes
-(Settings' "Default color scheme") or the desktop theme does. Backends
-without color schemes (Ghostty) ignore the call. The window chrome follows
-the same preference (doc 13 §Window theme).
+created, before its widget is shown, and again for every open terminal
+when the global row changes (Settings' "Default color scheme") or the
+desktop theme does. Both backends apply it (§VteBackend,
+§GhosttyBackend). The window chrome follows the same preference (doc 13
+§Window theme).
 
 ## Opacity
 
@@ -304,6 +305,14 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   in for VTE's `commit`, `contents-changed` and
   `current-directory-uri-changed` signals, which the SFTP sidebar
   follows the shell by (doc 07 §Following the shell).
+- **Color schemes.** `set_color_scheme` looks the name up as VTE does
+  (§Color schemes) and makes the palette's foreground, background, cursor
+  and 16 ANSI colors libghostty-vt's default colors. The 256-color cube
+  and grayscale ramp stay xterm's, as in VTE, and colors a program set
+  (OSC 4, 10, 11, 12) stay in force. Every cell resolves its colors at
+  the next snapshot, so an open tab repaints at once. An unknown name
+  changes nothing, and a reset keeps the scheme. Until the first call a
+  terminal has libghostty-vt's built-in colors.
 
 ### libghostty-vt pin
 
@@ -412,13 +421,14 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
 - **VTE:** no Kitty graphics.
-- **Ghostty:** no search, color schemes, URL detection or image
-  drawing (`features()` says so, and the UI hides them); no input method
-  or compose support; grapheme clustering (mode 2027) is off until a
-  program sets it, so until then a ZWJ sequence or a flag takes a wide
-  cell per emoji or regional indicator and is drawn as its parts; mouse
-  reporting covers the primary button and the wheel only, so middle and
-  right clicks and horizontal scrolling never reach the program.
+- **Ghostty:** no search, URL detection or image drawing (`features()`
+  says so, and the UI hides them); no input method or compose support;
+  only a grapheme's base codepoint is drawn; mouse reporting covers the
+  primary button and the wheel only, so middle and right clicks and
+  horizontal scrolling never reach the program; the text under the
+  cursor takes its cell's background color, since libghostty-vt has no
+  cursor text color (the scheme's matches the default background in both
+  palettes, so only a cell a program colored differs from VTE).
 - **Ghostty text:** box-drawing and block characters come from the font,
   so a line of them shows faint seams wherever the cell is wider than
   the glyph, as it is at the default font. Once font settings apply
