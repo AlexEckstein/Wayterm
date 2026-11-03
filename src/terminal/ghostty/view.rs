@@ -122,6 +122,29 @@ impl GhosttyView {
         self.imp().shared.borrow().clone()
     }
 
+    /// Input on its way to the remote side, as VTE's `commit`.
+    pub fn connect_input(&self, watch: impl Fn(&[u8]) + 'static) {
+        if let Some(shared) = self.shared() {
+            shared.watchers.input.borrow_mut().push(Rc::new(watch));
+        }
+    }
+
+    /// Output was written, as VTE's `contents-changed`.
+    pub fn connect_output(&self, watch: impl Fn() + 'static) {
+        if let Some(shared) = self.shared() {
+            shared.watchers.output.borrow_mut().push(Rc::new(watch));
+        }
+    }
+
+    /// The shell reported its directory (OSC 7, 9 or 1337), as VTE's
+    /// `current-directory-uri-changed`; the value is raw, a `file://` URI
+    /// for OSC 7.
+    pub fn connect_directory(&self, watch: impl Fn(&str) + 'static) {
+        if let Some(shared) = self.shared() {
+            shared.watchers.directory.borrow_mut().push(Rc::new(watch));
+        }
+    }
+
     pub(super) fn set_font(&self, font: &pango::FontDescription) {
         self.imp().font.replace(Some(font.clone()));
         self.imp().metrics.set(None);
@@ -1035,6 +1058,7 @@ mod ghostty_display {
         );
         mouse_routing(&backend, &view, &mut rx);
         glyphs_on_the_grid(&backend, &view);
+        shell_watchers(&backend, &view);
         window.close();
 
         // The factory follows the installed preference; VTE is the default.
@@ -1142,6 +1166,34 @@ mod ghostty_display {
         let reports = chunks();
         assert_eq!(reports.concat(), b"\x1b[O\x1b[I");
         assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
+    }
+
+    /// The hooks the tab follows the shell by (doc 07 §Following the
+    /// shell) see input, a reported directory, and then the output.
+    fn shell_watchers(backend: &GhosttyBackend, view: &GhosttyView) {
+        let seen: Rc<RefCell<Vec<String>>> = Rc::default();
+        let log = Rc::clone(&seen);
+        view.connect_input(move |data| {
+            log.borrow_mut()
+                .push(format!("input {}", String::from_utf8_lossy(data)))
+        });
+        let log = Rc::clone(&seen);
+        view.connect_output(move || log.borrow_mut().push("output".into()));
+        let log = Rc::clone(&seen);
+        view.connect_directory(move |uri| log.borrow_mut().push(format!("directory {uri}")));
+
+        backend.send_input(b"cd /tmp\r");
+        assert!(view.key(gdk::Key::a, gdk::ModifierType::empty()));
+        backend.write(b"\x1b]7;file://box/tmp\x07");
+        assert_eq!(
+            *seen.borrow(),
+            [
+                "input cd /tmp\r",
+                "input a",
+                "directory file://box/tmp",
+                "output"
+            ]
+        );
     }
 
     /// Glyphs, the cursor and text lines sit on the cell grid, however far
