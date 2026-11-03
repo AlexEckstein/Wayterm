@@ -109,6 +109,15 @@ impl SshConnection {
         Ok(channel)
     }
 
+    /// Whether the session has ended: a server disconnect, or a dead link
+    /// caught by keepalives (doc 04 §Keepalives). A handle busy in another
+    /// call counts as open.
+    pub fn is_closed(&self) -> bool {
+        self.handle
+            .try_lock()
+            .is_ok_and(|handle| handle.is_closed())
+    }
+
     pub async fn disconnect(&self) -> Result<(), TransportError> {
         self.handle
             .lock()

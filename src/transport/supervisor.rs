@@ -33,16 +33,22 @@ pub struct ConnectParams {
     pub username: String,
 }
 
-/// What the pool holds: anything it can disconnect once released.
+/// What the pool holds: anything it can disconnect once released, and
+/// tell apart once closed.
 #[async_trait]
 pub trait PooledConnection: Send + Sync + 'static {
     async fn disconnect_now(&self);
+    fn is_closed(&self) -> bool;
 }
 
 #[async_trait]
 impl PooledConnection for SshConnection {
     async fn disconnect_now(&self) {
         let _ = self.disconnect().await;
+    }
+
+    fn is_closed(&self) -> bool {
+        SshConnection::is_closed(self)
     }
 }
 
@@ -73,8 +79,17 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
         }
     }
 
+    /// The pooled connection for `key`. A closed one is evicted instead, so
+    /// the caller dials fresh rather than opening channels on a dead session.
     fn lookup(&self, key: &ConnectParams) -> Option<Arc<T>> {
-        lock_pool(&self.pool).get(key).map(Arc::clone)
+        let mut pool = lock_pool(&self.pool);
+        let conn = pool.get(key)?;
+        if conn.is_closed() {
+            pool.remove(key);
+            None
+        } else {
+            Some(Arc::clone(conn))
+        }
     }
 
     /// Reuse the pooled connection for `key`, else `dial` one. No lock is

@@ -7,12 +7,17 @@ type Flag = Arc<AtomicBool>;
 
 struct FakeConn {
     disconnected: Flag,
+    closed: AtomicBool,
 }
 
 #[async_trait]
 impl PooledConnection for FakeConn {
     async fn disconnect_now(&self) {
         self.disconnected.store(true, Ordering::SeqCst);
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
     }
 }
 
@@ -31,7 +36,10 @@ async fn fake_dial(
     dials.fetch_add(1, Ordering::SeqCst);
     let flag = Arc::new(AtomicBool::new(false));
     flags.lock().unwrap().push(Arc::clone(&flag));
-    Ok(Arc::new(FakeConn { disconnected: flag }))
+    Ok(Arc::new(FakeConn {
+        disconnected: flag,
+        closed: AtomicBool::new(false),
+    }))
 }
 
 fn disconnected(flags: &Mutex<Vec<Flag>>, i: usize) -> bool {
@@ -177,6 +185,33 @@ async fn supervisor_drop_still_cleans_up_on_last_release() {
     drop(conn);
     tokio::time::sleep(MONITOR_POLL * 4).await;
     assert!(disconnected(&flags, 0));
+}
+
+#[tokio::test]
+async fn a_closed_connection_is_redialled_even_while_held() {
+    let sup = ConnectionSupervisor::<FakeConn>::new();
+    let dials = AtomicUsize::new(0);
+    let flags = Mutex::new(Vec::new());
+
+    let dead = sup
+        .get_or_connect_with(key("a"), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    dead.closed.store(true, Ordering::SeqCst);
+
+    let fresh = sup
+        .get_or_connect_with(key("a"), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&dead, &fresh));
+    assert_eq!(dials.load(Ordering::SeqCst), 2);
+
+    // The dead one's monitor must not take the fresh entry down with it.
+    drop(dead);
+    tokio::time::sleep(MONITOR_POLL * 4).await;
+    assert!(!disconnected(&flags, 1));
+    let again = sup.lookup(&key("a")).expect("fresh entry stays pooled");
+    assert!(Arc::ptr_eq(&again, &fresh));
 }
 
 #[test]

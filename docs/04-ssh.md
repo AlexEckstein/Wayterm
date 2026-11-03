@@ -29,6 +29,9 @@ boundary (AGENTS.md).
 - consumers hold `Arc`s; a monitor task disconnects and evicts the
   connection once only the pool's own reference is left (checked every
   250 ms);
+- a lookup that finds a closed connection (`SshConnection::is_closed`:
+  a server disconnect, or a dead link caught by §Keepalives) evicts it and
+  dials fresh, even while other consumers still hold it;
 - concurrent dials for one key may race; the loser disconnects its own
   connection and adopts the winner's;
 - dialing runs host-key verification and the auth chain. Because prompts
@@ -249,6 +252,9 @@ Re-verify these when bumping a dependency; these APIs have moved before.
 - `ssh_options.compression` is stored but not applied. The session
   dialog edits no `ssh_options` field, so keepalives can only be set by an
   import and `ssh_w_fallback` only by a JSON import (doc 10).
+- A redial or new tab that starts before keepalives catch a dead link is
+  handed that connection and waits on it; once keepalives close it, the
+  attempt fails and the next one dials fresh.
 - Only Local forwards: Remote (`ssh -R`) and Dynamic (SOCKS, `ssh -D`)
   rules can be stored and are shown marked, but never start. No agent or
   X11 forwarding.
