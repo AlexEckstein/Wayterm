@@ -53,6 +53,21 @@ followed by the close is `SessionEnded`; a close without one is
 the exit status. `disconnect` cancels the reader and drops the channel;
 the shared connection stays up for its other consumers.
 
+## Keepalives
+
+Every dial, direct or through a jump host, runs russh keepalives from the
+hop's `ssh_options` (`Keepalive::from_options`): after
+`keepalive_interval` seconds with nothing from the server the client sends
+a probe, and once more than `keepalive_count` probes go unanswered the
+session closes. Unset fields default to 15 s and 3, so a link that dies
+silently (Wi-Fi gone: no FIN, no RST) is caught within about a minute. An
+interval of 0 turns probes off; a count of 0 probes without ever closing.
+
+The closed session ends every channel without an exit status, so each
+tab's reader reports `ConnectionLost` and the reconnect policy applies
+(doc 03 §Reconnect). A shared connection runs the keepalives of the
+session that dialed it.
+
 ## Host key verification
 
 ### Policy
@@ -231,9 +246,9 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   but nothing calls it.
 - Host certificates are rejected; there is no CA support.
 - The `off` policy has no badge in the UI.
-- `ssh_options.compression`, `keepalive_interval` and `keepalive_count`
-  are stored but not applied. The session dialog edits no `ssh_options`
-  field, so `ssh_w_fallback` can only be set by a JSON import (doc 10).
+- `ssh_options.compression` is stored but not applied. The session
+  dialog edits no `ssh_options` field, so keepalives can only be set by an
+  import and `ssh_w_fallback` only by a JSON import (doc 10).
 - Only Local forwards: Remote (`ssh -R`) and Dynamic (SOCKS, `ssh -D`)
   rules can be stored and are shown marked, but never start. No agent or
   X11 forwarding.

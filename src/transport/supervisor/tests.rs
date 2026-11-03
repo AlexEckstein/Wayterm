@@ -179,6 +179,44 @@ async fn supervisor_drop_still_cleans_up_on_last_release() {
     assert!(disconnected(&flags, 0));
 }
 
+#[test]
+fn keepalive_reads_stored_options_over_the_default() {
+    let options = |interval, count| SshOptions {
+        compression: false,
+        keepalive_interval: interval,
+        keepalive_count: count,
+        ssh_w_fallback: false,
+    };
+    let default = Keepalive::default();
+    assert_eq!(Keepalive::from_options(None), default);
+    assert_eq!(Keepalive::from_options(Some(&options(None, None))), default);
+    assert_eq!(
+        Keepalive::from_options(Some(&options(Some(30), Some(5)))),
+        Keepalive {
+            interval: Some(Duration::from_secs(30)),
+            max: 5,
+        }
+    );
+    assert_eq!(
+        Keepalive::from_options(Some(&options(Some(0), None))),
+        Keepalive {
+            interval: None,
+            max: default.max,
+        }
+    );
+}
+
+#[test]
+fn client_config_carries_the_keepalive() {
+    let keepalive = Keepalive {
+        interval: Some(Duration::from_secs(7)),
+        max: 2,
+    };
+    let config = client_config(keepalive);
+    assert_eq!(config.keepalive_interval, Some(Duration::from_secs(7)));
+    assert_eq!(config.keepalive_max, 2);
+}
+
 #[tokio::test]
 async fn dial_errors_propagate_and_leave_no_entry() {
     let sup = ConnectionSupervisor::<FakeConn>::new();

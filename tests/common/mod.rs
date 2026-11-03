@@ -21,7 +21,7 @@ use wayterm::transport::auth::{ChallengePrompt, ChallengeResponder};
 use wayterm::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
 use wayterm::transport::credentials::{CredentialManager, PromptSource};
 use wayterm::transport::hostkey::{HostKeyDecision, HostKeyVerifier};
-use wayterm::transport::supervisor::HopAuth;
+use wayterm::transport::supervisor::{HopAuth, Keepalive};
 use wayterm::transport::types::TransportEvent;
 
 pub struct Fixture {
@@ -100,6 +100,7 @@ pub fn password_auth(password: &str) -> HopAuth {
         creds: password_creds(password),
         verifier: accept_all_verifier(),
         responder: Some(password_responder(password)),
+        keepalive: Keepalive::default(),
     }
 }
 
@@ -111,6 +112,7 @@ pub fn no_auth() -> HopAuth {
         creds: CredentialManager::new(vec![]),
         verifier: accept_all_verifier(),
         responder: None,
+        keepalive: Keepalive::default(),
     }
 }
 
