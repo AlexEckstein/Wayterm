@@ -9,7 +9,7 @@ use super::terminal::{focus_after_connect, focus_terminal, show_session_ended, t
 use super::*;
 use crate::hotkeys::engine::focus_within;
 use crate::terminal::color_scheme::{Brightness, Rgb, DARK, LIGHT};
-use crate::terminal::create_terminal;
+use crate::terminal::{create_terminal, TerminalDefaults};
 use vte4::prelude::*;
 
 /// Focusing the current tab hands keyboard focus from the session tree
@@ -262,6 +262,7 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
         session_type: SessionType::LocalShell,
         local_shell: Some("/bin/sh".into()),
         color_scheme: Some("Light".into()),
+        font_size: Some(15.0),
         ..Default::default()
     };
     let store = Rc::new(SessionStore::in_memory().expect("in-memory store"));
@@ -283,6 +284,12 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
     assert!(SessionTab::active_terminal(&notebook).is_some());
     assert!(SessionTab::active_input_tap(&notebook).is_some());
     let terminal = SessionTab::active_terminal(&notebook).unwrap().widget();
+    let vte = terminal.downcast_ref::<vte4::Terminal>().unwrap();
+    assert_eq!(
+        vte.font().map(|font| font.to_string()).as_deref(),
+        Some("Monospace 15")
+    );
+    assert_eq!(vte.scrollback_lines(), 10_000);
     assert_eq!(
         background(&terminal),
         rgb(LIGHT.background),
@@ -371,6 +378,54 @@ fn background(terminal: &gtk4::Widget) -> (u8, u8, u8) {
 
 fn rgb(Rgb(r, g, b): Rgb) -> (u8, u8, u8) {
     (r, g, b)
+}
+
+/// Changing a global row re-applies it to every open terminal, under a
+/// session's overrides; an unchanged row leaves terminals alone.
+pub(in crate::ui) fn terminals_follow_the_font_opacity_and_scrollback_rows() {
+    let notebook = gtk4::Notebook::new();
+    let tab = |id, font_size| {
+        let session = SessionConfig {
+            id,
+            name: format!("local-{id}"),
+            session_type: SessionType::LocalShell,
+            font_size,
+            ..Default::default()
+        };
+        let page = page_content(&Rc::new(session));
+        let backend = create_terminal().backend;
+        let terminal = backend.widget().downcast::<vte4::Terminal>().unwrap();
+        set_terminal_area(&page, &terminal);
+        terminal_state(&page).terminal.replace(Some(backend));
+        notebook.append_page(&page, None::<&gtk4::Widget>);
+        terminal
+    };
+    let follows = tab(1, None);
+    let pinned = tab(2, Some(9.0));
+    crate::ui::appearance::track(&notebook);
+    let font = |terminal: &vte4::Terminal| terminal.font().map(|font| font.to_string());
+
+    let rows = TerminalDefaults {
+        font_family: "Monospace".into(),
+        font_size: 20.0,
+        opacity: 0.5,
+        scrollback_lines: 321,
+    };
+    crate::ui::appearance::install_terminal_defaults(rows.clone());
+    assert_eq!(font(&follows).as_deref(), Some("Monospace 20"));
+    assert_eq!(font(&pinned).as_deref(), Some("Monospace 9"));
+    assert_eq!(follows.scrollback_lines(), 321);
+    assert_eq!(pinned.scrollback_lines(), 321);
+    assert!(follows.has_css_class(crate::terminal::TRANSLUCENT_CLASS));
+
+    follows.set_scrollback_lines(7);
+    crate::ui::appearance::install_terminal_defaults(rows);
+    assert_eq!(follows.scrollback_lines(), 7, "nothing changed");
+
+    crate::ui::appearance::install_terminal_defaults(TerminalDefaults::default());
+    assert_eq!(font(&follows).as_deref(), Some("Monospace 12"));
+    assert_eq!(follows.scrollback_lines(), 10_000);
+    assert!(!follows.has_css_class(crate::terminal::TRANSLUCENT_CLASS));
 }
 
 /// Every open terminal follows the global scheme and, under System, the

@@ -806,6 +806,31 @@ mod tests {
         assert_eq!(frame(&engine).cells.len(), 400);
     }
 
+    /// `count` lines of 120 columns into a 120-column terminal limited to
+    /// `limit`: how many the terminal keeps.
+    fn kept_lines(limit: usize, count: usize) -> usize {
+        let engine = Engine::new(120, 24).expect("engine");
+        engine.set_scrollback_lines(limit);
+        for line in 0..count {
+            engine.write(format!("{line:0120}\r\n").as_bytes());
+        }
+        let text = engine.screen_text().expect("text");
+        text.lines().filter(|line| !line.is_empty()).count()
+    }
+
+    #[test]
+    fn the_line_limit_alone_bounds_the_scrollback() {
+        assert_eq!(kept_lines(10_000, 5_000), 5_000);
+        // Pruning goes by page: 387 rows at this width.
+        let kept = kept_lines(1_000, 5_000);
+        assert!(kept.abs_diff(1_000) < 400, "{kept}");
+    }
+
+    #[test]
+    fn a_limit_of_zero_keeps_no_scrollback() {
+        assert!(kept_lines(0, 5_000) <= 24, "{}", kept_lines(0, 5_000));
+    }
+
     #[test]
     fn screen_text_includes_scrollback() {
         let engine = engine();

@@ -246,18 +246,17 @@ impl SessionTab {
             .clone()
     }
 
-    /// `page`'s connected terminal and the session's `color_scheme`
-    /// override, if it has a terminal (the appearance push's targets).
-    pub(in crate::ui) fn terminal_and_scheme(
+    /// `page`'s connected terminal and its session, if it has a terminal
+    /// (the appearance push's targets).
+    pub(in crate::ui) fn terminal_and_session(
         page: &gtk4::Widget,
-    ) -> Option<(Arc<dyn TerminalBackend>, Option<String>)> {
+    ) -> Option<(Arc<dyn TerminalBackend>, Rc<SessionConfig>)> {
         let terminal = terminal::existing_terminal_state(page)?
             .terminal
             .borrow()
             .clone()?;
-        let scheme =
-            existing_state(page).and_then(|state| state.session.get()?.color_scheme.clone());
-        Some((terminal, scheme))
+        let session = existing_state(page)?.session.get()?.clone();
+        Some((terminal, session))
     }
 
     /// Give `page` its connected terminal and the tap on its input.

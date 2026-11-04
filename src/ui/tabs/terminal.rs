@@ -77,7 +77,7 @@ pub(super) async fn finish_connect(
     let gen = current_gen(page);
     let handle = create_terminal();
     let backend = handle.backend.clone();
-    appearance::apply_to(&*backend, session.color_scheme.as_deref());
+    appearance::apply_to(&*backend, session);
     let widget = backend.widget();
     translucency::follow(&widget);
     set_terminal_area(page, &widget);

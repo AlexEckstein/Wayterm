@@ -238,7 +238,14 @@ void wt_ghostty_reset(WtGhostty *g) {
   ghostty_terminal_reset(g->terminal);
 }
 
+/* The line limit decides: left in place, the default byte limit is reached
+ * first. Pruning goes by page, so only a byte limit of zero keeps nothing. */
 int wt_ghostty_set_scrollback_lines(WtGhostty *g, size_t lines) {
+  size_t none = 0;
+  int r = ghostty_terminal_set(g->terminal,
+                               GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+                               lines == 0 ? &none : NULL);
+  if (r != GHOSTTY_SUCCESS) return r;
   return ghostty_terminal_set(g->terminal,
                               GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &lines);
 }

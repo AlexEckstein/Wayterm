@@ -3,6 +3,7 @@
 
 pub mod backend;
 pub mod color_scheme;
+pub mod defaults;
 pub mod fake;
 #[cfg(feature = "backend-ghostty")]
 pub mod ghostty;
@@ -14,6 +15,7 @@ pub use backend::{
     TRANSLUCENT_CLASS,
 };
 pub use color_scheme::{ColorScheme, SchemeChoice, DEFAULT_COLOR_SCHEME_SETTING};
+pub use defaults::TerminalDefaults;
 pub use fake::FakeBackend;
 #[cfg(feature = "backend-ghostty")]
 pub use ghostty::GhosttyBackend;
