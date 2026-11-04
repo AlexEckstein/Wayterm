@@ -7,6 +7,9 @@
 //! desktop theme re-resolves every terminal in the tracked notebooks
 //! ([`track`]).
 //!
+//! Font, opacity and scrollback go the same way ([`apply_to`],
+//! [`install_terminal_defaults`]), without following the desktop theme.
+//!
 //! The desktop theme is xdg-desktop-portal's `color-scheme`
 //! ([`color_scheme::portal_color_scheme`]), read at start and followed
 //! through `SettingChanged`. Without a portal answer it falls back to
@@ -29,8 +32,9 @@ use std::time::Duration;
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
 
+use crate::store::model::SessionConfig;
 use crate::terminal::color_scheme::{self, classify_system_theme, Brightness, UNKNOWN_THEME};
-use crate::terminal::TerminalBackend;
+use crate::terminal::{TerminalBackend, TerminalDefaults};
 use crate::ui::tabs::SessionTab;
 
 const PORTAL: &str = "org.freedesktop.portal.Desktop";
@@ -55,6 +59,8 @@ const USER_CSS_SETTLE: Duration = Duration::from_millis(200);
 struct Appearance {
     /// The installed `default_color_scheme` row.
     default_scheme: Option<String>,
+    /// The installed font, opacity and scrollback rows.
+    terminal_defaults: TerminalDefaults,
     /// The windows' tab notebooks.
     notebooks: Vec<glib::WeakRef<gtk4::Notebook>>,
     /// The portal's light/dark preference, when it states one.
@@ -76,6 +82,17 @@ thread_local! {
 pub fn install_default_scheme(raw: Option<String>) {
     APPEARANCE.with(|state| state.borrow_mut().default_scheme = raw);
     refresh();
+}
+
+/// Record the stored font, opacity and scrollback rows and, if they
+/// changed, re-apply them to every open terminal.
+pub fn install_terminal_defaults(defaults: TerminalDefaults) {
+    let previous = APPEARANCE.with(|state| {
+        std::mem::replace(&mut state.borrow_mut().terminal_defaults, defaults.clone())
+    });
+    if previous != defaults {
+        for_each_terminal(apply_settings);
+    }
 }
 
 /// The desktop theme's brightness ([`classify_system_theme`]): the
@@ -127,15 +144,28 @@ pub(in crate::ui) fn chrome_preference() -> Option<Brightness> {
     gtk_preference(&gtk4::Settings::default()?)
 }
 
-/// Give `backend` the scheme its session resolves to.
-pub fn apply_to(backend: &dyn TerminalBackend, session_override: Option<&str>) {
-    apply_with(backend, session_override, system_brightness());
+/// Give `backend` the scheme, font, opacity and scrollback `session`
+/// resolves to.
+pub fn apply_to(backend: &dyn TerminalBackend, session: &SessionConfig) {
+    apply_with(
+        backend,
+        session.color_scheme.as_deref(),
+        system_brightness(),
+    );
+    apply_settings(backend, session);
 }
 
 fn apply_with(backend: &dyn TerminalBackend, session_override: Option<&str>, system: Brightness) {
     let global = APPEARANCE.with(|state| state.borrow().default_scheme.clone());
     let scheme = color_scheme::resolve(session_override, global.as_deref(), system);
     backend.set_color_scheme(scheme.name);
+}
+
+fn apply_settings(backend: &dyn TerminalBackend, session: &SessionConfig) {
+    let defaults = APPEARANCE.with(|state| state.borrow().terminal_defaults.clone());
+    backend.set_font(&defaults.font(session.font_family.as_deref(), session.font_size));
+    backend.set_opacity(defaults.opacity(session.opacity));
+    backend.set_scrollback_limit(defaults.scrollback_lines);
 }
 
 /// Re-apply on theme changes to the terminals in `notebook`, starting the
@@ -283,6 +313,14 @@ fn portal_preference(value: &glib::Variant) -> Option<Brightness> {
 /// Re-resolve and push the scheme to every terminal in the tracked
 /// notebooks.
 pub fn refresh() {
+    let system = system_brightness();
+    for_each_terminal(|terminal, session| {
+        apply_with(terminal, session.color_scheme.as_deref(), system);
+    });
+}
+
+/// Every terminal in the tracked notebooks, with its session.
+fn for_each_terminal(apply: impl Fn(&dyn TerminalBackend, &SessionConfig)) {
     let notebooks: Vec<gtk4::Notebook> = APPEARANCE.with(|state| {
         state
             .borrow()
@@ -291,17 +329,13 @@ pub fn refresh() {
             .filter_map(glib::WeakRef::upgrade)
             .collect()
     });
-    if notebooks.is_empty() {
-        return;
-    }
-    let system = system_brightness();
     for notebook in notebooks {
         for page_num in 0..notebook.n_pages() {
             let Some(page) = notebook.nth_page(Some(page_num)) else {
                 continue;
             };
-            if let Some((terminal, scheme)) = SessionTab::terminal_and_scheme(&page) {
-                apply_with(&*terminal, scheme.as_deref(), system);
+            if let Some((terminal, session)) = SessionTab::terminal_and_session(&page) {
+                apply(&*terminal, &session);
             }
         }
     }
@@ -419,6 +453,49 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Global rows reach a new terminal, under a session's overrides.
+    #[test]
+    fn apply_pushes_the_resolved_font_opacity_and_scrollback() {
+        install_terminal_defaults(TerminalDefaults {
+            font_family: "Hack".into(),
+            font_size: 10.0,
+            opacity: 0.8,
+            scrollback_lines: 500,
+        });
+        let settings = |session: &SessionConfig| {
+            let backend = FakeBackend::new();
+            apply_to(&backend, session);
+            backend
+                .interactions()
+                .into_iter()
+                .filter(|call| !matches!(call, Interaction::SetColorScheme(_)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            settings(&SessionConfig::default()),
+            [
+                Interaction::SetFont("Hack 10".into()),
+                Interaction::SetOpacity(0.8),
+                Interaction::SetScrollbackLimit(500),
+            ]
+        );
+        let session = SessionConfig {
+            font_family: Some("Fira Code".into()),
+            font_size: Some(14.0),
+            opacity: Some(1.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            settings(&session),
+            [
+                Interaction::SetFont("Fira Code 14".into()),
+                Interaction::SetOpacity(1.0),
+                Interaction::SetScrollbackLimit(500),
+            ]
+        );
+        install_terminal_defaults(TerminalDefaults::default());
     }
 
     /// The installed global row, the session override and the system theme

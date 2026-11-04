@@ -5,10 +5,13 @@ use gtk4::{pango, Widget};
 use super::backend::{TerminalBackend, TerminalFeatures};
 
 /// One interaction/scrollback call recorded by [`FakeBackend`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Interaction {
     SendInput(Vec<u8>),
     SetColorScheme(String),
+    SetFont(String),
+    SetOpacity(f64),
+    SetScrollbackLimit(u32),
     CopySelection,
     Paste(String),
     SelectAll,
@@ -84,9 +87,15 @@ impl TerminalBackend for FakeBackend {
     fn set_color_scheme(&self, name: &str) {
         self.record(Interaction::SetColorScheme(name.to_string()));
     }
-    fn set_font(&self, _font_desc: &pango::FontDescription) {}
-    fn set_opacity(&self, _opacity: f64) {}
-    fn set_scrollback_limit(&self, _lines: u32) {}
+    fn set_font(&self, font_desc: &pango::FontDescription) {
+        self.record(Interaction::SetFont(font_desc.to_string()));
+    }
+    fn set_opacity(&self, opacity: f64) {
+        self.record(Interaction::SetOpacity(opacity));
+    }
+    fn set_scrollback_limit(&self, lines: u32) {
+        self.record(Interaction::SetScrollbackLimit(lines));
+    }
 
     fn selected_text(&self) -> Option<String> {
         None

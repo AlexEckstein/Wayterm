@@ -80,6 +80,7 @@ mod gtk_tests {
         super::tabs::gtk_tests::the_sftp_session_ends_with_the_shell();
         super::tabs::gtk_tests::a_local_shell_tab_connects_and_closes();
         super::tabs::gtk_tests::terminals_follow_the_color_scheme_and_system_theme();
+        super::tabs::gtk_tests::terminals_follow_the_font_opacity_and_scrollback_rows();
         super::appearance::gtk_tests::user_css_reloads_when_its_files_change();
         super::appearance::gtk_tests::the_chrome_follows_the_desktop_preference();
         super::translucency::gtk_tests::a_translucent_terminal_clears_the_window_under_it();
