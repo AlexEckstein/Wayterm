@@ -231,16 +231,16 @@ impl Engine {
         unsafe { ffi::wt_ghostty_clear_selection(self.ptr()) };
     }
 
-    /// Select the next match of `needle`, `backward` toward older lines,
-    /// and scroll it into view: case-sensitive, through the scrollback,
-    /// wrapping around. A new query starts from the viewport, forward from
-    /// its top and backward from its bottom. `false` when nothing matches;
-    /// an empty needle ends the search. The selection is left alone.
+    /// Make the next match of `needle` current, `backward` toward older
+    /// lines, and scroll it into view: plain text, case-sensitive, through
+    /// the scrollback, wrapping around. A new query starts from the
+    /// viewport, forward from its top and backward from its bottom. `false`
+    /// when nothing matches; an empty needle ends the search. The selection
+    /// is left alone.
     pub fn search(&self, needle: &str, backward: bool) -> bool {
         // SAFETY: valid terminal; the needle is borrowed for the call.
-        let result = unsafe {
-            ffi::wt_ghostty_search(self.ptr(), needle.as_ptr(), needle.len(), backward)
-        };
+        let result =
+            unsafe { ffi::wt_ghostty_search(self.ptr(), needle.as_ptr(), needle.len(), backward) };
         result == ffi::SUCCESS
     }
 
@@ -251,7 +251,7 @@ impl Engine {
     }
 
     /// The search's highlight on the viewport: a span per row each match
-    /// covers, the selected match's marked `current`. Empty without a
+    /// covers, the current match's marked `current`. Empty without a
     /// search. Catches the search up with the terminal first.
     pub fn search_spans(&self) -> Vec<Span> {
         let mut spans = Vec::new();
@@ -709,13 +709,18 @@ mod tests {
         engine
     }
 
-    /// The viewport row the selected match is on, as text.
+    /// The viewport row the current match is on, as text.
     fn current_line(engine: &Engine) -> Option<String> {
         let span = engine.search_spans().into_iter().find(|s| s.current != 0)?;
-        Some(frame(engine).row_text(span.row.into()).trim_end().to_string())
+        Some(
+            frame(engine)
+                .row_text(span.row.into())
+                .trim_end()
+                .to_string(),
+        )
     }
 
-    /// Search `needle` `steps` times; the line of each selected match.
+    /// Search `needle` `steps` times; the line of each current match.
     fn walk(engine: &Engine, needle: &str, backward: bool, steps: usize) -> Vec<String> {
         (0..steps)
             .map(|_| {
@@ -743,6 +748,23 @@ mod tests {
         );
         // Turning around steps back the way it came.
         assert_eq!(walk(&engine, "Fox", false, 1), ["line 3 Fox"]);
+    }
+
+    /// The same answers as the VTE widget on the same screen.
+    #[test]
+    fn a_new_search_starts_from_a_scrolled_viewport() {
+        for backward in [false, true] {
+            let engine = foxes();
+            engine.scroll(Scroll::Top);
+            assert_eq!(walk(&engine, "Fox", backward, 1), ["line 3 Fox"]);
+
+            // Lines 10-14 on screen.
+            let engine = foxes();
+            engine.scroll(Scroll::Top);
+            engine.scroll(Scroll::By(10));
+            assert_eq!(walk(&engine, "Fox", backward, 1), ["line 12 Fox"]);
+            assert_eq!(frame(&engine).row_text(0).trim_end(), "line 10");
+        }
     }
 
     #[test]
@@ -834,10 +856,98 @@ mod tests {
             current: 1,
         };
         assert_eq!(engine.search_spans(), [span]);
+        // Letters make the match be read back, wide cells included.
+        assert!(engine.search("本b", false));
+        let span = Span {
+            start: 3,
+            end: 6,
+            ..span
+        };
+        assert_eq!(engine.search_spans(), [span]);
     }
 
     #[test]
-    fn the_selected_match_follows_new_output() {
+    fn spaces_in_a_query_are_read_back_as_typed() {
+        let engine = engine();
+        engine.write(b"Ab cd Ab");
+        assert!(engine.search("Ab ", false));
+        let span = Span {
+            row: 0,
+            start: 0,
+            end: 3,
+            current: 1,
+        };
+        assert_eq!(engine.search_spans(), [span]);
+    }
+
+    #[test]
+    fn a_lone_exact_match_among_case_variants_is_found_quickly() {
+        let engine = engine();
+        engine.resize(120, 40, 8, 16);
+        engine.write(b"the only Exact one\r\n");
+        let line = "e ".repeat(59);
+        for _ in 0..600 {
+            engine.write(format!("{line}\r\n").as_bytes());
+        }
+        let started = std::time::Instant::now();
+        // 35 000 candidates; stepping through them took close to a minute.
+        assert!(engine.search("E", true));
+        assert!(!engine.search("Z", true));
+        assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn the_current_match_survives_a_resize() {
+        let engine = foxes();
+        assert_eq!(
+            walk(&engine, "Fox", true, 2),
+            ["line 27 Fox", "line 12 Fox"]
+        );
+        // Narrower than the line: the match wraps onto a second row.
+        assert!(engine.resize(9, 5, 8, 16));
+        let current: Vec<_> = engine
+            .search_spans()
+            .into_iter()
+            .filter(|s| s.current != 0)
+            .map(|s| (s.end - s.start, s.row))
+            .collect();
+        assert_eq!(current.iter().map(|c| c.0).sum::<u16>(), 3, "{current:?}");
+        // It goes on from there, not from the viewport.
+        assert!(engine.resize(20, 5, 8, 16));
+        assert_eq!(walk(&engine, "Fox", true, 1), ["line 3 Fox"]);
+    }
+
+    #[test]
+    fn the_alternate_screen_has_its_own_matches() {
+        let engine = foxes();
+        assert_eq!(walk(&engine, "Fox", true, 1), ["line 27 Fox"]);
+        engine.write(b"\x1b[?1049h\x1b[2J\x1b[H\x1b[3Bfull-screen Fox");
+        // Lit there too, but the current match stayed behind.
+        let lit = Span {
+            row: 3,
+            start: 12,
+            end: 15,
+            current: 0,
+        };
+        assert_eq!(engine.search_spans(), [lit]);
+        assert_eq!(walk(&engine, "Fox", true, 2), ["full-screen Fox"; 2]);
+        engine.write(b"\x1b[?1049l");
+        assert!(engine.search_spans().iter().all(|s| s.current == 0));
+        assert_eq!(walk(&engine, "Fox", true, 1), ["line 27 Fox"]);
+    }
+
+    #[test]
+    fn overwritten_text_is_no_longer_lit() {
+        let engine = engine();
+        engine.write(b"Fox\r\nFox");
+        assert!(engine.search("Fox", true));
+        assert_eq!(engine.search_spans().len(), 2);
+        engine.write(b"\x1b[2;1Hdog\x1b[1;1Hcat");
+        assert_eq!(engine.search_spans(), []);
+    }
+
+    #[test]
+    fn the_current_match_follows_new_output() {
         let engine = foxes();
         assert_eq!(walk(&engine, "Fox", true, 1), ["line 27 Fox"]);
         for line in 30..40 {

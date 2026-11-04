@@ -79,7 +79,7 @@ pub struct WtSpan {
     pub row: u16,
     pub start: u16,
     pub end: u16,
-    /// Non-zero for the selected match.
+    /// Non-zero for the current match.
     pub current: u8,
 }
 

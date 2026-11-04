@@ -3,10 +3,11 @@
 //!
 //! - [`ffi`] declares `shim.c`, a narrow C layer over the pinned
 //!   libghostty-vt C API (doc 02 §libghostty-vt pin).
-//! - [`engine::Engine`] owns one terminal safely and needs no display.
+//! - [`engine::Engine`] owns one terminal, and its search, safely and needs
+//!   no display.
 //! - [`view::GhosttyView`] is the GTK4 widget that paints the engine's
-//!   grid snapshot and turns keys, mouse, wheel and focus events into
-//!   input or local selection and scrolling.
+//!   grid snapshot, lights search matches, and turns keys, mouse, wheel
+//!   and focus events into input or local selection and scrolling.
 //! - [`GhosttyBackend`] puts them behind [`TerminalBackend`].
 
 pub mod engine;

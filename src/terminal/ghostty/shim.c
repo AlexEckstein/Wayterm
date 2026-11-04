@@ -4,7 +4,7 @@
  *
  * libghostty-vt's API is built on sized structs and tagged unions. Their
  * layouts come from the C compiler here, so the Rust side (`ffi.rs`) only
- * declares the plain `wt_ghostty_*` functions below and two flat structs.
+ * declares the plain `wt_ghostty_*` functions below and a few flat structs.
  * Compiled by build.rs only with the `backend-ghostty` feature.
  */
 
@@ -100,7 +100,7 @@ typedef struct {
   uint16_t row;
   uint16_t start;
   uint16_t end;
-  uint8_t current; /* part of the selected match */
+  uint8_t current; /* part of the current match */
 } WtSpan;
 
 typedef struct {
@@ -120,7 +120,11 @@ typedef struct {
   size_t needle_len;
   bool needle_cased; /* has ASCII letters, which libghostty-vt folds */
   uint8_t *scratch;  /* needle_len bytes, for reading a match back */
-  bool found;        /* the search's selected match equals the needle */
+  /* The current match, tracked so it follows the terminal's changes. */
+  bool found;
+  GhosttyTrackedGridRef found_first;
+  GhosttyTrackedGridRef found_last;
+  GhosttyTerminalScreen found_screen;
   GhosttySelection *matches; /* reused buffer for match lists */
   size_t matches_cap;
 } WtGhostty;
@@ -221,8 +225,8 @@ void wt_ghostty_size(WtGhostty *g, uint16_t *cols, uint16_t *rows) {
 
 /* A full reset also ends the search: there is nothing left to find. */
 void wt_ghostty_reset(WtGhostty *g) {
-  ghostty_terminal_reset(g->terminal);
   wt_ghostty_search_clear(g);
+  ghostty_terminal_reset(g->terminal);
 }
 
 int wt_ghostty_set_scrollback_lines(WtGhostty *g, size_t lines) {
@@ -308,19 +312,29 @@ void wt_ghostty_clear_selection(WtGhostty *g) {
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, NULL);
 }
 
-/* Search runs on a GhosttySearch over the active screen, scrollback
- * included, driven on the terminal's thread like every call here. Its
- * selected match is the current one: search state, apart from the
- * terminal's selection, which search never touches. libghostty-vt matches
- * ASCII letters case-insensitively and VTE does not, so every match is
- * read back and compared with the needle as typed. */
+/* Search finds matches with a GhosttySearch over the active screen,
+ * scrollback included, driven on the terminal's thread like every call
+ * here. Two things are done on top of it:
+ *
+ * - libghostty-vt matches ASCII letters case-insensitively and VTE does
+ *   not, so a match is read back and compared with the needle as typed.
+ * - The current match lives in tracked grid refs, not in the search's own
+ *   selected match: moving that takes one call per match, each as slow as
+ *   the match list is long, and a rare exact match among many that differ
+ *   in case would freeze the UI for seconds.
+ *
+ * Neither touches the terminal's selection. */
 
 /* End the search: the needle goes, the search idles, nothing is lit. */
 void wt_ghostty_search_clear(WtGhostty *g) {
   if (g->search)
     ghostty_search_set(g->search, GHOSTTY_SEARCH_OPT_NEEDLE, NULL);
+  ghostty_tracked_grid_ref_free(g->found_first);
+  ghostty_tracked_grid_ref_free(g->found_last);
   free(g->needle);
   free(g->scratch);
+  g->found_first = NULL;
+  g->found_last = NULL;
   g->needle = NULL;
   g->scratch = NULL;
   g->needle_len = 0;
@@ -438,14 +452,52 @@ static size_t read_matches(WtGhostty *g, GhosttySearchData data) {
   return r == GHOSTTY_SUCCESS ? buf.len : 0;
 }
 
-/* The first of the `n` matches in g->matches that starts above screen row
- * `bound`, or `n`. They are in screen order, so a binary search does. */
-static size_t first_above(WtGhostty *g, size_t n, uint32_t bound) {
+/* The current match, if it is still there on the active screen. */
+static bool current_match(WtGhostty *g, GhosttySelection *match) {
+  GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+  if (!g->found ||
+      ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+                           &screen) != GHOSTTY_SUCCESS ||
+      screen != g->found_screen)
+    return false;
+  *match = GHOSTTY_INIT_SIZED(GhosttySelection);
+  match->start = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  match->end = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  return ghostty_tracked_grid_ref_snapshot(g->found_first, &match->start) ==
+             GHOSTTY_SUCCESS &&
+         ghostty_tracked_grid_ref_snapshot(g->found_last, &match->end) ==
+             GHOSTTY_SUCCESS;
+}
+
+static int track(WtGhostty *g, GhosttyTrackedGridRef *ref,
+                 GhosttyPointCoordinate at) {
+  GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_SCREEN,
+                        .value = {.coordinate = at}};
+  if (*ref) return ghostty_tracked_grid_ref_set(*ref, g->terminal, point);
+  return ghostty_terminal_grid_ref_track(g->terminal, point, ref);
+}
+
+/* Make the match at `e` the current one. */
+static int set_current(WtGhostty *g, const Extent *e) {
+  g->found = false;
+  int r = track(g, &g->found_first, e->first);
+  if (r == GHOSTTY_SUCCESS) r = track(g, &g->found_last, e->last);
+  if (r == GHOSTTY_SUCCESS)
+    r = ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+                             &g->found_screen);
+  g->found = r == GHOSTTY_SUCCESS;
+  return r;
+}
+
+/* The first of the `n` matches in g->matches that starts before `at`, or
+ * `n`. They are in screen order, so a binary search does. */
+static size_t first_before(WtGhostty *g, size_t n, GhosttyPointCoordinate at) {
   size_t lo = 0, hi = n;
   while (lo < hi) {
     size_t mid = lo + (hi - lo) / 2;
     Extent e;
-    if (!extent(g, &g->matches[mid], &e) || e.first.y < bound)
+    if (!extent(g, &g->matches[mid], &e) || e.first.y < at.y ||
+        (e.first.y == at.y && e.first.x < at.x))
       hi = mid;
     else
       lo = mid + 1;
@@ -453,54 +505,43 @@ static size_t first_above(WtGhostty *g, size_t n, uint32_t bound) {
   return lo;
 }
 
-/* Where a new search starts, as VTE's does: forward from the top of the
- * viewport, backward from its bottom, wrapping around. An index into the
- * match list. */
-static size_t start_index(WtGhostty *g, bool backward) {
-  size_t n = read_matches(g, GHOSTTY_SEARCH_DATA_MATCHES);
-  uint32_t top = 0;
-  uint16_t cols = 0, rows = 0;
-  if (n == 0 || !viewport_top(g, &top)) return 0;
-  wt_ghostty_size(g, &cols, &rows);
-  if (backward) {
-    size_t i = first_above(g, n, top + rows);
-    return i < n ? i : 0;
-  }
-  size_t i = first_above(g, n, top);
-  return i > 0 ? i - 1 : n - 1;
-}
-
-/* Put the selection, which a new search lacks, on match `i` of `total`:
- * a first SELECT_NEXT selects the newest match, a first SELECT_PREV the
- * oldest, and each one after that moves by one. */
-static int select_index(WtGhostty *g, size_t i, size_t total) {
-  bool from_newest = i < total - i;
-  GhosttySearchOption step = from_newest ? GHOSTTY_SEARCH_OPT_SELECT_NEXT
-                                         : GHOSTTY_SEARCH_OPT_SELECT_PREV;
-  size_t steps = from_newest ? i : total - 1 - i;
-  int r = GHOSTTY_SUCCESS;
-  for (size_t k = 0; r == GHOSTTY_SUCCESS && k <= steps; k++)
-    r = ghostty_search_set(g->search, step, NULL);
-  return r;
-}
-
-/* Scroll a match the viewport does not show in full to its middle. */
-static void reveal(WtGhostty *g, const GhosttySelection *match) {
+/* The match a search tries first, an index into the `n` in g->matches: the
+ * one past the current match or, with none, the first from the viewport,
+ * as in VTE: forward from its top, backward from its bottom. Wraps around. */
+static size_t start_index(WtGhostty *g, size_t n, bool backward) {
+  GhosttyPointCoordinate at = {0};
+  GhosttySelection match;
   Extent e;
   uint32_t top = 0;
   uint16_t cols = 0, rows = 0;
-  if (!extent(g, match, &e) || !viewport_top(g, &top)) return;
+  if (current_match(g, &match) && extent(g, &match, &e)) {
+    at = e.first;
+    if (!backward) at.x++;
+  } else if (viewport_top(g, &top)) {
+    wt_ghostty_size(g, &cols, &rows);
+    at.y = backward ? top + rows : top;
+  }
+  size_t i = first_before(g, n, at);
+  if (backward) return i < n ? i : 0;
+  return i > 0 ? i - 1 : n - 1;
+}
+
+/* Scroll a match the viewport does not show in full to its middle. */
+static void reveal(WtGhostty *g, const Extent *e) {
+  uint32_t top = 0;
+  uint16_t cols = 0, rows = 0;
+  if (!viewport_top(g, &top)) return;
   wt_ghostty_size(g, &cols, &rows);
-  if (e.first.y >= top && e.last.y < top + rows) return;
-  intptr_t middle = ((intptr_t)e.first.y + (intptr_t)e.last.y) / 2;
+  if (e->first.y >= top && e->last.y < top + rows) return;
+  intptr_t middle = ((intptr_t)e->first.y + (intptr_t)e->last.y) / 2;
   wt_ghostty_scroll(g, 2, middle - rows / 2 - (intptr_t)top);
 }
 
-/* Select the next match of `needle` (UTF-8 as typed), `backward` toward
- * older lines, wrapping around through the scrollback, and scroll it into
- * view. A new needle starts where start_index says; the same one again
- * moves on from its last match. GHOSTTY_NO_VALUE when nothing matches;
- * an empty needle ends the search. */
+/* Make the next match of `needle` (UTF-8 as typed) current, `backward`
+ * toward older lines, wrapping around through the scrollback, and scroll
+ * it into view. A new needle starts from the viewport; the same one again
+ * moves on from its last match. GHOSTTY_NO_VALUE when nothing matches; an
+ * empty needle ends the search. */
 int wt_ghostty_search(WtGhostty *g, const uint8_t *needle, size_t len,
                       bool backward) {
   if (len == 0) {
@@ -511,9 +552,6 @@ int wt_ghostty_search(WtGhostty *g, const uint8_t *needle, size_t len,
   if (!g->search) {
     r = ghostty_search_new(NULL, &g->search, g->terminal);
     if (r != GHOSTTY_SUCCESS) return r;
-    /* reveal() scrolls instead, centering the match. */
-    GhosttySearchScroll scroll = GHOSTTY_SEARCH_SCROLL_NONE;
-    ghostty_search_set(g->search, GHOSTTY_SEARCH_OPT_SELECT_SCROLL, &scroll);
   }
   if (!g->needle || g->needle_len != len ||
       memcmp(g->needle, needle, len) != 0) {
@@ -522,32 +560,25 @@ int wt_ghostty_search(WtGhostty *g, const uint8_t *needle, size_t len,
   }
   r = ghostty_search_run(g->search);
   if (r != GHOSTTY_SUCCESS) return r;
-  size_t total = 0, index = 0;
-  ghostty_search_get(g->search, GHOSTTY_SEARCH_DATA_TOTAL_MATCHES, &total);
-  g->found = false;
-  if (total == 0) return GHOSTTY_NO_VALUE;
 
-  /* libghostty-vt's "next" heads for older lines. */
-  GhosttySearchOption step = backward ? GHOSTTY_SEARCH_OPT_SELECT_NEXT
-                                      : GHOSTTY_SEARCH_OPT_SELECT_PREV;
-  if (ghostty_search_get(g->search, GHOSTTY_SEARCH_DATA_SELECTED_INDEX,
-                         &index) == GHOSTTY_SUCCESS)
-    r = ghostty_search_set(g->search, step, NULL);
-  else
-    r = select_index(g, start_index(g, backward), total);
+  size_t n = read_matches(g, GHOSTTY_SEARCH_DATA_MATCHES);
+  size_t i = n ? start_index(g, n, backward) : 0;
   /* Each match once at most, passing over those that differ in case. */
-  for (size_t tried = 0; r == GHOSTTY_SUCCESS && tried < total; tried++) {
-    GhosttySelection match = GHOSTTY_INIT_SIZED(GhosttySelection);
-    if (ghostty_search_get(g->search, GHOSTTY_SEARCH_DATA_SELECTED_MATCH,
-                           &match) == GHOSTTY_SUCCESS &&
-        exact(g, &match)) {
-      g->found = true;
-      reveal(g, &match);
-      return GHOSTTY_SUCCESS;
+  for (size_t tried = 0; tried < n; tried++) {
+    Extent e;
+    if (exact(g, &g->matches[i]) && extent(g, &g->matches[i], &e)) {
+      r = set_current(g, &e);
+      if (r == GHOSTTY_SUCCESS) reveal(g, &e);
+      return r;
     }
-    r = ghostty_search_set(g->search, step, NULL);
+    /* The list runs newest first. */
+    if (backward)
+      i = i + 1 < n ? i + 1 : 0;
+    else
+      i = i > 0 ? i - 1 : n - 1;
   }
-  return r == GHOSTTY_SUCCESS ? GHOSTTY_NO_VALUE : r;
+  g->found = false;
+  return GHOSTTY_NO_VALUE;
 }
 
 /* Add a span per viewport row the match covers. */
@@ -583,22 +614,23 @@ int wt_ghostty_search_spans(WtGhostty *g, WtSpan *out, size_t cap,
   if (!viewport_top(g, &top)) return GHOSTTY_SUCCESS;
   wt_ghostty_size(g, &cols, &rows);
 
+  /* Text can change under the current match, as under any other. */
   Extent current;
-  GhosttySelection match = GHOSTTY_INIT_SIZED(GhosttySelection);
-  bool has_current =
-      g->found &&
-      ghostty_search_get(g->search, GHOSTTY_SEARCH_DATA_SELECTED_MATCH,
-                         &match) == GHOSTTY_SUCCESS &&
-      exact(g, &match) && extent(g, &match, &current);
+  GhosttySelection match;
+  bool has_current = current_match(g, &match) && exact(g, &match) &&
+                     extent(g, &match, &current);
   if (has_current) add_spans(&current, top, cols, rows, true, out, cap, len);
 
+  /* The list covers whole pages: skip what is off screen before reading
+   * anything back. */
   size_t n = read_matches(g, GHOSTTY_SEARCH_DATA_VIEWPORT_MATCHES);
   for (size_t i = 0; i < n; i++) {
     Extent e;
-    if (!extent(g, &g->matches[i], &e) || !exact(g, &g->matches[i]) ||
-        (has_current && same_extent(&e, &current)))
-      continue;
-    add_spans(&e, top, cols, rows, false, out, cap, len);
+    if (extent(g, &g->matches[i], &e) && e.last.y >= top &&
+        e.first.y < top + rows &&
+        !(has_current && same_extent(&e, &current)) &&
+        exact(g, &g->matches[i]))
+      add_spans(&e, top, cols, rows, false, out, cap, len);
   }
   return *len > cap ? GHOSTTY_OUT_OF_SPACE : GHOSTTY_SUCCESS;
 }
