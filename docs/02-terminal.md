@@ -67,9 +67,10 @@ orchestration decision.
 
 ## Backend selection
 
-`create_terminal()` builds the backend and its event channel together and
-returns a `TerminalHandle { backend, events }`; the receiver goes to the
-transport pump (doc 03 §Wiring).
+`create_terminal_for(kind)` builds the backend and its event channel
+together and returns a `TerminalHandle { backend, events }`; the receiver
+goes to the transport pump (doc 03 §Wiring). `create_terminal()` builds the
+installed preference.
 
 - VTE is the default and the fallback.
 - With the `backend-ghostty` Cargo feature, Settings' General page shows
@@ -79,11 +80,14 @@ transport pump (doc 03 §Wiring).
 - The row is installed at startup and on change
   (`install_backend_preference`); tabs opened afterwards use it, open tabs
   keep their backend.
-- Ghostty falls back to VTE when the feature is off or libghostty-vt cannot
-  allocate a terminal.
+- A session's `terminal_backend` column (`ghostty` or `vte`, doc 09) wins
+  over the row for that session's tabs; an empty or unknown value follows
+  the row. The session dialog does not edit it (doc 09 §Limitations).
+- Ghostty falls back to VTE, with a note on stderr, when the feature is off
+  or libghostty-vt cannot allocate a terminal.
 
 A further backend would be another Cargo feature and another match arm in
-`create_terminal`: type-safe, no `dlopen`. Loading backends as runtime
+`create_terminal_for`: type-safe, no `dlopen`. Loading backends as runtime
 plugins (`.so` behind a C ABI) is not supported; it would need fixed
 plugin directories, no credentials crossing the boundary, and calls on the
 GTK main thread.
@@ -462,8 +466,6 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **Opacity needs a compositor.** Every Wayland session has one; on X11
   without a compositing manager the cleared areas draw dark instead of
   showing the desktop.
-- **The per-session `terminal_backend` override is not read:**
-  `create_terminal()` follows the global row only.
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
 - **VTE:** no Kitty graphics. Search steps between rows, reaching only
