@@ -1,8 +1,8 @@
 //! Raw bindings to `shim.c`, the narrow C layer over libghostty-vt; use
 //! [`Engine`](super::engine::Engine) instead of calling these directly.
 //! The structs mirror `WtCell`/`WtFrame`/`WtSpan` there; the unit tests
-//! check the sizes, and where the cell's grapheme fields sit, against the
-//! C compiler's.
+//! check the sizes, and where the cell's grapheme and link fields sit,
+//! against the C compiler's.
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -59,6 +59,9 @@ pub struct WtCell {
     /// Codepoints in the cluster, base included: 0 = empty, 1 = just
     /// `codepoint`.
     pub grapheme_len: u16,
+    /// 0 = no OSC 8 hyperlink; else its entry, from 1, in the snapshot's
+    /// links ([`wt_ghostty_links`]).
+    pub link: u16,
     /// With `grapheme_len` > 1: where the whole cluster starts in the
     /// snapshot's grapheme buffer.
     pub grapheme: u32,
@@ -239,6 +242,15 @@ extern "C" {
         graphemes_cap: usize,
         graphemes_len: *mut usize,
     ) -> c_int;
+    /// The last snapshot's links, valid until the next one: `count`
+    /// entries, entry n, from 1, being `uris` up to `ends[n - 1]`, starting
+    /// where the entry before it ends. Null while there are none.
+    pub fn wt_ghostty_links(
+        g: *mut WtGhostty,
+        uris: *mut *const u8,
+        ends: *mut *const usize,
+        count: *mut usize,
+    );
 }
 
 // ABI checks for the mirrors above (engine tests).
@@ -249,4 +261,5 @@ extern "C" {
     pub fn wt_ghostty_span_size() -> usize;
     pub fn wt_ghostty_cell_grapheme_offset() -> usize;
     pub fn wt_ghostty_cell_grapheme_len_offset() -> usize;
+    pub fn wt_ghostty_cell_link_offset() -> usize;
 }
