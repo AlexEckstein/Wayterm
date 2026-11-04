@@ -24,11 +24,29 @@ live; there is no Apply button.
 | Open SFTP on connect | `sftp_on_connect` | to tabs connected afterwards (doc 07 §Connection model) |
 | Minimize to tray on close | `minimize_to_tray` | at each window close (doc 03 §Tray) |
 | Experimental Ghostty terminal | `default_backend` (`ghostty`/`vte`) | to tabs opened afterwards; disabled with a "rebuild with the backend-ghostty feature to enable" tooltip in a default build (doc 02 §Backend selection) |
-| Default color scheme | `default_color_scheme` (`System`/`Light`/`Dark`) | to every open terminal at once (doc 02 §Color schemes) |
 | Clear all reminders | writes `1` to `duplicate_tmux_notice` and `confirm_close_notice` | every "Do not show me again" notice shows again; greyed out while none is silenced |
 
 Each switch writes `1`/`0`. The stored values are pushed to the modules
 that act on them at startup and after every change.
+
+### Customize
+
+`src/ui/settings/customize.rs`:
+
+| Control | Row | Applies |
+|---|---|---|
+| Default color scheme | `default_color_scheme` (`System`/`Light`/`Dark`) | to every open terminal at once (doc 02 §Color schemes) |
+| Font | `default_font_family` | to every open terminal without its own (doc 02 §Font, opacity and scrollback) |
+| Font size | `default_font_size` | as Font, once settled |
+| Background opacity | `default_opacity` | as Font, once settled (doc 02 §Opacity) |
+| Scrollback lines | `scrollback_limit` | to every open terminal, once settled |
+
+The font picker lists monospace families and sets the family only: a
+terminal's rows hold no face, so Bold could not be kept. The size, opacity
+and scrollback controls save 150 ms after their last change, because each
+save re-applies to every tab and a size change resizes every remote's grid.
+The mouse wheel over them scrolls the page and leaves the value alone, since
+a lowered scrollback drops lines from open tabs.
 
 ### Credentials
 
@@ -102,7 +120,5 @@ xdg-desktop-portal's `color-scheme`, read at start and followed through
 
 - `tmux_default` is seeded but never read: new sessions start with tmux
   off.
-- The font, opacity and scrollback rows and the global `host_key_policy`
-  have no control in the window; they can only be changed in the
-  database. A font, opacity or scrollback change made that way reaches
-  tabs at the next start, or sooner if a General page control saves.
+- The global `host_key_policy` has no control in the window; it can only
+  be changed in the database.
