@@ -15,10 +15,11 @@
 //! PageDown/Home/End scroll the viewport as in VTE. Mouse events go where
 //! [`route`] says: to the program through the mouse encoder while it
 //! tracks the mouse, as arrow keys for the wheel under alternate scroll,
-//! else local, where a primary-button drag selects and the wheel scrolls
-//! the viewport three rows per notch (smooth steps accumulate). Shift
-//! keeps them local. Focus changes are reported when the program asks. A
-//! press or a typed key ends the search, as it clears the selection.
+//! else local, where a primary-button drag selects (by word after a double
+//! click, by line after a triple) and the wheel scrolls the viewport three
+//! rows per notch (smooth steps accumulate). Shift keeps them local. Focus
+//! changes are reported when the program asks. A press or a typed key ends
+//! the search, as it clears the selection.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -64,8 +65,6 @@ mod imp {
         pub(super) requested: Cell<(u16, u16)>,
         /// The last grid reported as `SizeChange`, as `(cols, rows)`.
         pub(super) reported: Cell<Option<(u16, u16)>>,
-        /// Where the current selection drag started, `(col, row)`.
-        pub(super) anchor: Cell<Option<(u16, u16)>>,
         /// Wheel rows not yet scrolled; see [`super::wheel_rows`].
         pub(super) wheel_carry: Cell<f64>,
         /// Where the primary-button drag in progress goes.
@@ -275,7 +274,11 @@ impl GhosttyView {
         drag.connect_drag_begin(move |drag, x, y| {
             if let Some(view) = view.upgrade() {
                 view.grab_focus();
-                view.press(drag.current_event_state(), (x, y));
+                view.press(
+                    drag.current_event_state(),
+                    drag.current_event_time(),
+                    (x, y),
+                );
             }
         });
         let view = self.downgrade();
@@ -328,9 +331,9 @@ impl GhosttyView {
         self.add_controller(wheel);
     }
 
-    /// Primary button down at widget pixels `at`: report it, or start a
-    /// selection. The whole drag goes the same way.
-    fn press(&self, state: gdk::ModifierType, at: (f64, f64)) {
+    /// Primary button down at widget pixels `at`, `time` in milliseconds:
+    /// report it, or start a selection. The whole drag goes the same way.
+    fn press(&self, state: gdk::ModifierType, time: u32, at: (f64, f64)) {
         let Some(shared) = self.shared() else { return };
         let imp = self.imp();
         let route = route(shared.engine.mouse_modes(), state, false);
@@ -339,10 +342,15 @@ impl GhosttyView {
         shared.engine.clear_selection();
         shared.engine.clear_search();
         if route == Route::Report {
-            imp.anchor.set(None);
+            shared.engine.selection_cancel();
             self.report(&shared, ffi::MOUSE_PRESS, ffi::BUTTON_LEFT, state, at);
         } else {
-            imp.anchor.set(Some(self.cell_at(at.0, at.1)));
+            let repeat_ms = self.settings().gtk_double_click_time().unsigned_abs();
+            let repeat_px = f64::from(self.cell_size().0);
+            let cell = self.cell_at(at.0, at.1);
+            shared
+                .engine
+                .selection_press(cell, at, time, repeat_ms, repeat_px);
         }
         self.queue_draw();
     }
@@ -352,19 +360,29 @@ impl GhosttyView {
         let Some(shared) = self.shared() else { return };
         let imp = self.imp();
         imp.pointer.set(at);
-        if imp.drag.get() == Some(Route::Report) {
-            self.report_motion(&shared, ffi::BUTTON_LEFT, state, at);
-        } else if let Some(anchor) = imp.anchor.get() {
-            shared.engine.select(anchor, self.cell_at(at.0, at.1));
-            self.queue_draw();
+        match imp.drag.get() {
+            Some(Route::Report) => self.report_motion(&shared, ffi::BUTTON_LEFT, state, at),
+            Some(_) => {
+                let cell = self.cell_at(at.0, at.1);
+                let cell_w = px(self.cell_size().0);
+                shared
+                    .engine
+                    .selection_drag(cell, at, cell_w, px(self.height()));
+                self.queue_draw();
+            }
+            None => {}
         }
     }
 
     /// The primary button released at `at`.
     fn release(&self, state: gdk::ModifierType, at: (f64, f64)) {
         let Some(shared) = self.shared() else { return };
-        if self.imp().drag.take() == Some(Route::Report) {
-            self.report(&shared, ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, state, at);
+        match self.imp().drag.take() {
+            Some(Route::Report) => {
+                self.report(&shared, ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, state, at);
+            }
+            Some(_) => shared.engine.selection_release(self.cell_at(at.0, at.1)),
+            None => {}
         }
     }
 
@@ -1252,7 +1270,7 @@ mod ghostty_display {
         chunks();
 
         // No tracking: a drag selects and the wheel scrolls, sending nothing.
-        view.press(none, at(0, 0));
+        view.press(none, 1000, at(0, 0));
         view.drag_to(none, at(2, 0));
         view.release(none, at(2, 0));
         assert!(engine().is_some_and(|text| !text.is_empty()));
@@ -1265,7 +1283,7 @@ mod ghostty_display {
         // Tracking with SGR: press, drag and release are reported, nothing
         // is selected, and the wheel is three wheel-up reports.
         backend.write(b"\x1b[?1002h\x1b[?1006h");
-        view.press(none, at(1, 1));
+        view.press(none, 2000, at(1, 1));
         view.drag_to(none, at(1, 1));
         view.drag_to(none, at(3, 1));
         view.release(none, at(3, 1));
@@ -1286,7 +1304,7 @@ mod ghostty_display {
         assert_eq!(top_row(), bottom, "the viewport stays put");
 
         // Shift keeps the drag and the wheel local.
-        view.press(shift, at(0, 0));
+        view.press(shift, 3000, at(0, 0));
         view.drag_to(shift, at(2, 0));
         view.release(shift, at(2, 0));
         assert!(engine().is_some_and(|text| !text.is_empty()));
@@ -1405,7 +1423,16 @@ mod ghostty_display {
         assert_eq!(color(8), opaque(SEARCH_CURRENT_BG));
 
         let engine = || view.shared().unwrap().engine.selection_text();
-        assert!(view.shared().unwrap().engine.select((0, 0), (2, 0)));
+        // On the engine: a press through the view would end the search.
+        let shared = view.shared().unwrap();
+        shared.engine.selection_cancel();
+        assert!(shared
+            .engine
+            .selection_press((0, 0), (1.0, 1.0), 0, 400, 1.0));
+        let end = (f64::from(3 * cw - 1), 1.0);
+        assert!(shared
+            .engine
+            .selection_drag((2, 0), end, cw as u32, view.height() as u32));
         assert_ne!(color(0), opaque(SEARCH_BG), "the selection is on top");
         assert_eq!(engine().as_deref(), Some("one"));
         view.shared().unwrap().engine.clear_selection();
@@ -1417,7 +1444,7 @@ mod ghostty_display {
 
         backend.search("one", false);
         assert_eq!(color(0), opaque(SEARCH_CURRENT_BG));
-        view.press(gdk::ModifierType::empty(), (1.0, 1.0));
+        view.press(gdk::ModifierType::empty(), 5000, (1.0, 1.0));
         view.release(gdk::ModifierType::empty(), (1.0, 1.0));
         assert_eq!(color(0), background());
 
