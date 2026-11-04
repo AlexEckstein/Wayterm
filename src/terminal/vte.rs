@@ -12,6 +12,9 @@ use super::backend::{
 use super::color_scheme::{self, Rgb};
 use crate::backpressure::IdleSender;
 
+/// VTE requires this on search regexes; vte4 does not export it.
+const PCRE2_MULTILINE: u32 = 0x0000_0400;
+
 /// The built-in backend: the GTK4 VTE widget (doc 02). Main thread only.
 pub struct VteBackend {
     terminal: VteTerminal,
@@ -239,18 +242,26 @@ impl TerminalBackend for VteBackend {
     /// invalid query clears the highlight instead of stepping a stale match.
     fn search(&self, text: &str, reverse: bool) {
         let regex = (!text.is_empty())
-            .then(|| vte4::Regex::for_match(text, 0).ok())
+            .then(|| vte4::Regex::for_search(text, PCRE2_MULTILINE).ok())
             .flatten();
         let Some(regex) = regex else {
             self.terminal.search_set_regex(None::<&vte4::Regex>, 0);
+            self.terminal.unselect_all();
             return;
         };
         self.terminal.search_set_wrap_around(true);
         self.terminal.search_set_regex(Some(&regex), 0);
-        if reverse {
-            self.terminal.search_find_previous();
-        } else {
-            self.terminal.search_find_next();
+        let find = || {
+            if reverse {
+                self.terminal.search_find_previous()
+            } else {
+                self.terminal.search_find_next()
+            }
+        };
+        // With the only match selected VTE finds nothing and deselects it;
+        // the second try starts afresh and selects it again.
+        if !find() {
+            find();
         }
     }
 

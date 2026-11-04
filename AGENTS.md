@@ -83,8 +83,9 @@ with a **Limitations** section listing that feature's known gaps.
 - **docs** — always runs: validates that relative links across the
   design docs resolve.
 - **rust** — fmt check, clippy `--all-targets -D warnings`, `cargo
-  test` (sshd-gated suites skip themselves), then a real sshd for
-  `tests/transport_sshd.rs` (`SSH_TEST_*` env vars, doc 15 §CI).
+  test` (sshd-gated suites skip themselves), the VTE search test under
+  xvfb, then a real sshd for `tests/transport_sshd.rs` (`SSH_TEST_*` env
+  vars, doc 15 §CI).
 - **ghostty** — clippy and `cargo test` with `--features
   backend-ghostty`, then the Ghostty widget test under xvfb, against
   libghostty-vt built at the pin and cached per pin (doc 02

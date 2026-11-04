@@ -24,10 +24,11 @@ on any machine.
 
 - **docs:** every relative Markdown link resolves.
 - **rust:** `cargo fmt --check`, `cargo clippy --all-targets -D warnings`,
-  `cargo test`, then a real sshd for `tests/transport_sshd.rs`: the runner's
-  own sshd on port 22 with a throwaway `wayterm-test` user (random password
-  and a fresh ed25519 key), exported as `SSH_TEST_*`. Debug info is
-  line-tables-only so the GTK test binaries fit the runner's disk.
+  `cargo test`, the VTE search test under xvfb, then a real sshd for
+  `tests/transport_sshd.rs`: the runner's own sshd on port 22 with a
+  throwaway `wayterm-test` user (random password and a fresh ed25519
+  key), exported as `SSH_TEST_*`. Debug info is line-tables-only so the
+  GTK test binaries fit the runner's disk.
 - **ghostty:** clippy, `cargo test` and the Ghostty widget test under
   xvfb, all with `--features backend-ghostty` (§Ghostty backend). It
   builds libghostty-vt at the pin as doc 02 §libghostty-vt pin does and
@@ -99,7 +100,8 @@ embedding, the tab bar's "+", and that every shortcut has a window
 action.
 
 Other ignored display tests: VTE scrollback extraction
-(`tests/terminal_polish.rs`) and the Ghostty widget
+(`tests/terminal_polish.rs`), VTE search (`tests/vte_search.rs`) and the
+Ghostty widget
 (`--features backend-ghostty -- --ignored ghostty_display`).
 
 ## sshd suites
@@ -189,8 +191,8 @@ CI runs all but the benchmark (§CI).
 - CI runs only `transport_sshd` against its sshd; `connect_flow`,
   `tmux_persistence`, `reconnect_sshd`, `forward_sshd` and `jump_sshd`
   need only that same sshd but run locally only.
-- Of the display tests, CI runs only the Ghostty widget: the widget
-  suite (`ui::gtk_tests::widgets`) and the VTE scrollback test
+- Of the display tests, CI runs only VTE search and the Ghostty widget:
+  the widget suite (`ui::gtk_tests::widgets`) and the VTE scrollback test
   (`tests/terminal_polish.rs`) run locally only, as does the benchmark.
 - `jump_sshd` dials through `dial_via_jump` while the test itself holds
   the jump connection, so the app's path — where nothing holds the jump
