@@ -531,9 +531,7 @@ impl GhosttyView {
                     let cursor = is_cursor(&info, row, col);
                     let painted = Painted::new(&info, cell, cursor);
                     match marks.get(row * cols + col) {
-                        Some(&Some(current))
-                            if !cursor && cell.flags & ffi::CELL_SELECTED == 0 =>
-                        {
+                        Some(&Some(current)) if !cursor && cell.flags & ffi::CELL_SELECTED == 0 => {
                             painted.searched(current)
                         }
                         _ => painted,
@@ -715,9 +713,13 @@ impl Painted {
         }
     }
 
-    /// Search highlight colors; `current` for the selected match.
+    /// Search highlight colors; `current` for the current match.
     fn searched(self, current: bool) -> Self {
-        let bg = if current { SEARCH_CURRENT_BG } else { SEARCH_BG };
+        let bg = if current {
+            SEARCH_CURRENT_BG
+        } else {
+            SEARCH_BG
+        };
         Self {
             fg: SEARCH_FG,
             bg: Some(bg),
@@ -1140,6 +1142,7 @@ mod ghostty_display {
         mouse_routing(&backend, &view, &mut rx);
         glyphs_on_the_grid(&backend, &view);
         shell_watchers(&backend, &view);
+        search_highlight(&backend, &view);
         window.close();
 
         // The factory follows the installed preference; VTE is the default.
@@ -1310,9 +1313,83 @@ mod ghostty_display {
         }
     }
 
+    /// Search lights its matches and the current one apart, under the
+    /// selection; an empty query or a press puts them out. The popover the
+    /// search actions open sits on this widget as it does on VTE's.
+    fn search_highlight(backend: &GhosttyBackend, view: &GhosttyView) {
+        let features = backend.features();
+        assert!(features.search && features.scrollback_search);
+        let (cw, _) = view.cell_size();
+        let cell = |col: usize| col * cw as usize + 1;
+        let background = || {
+            let at = pixels(view);
+            at(view.width() as usize - 1, view.height() as usize - 1)
+        };
+        // The cell's top left: its background, never a glyph.
+        let color = |col| pixels(view)(cell(col), 1);
+        let opaque = |[r, g, b]: [u8; 3]| [b, g, r, 255];
+
+        backend.reset();
+        backend.write(b"one two one");
+        assert_eq!(color(0), background(), "no search, no highlight");
+        backend.search("one", false);
+        assert_eq!(color(0), opaque(SEARCH_CURRENT_BG));
+        assert_eq!(color(4), background());
+        assert_eq!(color(8), opaque(SEARCH_BG));
+        // Forward again: the current match moves, the first stays lit.
+        backend.search("one", false);
+        assert_eq!(color(0), opaque(SEARCH_BG));
+        assert_eq!(color(8), opaque(SEARCH_CURRENT_BG));
+
+        let engine = || view.shared().unwrap().engine.selection_text();
+        assert!(view.shared().unwrap().engine.select((0, 0), (2, 0)));
+        assert_ne!(color(0), opaque(SEARCH_BG), "the selection is on top");
+        assert_eq!(engine().as_deref(), Some("one"));
+        view.shared().unwrap().engine.clear_selection();
+        assert_eq!(color(0), opaque(SEARCH_BG));
+
+        backend.search("", false);
+        assert_eq!(color(0), background());
+        assert_eq!(color(8), background());
+
+        backend.search("one", false);
+        assert_eq!(color(0), opaque(SEARCH_CURRENT_BG));
+        view.press(gdk::ModifierType::empty(), (1.0, 1.0));
+        view.release(gdk::ModifierType::empty(), (1.0, 1.0));
+        assert_eq!(color(0), background());
+
+        backend.search("one", false);
+        assert!(view.key(gdk::Key::a, gdk::ModifierType::empty()));
+        assert_eq!(color(0), background());
+
+        let popover = gtk4::Popover::new();
+        popover.set_child(Some(&gtk4::Entry::new()));
+        popover.set_parent(view);
+        popover.popup();
+        let context = glib::MainContext::default();
+        for _ in 0..50 {
+            context.iteration(false);
+        }
+        assert!(popover.is_visible());
+        popover.popdown();
+        popover.unparent();
+    }
+
     /// Paint the view now; the result tells whether any pixel in a box
     /// differs from the background.
     fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool {
+        let (width, height) = (view.width() as usize, view.height() as usize);
+        let at = pixels(view);
+        let background = at(width - 1, height - 1);
+        move |xs, ys| {
+            xs.flat_map(|x| ys.clone().map(move |y| (x, y)))
+                .any(|(x, y)| at(x, y) != background)
+        }
+    }
+
+    /// Paint the view now; the result reads one pixel, as GDK stores it:
+    /// blue, green, red, alpha.
+    fn pixels(view: &GhosttyView) -> impl Fn(usize, usize) -> [u8; 4] {
         let (width, height) = (view.width(), view.height());
         let snapshot = gtk4::Snapshot::new();
         view.paint(&snapshot);
@@ -1322,14 +1399,9 @@ mod ghostty_display {
         let stride = width as usize * 4;
         let mut pixels = vec![0; stride * height as usize];
         texture.download(&mut pixels, stride);
-        let at = move |x: usize, y: usize| -> [u8; 4] {
+        move |x, y| {
             let i = y * stride + x * 4;
             [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
-        };
-        let background = at(width as usize - 1, height as usize - 1);
-        move |xs, ys| {
-            xs.flat_map(|x| ys.clone().map(move |y| (x, y)))
-                .any(|(x, y)| at(x, y) != background)
         }
     }
 }
