@@ -4,13 +4,10 @@
 
 mod common;
 
-use std::io::Read;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use russh::keys::ssh_key::private::Ed25519Keypair;
-use russh::keys::PrivateKey;
 use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session};
 use russh::{Channel, ChannelMsg};
 use tokio::net::{TcpListener, TcpStream};
@@ -49,20 +46,11 @@ impl server::Handler for Server {
     }
 }
 
-/// A throwaway host key, generated per run so none is ever committed.
-fn host_key() -> PrivateKey {
-    let mut seed = [0u8; 32];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut urandom| urandom.read_exact(&mut seed))
-        .expect("read /dev/urandom");
-    PrivateKey::from(Ed25519Keypair::from_seed(&seed))
-}
-
 async fn start_server() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config = server::Config::default();
-    config.keys.push(host_key());
+    config.keys.push(common::host_key());
     let config = Arc::new(config);
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
