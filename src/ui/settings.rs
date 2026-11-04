@@ -1,11 +1,12 @@
 //! The Settings window: a sidebar of pages beside the selected one —
-//! [`general`], [`credentials`] (doc 05), Keyboard Shortcuts
+//! [`general`], [`customize`], [`credentials`] (doc 05), Keyboard Shortcuts
 //! ([`hotkeys`], doc 11), and Backup / Restore ([`backup`], doc 10). Every
 //! page saves each change at once and applies it live; there is no Apply
 //! button.
 
 pub mod backup;
 pub mod credentials;
+pub mod customize;
 pub mod general;
 pub mod hotkeys;
 
@@ -20,6 +21,7 @@ use crate::ui::widgets::set_margins;
 
 /// Stack names of the pages, in sidebar order.
 pub const GENERAL_PAGE: &str = "general";
+pub const CUSTOMIZE_PAGE: &str = "customize";
 pub const CREDENTIALS_PAGE: &str = "credentials";
 pub const SHORTCUTS_PAGE: &str = "keyboard-shortcuts";
 pub const BACKUP_PAGE: &str = "backup-restore";
@@ -89,6 +91,11 @@ fn pages(
     let stack = gtk4::Stack::new();
     stack.set_hexpand(true);
     stack.add_titled(&general::page(store.clone()), Some(GENERAL_PAGE), "General");
+    stack.add_titled(
+        &customize::page(store.clone()),
+        Some(CUSTOMIZE_PAGE),
+        "Customize",
+    );
     stack.add_titled(
         &credentials::page(store.clone()),
         Some(CREDENTIALS_PAGE),
@@ -203,9 +210,9 @@ pub(super) mod gtk_tests {
         descendants(widget, found);
     }
 
-    /// The sidebar lists General, Credentials, Keyboard Shortcuts, then
-    /// Backup / Restore, and opens on
-    /// General; each General switch shows and saves its own row.
+    /// The sidebar lists General, Customize, Credentials, Keyboard
+    /// Shortcuts, then Backup / Restore, and opens on General; each General
+    /// switch shows and saves its own row.
     pub(in crate::ui) fn pages_and_general_switches() {
         let store = Rc::new(SessionStore::in_memory().unwrap());
         store
@@ -228,6 +235,7 @@ pub(super) mod gtk_tests {
             listed,
             vec![
                 (GENERAL_PAGE.to_string(), "General".to_string()),
+                (CUSTOMIZE_PAGE.to_string(), "Customize".to_string()),
                 (CREDENTIALS_PAGE.to_string(), "Credentials".to_string()),
                 (SHORTCUTS_PAGE.to_string(), "Keyboard Shortcuts".to_string()),
                 (BACKUP_PAGE.to_string(), "Backup / Restore".to_string()),
@@ -282,16 +290,17 @@ pub(super) mod gtk_tests {
         // The color scheme drop-down: opens on the seeded System and saves
         // each pick.
         use crate::terminal::SchemeChoice;
+        let customize_page = stack.child_by_name(CUSTOMIZE_PAGE).unwrap();
         let mut dropdowns: Vec<gtk4::DropDown> = Vec::new();
-        descendants(&general, &mut dropdowns);
+        descendants(&customize_page, &mut dropdowns);
         assert_eq!(dropdowns.len(), 1);
         let dropdown = &dropdowns[0];
         let position = |choice| SchemeChoice::ALL.iter().position(|c| *c == choice).unwrap();
         assert_eq!(dropdown.selected() as usize, position(SchemeChoice::System));
         dropdown.set_selected(position(SchemeChoice::Light) as u32);
-        assert_eq!(general::color_scheme(&store), SchemeChoice::Light);
+        assert_eq!(customize::color_scheme(&store), SchemeChoice::Light);
         dropdown.set_selected(position(SchemeChoice::System) as u32);
-        assert_eq!(general::color_scheme(&store), SchemeChoice::System);
+        assert_eq!(customize::color_scheme(&store), SchemeChoice::System);
 
         terminal_appearance_controls();
     }
@@ -315,10 +324,10 @@ pub(super) mod gtk_tests {
 
         let store = Rc::new(SessionStore::in_memory().unwrap());
         store.set_setting(DEFAULT_OPACITY_SETTING, "0.8").unwrap();
-        let general = general::page(store.clone());
+        let page = customize::page(store.clone());
 
         let mut fonts: Vec<gtk4::FontDialogButton> = Vec::new();
-        descendants(&general, &mut fonts);
+        descendants(&page, &mut fonts);
         assert_eq!(fonts.len(), 1);
         let font = &fonts[0];
         let family = |font: &gtk4::FontDialogButton| {
@@ -329,7 +338,7 @@ pub(super) mod gtk_tests {
         assert_eq!(family(font).as_deref(), Some("Monospace"));
 
         let filter = font.dialog().and_then(|dialog| dialog.filter()).unwrap();
-        let context = general.pango_context();
+        let context = page.pango_context();
         let families = context.list_families();
         let named = |name: &str| families.iter().find(|family| family.name() == name);
         let mono = named("Monospace").expect("fontconfig provides Monospace");
@@ -340,11 +349,11 @@ pub(super) mod gtk_tests {
         }
 
         let mut spins: Vec<gtk4::SpinButton> = Vec::new();
-        descendants(&general, &mut spins);
+        descendants(&page, &mut spins);
         assert_eq!(spins.len(), 2);
         let (size, scrollback) = (&spins[0], &spins[1]);
         let mut scales: Vec<gtk4::Scale> = Vec::new();
-        descendants(&general, &mut scales);
+        descendants(&page, &mut scales);
         assert_eq!(scales.len(), 1);
         let opacity = &scales[0];
 
@@ -369,20 +378,20 @@ pub(super) mod gtk_tests {
         let mut desc = font.font_desc().unwrap();
         desc.set_family("Hack");
         font.set_font_desc(&desc);
-        assert_eq!(general::terminal_defaults(&store).font_family, "Hack");
+        assert_eq!(customize::terminal_defaults(&store).font_family, "Hack");
 
         for points in [13.0, 14.0, 14.5] {
             size.set_value(points);
         }
         assert_eq!(
-            general::terminal_defaults(&store).font_size,
+            customize::terminal_defaults(&store).font_size,
             12.0,
             "settling"
         );
         opacity.set_value(55.0);
         scrollback.set_value(f64::from(u32::MAX));
         wait_for(|| {
-            let saved = general::terminal_defaults(&store);
+            let saved = customize::terminal_defaults(&store);
             saved.font_size == 14.5 && saved.opacity == 0.55 && saved.scrollback_lines == u32::MAX
         });
         assert_eq!(
@@ -394,8 +403,8 @@ pub(super) mod gtk_tests {
         size.set_value(9.0);
         drop(spins);
         drop(scales);
-        drop(general);
-        wait_for(|| general::terminal_defaults(&store).font_size == 9.0);
+        drop(page);
+        wait_for(|| customize::terminal_defaults(&store).font_size == 9.0);
 
         // `apply` installed these for the whole thread.
         general::apply(&SessionStore::in_memory().unwrap());
