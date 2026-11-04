@@ -122,8 +122,9 @@ flow control (doc 01 §Threading model).
   like a keystroke. The vte4 `commit` binding reads its text as a
   NUL-terminated UTF-8 string, so bytes it cannot carry (invalid UTF-8,
   NUL) are queued as `DataOut` directly instead, still in order.
-- **Search** sets a PCRE2 regex (case-sensitive) with wrap-around; an
-  empty or invalid query clears the highlight.
+- **Search** sets a PCRE2 regex (case-sensitive) with wrap-around. The
+  current match is the selection, and a lone match stays selected when
+  stepped; an empty or invalid query clears it.
 - **Color schemes:** `set_color_scheme` looks the name up among the
   built-in palettes (§Color schemes) and applies foreground, background,
   the 16 ANSI colors and the cursor colors; bold and the selection keep
@@ -439,7 +440,8 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   `create_terminal()` follows the global row only.
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
-- **VTE:** no Kitty graphics.
+- **VTE:** no Kitty graphics. Search steps between rows, reaching only
+  the first match on each.
 - **Ghostty:** no URL detection or image drawing (`features()` says so,
   and the UI hides them); no input method or compose support; mouse
   reporting covers the primary button and the wheel only, so middle and
