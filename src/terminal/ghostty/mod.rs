@@ -207,6 +207,7 @@ impl TerminalBackend for GhosttyBackend {
 
     fn select_all(&self) {
         self.engine().select_all();
+        self.view.copy_primary();
         self.view.queue_draw();
     }
 

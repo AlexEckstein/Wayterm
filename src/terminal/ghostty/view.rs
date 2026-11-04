@@ -15,10 +15,12 @@
 //! PageDown/Home/End scroll the viewport as in VTE. Mouse events go where
 //! [`route`] says: to the program through the mouse encoder while it
 //! tracks the mouse, as arrow keys for the wheel under alternate scroll,
-//! else local, where a primary-button drag selects and the wheel scrolls
-//! the viewport three rows per notch (smooth steps accumulate). Shift
-//! keeps them local. Focus changes are reported when the program asks. A
-//! press or a typed key ends the search, as it clears the selection.
+//! else local, where a primary-button drag selects (by word after a double
+//! click, by line after a triple), a finished selection goes to PRIMARY, a
+//! middle click pastes PRIMARY, and the wheel scrolls the viewport three
+//! rows per notch (smooth steps accumulate). Shift keeps them local. Focus
+//! changes are reported when the program asks. A press or a typed key ends
+//! the search, as it clears the selection.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -64,8 +66,6 @@ mod imp {
         pub(super) requested: Cell<(u16, u16)>,
         /// The last grid reported as `SizeChange`, as `(cols, rows)`.
         pub(super) reported: Cell<Option<(u16, u16)>>,
-        /// Where the current selection drag started, `(col, row)`.
-        pub(super) anchor: Cell<Option<(u16, u16)>>,
         /// Wheel rows not yet scrolled; see [`super::wheel_rows`].
         pub(super) wheel_carry: Cell<f64>,
         /// Where the primary-button drag in progress goes.
@@ -275,7 +275,11 @@ impl GhosttyView {
         drag.connect_drag_begin(move |drag, x, y| {
             if let Some(view) = view.upgrade() {
                 view.grab_focus();
-                view.press(drag.current_event_state(), (x, y));
+                view.press(
+                    drag.current_event_state(),
+                    drag.current_event_time(),
+                    (x, y),
+                );
             }
         });
         let view = self.downgrade();
@@ -291,6 +295,17 @@ impl GhosttyView {
             }
         });
         self.add_controller(drag);
+
+        let middle = gtk4::GestureClick::new();
+        middle.set_button(gdk::BUTTON_MIDDLE);
+        let view = self.downgrade();
+        middle.connect_pressed(move |middle, _, _, _| {
+            if let Some(view) = view.upgrade() {
+                view.grab_focus();
+                view.paste_primary(middle.current_event_state());
+            }
+        });
+        self.add_controller(middle);
 
         let motion = gtk4::EventControllerMotion::new();
         let view = self.downgrade();
@@ -328,9 +343,9 @@ impl GhosttyView {
         self.add_controller(wheel);
     }
 
-    /// Primary button down at widget pixels `at`: report it, or start a
-    /// selection. The whole drag goes the same way.
-    fn press(&self, state: gdk::ModifierType, at: (f64, f64)) {
+    /// Primary button down at widget pixels `at`, `time` in milliseconds:
+    /// report it, or start a selection. The whole drag goes the same way.
+    fn press(&self, state: gdk::ModifierType, time: u32, at: (f64, f64)) {
         let Some(shared) = self.shared() else { return };
         let imp = self.imp();
         let route = route(shared.engine.mouse_modes(), state, false);
@@ -339,10 +354,15 @@ impl GhosttyView {
         shared.engine.clear_selection();
         shared.engine.clear_search();
         if route == Route::Report {
-            imp.anchor.set(None);
+            shared.engine.selection_cancel();
             self.report(&shared, ffi::MOUSE_PRESS, ffi::BUTTON_LEFT, state, at);
         } else {
-            imp.anchor.set(Some(self.cell_at(at.0, at.1)));
+            let repeat_ms = self.settings().gtk_double_click_time().unsigned_abs();
+            let repeat_px = f64::from(self.cell_size().0);
+            let cell = self.cell_at(at.0, at.1);
+            shared
+                .engine
+                .selection_press(cell, at, time, repeat_ms, repeat_px);
         }
         self.queue_draw();
     }
@@ -352,20 +372,63 @@ impl GhosttyView {
         let Some(shared) = self.shared() else { return };
         let imp = self.imp();
         imp.pointer.set(at);
-        if imp.drag.get() == Some(Route::Report) {
-            self.report_motion(&shared, ffi::BUTTON_LEFT, state, at);
-        } else if let Some(anchor) = imp.anchor.get() {
-            shared.engine.select(anchor, self.cell_at(at.0, at.1));
-            self.queue_draw();
+        match imp.drag.get() {
+            Some(Route::Report) => self.report_motion(&shared, ffi::BUTTON_LEFT, state, at),
+            Some(_) => {
+                let cell = self.cell_at(at.0, at.1);
+                let cell_w = px(self.cell_size().0);
+                shared
+                    .engine
+                    .selection_drag(cell, at, cell_w, px(self.height()));
+                self.queue_draw();
+            }
+            None => {}
         }
     }
 
     /// The primary button released at `at`.
     fn release(&self, state: gdk::ModifierType, at: (f64, f64)) {
         let Some(shared) = self.shared() else { return };
-        if self.imp().drag.take() == Some(Route::Report) {
-            self.report(&shared, ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, state, at);
+        match self.imp().drag.take() {
+            Some(Route::Report) => {
+                self.report(&shared, ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, state, at);
+            }
+            Some(_) => {
+                shared.engine.selection_release(self.cell_at(at.0, at.1));
+                self.copy_primary();
+            }
+            None => {}
         }
+    }
+
+    /// Put the selection on PRIMARY; without one, PRIMARY keeps its text.
+    pub(super) fn copy_primary(&self) {
+        let text = self.shared().and_then(|s| s.engine.selection_text());
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            self.primary_clipboard().set_text(&text);
+        }
+    }
+
+    /// Middle button down: paste PRIMARY, bracketed when the program
+    /// enabled mode 2004, unless the program tracks the mouse.
+    fn paste_primary(&self, state: gdk::ModifierType) {
+        let Some(shared) = self.shared() else { return };
+        if route(shared.engine.mouse_modes(), state, false) != Route::Local {
+            return;
+        }
+        let clipboard = self.primary_clipboard();
+        let view = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(Some(text)) = clipboard.read_text_future().await else {
+                return;
+            };
+            if let Some(view) = view.upgrade() {
+                if let Some(shared) = view.shared() {
+                    shared.input(shared.engine.encode_paste(&text));
+                    view.queue_draw();
+                }
+            }
+        });
     }
 
     /// The pointer moved to `at` with no drag in progress: motion for a
@@ -1206,6 +1269,7 @@ mod ghostty_display {
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
         search_highlight(&backend, &view);
+        primary_selection(&backend, &view, &mut rx);
         window.close();
 
         // The factory follows the installed preference; VTE is the default.
@@ -1252,7 +1316,7 @@ mod ghostty_display {
         chunks();
 
         // No tracking: a drag selects and the wheel scrolls, sending nothing.
-        view.press(none, at(0, 0));
+        view.press(none, 1000, at(0, 0));
         view.drag_to(none, at(2, 0));
         view.release(none, at(2, 0));
         assert!(engine().is_some_and(|text| !text.is_empty()));
@@ -1265,7 +1329,7 @@ mod ghostty_display {
         // Tracking with SGR: press, drag and release are reported, nothing
         // is selected, and the wheel is three wheel-up reports.
         backend.write(b"\x1b[?1002h\x1b[?1006h");
-        view.press(none, at(1, 1));
+        view.press(none, 2000, at(1, 1));
         view.drag_to(none, at(1, 1));
         view.drag_to(none, at(3, 1));
         view.release(none, at(3, 1));
@@ -1286,7 +1350,7 @@ mod ghostty_display {
         assert_eq!(top_row(), bottom, "the viewport stays put");
 
         // Shift keeps the drag and the wheel local.
-        view.press(shift, at(0, 0));
+        view.press(shift, 3000, at(0, 0));
         view.drag_to(shift, at(2, 0));
         view.release(shift, at(2, 0));
         assert!(engine().is_some_and(|text| !text.is_empty()));
@@ -1376,6 +1440,96 @@ mod ghostty_display {
         }
     }
 
+    /// Double and triple clicks select a word and a line, a finished
+    /// selection reaches PRIMARY, and a middle click pastes it unless the
+    /// program tracks the mouse.
+    fn primary_selection(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let none = gdk::ModifierType::empty();
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let (cell_w, cell_h) = view.cell_size();
+        let at = |col: i32, row: i32| {
+            (
+                f64::from(col * cell_w + cell_w / 2),
+                f64::from(row * cell_h + cell_h / 2),
+            )
+        };
+        let click = |state, time, col| {
+            view.press(state, time, at(col, 0));
+            view.release(state, at(col, 0));
+        };
+        while rx.try_recv().is_ok() {}
+        let context = glib::MainContext::default();
+        let primary = || {
+            let read = view.primary_clipboard().read_text_future();
+            context.block_on(read).unwrap().map(String::from)
+        };
+        let mut pasted = |state| {
+            view.paste_primary(state);
+            let mut sent = Vec::new();
+            for _ in 0..100 {
+                while context.iteration(false) {}
+                while let Ok(event) = rx.try_recv() {
+                    if let TerminalEvent::DataOut(bytes) = event {
+                        sent.extend(bytes);
+                    }
+                }
+                if !sent.is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            sent
+        };
+
+        backend.reset();
+        backend.write(b"alpha beta gamma");
+        view.primary_clipboard().set_text("before");
+        click(none, 10_000, 7);
+        assert_eq!(
+            primary().as_deref(),
+            Some("before"),
+            "a click selects nothing"
+        );
+        click(none, 10_100, 7);
+        assert_eq!(backend.selected_text().as_deref(), Some("beta"));
+        assert_eq!(primary().as_deref(), Some("beta"));
+        click(none, 10_200, 7);
+        assert_eq!(primary().as_deref(), Some("alpha beta gamma"));
+
+        // A drag reaches PRIMARY on release, not along the way.
+        view.primary_clipboard().set_text("before");
+        view.press(none, 20_000, at(0, 0));
+        view.drag_to(none, at(4, 0));
+        assert_eq!(primary().as_deref(), Some("before"));
+        view.release(none, at(4, 0));
+        assert!(primary().is_some_and(|text| text.starts_with("alph")));
+
+        backend.select_all();
+        assert!(primary().is_some_and(|text| text.contains("alpha beta gamma")));
+
+        view.primary_clipboard().set_text("a\nb");
+        assert_eq!(pasted(none), b"a\rb");
+        backend.write(b"\x1b[?2004h");
+        assert_eq!(pasted(none), b"\x1b[200~a\nb\x1b[201~");
+        backend.write(b"\x1b[?2004l\x1b[?1000h");
+        assert_eq!(pasted(none), b"", "the program owns the mouse");
+        assert_eq!(pasted(shift), b"a\rb", "Shift keeps it local");
+
+        // A reported press ends a click sequence, and Shift still selects.
+        click(shift, 30_000, 7);
+        click(none, 30_100, 7);
+        click(shift, 30_200, 7);
+        assert_eq!(backend.selected_text(), None);
+        click(shift, 30_300, 7);
+        assert_eq!(backend.selected_text().as_deref(), Some("beta"));
+        backend.write(b"\x1b[?1000l");
+        while rx.try_recv().is_ok() {}
+    }
+
     /// Search lights its matches and the current one apart, under the
     /// selection; an empty query or a press puts them out. The popover the
     /// search actions open sits on this widget as it does on VTE's.
@@ -1405,7 +1559,16 @@ mod ghostty_display {
         assert_eq!(color(8), opaque(SEARCH_CURRENT_BG));
 
         let engine = || view.shared().unwrap().engine.selection_text();
-        assert!(view.shared().unwrap().engine.select((0, 0), (2, 0)));
+        // On the engine: a press through the view would end the search.
+        let shared = view.shared().unwrap();
+        shared.engine.selection_cancel();
+        assert!(shared
+            .engine
+            .selection_press((0, 0), (1.0, 1.0), 0, 400, 1.0));
+        let end = (f64::from(3 * cw - 1), 1.0);
+        assert!(shared
+            .engine
+            .selection_drag((2, 0), end, cw as u32, view.height() as u32));
         assert_ne!(color(0), opaque(SEARCH_BG), "the selection is on top");
         assert_eq!(engine().as_deref(), Some("one"));
         view.shared().unwrap().engine.clear_selection();
@@ -1417,7 +1580,7 @@ mod ghostty_display {
 
         backend.search("one", false);
         assert_eq!(color(0), opaque(SEARCH_CURRENT_BG));
-        view.press(gdk::ModifierType::empty(), (1.0, 1.0));
+        view.press(gdk::ModifierType::empty(), 5000, (1.0, 1.0));
         view.release(gdk::ModifierType::empty(), (1.0, 1.0));
         assert_eq!(color(0), background());
 

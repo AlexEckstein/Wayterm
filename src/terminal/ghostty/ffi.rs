@@ -165,14 +165,28 @@ extern "C" {
         len: *mut usize,
     ) -> c_int;
     pub fn wt_ghostty_select_all(g: *mut WtGhostty) -> c_int;
-    pub fn wt_ghostty_select_viewport(
-        g: *mut WtGhostty,
-        x0: u16,
-        y0: u16,
-        x1: u16,
-        y1: u16,
-    ) -> c_int;
     pub fn wt_ghostty_clear_selection(g: *mut WtGhostty);
+    pub fn wt_ghostty_selection_press(
+        g: *mut WtGhostty,
+        col: u16,
+        row: u16,
+        x: f64,
+        y: f64,
+        time_ns: u64,
+        repeat_ns: u64,
+        repeat_px: f64,
+    ) -> c_int;
+    pub fn wt_ghostty_selection_drag(
+        g: *mut WtGhostty,
+        col: u16,
+        row: u16,
+        x: f64,
+        y: f64,
+        cell_w: u32,
+        height: u32,
+    ) -> c_int;
+    pub fn wt_ghostty_selection_release(g: *mut WtGhostty, col: u16, row: u16);
+    pub fn wt_ghostty_selection_cancel(g: *mut WtGhostty);
     pub fn wt_ghostty_search(
         g: *mut WtGhostty,
         needle: *const u8,

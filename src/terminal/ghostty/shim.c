@@ -117,6 +117,7 @@ typedef struct {
   GhosttyKeyEvent key_event;
   GhosttyMouseEncoder mouse_encoder;
   GhosttyMouseEvent mouse_event;
+  GhosttySelectionGesture gesture;
   WtEffectFn effect;
   void *userdata;
   /* Search: created on first use; idle while `needle` is NULL. */
@@ -177,6 +178,7 @@ void wt_ghostty_free(WtGhostty *g) {
   ghostty_render_state_row_cells_free(g->cells);
   ghostty_render_state_row_iterator_free(g->rows);
   ghostty_render_state_free(g->render);
+  ghostty_selection_gesture_free(g->gesture, g->terminal);
   ghostty_terminal_free(g->terminal);
   free(g);
 }
@@ -192,7 +194,8 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
       ghostty_key_encoder_new(NULL, &g->encoder) != GHOSTTY_SUCCESS ||
       ghostty_key_event_new(NULL, &g->key_event) != GHOSTTY_SUCCESS ||
       ghostty_mouse_encoder_new(NULL, &g->mouse_encoder) != GHOSTTY_SUCCESS ||
-      ghostty_mouse_event_new(NULL, &g->mouse_event) != GHOSTTY_SUCCESS) {
+      ghostty_mouse_event_new(NULL, &g->mouse_event) != GHOSTTY_SUCCESS ||
+      ghostty_selection_gesture_new(NULL, &g->gesture) != GHOSTTY_SUCCESS) {
     wt_ghostty_free(g);
     return NULL;
   }
@@ -231,6 +234,7 @@ void wt_ghostty_size(WtGhostty *g, uint16_t *cols, uint16_t *rows) {
 /* A full reset also ends the search: there is nothing left to find. */
 void wt_ghostty_reset(WtGhostty *g) {
   wt_ghostty_search_clear(g);
+  ghostty_selection_gesture_reset(g->gesture, g->terminal);
   ghostty_terminal_reset(g->terminal);
 }
 
@@ -324,26 +328,93 @@ int wt_ghostty_select_all(WtGhostty *g) {
                               &sel);
 }
 
-/* Select from one viewport cell to another (inclusive), as a mouse drag. */
-int wt_ghostty_select_viewport(WtGhostty *g, uint16_t x0, uint16_t y0,
-                               uint16_t x1, uint16_t y1) {
-  GhosttySelection sel = GHOSTTY_INIT_SIZED(GhosttySelection);
-  GhosttyPoint a = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
-                    .value = {.coordinate = {.x = x0, .y = y0}}};
-  GhosttyPoint b = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
-                    .value = {.coordinate = {.x = x1, .y = y1}}};
-  sel.start = GHOSTTY_INIT_SIZED(GhosttyGridRef);
-  sel.end = GHOSTTY_INIT_SIZED(GhosttyGridRef);
-  int r = ghostty_terminal_grid_ref(g->terminal, a, &sel.start);
+void wt_ghostty_clear_selection(WtGhostty *g) {
+  ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, NULL);
+}
+
+/* The selection gesture counts clicks and picks cell, word or line
+ * selection; it only computes a selection, so each result is installed
+ * here. Having none clears the terminal's, as Ghostty's Surface does. */
+static int gesture_event(WtGhostty *g, GhosttySelectionGestureEventType type,
+                         uint16_t col, uint16_t row,
+                         GhosttySelectionGestureEvent *out) {
+  GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
+                        .value = {.coordinate = {.x = col, .y = row}}};
+  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  int r = ghostty_terminal_grid_ref(g->terminal, point, &ref);
   if (r != GHOSTTY_SUCCESS) return r;
-  r = ghostty_terminal_grid_ref(g->terminal, b, &sel.end);
+  r = ghostty_selection_gesture_event_new(NULL, out, type);
+  if (r != GHOSTTY_SUCCESS) return r;
+  ghostty_selection_gesture_event_set(*out,
+                                      GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REF,
+                                      &ref);
+  return GHOSTTY_SUCCESS;
+}
+
+static int gesture_apply(WtGhostty *g, GhosttySelectionGestureEvent event) {
+  GhosttySelection sel = GHOSTTY_INIT_SIZED(GhosttySelection);
+  int r = ghostty_selection_gesture_event(g->gesture, g->terminal, event, &sel);
+  ghostty_selection_gesture_event_free(event);
+  if (r == GHOSTTY_NO_VALUE) {
+    wt_ghostty_clear_selection(g);
+    return GHOSTTY_SUCCESS;
+  }
   if (r != GHOSTTY_SUCCESS) return r;
   return ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION,
                               &sel);
 }
 
-void wt_ghostty_clear_selection(WtGhostty *g) {
-  ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, NULL);
+int wt_ghostty_selection_press(WtGhostty *g, uint16_t col, uint16_t row,
+                               double x, double y, uint64_t time_ns,
+                               uint64_t repeat_ns, double repeat_px) {
+  GhosttySelectionGestureEvent event = NULL;
+  int r = gesture_event(g, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_PRESS, col, row,
+                        &event);
+  if (r != GHOSTTY_SUCCESS) return r;
+  GhosttySurfacePosition at = {.x = x, .y = y};
+  ghostty_selection_gesture_event_set(
+      event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &at);
+  ghostty_selection_gesture_event_set(
+      event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_TIME_NS, &time_ns);
+  ghostty_selection_gesture_event_set(
+      event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_INTERVAL_NS,
+      &repeat_ns);
+  ghostty_selection_gesture_event_set(
+      event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_REPEAT_DISTANCE, &repeat_px);
+  return gesture_apply(g, event);
+}
+
+int wt_ghostty_selection_drag(WtGhostty *g, uint16_t col, uint16_t row,
+                              double x, double y, uint32_t cell_w,
+                              uint32_t height) {
+  GhosttySelectionGestureEvent event = NULL;
+  int r = gesture_event(g, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_DRAG, col, row,
+                        &event);
+  if (r != GHOSTTY_SUCCESS) return r;
+  uint16_t cols = 0, rows = 0;
+  wt_ghostty_size(g, &cols, &rows);
+  GhosttySurfacePosition at = {.x = x, .y = y};
+  GhosttySelectionGestureGeometry geometry = {
+      .columns = cols, .cell_width = cell_w, .screen_height = height};
+  ghostty_selection_gesture_event_set(
+      event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_POSITION, &at);
+  ghostty_selection_gesture_event_set(
+      event, GHOSTTY_SELECTION_GESTURE_EVENT_OPT_GEOMETRY, &geometry);
+  return gesture_apply(g, event);
+}
+
+/* A release keeps the click count, for the next press to continue. */
+void wt_ghostty_selection_release(WtGhostty *g, uint16_t col, uint16_t row) {
+  GhosttySelectionGestureEvent event = NULL;
+  if (gesture_event(g, GHOSTTY_SELECTION_GESTURE_EVENT_TYPE_RELEASE, col, row,
+                    &event) != GHOSTTY_SUCCESS)
+    return;
+  ghostty_selection_gesture_event(g->gesture, g->terminal, event, NULL);
+  ghostty_selection_gesture_event_free(event);
+}
+
+void wt_ghostty_selection_cancel(WtGhostty *g) {
+  ghostty_selection_gesture_reset(g->gesture, g->terminal);
 }
 
 /* Search finds matches with a GhosttySearch over the active screen,
