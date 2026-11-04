@@ -24,15 +24,22 @@ live; there is no Apply button.
 | Open SFTP on connect | `sftp_on_connect` | to tabs connected afterwards (doc 07 §Connection model) |
 | Minimize to tray on close | `minimize_to_tray` | at each window close (doc 03 §Tray) |
 | Experimental Ghostty terminal | `default_backend` (`ghostty`/`vte`) | to tabs opened afterwards; disabled with a "rebuild with the backend-ghostty feature to enable" tooltip in a default build (doc 02 §Backend selection) |
+| Clear all reminders | writes `1` to `duplicate_tmux_notice` and `confirm_close_notice` | every "Do not show me again" notice shows again; greyed out while none is silenced |
+
+Each switch writes `1`/`0`. The stored values are pushed to the modules
+that act on them at startup and after every change.
+
+### Customize
+
+`src/ui/settings/customize.rs`:
+
+| Control | Row | Applies |
+|---|---|---|
 | Default color scheme | `default_color_scheme` (`System`/`Light`/`Dark`) | to every open terminal at once (doc 02 §Color schemes) |
 | Font | `default_font_family` | to every open terminal without its own (doc 02 §Font, opacity and scrollback) |
 | Font size | `default_font_size` | as Font, once settled |
 | Background opacity | `default_opacity` | as Font, once settled (doc 02 §Opacity) |
 | Scrollback lines | `scrollback_limit` | to every open terminal, once settled |
-| Clear all reminders | writes `1` to `duplicate_tmux_notice` and `confirm_close_notice` | every "Do not show me again" notice shows again; greyed out while none is silenced |
-
-Each switch writes `1`/`0`. The stored values are pushed to the modules
-that act on them at startup and after every change.
 
 The font picker lists monospace families and sets the family only: a
 terminal's rows hold no face, so Bold could not be kept. The size, opacity
