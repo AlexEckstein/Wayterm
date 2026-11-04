@@ -16,7 +16,8 @@
 //! [`route`] says: to the program through the mouse encoder while it
 //! tracks the mouse, as arrow keys for the wheel under alternate scroll,
 //! else local, where a primary-button drag selects (by word after a double
-//! click, by line after a triple) and the wheel scrolls the viewport three
+//! click, by line after a triple), a finished selection goes to PRIMARY, a
+//! middle click pastes PRIMARY, and the wheel scrolls the viewport three
 //! rows per notch (smooth steps accumulate). Shift keeps them local. Focus
 //! changes are reported when the program asks. A press or a typed key ends
 //! the search, as it clears the selection.
@@ -295,6 +296,17 @@ impl GhosttyView {
         });
         self.add_controller(drag);
 
+        let middle = gtk4::GestureClick::new();
+        middle.set_button(gdk::BUTTON_MIDDLE);
+        let view = self.downgrade();
+        middle.connect_pressed(move |middle, _, _, _| {
+            if let Some(view) = view.upgrade() {
+                view.grab_focus();
+                view.paste_primary(middle.current_event_state());
+            }
+        });
+        self.add_controller(middle);
+
         let motion = gtk4::EventControllerMotion::new();
         let view = self.downgrade();
         motion.connect_motion(move |motion, x, y| {
@@ -381,9 +393,42 @@ impl GhosttyView {
             Some(Route::Report) => {
                 self.report(&shared, ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, state, at);
             }
-            Some(_) => shared.engine.selection_release(self.cell_at(at.0, at.1)),
+            Some(_) => {
+                shared.engine.selection_release(self.cell_at(at.0, at.1));
+                self.copy_primary();
+            }
             None => {}
         }
+    }
+
+    /// Put the selection on PRIMARY; without one, PRIMARY keeps its text.
+    pub(super) fn copy_primary(&self) {
+        let text = self.shared().and_then(|s| s.engine.selection_text());
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            self.primary_clipboard().set_text(&text);
+        }
+    }
+
+    /// Middle button down: paste PRIMARY, bracketed when the program
+    /// enabled mode 2004, unless the program tracks the mouse.
+    fn paste_primary(&self, state: gdk::ModifierType) {
+        let Some(shared) = self.shared() else { return };
+        if route(shared.engine.mouse_modes(), state, false) != Route::Local {
+            return;
+        }
+        let clipboard = self.primary_clipboard();
+        let view = self.downgrade();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(Some(text)) = clipboard.read_text_future().await else {
+                return;
+            };
+            if let Some(view) = view.upgrade() {
+                if let Some(shared) = view.shared() {
+                    shared.input(shared.engine.encode_paste(&text));
+                    view.queue_draw();
+                }
+            }
+        });
     }
 
     /// The pointer moved to `at` with no drag in progress: motion for a
@@ -1224,6 +1269,7 @@ mod ghostty_display {
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
         search_highlight(&backend, &view);
+        primary_selection(&backend, &view, &mut rx);
         window.close();
 
         // The factory follows the installed preference; VTE is the default.
@@ -1392,6 +1438,96 @@ mod ghostty_display {
                 assert!(inked(x..x + 1, y..y + 1), "no line in cell {col}");
             }
         }
+    }
+
+    /// Double and triple clicks select a word and a line, a finished
+    /// selection reaches PRIMARY, and a middle click pastes it unless the
+    /// program tracks the mouse.
+    fn primary_selection(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let none = gdk::ModifierType::empty();
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let (cell_w, cell_h) = view.cell_size();
+        let at = |col: i32, row: i32| {
+            (
+                f64::from(col * cell_w + cell_w / 2),
+                f64::from(row * cell_h + cell_h / 2),
+            )
+        };
+        let click = |state, time, col| {
+            view.press(state, time, at(col, 0));
+            view.release(state, at(col, 0));
+        };
+        while rx.try_recv().is_ok() {}
+        let context = glib::MainContext::default();
+        let primary = || {
+            let read = view.primary_clipboard().read_text_future();
+            context.block_on(read).unwrap().map(String::from)
+        };
+        let mut pasted = |state| {
+            view.paste_primary(state);
+            let mut sent = Vec::new();
+            for _ in 0..100 {
+                while context.iteration(false) {}
+                while let Ok(event) = rx.try_recv() {
+                    if let TerminalEvent::DataOut(bytes) = event {
+                        sent.extend(bytes);
+                    }
+                }
+                if !sent.is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            sent
+        };
+
+        backend.reset();
+        backend.write(b"alpha beta gamma");
+        view.primary_clipboard().set_text("before");
+        click(none, 10_000, 7);
+        assert_eq!(
+            primary().as_deref(),
+            Some("before"),
+            "a click selects nothing"
+        );
+        click(none, 10_100, 7);
+        assert_eq!(backend.selected_text().as_deref(), Some("beta"));
+        assert_eq!(primary().as_deref(), Some("beta"));
+        click(none, 10_200, 7);
+        assert_eq!(primary().as_deref(), Some("alpha beta gamma"));
+
+        // A drag reaches PRIMARY on release, not along the way.
+        view.primary_clipboard().set_text("before");
+        view.press(none, 20_000, at(0, 0));
+        view.drag_to(none, at(4, 0));
+        assert_eq!(primary().as_deref(), Some("before"));
+        view.release(none, at(4, 0));
+        assert!(primary().is_some_and(|text| text.starts_with("alph")));
+
+        backend.select_all();
+        assert!(primary().is_some_and(|text| text.contains("alpha beta gamma")));
+
+        view.primary_clipboard().set_text("a\nb");
+        assert_eq!(pasted(none), b"a\rb");
+        backend.write(b"\x1b[?2004h");
+        assert_eq!(pasted(none), b"\x1b[200~a\nb\x1b[201~");
+        backend.write(b"\x1b[?2004l\x1b[?1000h");
+        assert_eq!(pasted(none), b"", "the program owns the mouse");
+        assert_eq!(pasted(shift), b"a\rb", "Shift keeps it local");
+
+        // A reported press ends a click sequence, and Shift still selects.
+        click(shift, 30_000, 7);
+        click(none, 30_100, 7);
+        click(shift, 30_200, 7);
+        assert_eq!(backend.selected_text(), None);
+        click(shift, 30_300, 7);
+        assert_eq!(backend.selected_text().as_deref(), Some("beta"));
+        backend.write(b"\x1b[?1000l");
+        while rx.try_recv().is_ok() {}
     }
 
     /// Search lights its matches and the current one apart, under the
