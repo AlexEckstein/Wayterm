@@ -83,6 +83,8 @@ typedef struct {
   uint8_t has_bg;        /* 0 = default background */
   uint16_t grapheme_len; /* codepoints in the cluster, base included:
                             0 = empty, 1 = just `codepoint` */
+  uint8_t wraps;         /* on a row's last cell: the row soft-wraps into
+                            the next */
   uint32_t grapheme;     /* with grapheme_len > 1: where the whole cluster
                             starts in the snapshot's grapheme buffer */
 } WtCell;
@@ -906,6 +908,7 @@ size_t wt_ghostty_cell_grapheme_offset(void) {
 size_t wt_ghostty_cell_grapheme_len_offset(void) {
   return offsetof(WtCell, grapheme_len);
 }
+size_t wt_ghostty_cell_wraps_offset(void) { return offsetof(WtCell, wraps); }
 
 static void rgb(uint8_t out[3], GhosttyColorRgb c) {
   out[0] = c.r;
@@ -1025,6 +1028,15 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
       if (selected) cell->flags |= WT_CELL_SELECTED;
       x++;
     }
+    GhosttyRow row;
+    bool wraps = false;
+    if (cols > 0 &&
+        ghostty_render_state_row_get(g->rows, GHOSTTY_RENDER_STATE_ROW_DATA_RAW,
+                                     &row) == GHOSTTY_SUCCESS &&
+        ghostty_row_get(row, GHOSTTY_ROW_DATA_WRAP, &wraps) ==
+            GHOSTTY_SUCCESS &&
+        wraps)
+      cells[y * cols + cols - 1].wraps = 1;
     y++;
   }
   *graphemes_len = used;
