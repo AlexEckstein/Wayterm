@@ -1,8 +1,8 @@
 //! Raw bindings to `shim.c`, the narrow C layer over libghostty-vt; use
 //! [`Engine`](super::engine::Engine) instead of calling these directly.
 //! The structs mirror `WtCell`/`WtFrame`/`WtSpan` there; the unit tests
-//! check the sizes, and where the cell's grapheme fields sit, against the
-//! C compiler's.
+//! check the sizes, and where the cell's grapheme and underline fields
+//! sit, against the C compiler's.
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -24,12 +24,19 @@ pub const EFFECT_PWD: c_int = 4;
 
 pub const CELL_BOLD: u8 = 1 << 0;
 pub const CELL_ITALIC: u8 = 1 << 1;
-pub const CELL_UNDERLINE: u8 = 1 << 2;
 pub const CELL_STRIKE: u8 = 1 << 3;
 pub const CELL_INVERSE: u8 = 1 << 4;
 pub const CELL_SELECTED: u8 = 1 << 5;
 pub const CELL_INVISIBLE: u8 = 1 << 6;
 pub const CELL_FAINT: u8 = 1 << 7;
+
+/// `WtCell::underline`: libghostty-vt's `GHOSTTY_SGR_UNDERLINE_*` values.
+pub const UNDERLINE_NONE: u8 = 0;
+pub const UNDERLINE_SINGLE: u8 = 1;
+pub const UNDERLINE_DOUBLE: u8 = 2;
+pub const UNDERLINE_CURLY: u8 = 3;
+pub const UNDERLINE_DOTTED: u8 = 4;
+pub const UNDERLINE_DASHED: u8 = 5;
 
 pub const MOD_SHIFT: u32 = 1 << 0;
 pub const MOD_CTRL: u32 = 1 << 1;
@@ -53,9 +60,14 @@ pub struct WtCell {
     pub codepoint: u32,
     pub fg: [u8; 3],
     pub bg: [u8; 3],
+    pub underline_rgb: [u8; 3],
     pub flags: u8,
     /// 0 = the default background.
     pub has_bg: u8,
+    /// 0 = the line takes the text color.
+    pub underline_has_rgb: u8,
+    /// `UNDERLINE_*`.
+    pub underline: u8,
     /// Codepoints in the cluster, base included: 0 = empty, 1 = just
     /// `codepoint`.
     pub grapheme_len: u16,
@@ -249,4 +261,7 @@ extern "C" {
     pub fn wt_ghostty_span_size() -> usize;
     pub fn wt_ghostty_cell_grapheme_offset() -> usize;
     pub fn wt_ghostty_cell_grapheme_len_offset() -> usize;
+    pub fn wt_ghostty_cell_underline_offset() -> usize;
+    pub fn wt_ghostty_cell_underline_rgb_offset() -> usize;
+    pub fn wt_ghostty_cell_underline_has_rgb_offset() -> usize;
 }

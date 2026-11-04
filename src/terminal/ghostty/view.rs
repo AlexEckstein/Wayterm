@@ -640,11 +640,11 @@ impl GhosttyView {
                     &baseline,
                 );
                 let width = (col - start) as f32 * cw;
-                for (flag, (top, thickness)) in [
-                    (ffi::CELL_UNDERLINE, metrics.underline),
-                    (ffi::CELL_STRIKE, metrics.strike),
+                for (drawn, (top, thickness)) in [
+                    (style.underline != ffi::UNDERLINE_NONE, metrics.underline),
+                    (style.flags & ffi::CELL_STRIKE != 0, metrics.strike),
                 ] {
-                    if style.flags & flag != 0 {
+                    if drawn {
                         let line = graphene::Rect::new(x, y + top, width, thickness);
                         snapshot.append_color(&color, &line);
                     }
@@ -790,15 +790,13 @@ struct Painted<'a> {
     /// `None` = the frame background already painted underneath.
     bg: Option<[u8; 3]>,
     flags: u8,
+    /// `ffi::UNDERLINE_*`.
+    underline: u8,
 }
 
 /// Flags that change how text is drawn (not just its colors).
-const TEXT_FLAGS: u8 = ffi::CELL_BOLD
-    | ffi::CELL_ITALIC
-    | ffi::CELL_UNDERLINE
-    | ffi::CELL_STRIKE
-    | ffi::CELL_FAINT
-    | ffi::CELL_INVISIBLE;
+const TEXT_FLAGS: u8 =
+    ffi::CELL_BOLD | ffi::CELL_ITALIC | ffi::CELL_STRIKE | ffi::CELL_FAINT | ffi::CELL_INVISIBLE;
 
 impl<'a> Painted<'a> {
     fn new(info: &FrameInfo, cell: &GridCell, cluster: &'a [u32], cursor: bool) -> Self {
@@ -819,6 +817,7 @@ impl<'a> Painted<'a> {
             fg,
             bg,
             flags: cell.flags & TEXT_FLAGS,
+            underline: cell.underline,
         }
     }
 
@@ -837,7 +836,7 @@ impl<'a> Painted<'a> {
     }
 
     fn same_style(&self, other: &Self) -> bool {
-        self.fg == other.fg && self.flags == other.flags
+        self.fg == other.fg && self.flags == other.flags && self.underline == other.underline
     }
 
     fn font(&self, base: &pango::FontDescription) -> pango::FontDescription {
