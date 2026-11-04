@@ -528,19 +528,7 @@ impl GhosttyView {
         let marks = search_marks(&shared.engine.search_spans(), cols, rows);
         for row in 0..rows {
             let y = row as f32 * ch;
-            let cells: Vec<Painted> = (0..cols)
-                .filter_map(|col| frame.cell(row, col).map(|cell| (col, cell)))
-                .map(|(col, cell)| {
-                    let cursor = is_cursor(&info, row, col);
-                    let painted = Painted::new(&info, cell, frame.grapheme(row, col), cursor);
-                    match marks.get(row * cols + col) {
-                        Some(&Some(current)) if !cursor && cell.flags & ffi::CELL_SELECTED == 0 => {
-                            painted.searched(current)
-                        }
-                        _ => painted,
-                    }
-                })
-                .collect();
+            let cells = painted_row(&frame, row, &marks);
 
             // Backgrounds: one rectangle per run of equal, non-default color.
             let mut col = 0;
@@ -672,14 +660,23 @@ fn run_text(cells: &[Painted]) -> (String, Vec<usize>) {
     (text, columns)
 }
 
-/// One viewport row's cells as painted.
-fn painted_row(frame: &Frame, row: usize) -> Vec<Painted<'_>> {
+/// One viewport row's cells as painted, search marks included: per cell,
+/// `Some(current)` lights it for the search, the current match apart, and
+/// the selection and the cursor still draw on top.
+fn painted_row<'a>(frame: &'a Frame, row: usize, marks: &[Option<bool>]) -> Vec<Painted<'a>> {
     let info = &frame.info;
-    (0..usize::from(info.cols))
+    let cols = usize::from(info.cols);
+    (0..cols)
         .filter_map(|col| frame.cell(row, col).map(|cell| (col, cell)))
         .map(|(col, cell)| {
             let cursor = is_cursor(info, row, col);
-            Painted::new(info, cell, frame.grapheme(row, col), cursor)
+            let painted = Painted::new(info, cell, frame.grapheme(row, col), cursor);
+            match marks.get(row * cols + col) {
+                Some(&Some(current)) if !cursor && cell.flags & ffi::CELL_SELECTED == 0 => {
+                    painted.searched(current)
+                }
+                _ => painted,
+            }
         })
         .collect()
 }
@@ -1034,7 +1031,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn search_spans_mark_their_cells() {
         let span = |row, start, end, current| Span {
             row,
@@ -1073,7 +1069,7 @@ mod tests {
         engine.write(format!("\x1b[?2027hx{family}e\u{301}y").as_bytes());
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let (text, columns) = run_text(&painted_row(&frame, 0)[..5]);
+        let (text, columns) = run_text(&painted_row(&frame, 0, &[])[..5]);
         // The family's tail is a space, so é and y keep their columns.
         let cells = [("x", 0), (family, 1), (" ", 2), ("e\u{301}", 3), ("y", 4)];
         assert_eq!(text, cells.map(|(cluster, _)| cluster).concat());
@@ -1458,7 +1454,7 @@ mod ghostty_display {
         assert!(view.shared().unwrap().engine.snapshot(&mut frame));
         // Each glyph of a row's first four cells: (glyph, column, x).
         let shaped = |row: usize| {
-            let (text, columns) = run_text(&painted_row(&frame, row)[..4]);
+            let (text, columns) = run_text(&painted_row(&frame, row, &[])[..4]);
             let mut glyphs = Vec::new();
             view.shape(&text, &columns, &view.font(), |_, string, columns| {
                 for (glyph, &col) in string.glyph_info().iter().zip(columns) {
