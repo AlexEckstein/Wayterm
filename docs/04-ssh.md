@@ -180,9 +180,9 @@ and run the target's SSH session over that stream.
 - The jump hop comes from the supervisor like any connection. The target
   connection is never pooled — the pool key describes a TCP endpoint, not
   a connection backed by a jump channel — and the tab holds only the
-  target. Nothing holds the jump hop's `Arc` once the dial returns, so the
-  supervisor's monitor releases the bastion like any unused connection
-  (§Limitations).
+  target. The target holds the jump hop's `Arc` for its whole life, so the
+  supervisor's monitor releases the bastion only after the last target
+  over it is dropped.
 - No SFTP task runs over a jumped connection; the sidebar says so instead
   of attaching.
 
@@ -190,7 +190,8 @@ and run the target's SSH session over that stream.
 whose direct-tcpip channel the jump hop refuses is reached through
 `ssh -W target:port [user@]jump -o BatchMode=yes` as the stream (OpenSSH
 never prompts on a tty Wayterm does not own). The child carries no secrets
-and is killed when the connection drops. Trust note: on that hop
+and is killed when the connection drops. The stream does not use the jump
+hop's connection, so the target does not hold it. Trust note: on that hop
 OpenSSH — not Wayterm — verifies the host key and authenticates (its
 `known_hosts`, agent and config); the target hop is still verified and
 authenticated by Wayterm.
@@ -258,13 +259,6 @@ Re-verify these when bumping a dependency; these APIs have moved before.
 - Only Local forwards: Remote (`ssh -R`) and Dynamic (SOCKS, `ssh -D`)
   rules can be stored and are shown marked, but never start. No agent or
   X11 forwarding.
-- **A jumped session does not keep its bastion alive.** After the dial,
-  only the supervisor's pool references the jump hop, so its monitor
-  disconnects it within about 250 ms — closing the direct-tcpip channel
-  the target runs over — unless another consumer (a direct tab to the
-  same host and user) holds it. The `jump_sshd` suite holds the jump
-  connection itself, so it does not exercise this path. Read from the
-  code, not observed in a running app.
 - Jump depth is one hop. Jumped connections are not deduplicated (two tabs
   to the same target through the same bastion open two target
   connections), and have no SFTP sidebar.
