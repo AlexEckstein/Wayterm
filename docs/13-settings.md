@@ -55,9 +55,9 @@ inserts 28 informational hotkey rows (doc 11 §Persistence).
 |---|---|---|
 | `default_backend` | `vte` | terminal backend for new tabs (doc 02 §Backend selection) |
 | `default_color_scheme` | `System` | `System`, `Light` or `Dark` (doc 02 §Color schemes) |
-| `default_font_family` / `default_font_size` | `Monospace` / `12.0` | not applied (doc 02 §Limitations) |
-| `default_opacity` | `1.0` | not applied |
-| `scrollback_limit` | `10000` | not applied |
+| `default_font_family` / `default_font_size` | `Monospace` / `12.0` | terminal font, in points, for sessions without their own (doc 02 §Font, opacity and scrollback) |
+| `default_opacity` | `1.0` | terminal background opacity, 0–1, for sessions without their own (doc 02 §Opacity) |
+| `scrollback_limit` | `10000` | lines each terminal keeps, 0 for none |
 | `confirm_close` | `1` | ask before closing a live tab |
 | `reconnect_on_drop` | `1` | reconnect automatically vs ask each attempt |
 | `tmux_default` | `0` | not read |
@@ -102,7 +102,7 @@ xdg-desktop-portal's `color-scheme`, read at start and followed through
 
 - `tmux_default` is seeded but never read: new sessions start with tmux
   off.
-- The font, opacity and scrollback rows are not applied (doc 02
-  §Limitations).
-- The global `host_key_policy` has no control in the window; it can only
-  be changed in the database.
+- The font, opacity and scrollback rows and the global `host_key_policy`
+  have no control in the window; they can only be changed in the
+  database. A font, opacity or scrollback change made that way reaches
+  tabs at the next start, or sooner if a General page control saves.

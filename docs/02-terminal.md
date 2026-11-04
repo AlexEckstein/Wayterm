@@ -12,7 +12,8 @@ Two kinds of backend fit behind it:
 
 Code: `src/terminal/` (backends, color schemes), `src/backpressure.rs`
 (the never-blocking sender), `src/ui/tabs/terminal_actions.rs` (copy, paste,
-search), `src/ui/appearance.rs` (applying color schemes),
+search), `src/ui/appearance.rs` (applying color schemes, fonts, opacity
+and scrollback), `src/terminal/defaults.rs` (resolving the last three),
 `src/ui/translucency.rs` (the window under a translucent terminal).
 
 ## The trait
@@ -194,6 +195,23 @@ when the global row changes (Settings' "Default color scheme") or the
 desktop theme does. Both backends apply it (§VteBackend,
 §GhosttyBackend). The window chrome follows the same preference (doc 13
 §Window theme).
+
+## Font, opacity and scrollback
+
+`src/terminal/defaults.rs` is display-free. A tab's font family, font size
+and opacity each resolve from its session's column, else the global row
+(`default_font_family`, `default_font_size`, `default_opacity`), else the
+seed value (doc 13 §Settings rows). Scrollback is global only:
+`scrollback_limit`, in lines, 0 for none. As with color schemes, an unusable
+value falls through to the next level: a blank family, a font size outside
+0–512 points, or a number that does not parse.
+
+`ui::appearance` applies them when a tab's terminal is created, before its
+widget is shown, so the first grid is measured in the right font. The rows
+are installed at startup and whenever the General settings page saves
+(`install_terminal_defaults`); a change re-applies them to every open
+terminal, and an unchanged install touches nothing. A desktop theme switch
+does not re-apply them.
 
 ## Opacity
 
@@ -437,12 +455,10 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 
 ## Limitations
 
-- **Font, opacity and scrollback settings are not applied.** The
-  `default_font_family`, `default_font_size`, `default_opacity` and
-  `scrollback_limit` rows and the per-session `font_family`, `font_size`
-  and `opacity` columns are stored, but no tab reads them: terminals use
-  the backend's own defaults. Both backends implement `set_opacity`
-  (§Opacity), but nothing calls it yet.
+- **No control sets font, opacity or scrollback.** Tabs apply the rows
+  and columns (§Font, opacity and scrollback), but neither the Settings
+  window nor the session dialog edits them (doc 13 §Limitations, doc 09
+  §Limitations).
 - **Opacity needs a compositor.** Every Wayland session has one; on X11
   without a compositing manager the cleared areas draw dark instead of
   showing the desktop.
@@ -467,16 +483,15 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   on VTE, and matching is case-exact (libghostty-vt folds ASCII case, so
   a match is read back and compared as typed). A match is not the
   selection, so Copy after a search copies nothing new, where VTE copies
-  the match. Only what the terminal keeps can be found: libghostty-vt's
-  byte limit on scrollback, which `set_scrollback_limit` does not
-  change, holds a few hundred lines at 120 columns.
+  the match.
+- **Ghostty scrollback:** `set_scrollback_limit` drops libghostty-vt's
+  byte limit, so lines alone bound it, but it prunes whole pages: what is
+  kept lands within a page of the limit, often just under it (a page is
+  387 rows at 120 columns, and a limit below one page keeps part of a
+  page). Only 0 is exact.
 - **Ghostty text:** box-drawing and block characters come from the font,
   so a line of them shows faint seams wherever the cell is wider than
-  the glyph, as it is at the default font. Once font settings apply
-  (first item above), three more gaps show: the cell is measured from
+  the glyph, as it is at the default font. The cell is measured from
   "M" alone, so a proportional font, or any glyph wider than "M",
-  overlaps the next cell; ligatures are drawn as the font shapes them,
-  at their first cell, and nothing turns them off; and a font change
-  that keeps the grid's columns and rows does not give libghostty-vt the
-  new cell size in pixels, so the size reports a program can ask for
-  stay stale until the grid next changes.
+  overlaps the next cell. Ligatures are drawn as the font shapes them,
+  at their first cell, and nothing turns them off.
