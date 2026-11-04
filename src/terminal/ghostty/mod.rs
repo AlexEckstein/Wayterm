@@ -3,10 +3,11 @@
 //!
 //! - [`ffi`] declares `shim.c`, a narrow C layer over the pinned
 //!   libghostty-vt C API (doc 02 §libghostty-vt pin).
-//! - [`engine::Engine`] owns one terminal safely and needs no display.
+//! - [`engine::Engine`] owns one terminal, and its search, safely and needs
+//!   no display.
 //! - [`view::GhosttyView`] is the GTK4 widget that paints the engine's
-//!   grid snapshot and turns keys, mouse, wheel and focus events into
-//!   input or local selection and scrolling.
+//!   grid snapshot, lights search matches, and turns keys, mouse, wheel
+//!   and focus events into input or local selection and scrolling.
 //! - [`GhosttyBackend`] puts them behind [`TerminalBackend`].
 
 pub mod engine;
@@ -147,9 +148,9 @@ impl TerminalBackend for GhosttyBackend {
 
     fn features(&self) -> TerminalFeatures {
         TerminalFeatures {
-            search: false,
+            search: true,
             color_schemes: true,
-            scrollback_search: false,
+            scrollback_search: true,
             url_detection: false,
             sixel_graphics: false,
             // libghostty-vt parses Kitty graphics; the widget draws no
@@ -214,8 +215,13 @@ impl TerminalBackend for GhosttyBackend {
         self.reset();
     }
 
-    /// A no-op: `features().search` is false, so the UI hides it.
-    fn search(&self, _text: &str, _reverse: bool) {}
+    /// Case-sensitive, through the scrollback, wrapping around; the match
+    /// is highlighted and scrolled into view, the selection left alone. An
+    /// empty query clears the highlight.
+    fn search(&self, text: &str, reverse: bool) {
+        self.engine().search(text, reverse);
+        self.view.queue_draw();
+    }
 
     fn scrollback_text(&self) -> Option<String> {
         self.engine().screen_text()

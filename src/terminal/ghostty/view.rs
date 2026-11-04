@@ -6,7 +6,9 @@
 //! does not place: each goes at its own cell, since the font's advances
 //! are rarely the whole-pixel cell width and would drift off the grid.
 //! A cell's whole grapheme cluster is shaped together and sits at that
-//! cell. Underline and strikethrough are drawn as rectangles.
+//! cell. Underline and strikethrough are drawn as rectangles. Search
+//! matches are lit in Ghostty's colors, the current one apart, under the
+//! selection and the cursor.
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
@@ -15,7 +17,8 @@
 //! tracks the mouse, as arrow keys for the wheel under alternate scroll,
 //! else local, where a primary-button drag selects and the wheel scrolls
 //! the viewport three rows per notch (smooth steps accumulate). Shift
-//! keeps them local. Focus changes are reported when the program asks.
+//! keeps them local. Focus changes are reported when the program asks. A
+//! press or a typed key ends the search, as it clears the selection.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -26,7 +29,7 @@ use gtk4::subclass::prelude::*;
 use gtk4::{gdk, glib, graphene, gsk, pango};
 
 use super::engine::{
-    push_cluster, Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll,
+    push_cluster, Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll, Span,
 };
 use super::ffi;
 use super::Shared;
@@ -39,6 +42,11 @@ const WHEEL_ROWS: f64 = 3.0;
 /// The arrow keysyms alternate scroll sends.
 const ARROW_UP: u32 = 0xff52;
 const ARROW_DOWN: u32 = 0xff54;
+/// Search highlight colors, Ghostty's defaults: dark text on yellow, on
+/// orange for the current match.
+const SEARCH_FG: [u8; 3] = [0, 0, 0];
+const SEARCH_BG: [u8; 3] = [0xff, 0xe0, 0x82];
+const SEARCH_CURRENT_BG: [u8; 3] = [0xf2, 0xa5, 0x7e];
 
 mod imp {
     use super::*;
@@ -329,6 +337,7 @@ impl GhosttyView {
         imp.drag.set(Some(route));
         imp.pointer.set(at);
         shared.engine.clear_selection();
+        shared.engine.clear_search();
         if route == Route::Report {
             imp.anchor.set(None);
             self.report(&shared, ffi::MOUSE_PRESS, ffi::BUTTON_LEFT, state, at);
@@ -494,6 +503,7 @@ impl GhosttyView {
             return false;
         }
         shared.engine.clear_selection();
+        shared.engine.clear_search();
         shared.input(bytes);
         self.queue_draw();
         true
@@ -514,9 +524,11 @@ impl GhosttyView {
         );
 
         let font = self.font();
-        for row in 0..usize::from(info.rows) {
+        let (cols, rows) = (usize::from(info.cols), usize::from(info.rows));
+        let marks = search_marks(&shared.engine.search_spans(), cols, rows);
+        for row in 0..rows {
             let y = row as f32 * ch;
-            let cells = painted_row(&frame, row);
+            let cells = painted_row(&frame, row, &marks);
 
             // Backgrounds: one rectangle per run of equal, non-default color.
             let mut col = 0;
@@ -648,14 +660,23 @@ fn run_text(cells: &[Painted]) -> (String, Vec<usize>) {
     (text, columns)
 }
 
-/// One viewport row's cells as painted.
-fn painted_row(frame: &Frame, row: usize) -> Vec<Painted<'_>> {
+/// One viewport row's cells as painted, search marks included: per cell,
+/// `Some(current)` lights it for the search, the current match apart, and
+/// the selection and the cursor still draw on top.
+fn painted_row<'a>(frame: &'a Frame, row: usize, marks: &[Option<bool>]) -> Vec<Painted<'a>> {
     let info = &frame.info;
-    (0..usize::from(info.cols))
+    let cols = usize::from(info.cols);
+    (0..cols)
         .filter_map(|col| frame.cell(row, col).map(|cell| (col, cell)))
         .map(|(col, cell)| {
             let cursor = is_cursor(info, row, col);
-            Painted::new(info, cell, frame.grapheme(row, col), cursor)
+            let painted = Painted::new(info, cell, frame.grapheme(row, col), cursor);
+            match marks.get(row * cols + col) {
+                Some(&Some(current)) if !cursor && cell.flags & ffi::CELL_SELECTED == 0 => {
+                    painted.searched(current)
+                }
+                _ => painted,
+            }
         })
         .collect()
 }
@@ -732,6 +753,20 @@ impl<'a> Painted<'a> {
             fg,
             bg,
             flags: cell.flags & TEXT_FLAGS,
+        }
+    }
+
+    /// Search highlight colors; `current` for the current match.
+    fn searched(self, current: bool) -> Self {
+        let bg = if current {
+            SEARCH_CURRENT_BG
+        } else {
+            SEARCH_BG
+        };
+        Self {
+            fg: SEARCH_FG,
+            bg: Some(bg),
+            ..self
         }
     }
 
@@ -824,6 +859,24 @@ fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<S
         gdk::Key::End => Some(Scroll::Bottom),
         _ => None,
     }
+}
+
+/// Per viewport cell, row-major: `Some(current)` where a search match is
+/// lit. Empty without spans.
+fn search_marks(spans: &[Span], cols: usize, rows: usize) -> Vec<Option<bool>> {
+    if spans.is_empty() {
+        return Vec::new();
+    }
+    let mut marks = vec![None; cols * rows];
+    for span in spans.iter().filter(|span| usize::from(span.row) < rows) {
+        let line = usize::from(span.row) * cols;
+        let end = usize::from(span.end).min(cols);
+        let start = usize::from(span.start).min(end);
+        for mark in &mut marks[line + start..line + end] {
+            *mark = Some(span.current != 0 || mark.unwrap_or(false));
+        }
+    }
+    marks
 }
 
 fn is_cursor(info: &FrameInfo, row: usize, col: usize) -> bool {
@@ -978,6 +1031,37 @@ mod tests {
     }
 
     #[test]
+    fn search_spans_mark_their_cells() {
+        let span = |row, start, end, current| Span {
+            row,
+            start,
+            end,
+            current,
+        };
+        assert_eq!(search_marks(&[], 4, 2), []);
+        let spans = [
+            span(0, 1, 3, 0),
+            span(1, 0, 2, 1),
+            // Clipped to the grid; off it, or empty, nothing.
+            span(1, 3, 9, 0),
+            span(5, 0, 4, 1),
+            span(0, 3, 2, 1),
+        ];
+        let (lit, current) = (Some(false), Some(true));
+        assert_eq!(
+            search_marks(&spans, 4, 2),
+            [None, lit, lit, None, current, current, None, lit]
+        );
+        // The current match wins where matches overlap, in either order.
+        for spans in [
+            [span(0, 0, 2, 0), span(0, 1, 2, 1)],
+            [span(0, 1, 2, 1), span(0, 0, 2, 0)],
+        ] {
+            assert_eq!(search_marks(&spans, 2, 1), [lit, current]);
+        }
+    }
+
+    #[test]
     fn a_run_carries_each_cells_whole_cluster_at_its_column() {
         let engine = super::super::engine::Engine::new(10, 1).expect("engine");
         let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
@@ -985,7 +1069,7 @@ mod tests {
         engine.write(format!("\x1b[?2027hx{family}e\u{301}y").as_bytes());
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let (text, columns) = run_text(&painted_row(&frame, 0)[..5]);
+        let (text, columns) = run_text(&painted_row(&frame, 0, &[])[..5]);
         // The family's tail is a space, so é and y keep their columns.
         let cells = [("x", 0), (family, 1), (" ", 2), ("e\u{301}", 3), ("y", 4)];
         assert_eq!(text, cells.map(|(cluster, _)| cluster).concat());
@@ -1121,6 +1205,7 @@ mod ghostty_display {
         glyphs_on_the_grid(&backend, &view);
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
+        search_highlight(&backend, &view);
         window.close();
 
         // The factory follows the installed preference; VTE is the default.
@@ -1291,6 +1376,68 @@ mod ghostty_display {
         }
     }
 
+    /// Search lights its matches and the current one apart, under the
+    /// selection; an empty query or a press puts them out. The popover the
+    /// search actions open sits on this widget as it does on VTE's.
+    fn search_highlight(backend: &GhosttyBackend, view: &GhosttyView) {
+        let features = backend.features();
+        assert!(features.search && features.scrollback_search);
+        let (cw, _) = view.cell_size();
+        let cell = |col: usize| col * cw as usize + 1;
+        let background = || {
+            let at = pixels(view);
+            at(view.width() as usize - 1, view.height() as usize - 1)
+        };
+        // The cell's top left: its background, never a glyph.
+        let color = |col| pixels(view)(cell(col), 1);
+        let opaque = |[r, g, b]: [u8; 3]| [b, g, r, 255];
+
+        backend.reset();
+        backend.write(b"one two one");
+        assert_eq!(color(0), background(), "no search, no highlight");
+        backend.search("one", false);
+        assert_eq!(color(0), opaque(SEARCH_CURRENT_BG));
+        assert_eq!(color(4), background());
+        assert_eq!(color(8), opaque(SEARCH_BG));
+        // Forward again: the current match moves, the first stays lit.
+        backend.search("one", false);
+        assert_eq!(color(0), opaque(SEARCH_BG));
+        assert_eq!(color(8), opaque(SEARCH_CURRENT_BG));
+
+        let engine = || view.shared().unwrap().engine.selection_text();
+        assert!(view.shared().unwrap().engine.select((0, 0), (2, 0)));
+        assert_ne!(color(0), opaque(SEARCH_BG), "the selection is on top");
+        assert_eq!(engine().as_deref(), Some("one"));
+        view.shared().unwrap().engine.clear_selection();
+        assert_eq!(color(0), opaque(SEARCH_BG));
+
+        backend.search("", false);
+        assert_eq!(color(0), background());
+        assert_eq!(color(8), background());
+
+        backend.search("one", false);
+        assert_eq!(color(0), opaque(SEARCH_CURRENT_BG));
+        view.press(gdk::ModifierType::empty(), (1.0, 1.0));
+        view.release(gdk::ModifierType::empty(), (1.0, 1.0));
+        assert_eq!(color(0), background());
+
+        backend.search("one", false);
+        assert!(view.key(gdk::Key::a, gdk::ModifierType::empty()));
+        assert_eq!(color(0), background());
+
+        let popover = gtk4::Popover::new();
+        popover.set_child(Some(&gtk4::Entry::new()));
+        popover.set_parent(view);
+        popover.popup();
+        let context = glib::MainContext::default();
+        for _ in 0..50 {
+            context.iteration(false);
+        }
+        assert!(popover.is_visible());
+        popover.popdown();
+        popover.unparent();
+    }
+
     /// A cell's whole cluster reaches Pango: a ZWJ family shapes to other
     /// glyphs than its first emoji alone (the family glyph with an emoji
     /// font, a glyph per codepoint without one), all at the family's cell,
@@ -1307,7 +1454,7 @@ mod ghostty_display {
         assert!(view.shared().unwrap().engine.snapshot(&mut frame));
         // Each glyph of a row's first four cells: (glyph, column, x).
         let shaped = |row: usize| {
-            let (text, columns) = run_text(&painted_row(&frame, row)[..4]);
+            let (text, columns) = run_text(&painted_row(&frame, row, &[])[..4]);
             let mut glyphs = Vec::new();
             view.shape(&text, &columns, &view.font(), |_, string, columns| {
                 for (glyph, &col) in string.glyph_info().iter().zip(columns) {
@@ -1348,6 +1495,18 @@ mod ghostty_display {
     /// Paint the view now; the result tells whether any pixel in a box
     /// differs from the background.
     fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool {
+        let (width, height) = (view.width() as usize, view.height() as usize);
+        let at = pixels(view);
+        let background = at(width - 1, height - 1);
+        move |xs, ys| {
+            xs.flat_map(|x| ys.clone().map(move |y| (x, y)))
+                .any(|(x, y)| at(x, y) != background)
+        }
+    }
+
+    /// Paint the view now; the result reads one pixel, as GDK stores it:
+    /// blue, green, red, alpha.
+    fn pixels(view: &GhosttyView) -> impl Fn(usize, usize) -> [u8; 4] {
         let (width, height) = (view.width(), view.height());
         let snapshot = gtk4::Snapshot::new();
         view.paint(&snapshot);
@@ -1357,14 +1516,9 @@ mod ghostty_display {
         let stride = width as usize * 4;
         let mut pixels = vec![0; stride * height as usize];
         texture.download(&mut pixels, stride);
-        let at = move |x: usize, y: usize| -> [u8; 4] {
+        move |x, y| {
             let i = y * stride + x * 4;
             [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
-        };
-        let background = at(width as usize - 1, height as usize - 1);
-        move |xs, ys| {
-            xs.flat_map(|x| ys.clone().map(move |y| (x, y)))
-                .any(|(x, y)| at(x, y) != background)
         }
     }
 }

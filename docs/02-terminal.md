@@ -237,19 +237,21 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
 
 - **FFI.** `shim.c` wraps the C API, whose sized structs and tagged unions
   stay on the C side; `ffi.rs` declares only the shim's plain functions
-  and two flat structs (a cell, a frame), checked against the C compiler
-  by a unit test: their sizes, and where the cell's grapheme fields sit.
-  `build.rs` compiles the shim with the `cc` crate and links
-  `libghostty-vt.a` statically; nothing beyond libc is needed.
+  and three flat structs (a cell, a frame, a span of search highlight),
+  checked against the C compiler by a unit test: their sizes, and where
+  the cell's grapheme fields sit. `build.rs` compiles the shim with the
+  `cc` crate and links `libghostty-vt.a` statically; nothing beyond libc
+  is needed.
 - **`Engine`.** The safe owner of one terminal, with no display: VT
   parsing, resize with reflow, scrollback limit, viewport scrolling,
-  selection, plain-text export, key, paste, mouse and focus encoding, the
-  mouse modes a program set, and a viewport snapshot with colors
-  resolved to RGB. A snapshot cell holds its whole grapheme cluster: the
-  base codepoint, or for a longer cluster a slice of a codepoint buffer
-  that grows as needed and is reused frame to frame; the tail cell of a
-  wide character holds nothing. Effects raised while parsing — replies to
-  queries (device attributes, status reports), BEL, OSC 0/2
+  selection, search, plain-text export, key, paste, mouse and focus
+  encoding, the mouse modes a program set, and a viewport snapshot with
+  colors resolved to RGB. A snapshot cell holds its whole grapheme
+  cluster: the base codepoint, or for a longer cluster a slice of a
+  codepoint buffer that grows as needed and is reused frame to frame;
+  the tail cell of a wide character holds nothing. Effects raised while
+  parsing — replies to queries (device attributes, status reports), BEL,
+  OSC 0/2
   titles, OSC 7 directories — come back from the `write` that raised them
   and leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
   the view's directory hook instead.
@@ -294,6 +296,23 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   (pixel deltas count by cell height); a reported or arrow-key wheel
   sends one report or key per row. With mode 1004 set, keyboard focus
   entering and leaving the widget sends `CSI I` and `CSI O`.
+- **Search.** libghostty-vt's search covers the active screen and its
+  scrollback, and the shim builds VTE's behavior on it: case-sensitive,
+  with wrap-around. A new query starts from the viewport, forward from
+  its top and backward from its bottom; the same query again moves on
+  from the current match. libghostty-vt folds ASCII case, so each
+  candidate is read back and compared with the query as typed. The
+  current match is held in tracked grid refs, which follow it through
+  output, scrolling and reflow, rather than in the search's own selected
+  match, which moves one slow call per match. A match off screen is
+  scrolled to the middle of the viewport.
+
+  Every visible match is lit in Ghostty's colors, the current one in its
+  own (`search_marks` in `view.rs`), with the search caught up on each
+  frame. It only colors cells: the terminal's selection is untouched and
+  draws on top, as does the cursor. An empty query, a press, a typed key
+  or a reset ends the search; the UI never sends an empty query, so the
+  press and the key are how a highlight goes away.
 - **Backend.** Events go through the same never-blocking sender as VTE's
   (§Backpressure). `send_input` and `paste` queue `DataOut` like a key
   press, so macros work unchanged; `paste` is bracketed when the program
@@ -421,14 +440,21 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
 - **VTE:** no Kitty graphics.
-- **Ghostty:** no search, URL detection or image drawing (`features()`
-  says so, and the UI hides them); no input method or compose support;
-  only a grapheme's base codepoint is drawn; mouse reporting covers the
-  primary button and the wheel only, so middle and right clicks and
-  horizontal scrolling never reach the program; the text under the
-  cursor takes its cell's background color, since libghostty-vt has no
-  cursor text color (the scheme's matches the default background in both
-  palettes, so only a cell a program colored differs from VTE).
+- **Ghostty:** no URL detection or image drawing (`features()` says so,
+  and the UI hides them); no input method or compose support; mouse
+  reporting covers the primary button and the wheel only, so middle and
+  right clicks and horizontal scrolling never reach the program; the
+  text under the cursor takes its cell's background color, since
+  libghostty-vt has no cursor text color (the scheme's matches the
+  default background in both palettes, so only a cell a program colored
+  differs from VTE).
+- **Ghostty search:** a query is plain text, not a regular expression as
+  on VTE, and matching is case-exact (libghostty-vt folds ASCII case, so
+  a match is read back and compared as typed). A match is not the
+  selection, so Copy after a search copies nothing new, where VTE copies
+  the match. Only what the terminal keeps can be found: libghostty-vt's
+  byte limit on scrollback, which `set_scrollback_limit` does not
+  change, holds a few hundred lines at 120 columns.
 - **Ghostty text:** box-drawing and block characters come from the font,
   so a line of them shows faint seams wherever the cell is wider than
   the glyph, as it is at the default font. Once font settings apply
