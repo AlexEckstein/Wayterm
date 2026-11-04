@@ -281,17 +281,27 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
     which the terminal's modes also give its format — X10 bytes unless
     the program picked SGR (1006), UTF-8, urxvt or SGR-pixels — and which
     drops what the tracking mode does not report. A reported press
-    selects nothing. Each report is a `DataOut` chunk of its own, so
-    macro recording skips it (doc 12 §Recording).
+    selects nothing and ends any click sequence. Each report is a
+    `DataOut` chunk of its own, so macro recording skips it (doc 12
+    §Recording).
   - **Arrow keys** for the wheel on the alternate screen (1047 or 1049)
     under alternate scroll (mode 1007, on until the program resets it),
     when no tracking mode is set: Up or Down per row, in the cursor-key
     mode's form.
-  - **Local** otherwise: a primary-button drag selects, and the wheel
-    scrolls the viewport.
+  - **Local** otherwise: a primary-button drag selects, a middle click
+    pastes PRIMARY, and the wheel scrolls the viewport.
 
-  Holding Shift keeps a press, its drag and the wheel local even while
-  the program tracks the mouse. The wheel counts three rows per notch,
+  Selection is libghostty-vt's gesture: it counts clicks by the desktop's
+  double-click time and a cell's width of movement, and picks what the
+  press takes and what a drag extends by. A double click takes the word
+  under it and a triple click the logical line, wrapped rows included,
+  each then dragging by word or line. A selection reaches PRIMARY when
+  the button is released, and Select All at once; a click that selects
+  nothing leaves PRIMARY alone. A middle click pastes like the Paste
+  action, bracketed when the program enabled mode 2004.
+
+  Holding Shift keeps a press, its drag, a middle click and the wheel
+  local even while the program tracks the mouse. The wheel counts three rows per notch,
   adding up the fractional steps of high-resolution wheels and touchpads
   (pixel deltas count by cell height); a reported or arrow-key wheel
   sends one report or key per row. With mode 1004 set, keyboard focus
@@ -448,6 +458,9 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   libghostty-vt has no cursor text color (the scheme's matches the
   default background in both palettes, so only a cell a program colored
   differs from VTE).
+- **Ghostty selection:** word boundaries are libghostty-vt's defaults,
+  where `:` ends a word, so a double click takes part of a URL. A drag
+  past the top or bottom edge does not scroll the viewport.
 - **Ghostty search:** a query is plain text, not a regular expression as
   on VTE, and matching is case-exact (libghostty-vt folds ASCII case, so
   a match is read back and compared as typed). A match is not the
