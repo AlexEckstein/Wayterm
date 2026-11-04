@@ -1,11 +1,12 @@
 //! The Settings window: a sidebar of pages beside the selected one —
-//! [`general`], [`credentials`] (doc 05), Keyboard Shortcuts
+//! [`general`], [`customize`], [`credentials`] (doc 05), Keyboard Shortcuts
 //! ([`hotkeys`], doc 11), and Backup / Restore ([`backup`], doc 10). Every
 //! page saves each change at once and applies it live; there is no Apply
 //! button.
 
 pub mod backup;
 pub mod credentials;
+pub mod customize;
 pub mod general;
 pub mod hotkeys;
 
@@ -20,6 +21,7 @@ use crate::ui::widgets::set_margins;
 
 /// Stack names of the pages, in sidebar order.
 pub const GENERAL_PAGE: &str = "general";
+pub const CUSTOMIZE_PAGE: &str = "customize";
 pub const CREDENTIALS_PAGE: &str = "credentials";
 pub const SHORTCUTS_PAGE: &str = "keyboard-shortcuts";
 pub const BACKUP_PAGE: &str = "backup-restore";
@@ -89,6 +91,11 @@ fn pages(
     let stack = gtk4::Stack::new();
     stack.set_hexpand(true);
     stack.add_titled(&general::page(store.clone()), Some(GENERAL_PAGE), "General");
+    stack.add_titled(
+        &customize::page(store.clone()),
+        Some(CUSTOMIZE_PAGE),
+        "Customize",
+    );
     stack.add_titled(
         &credentials::page(store.clone()),
         Some(CREDENTIALS_PAGE),
@@ -203,9 +210,9 @@ pub(super) mod gtk_tests {
         descendants(widget, found);
     }
 
-    /// The sidebar lists General, Credentials, Keyboard Shortcuts, then
-    /// Backup / Restore, and opens on
-    /// General; each General switch shows and saves its own row.
+    /// The sidebar lists General, Customize, Credentials, Keyboard
+    /// Shortcuts, then Backup / Restore, and opens on General; each General
+    /// switch shows and saves its own row.
     pub(in crate::ui) fn pages_and_general_switches() {
         let store = Rc::new(SessionStore::in_memory().unwrap());
         store
@@ -228,6 +235,7 @@ pub(super) mod gtk_tests {
             listed,
             vec![
                 (GENERAL_PAGE.to_string(), "General".to_string()),
+                (CUSTOMIZE_PAGE.to_string(), "Customize".to_string()),
                 (CREDENTIALS_PAGE.to_string(), "Credentials".to_string()),
                 (SHORTCUTS_PAGE.to_string(), "Keyboard Shortcuts".to_string()),
                 (BACKUP_PAGE.to_string(), "Backup / Restore".to_string()),
@@ -282,15 +290,123 @@ pub(super) mod gtk_tests {
         // The color scheme drop-down: opens on the seeded System and saves
         // each pick.
         use crate::terminal::SchemeChoice;
+        let customize_page = stack.child_by_name(CUSTOMIZE_PAGE).unwrap();
         let mut dropdowns: Vec<gtk4::DropDown> = Vec::new();
-        descendants(&general, &mut dropdowns);
+        descendants(&customize_page, &mut dropdowns);
         assert_eq!(dropdowns.len(), 1);
         let dropdown = &dropdowns[0];
         let position = |choice| SchemeChoice::ALL.iter().position(|c| *c == choice).unwrap();
         assert_eq!(dropdown.selected() as usize, position(SchemeChoice::System));
         dropdown.set_selected(position(SchemeChoice::Light) as u32);
-        assert_eq!(general::color_scheme(&store), SchemeChoice::Light);
+        assert_eq!(customize::color_scheme(&store), SchemeChoice::Light);
         dropdown.set_selected(position(SchemeChoice::System) as u32);
-        assert_eq!(general::color_scheme(&store), SchemeChoice::System);
+        assert_eq!(customize::color_scheme(&store), SchemeChoice::System);
+
+        terminal_appearance_controls();
+    }
+
+    /// Spin the main loop until `done`; numeric controls save on a timer.
+    fn wait_for(done: impl Fn() -> bool) {
+        let context = gtk4::glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            while context.iteration(false) {}
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// The controls open on the stored rows without writing them, save
+    /// what they are set to, and collapse a burst into one save. The font
+    /// picker offers monospace families only.
+    fn terminal_appearance_controls() {
+        use crate::terminal::defaults::{DEFAULT_OPACITY_SETTING, SCROLLBACK_LIMIT_SETTING};
+
+        let store = Rc::new(SessionStore::in_memory().unwrap());
+        store.set_setting(DEFAULT_OPACITY_SETTING, "0.8").unwrap();
+        let page = customize::page(store.clone());
+
+        let mut fonts: Vec<gtk4::FontDialogButton> = Vec::new();
+        descendants(&page, &mut fonts);
+        assert_eq!(fonts.len(), 1);
+        let font = &fonts[0];
+        let family = |font: &gtk4::FontDialogButton| {
+            font.font_desc()
+                .and_then(|desc| desc.family())
+                .map(|family| family.to_string())
+        };
+        assert_eq!(family(font).as_deref(), Some("Monospace"));
+
+        let filter = font.dialog().and_then(|dialog| dialog.filter()).unwrap();
+        let context = page.pango_context();
+        let families = context.list_families();
+        let named = |name: &str| families.iter().find(|family| family.name() == name);
+        let mono = named("Monospace").expect("fontconfig provides Monospace");
+        assert!(filter.match_(mono));
+        assert!(filter.match_(&mono.face(None).expect("a default face")));
+        if let Some(sans) = named("Sans") {
+            assert!(!filter.match_(sans));
+        }
+
+        let mut spins: Vec<gtk4::SpinButton> = Vec::new();
+        descendants(&page, &mut spins);
+        assert_eq!(spins.len(), 2);
+        let (size, scrollback) = (&spins[0], &spins[1]);
+        let mut scales: Vec<gtk4::Scale> = Vec::new();
+        descendants(&page, &mut scales);
+        assert_eq!(scales.len(), 1);
+        let opacity = &scales[0];
+
+        let takes_wheel = |control: &gtk4::Widget| {
+            control
+                .observe_controllers()
+                .iter::<gtk4::glib::Object>()
+                .flatten()
+                .any(|controller| controller.is::<gtk4::EventControllerScroll>())
+        };
+        assert!(!takes_wheel(size.upcast_ref()));
+        assert!(!takes_wheel(opacity.upcast_ref()));
+        assert!(!takes_wheel(scrollback.upcast_ref()));
+
+        assert_eq!(size.value(), 12.0);
+        assert_eq!(opacity.value(), 80.0);
+        assert_eq!(scrollback.value(), 10_000.0);
+
+        let row = |key: &str| store.get_setting(key).unwrap();
+        assert_eq!(row(DEFAULT_OPACITY_SETTING).as_deref(), Some("0.8"));
+
+        let mut desc = font.font_desc().unwrap();
+        desc.set_family("Hack");
+        font.set_font_desc(&desc);
+        assert_eq!(customize::terminal_defaults(&store).font_family, "Hack");
+
+        for points in [13.0, 14.0, 14.5] {
+            size.set_value(points);
+        }
+        assert_eq!(
+            customize::terminal_defaults(&store).font_size,
+            12.0,
+            "settling"
+        );
+        opacity.set_value(55.0);
+        scrollback.set_value(f64::from(u32::MAX));
+        wait_for(|| {
+            let saved = customize::terminal_defaults(&store);
+            saved.font_size == 14.5 && saved.opacity == 0.55 && saved.scrollback_lines == u32::MAX
+        });
+        assert_eq!(
+            row(SCROLLBACK_LIMIT_SETTING).as_deref(),
+            Some(u32::MAX.to_string().as_str())
+        );
+
+        // A save still waiting when the page goes away lands.
+        size.set_value(9.0);
+        drop(spins);
+        drop(scales);
+        drop(page);
+        wait_for(|| customize::terminal_defaults(&store).font_size == 9.0);
+
+        // `apply` installed these for the whole thread.
+        general::apply(&SessionStore::in_memory().unwrap());
     }
 }

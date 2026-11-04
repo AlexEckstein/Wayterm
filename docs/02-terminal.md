@@ -208,10 +208,10 @@ value falls through to the next level: a blank family, a font size outside
 
 `ui::appearance` applies them when a tab's terminal is created, before its
 widget is shown, so the first grid is measured in the right font. The rows
-are installed at startup and whenever the General settings page saves
-(`install_terminal_defaults`); a change re-applies them to every open
-terminal, and an unchanged install touches nothing. A desktop theme switch
-does not re-apply them.
+are installed at startup and whenever the General or Customize settings
+page saves (`install_terminal_defaults`); a change re-applies them to every
+open terminal, and an unchanged install touches nothing. A desktop theme
+switch does not re-apply them.
 
 ## Opacity
 
@@ -461,10 +461,10 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 
 ## Limitations
 
-- **No control sets font, opacity or scrollback.** Tabs apply the rows
-  and columns (§Font, opacity and scrollback), but neither the Settings
-  window nor the session dialog edits them (doc 13 §Limitations, doc 09
-  §Limitations).
+- **No per-session font or opacity control.** Tabs honor the session
+  columns (§Font, opacity and scrollback), but the session dialog does not
+  edit them (doc 09 §Limitations); Settings edits the global rows (doc 13
+  §Customize).
 - **Opacity needs a compositor.** Every Wayland session has one; on X11
   without a compositing manager the cleared areas draw dark instead of
   showing the desktop.
