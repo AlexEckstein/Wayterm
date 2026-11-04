@@ -31,6 +31,12 @@ pub const CELL_SELECTED: u8 = 1 << 5;
 pub const CELL_INVISIBLE: u8 = 1 << 6;
 pub const CELL_FAINT: u8 = 1 << 7;
 
+/// `GhosttyRenderStateCursorVisualStyle`, as `WtFrame` carries it.
+pub const CURSOR_BAR: u8 = 0;
+pub const CURSOR_BLOCK: u8 = 1;
+pub const CURSOR_UNDERLINE: u8 = 2;
+pub const CURSOR_BLOCK_HOLLOW: u8 = 3;
+
 pub const MOD_SHIFT: u32 = 1 << 0;
 pub const MOD_CTRL: u32 = 1 << 1;
 pub const MOD_ALT: u32 = 1 << 2;
@@ -77,6 +83,11 @@ pub struct WtFrame {
     pub bg: [u8; 3],
     pub cursor_rgb: [u8; 3],
     pub cursor_has_rgb: u8,
+    /// `CURSOR_*`.
+    pub cursor_style: u8,
+    /// Non-zero when the terminal asks for a blinking cursor (mode 12 or
+    /// a DECSCUSR blink variant).
+    pub cursor_blinking: u8,
 }
 
 /// One viewport row's run of search highlight: cells `start..end`.

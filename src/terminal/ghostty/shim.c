@@ -98,6 +98,8 @@ typedef struct {
   uint8_t bg[3];
   uint8_t cursor_rgb[3];
   uint8_t cursor_has_rgb;
+  uint8_t cursor_style; /* GhosttyRenderStateCursorVisualStyle */
+  uint8_t cursor_blinking;
 } WtFrame;
 
 /* One viewport row's run of search highlight, cells [start, end). */
@@ -945,6 +947,8 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
   frame->cursor_visible = cursor.visible && cursor.viewport_has_value;
   frame->cursor_x = cursor.viewport_x;
   frame->cursor_y = cursor.viewport_y;
+  frame->cursor_style = (uint8_t)cursor.visual_style;
+  frame->cursor_blinking = cursor.blinking;
 
   size_t cols = frame->cols;
   if (cap < cols * (size_t)frame->rows) return GHOSTTY_OUT_OF_SPACE;

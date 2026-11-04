@@ -579,6 +579,39 @@ mod tests {
         assert_eq!((frame.info.cursor_x, frame.info.cursor_y), (5, 1));
     }
 
+    /// DECSCUSR picks the shape and the blink, mode 12 the blink alone;
+    /// DECSCUSR 0 and a reset go back to a steady block.
+    #[test]
+    fn cursor_style_and_blink_follow_the_terminal() {
+        let engine = engine();
+        let cursor = || {
+            let info = frame(&engine).info;
+            (info.cursor_style, info.cursor_blinking != 0)
+        };
+        assert_eq!(cursor(), (ffi::CURSOR_BLOCK, false));
+        for (decscusr, style, blinking) in [
+            (1, ffi::CURSOR_BLOCK, true),
+            (2, ffi::CURSOR_BLOCK, false),
+            (3, ffi::CURSOR_UNDERLINE, true),
+            (4, ffi::CURSOR_UNDERLINE, false),
+            (5, ffi::CURSOR_BAR, true),
+            (6, ffi::CURSOR_BAR, false),
+        ] {
+            engine.write(format!("\x1b[{decscusr} q").as_bytes());
+            assert_eq!(cursor(), (style, blinking), "DECSCUSR {decscusr}");
+        }
+        engine.write(b"\x1b[?12h");
+        assert_eq!(cursor(), (ffi::CURSOR_BAR, true));
+        engine.write(b"\x1b[?12l");
+        assert_eq!(cursor(), (ffi::CURSOR_BAR, false));
+
+        engine.write(b"\x1b[5 q\x1b[0 q");
+        assert_eq!(cursor(), (ffi::CURSOR_BLOCK, false));
+        engine.write(b"\x1b[3 q");
+        engine.reset();
+        assert_eq!(cursor(), (ffi::CURSOR_BLOCK, false));
+    }
+
     /// A cell's cluster as a string; empty for an empty cell.
     fn cluster(frame: &Frame, row: usize, col: usize) -> String {
         frame
