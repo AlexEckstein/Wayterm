@@ -6,7 +6,8 @@
 //! does not place: each goes at its own cell, since the font's advances
 //! are rarely the whole-pixel cell width and would drift off the grid.
 //! A cell's whole grapheme cluster is shaped together and sits at that
-//! cell. Underline and strikethrough are drawn as rectangles. Search
+//! cell. Strikethrough is a rectangle; underlines run on across changes of
+//! text color, in the SGR style and underline color of their cells. Search
 //! matches are lit in Ghostty's colors, the current one apart, under the
 //! selection and the cursor.
 //!
@@ -23,6 +24,7 @@
 //! the search, as it clears the selection.
 
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::Rc;
 
 use gtk4::glib::translate::IntoGlib;
@@ -44,6 +46,9 @@ const WHEEL_ROWS: f64 = 3.0;
 /// The arrow keysyms alternate scroll sends.
 const ARROW_UP: u32 = 0xff52;
 const ARROW_DOWN: u32 = 0xff54;
+/// Lit and dark lengths of the patterned underlines, in line thicknesses.
+const DOTTED: (i32, i32) = (1, 2);
+const DASHED: (i32, i32) = (4, 2);
 /// Search highlight colors, Ghostty's defaults: dark text on yellow, on
 /// orange for the current match.
 const SEARCH_FG: [u8; 3] = [0, 0, 0];
@@ -213,6 +218,10 @@ impl GhosttyView {
             underline: line(
                 font_metrics.underline_position(),
                 font_metrics.underline_thickness(),
+            ),
+            font_underline: (
+                pixels(font_metrics.underline_position()),
+                pixels(font_metrics.underline_thickness()),
             ),
             strike: line(
                 font_metrics.strikethrough_position(),
@@ -623,12 +632,7 @@ impl GhosttyView {
                 if style.flags & ffi::CELL_INVISIBLE != 0 || text.trim().is_empty() {
                     continue;
                 }
-                let alpha = if style.flags & ffi::CELL_FAINT != 0 {
-                    0.6
-                } else {
-                    1.0
-                };
-                let color = rgba(style.fg, alpha);
+                let color = rgba(style.fg, style.alpha());
                 let x = start as f32 * cw;
                 let baseline = graphene::Point::new(x, y + metrics.baseline);
                 self.draw_glyphs(
@@ -639,17 +643,127 @@ impl GhosttyView {
                     &color,
                     &baseline,
                 );
-                let width = (col - start) as f32 * cw;
-                for (drawn, (top, thickness)) in [
-                    (style.underline != ffi::UNDERLINE_NONE, metrics.underline),
-                    (style.flags & ffi::CELL_STRIKE != 0, metrics.strike),
-                ] {
-                    if drawn {
-                        let line = graphene::Rect::new(x, y + top, width, thickness);
-                        snapshot.append_color(&color, &line);
-                    }
+                if style.flags & ffi::CELL_STRIKE != 0 {
+                    let (top, thickness) = metrics.strike;
+                    let width = (col - start) as f32 * cw;
+                    let line = graphene::Rect::new(x, y + top, width, thickness);
+                    snapshot.append_color(&color, &line);
                 }
             }
+
+            // Underlines: one per run of equal style and color, so text
+            // changing color under a line does not break it.
+            let mut col = 0;
+            while col < cells.len() {
+                let start = col;
+                let underline = cells[start].underline();
+                while col < cells.len() && cells[col].underline() == underline {
+                    col += 1;
+                }
+                if let Some((style, color)) = underline {
+                    self.draw_underline(snapshot, style, &color, start..col, y);
+                }
+            }
+        }
+    }
+
+    /// Draw an underline of `ffi::UNDERLINE_*` style under the cells
+    /// `columns` of the row at `y`.
+    fn draw_underline(
+        &self,
+        snapshot: &gtk4::Snapshot,
+        style: u8,
+        color: &gdk::RGBA,
+        columns: Range<usize>,
+        y: f32,
+    ) {
+        let cell = self.metrics().width;
+        let span = columns.start as i32 * cell..columns.end as i32 * cell;
+        match style {
+            ffi::UNDERLINE_DOUBLE => {
+                self.draw_pango_line(snapshot, pango::Underline::Double, color, span, y);
+            }
+            ffi::UNDERLINE_CURLY => self.draw_wave(snapshot, color, span, y),
+            ffi::UNDERLINE_DOTTED => self.draw_pattern(snapshot, DOTTED, color, span, y),
+            ffi::UNDERLINE_DASHED => self.draw_pattern(snapshot, DASHED, color, span, y),
+            _ => self.draw_pango_line(snapshot, pango::Underline::Single, color, span, y),
+        }
+    }
+
+    /// Draw a Pango underline across the pixels `span` of the row at `y`:
+    /// the line of a blank shaped to the span's width. The font's line is
+    /// rarely whole pixels, so it is moved and stretched onto the view's.
+    fn draw_pango_line(
+        &self,
+        snapshot: &gtk4::Snapshot,
+        underline: pango::Underline,
+        color: &gdk::RGBA,
+        span: Range<i32>,
+        y: f32,
+    ) {
+        let blank = pango::Rectangle::new(
+            0,
+            -pango::SCALE,
+            (span.end - span.start) * pango::SCALE,
+            pango::SCALE,
+        );
+        let attrs = pango::AttrList::new();
+        attrs.insert(pango::AttrFontDesc::new(&self.font()));
+        attrs.insert(pango::AttrShape::new(&blank, &blank));
+        attrs.insert(pango::AttrInt::new_underline(underline));
+        let layout = self.create_pango_layout(Some(" "));
+        layout.set_attributes(Some(&attrs));
+
+        let metrics = self.metrics();
+        let (top, thickness) = metrics.underline;
+        let (position, font_thickness) = metrics.font_underline;
+        snapshot.save();
+        snapshot.translate(&graphene::Point::new(span.start as f32, y + top));
+        snapshot.scale(1.0, thickness / font_thickness.max(f32::EPSILON));
+        snapshot.translate(&graphene::Point::new(
+            0.0,
+            position - pixels(layout.baseline()),
+        ));
+        snapshot.append_layout(&layout, color);
+        snapshot.restore();
+    }
+
+    /// Draw a wave across the pixels `span` of the row at `y`, a crest and
+    /// a trough per cell so that neighboring runs meet, down to the cell's
+    /// bottom. Not Pango's error underline: GTK draws that as round dots.
+    fn draw_wave(&self, snapshot: &gtk4::Snapshot, color: &gdk::RGBA, span: Range<i32>, y: f32) {
+        let metrics = self.metrics();
+        let (top, thickness) = metrics.underline;
+        let height = (metrics.height as f32 - top).max(3.0 * thickness);
+        let middle = y + top + height / 2.0;
+        // A curve goes half way to its control point.
+        let reach = height - thickness;
+        let cell = metrics.width as f32;
+        let path = gsk::PathBuilder::new();
+        path.move_to(span.start as f32, middle);
+        for x in span.step_by(metrics.width as usize) {
+            let x = x as f32;
+            path.quad_to(x + cell / 4.0, middle - reach, x + cell / 2.0, middle);
+            path.quad_to(x + cell * 0.75, middle + reach, x + cell, middle);
+        }
+        snapshot.append_stroke(&path.to_path(), &gsk::Stroke::new(thickness), color);
+    }
+
+    /// Draw a dotted or dashed line across the pixels `span` of the row at
+    /// `y`, Pango having neither: `on` lit and `off` dark, in thicknesses.
+    fn draw_pattern(
+        &self,
+        snapshot: &gtk4::Snapshot,
+        (on, off): (i32, i32),
+        color: &gdk::RGBA,
+        span: Range<i32>,
+        y: f32,
+    ) {
+        let (top, thickness) = self.metrics().underline;
+        let scale = thickness as i32;
+        for (x, width) in line_pieces(span.start, span.end, on * scale, off * scale) {
+            let line = graphene::Rect::new(x as f32, y + top, width as f32, thickness);
+            snapshot.append_color(color, &line);
         }
     }
 
@@ -769,15 +883,30 @@ fn pin_glyphs(columns: &[usize], advances: &[i32], cell: i32) -> Vec<i32> {
         .collect()
 }
 
+/// The lit `(x, width)` pieces of a patterned line over the pixels
+/// `start..end`: `on` lit and `off` dark, counted from the grid's left
+/// edge so a line split into runs stays in step.
+fn line_pieces(start: i32, end: i32, on: i32, off: i32) -> Vec<(i32, i32)> {
+    let period = on + off;
+    (start / period * period..end)
+        .step_by(period as usize)
+        .map(|x| (x.max(start), (x + on).min(end)))
+        .filter(|(from, to)| from < to)
+        .map(|(from, to)| (from, to - from))
+        .collect()
+}
+
 /// A cell's size in whole pixels, and where its text sits: the baseline,
 /// and the underline and strikethrough as `(top, thickness)`, in pixels
-/// down from the cell's top.
+/// down from the cell's top. `font_underline` is the font's own line, as
+/// Pango draws it: `(position, thickness)` in pixels, up from the baseline.
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
     width: i32,
     height: i32,
     baseline: f32,
     underline: (f32, f32),
+    font_underline: (f32, f32),
     strike: (f32, f32),
 }
 
@@ -792,6 +921,8 @@ struct Painted<'a> {
     flags: u8,
     /// `ffi::UNDERLINE_*`.
     underline: u8,
+    /// `None` = the line takes the text color.
+    underline_rgb: Option<[u8; 3]>,
 }
 
 /// Flags that change how text is drawn (not just its colors).
@@ -818,6 +949,7 @@ impl<'a> Painted<'a> {
             bg,
             flags: cell.flags & TEXT_FLAGS,
             underline: cell.underline,
+            underline_rgb: (cell.underline_has_rgb != 0).then_some(cell.underline_rgb),
         }
     }
 
@@ -836,7 +968,26 @@ impl<'a> Painted<'a> {
     }
 
     fn same_style(&self, other: &Self) -> bool {
-        self.fg == other.fg && self.flags == other.flags && self.underline == other.underline
+        self.fg == other.fg && self.flags == other.flags
+    }
+
+    /// Faint text and its lines are see-through.
+    fn alpha(&self) -> f32 {
+        if self.flags & ffi::CELL_FAINT != 0 {
+            0.6
+        } else {
+            1.0
+        }
+    }
+
+    /// The line to draw under this cell: its `ffi::UNDERLINE_*` style and
+    /// its color.
+    fn underline(&self) -> Option<(u8, gdk::RGBA)> {
+        let hidden = self.flags & ffi::CELL_INVISIBLE != 0;
+        (self.underline != ffi::UNDERLINE_NONE && !hidden).then(|| {
+            let color = self.underline_rgb.unwrap_or(self.fg);
+            (self.underline, rgba(color, self.alpha()))
+        })
     }
 
     fn font(&self, base: &pango::FontDescription) -> pango::FontDescription {
@@ -1145,6 +1296,59 @@ mod tests {
         assert_eq!(columns, expected);
     }
 
+    /// The line a painted cell draws: its own color, else the text's,
+    /// which search changes; nothing under hidden text.
+    #[test]
+    fn a_cell_underline_takes_its_color_and_style_from_the_cell() {
+        let engine = super::super::engine::Engine::new(10, 2).expect("engine");
+        engine.write(
+            b"\x1b[4:3;38;2;1;2;3ma\x1b[58;2;9;8;7mb\x1b[59;2mc\x1b[0;8;4md\x1b[0;58;2;9;8;7me",
+        );
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        let cells = painted_row(&frame, 0, &[]);
+        assert_eq!(
+            cells[0].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba([1, 2, 3], 1.0)))
+        );
+        assert_eq!(
+            cells[1].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba([9, 8, 7], 1.0)))
+        );
+        assert_eq!(
+            cells[2].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba([1, 2, 3], 0.6))),
+            "a faint line"
+        );
+        assert_eq!(cells[3].underline(), None, "hidden text");
+        assert_eq!(cells[4].underline(), None, "a color but no style");
+
+        let marks = [Some(true), Some(true)];
+        let cells = painted_row(&frame, 0, &marks);
+        assert_eq!(
+            cells[0].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba(SEARCH_FG, 1.0)))
+        );
+        assert_eq!(
+            cells[1].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba([9, 8, 7], 1.0)))
+        );
+    }
+
+    #[test]
+    fn line_pieces_follow_the_grid_not_the_run() {
+        assert_eq!(line_pieces(0, 7, 1, 2), [(0, 1), (3, 1), (6, 1)]);
+        // A run starting mid-pattern picks it up where it stands.
+        assert_eq!(line_pieces(4, 13, 4, 2), [(6, 4), (12, 1)]);
+        assert_eq!(line_pieces(2, 5, 4, 2), [(2, 2)]);
+        assert_eq!(line_pieces(4, 6, 4, 2), []);
+        // Split anywhere, a line comes out the same.
+        let whole = line_pieces(0, 30, 4, 2);
+        let mut halves = line_pieces(0, 12, 4, 2);
+        halves.extend(line_pieces(12, 30, 4, 2));
+        assert_eq!(whole, halves);
+    }
+
     #[test]
     fn glyphs_sit_at_their_cells_whatever_the_font_advances() {
         // 9.6-pixel glyphs on a 10-pixel grid.
@@ -1186,7 +1390,6 @@ mod ghostty_display {
         TRANSLUCENT_CLASS,
     };
     use crate::ui::translucency::gtk_tests::alpha_at;
-    use std::ops::Range;
     use tokio::sync::mpsc;
 
     /// The view paints a frame, reports its grid once allocated, and turns
@@ -1284,6 +1487,7 @@ mod ghostty_display {
         );
         mouse_routing(&backend, &view, &mut rx);
         glyphs_on_the_grid(&backend, &view);
+        underline_styles(&backend, &view);
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
         search_highlight(&backend, &view);
@@ -1456,6 +1660,121 @@ mod ghostty_display {
                 assert!(inked(x..x + 1, y..y + 1), "no line in cell {col}");
             }
         }
+    }
+
+    /// Each SGR underline style has its own shape, sharp and in its full
+    /// color: the cell's underline color when it has one, the text's
+    /// otherwise. The rows hold only blanks, so all that is lit is the line.
+    fn underline_styles(backend: &GhosttyBackend, view: &GhosttyView) {
+        const CELLS: usize = 8;
+        const RED: [u8; 4] = [0, 0, 255, 255];
+        const GREEN: [u8; 4] = [0, 255, 0, 255];
+        const BLUE: [u8; 4] = [255, 0, 0, 255];
+        let metrics = view.metrics();
+        let (cw, ch) = (metrics.width as usize, metrics.height as usize);
+        let (top, thickness) = (metrics.underline.0 as usize, metrics.underline.1 as usize);
+        let blank = " ".repeat(CELLS);
+        let red = "58;2;255;0;0";
+        let green = "38;2;0;255;0";
+        // The pixels of a row's line, from its top on, as rows of pixels.
+        let line_of = |sgr: &str| -> Vec<Vec<[u8; 4]>> {
+            backend.reset();
+            backend.write(format!("\x1b[{sgr}m{blank}\x1b[0m\r\n").as_bytes());
+            let (width, height) = (view.width() as usize, view.height() as usize);
+            let at = pixels(view);
+            let background = at(width - 1, height - 1);
+            (top..ch)
+                .map(|y| {
+                    (0..CELLS * cw)
+                        .map(|x| at(x, y))
+                        .map(|p| if p == background { [0; 4] } else { p })
+                        .collect()
+                })
+                .collect()
+        };
+        let solid = |row: &[[u8; 4]], color| row.iter().all(|&p| p == color);
+        let blank_row = |row: &[[u8; 4]]| row.iter().all(|&p| p == [0; 4]);
+        // The lengths of a row's lit stretches.
+        let stretches = |row: &[[u8; 4]]| -> Vec<usize> {
+            row.split(|&p| p == [0; 4])
+                .map(<[_]>::len)
+                .filter(|&len| len > 0)
+                .collect()
+        };
+
+        let single = line_of(&format!("4:1;{red}"));
+        assert!(solid(&single[0], RED), "{:?}", &single[0][..4]);
+        assert!(single[thickness..].iter().all(|row| blank_row(row)));
+
+        let double = line_of(&format!("4:2;{red}"));
+        assert!(solid(&double[0], RED));
+        assert!(blank_row(&double[thickness]), "the lines stay apart");
+        assert!(solid(&double[2 * thickness], RED));
+
+        // A wave: its crest moves between rows along the line, over three
+        // rows or more, and it is strong in the line's color, not a stipple.
+        let curly = line_of(&format!("4:3;{red}"));
+        let strength = |[_, g, r, _]: [u8; 4]| i32::from(r) - i32::from(g);
+        let crest = |x: usize| (0..curly.len()).max_by_key(|&y| strength(curly[y][x]));
+        let crests: std::collections::HashSet<_> = (0..CELLS * cw).filter_map(crest).collect();
+        assert!(crests.len() >= 2, "{crests:?}");
+        assert!(curly.iter().filter(|row| !blank_row(row)).count() >= 3);
+        let peak = curly.iter().flatten().map(|&p| strength(p)).max();
+        assert!(peak >= Some(160), "{peak:?}");
+        assert!(curly.iter().all(|row| !solid(row, RED)));
+        for &[b, g, r, _] in curly.iter().flatten().filter(|&&p| p != [0; 4]) {
+            assert!(r > g && r > b, "{:?}", [r, g, b]);
+        }
+
+        let dotted = line_of(&format!("4:4;{red}"));
+        assert!(stretches(&dotted[0]).iter().all(|&len| len == thickness));
+        assert!(stretches(&dotted[0]).len() > CELLS);
+        assert!(dotted[0].iter().all(|&p| p == RED || p == [0; 4]));
+        assert!(dotted[thickness..].iter().all(|row| blank_row(row)));
+
+        let dashed = line_of(&format!("4:5;{red}"));
+        let dashes = stretches(&dashed[0]);
+        assert!(dashes.len() > 1);
+        assert!(dashes[..dashes.len() - 1]
+            .iter()
+            .all(|&len| len > 2 * thickness));
+        assert!(dashed[0].iter().all(|&p| p == RED || p == [0; 4]));
+
+        // With no underline color each style is in the text color, and
+        // SGR 59 goes back to it.
+        assert!(solid(&line_of(&format!("4:1;{green}"))[0], GREEN));
+        assert!(solid(&line_of(&format!("4:2;{green}"))[0], GREEN));
+        let reset = format!("4:1;{green};{red};59");
+        assert!(solid(&line_of(&reset)[0], GREEN), "SGR 59");
+        for sgr in ["4:3", "4:4", "4:5"] {
+            let line = line_of(&format!("{sgr};{green}"));
+            for &[b, g, r, _] in line.iter().flatten().filter(|&&p| p != [0; 4]) {
+                assert!(g > r && g > b, "{sgr}: {:?}", [r, g, b]);
+            }
+        }
+
+        // Off is off, and a color alone draws nothing.
+        for sgr in ["4:3;4:0", "4:3;24", red] {
+            let line = line_of(sgr);
+            assert!(line.iter().all(|row| blank_row(row)), "{sgr}");
+        }
+
+        // Neighbors of one style split on color, and join across a change
+        // of text color: a wave runs on unbroken under a line of code.
+        backend.reset();
+        let half = " ".repeat(CELLS / 2);
+        backend.write(format!("\x1b[4:1;{red}m{half}\x1b[58;2;0;0;255m{half}\x1b[0m").as_bytes());
+        let at = pixels(view);
+        assert_eq!(at(cw, top), RED);
+        assert_eq!(at((CELLS - 1) * cw, top), BLUE);
+        let whole = line_of(&format!("4:3;{red};38;2;4;5;6m{half}\x1b[38;2;4;5;6"));
+        let split = line_of(&format!("4:3;{red};38;2;1;2;3m{half}\x1b[38;2;4;5;6"));
+        assert_eq!(whole, split);
+
+        // The line crosses text as it crosses blanks.
+        backend.reset();
+        backend.write(format!("\x1b[4:1;{red}mMMM\x1b[0m").as_bytes());
+        assert_eq!(pixels(view)(cw + cw / 2, top), RED);
     }
 
     /// Double and triple clicks select a word and a line, a finished
