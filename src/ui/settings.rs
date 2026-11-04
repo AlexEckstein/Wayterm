@@ -292,5 +292,112 @@ pub(super) mod gtk_tests {
         assert_eq!(general::color_scheme(&store), SchemeChoice::Light);
         dropdown.set_selected(position(SchemeChoice::System) as u32);
         assert_eq!(general::color_scheme(&store), SchemeChoice::System);
+
+        terminal_appearance_controls();
+    }
+
+    /// Spin the main loop until `done`; numeric controls save on a timer.
+    fn wait_for(done: impl Fn() -> bool) {
+        let context = gtk4::glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            while context.iteration(false) {}
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// The controls open on the stored rows without writing them, save
+    /// what they are set to, and collapse a burst into one save. The font
+    /// picker offers monospace families only.
+    fn terminal_appearance_controls() {
+        use crate::terminal::defaults::{DEFAULT_OPACITY_SETTING, SCROLLBACK_LIMIT_SETTING};
+
+        let store = Rc::new(SessionStore::in_memory().unwrap());
+        store.set_setting(DEFAULT_OPACITY_SETTING, "0.8").unwrap();
+        let general = general::page(store.clone());
+
+        let mut fonts: Vec<gtk4::FontDialogButton> = Vec::new();
+        descendants(&general, &mut fonts);
+        assert_eq!(fonts.len(), 1);
+        let font = &fonts[0];
+        let family = |font: &gtk4::FontDialogButton| {
+            font.font_desc()
+                .and_then(|desc| desc.family())
+                .map(|family| family.to_string())
+        };
+        assert_eq!(family(font).as_deref(), Some("Monospace"));
+
+        let filter = font.dialog().and_then(|dialog| dialog.filter()).unwrap();
+        let context = general.pango_context();
+        let families = context.list_families();
+        let named = |name: &str| families.iter().find(|family| family.name() == name);
+        let mono = named("Monospace").expect("fontconfig provides Monospace");
+        assert!(filter.match_(mono));
+        assert!(filter.match_(&mono.face(None).expect("a default face")));
+        if let Some(sans) = named("Sans") {
+            assert!(!filter.match_(sans));
+        }
+
+        let mut spins: Vec<gtk4::SpinButton> = Vec::new();
+        descendants(&general, &mut spins);
+        assert_eq!(spins.len(), 2);
+        let (size, scrollback) = (&spins[0], &spins[1]);
+        let mut scales: Vec<gtk4::Scale> = Vec::new();
+        descendants(&general, &mut scales);
+        assert_eq!(scales.len(), 1);
+        let opacity = &scales[0];
+
+        let takes_wheel = |control: &gtk4::Widget| {
+            control
+                .observe_controllers()
+                .iter::<gtk4::glib::Object>()
+                .flatten()
+                .any(|controller| controller.is::<gtk4::EventControllerScroll>())
+        };
+        assert!(!takes_wheel(size.upcast_ref()));
+        assert!(!takes_wheel(opacity.upcast_ref()));
+        assert!(!takes_wheel(scrollback.upcast_ref()));
+
+        assert_eq!(size.value(), 12.0);
+        assert_eq!(opacity.value(), 80.0);
+        assert_eq!(scrollback.value(), 10_000.0);
+
+        let row = |key: &str| store.get_setting(key).unwrap();
+        assert_eq!(row(DEFAULT_OPACITY_SETTING).as_deref(), Some("0.8"));
+
+        let mut desc = font.font_desc().unwrap();
+        desc.set_family("Hack");
+        font.set_font_desc(&desc);
+        assert_eq!(general::terminal_defaults(&store).font_family, "Hack");
+
+        for points in [13.0, 14.0, 14.5] {
+            size.set_value(points);
+        }
+        assert_eq!(
+            general::terminal_defaults(&store).font_size,
+            12.0,
+            "settling"
+        );
+        opacity.set_value(55.0);
+        scrollback.set_value(f64::from(u32::MAX));
+        wait_for(|| {
+            let saved = general::terminal_defaults(&store);
+            saved.font_size == 14.5 && saved.opacity == 0.55 && saved.scrollback_lines == u32::MAX
+        });
+        assert_eq!(
+            row(SCROLLBACK_LIMIT_SETTING).as_deref(),
+            Some(u32::MAX.to_string().as_str())
+        );
+
+        // A save still waiting when the page goes away lands.
+        size.set_value(9.0);
+        drop(spins);
+        drop(scales);
+        drop(general);
+        wait_for(|| general::terminal_defaults(&store).font_size == 9.0);
+
+        // `apply` installed these for the whole thread.
+        general::apply(&SessionStore::in_memory().unwrap());
     }
 }
