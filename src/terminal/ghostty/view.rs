@@ -64,6 +64,8 @@ mod imp {
         pub(super) metrics: Cell<Option<Metrics>>,
         /// The grid asked for by `set_size`: the natural size.
         pub(super) requested: Cell<(u16, u16)>,
+        /// The cell size the engine last got from `fit_grid`.
+        pub(super) fitted_cell: Cell<(i32, i32)>,
         /// The last grid reported as `SizeChange`, as `(cols, rows)`.
         pub(super) reported: Cell<Option<(u16, u16)>>,
         /// Wheel rows not yet scrolled; see [`super::wheel_rows`].
@@ -234,7 +236,8 @@ impl GhosttyView {
         let fit =
             |pixels: i32, cell: i32| u16::try_from((pixels / cell).max(1)).unwrap_or(u16::MAX);
         let grid = (fit(width, cell_w), fit(height, cell_h));
-        if shared.engine.size() != grid {
+        let cell_changed = self.imp().fitted_cell.replace((cell_w, cell_h)) != (cell_w, cell_h);
+        if cell_changed || shared.engine.size() != grid {
             shared.engine.resize(grid.0, grid.1, px(cell_w), px(cell_h));
         }
         if self.imp().reported.replace(Some(grid)) != Some(grid) {
@@ -1231,6 +1234,22 @@ mod ghostty_display {
         assert_eq!(alpha_at(&view, cell_w / 2, cell_h + cell_h / 2), 255);
         backend.set_opacity(1.0);
         assert!(!view.has_css_class(TRANSLUCENT_CLASS));
+
+        // A new cell size reaches the engine with the grid unchanged.
+        backend.write(b"\x1b[?2048h");
+        while rx.try_recv().is_ok() {}
+        let (cols, rows) = view.shared().unwrap().engine.size();
+        backend.set_font(&pango::FontDescription::from_string("Monospace 20"));
+        let (cell_w, cell_h) = view.cell_size();
+        let (width, height) = (i32::from(cols) * cell_w, i32::from(rows) * cell_h);
+        view.fit_grid(width, height);
+        backend.write(b"");
+        let report = format!("\x1b[48;{rows};{cols};{height};{width}t").into_bytes();
+        assert_eq!(rx.try_recv(), Ok(TerminalEvent::DataOut(report)));
+        backend.write(b"\x1b[?2048l");
+        backend.set_font(&pango::FontDescription::from_string(DEFAULT_FONT));
+        view.fit_grid(view.width(), view.height());
+        while rx.try_recv().is_ok() {}
 
         assert!(view.key(gdk::Key::a, gdk::ModifierType::empty()));
         assert_eq!(
