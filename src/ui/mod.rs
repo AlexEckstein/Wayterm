@@ -62,6 +62,7 @@ mod gtk_tests {
         super::panels::session_tree::gtk_tests::a_long_name_ellipsizes();
         super::panels::sftp_sidebar::gtk_tests::listing_renders_and_selection_drives_toolbar();
         super::panels::sftp_sidebar::gtk_tests::follow_checkbox_toggles_following();
+        super::panels::sftp_sidebar::gtk_tests::a_dropped_sidebar_is_freed();
         super::panels::side_dock::gtk_tests::icon_tabs_switch_the_panel();
         super::panels::side_dock::gtk_tests::the_panel_is_as_wide_as_its_page();
         super::panels::side_dock::gtk_tests::sftp_panel_follows_the_current_tab();
@@ -76,6 +77,7 @@ mod gtk_tests {
         super::tabs::gtk_tests::reconnect_does_not_steal_focus();
         super::tabs::gtk_tests::closing_a_tab_focuses_the_next_terminal();
         super::tabs::gtk_tests::sftp_sidebar_follows_the_shell_directory();
+        super::tabs::gtk_tests::the_sftp_session_ends_with_the_shell();
         super::tabs::gtk_tests::a_local_shell_tab_connects_and_closes();
         super::tabs::gtk_tests::terminals_follow_the_color_scheme_and_system_theme();
         super::appearance::gtk_tests::user_css_reloads_when_its_files_change();

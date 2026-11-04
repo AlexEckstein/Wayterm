@@ -188,10 +188,11 @@ theme name stays `Breeze` in dark mode, and the dark flag comes from
 `settings.ini`, which GTK reads once at startup.
 
 `ui::appearance` applies the resolved name when a tab's terminal is
-created, and again for every open terminal when the global row changes
-(Settings' "Default color scheme") or the desktop theme does. Backends
-without color schemes (Ghostty) ignore the call. The window chrome follows
-the same preference (doc 13 §Window theme).
+created, before its widget is shown, and again for every open terminal
+when the global row changes (Settings' "Default color scheme") or the
+desktop theme does. Both backends apply it (§VteBackend,
+§GhosttyBackend). The window chrome follows the same preference (doc 13
+§Window theme).
 
 ## Opacity
 
@@ -237,14 +238,20 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
 - **FFI.** `shim.c` wraps the C API, whose sized structs and tagged unions
   stay on the C side; `ffi.rs` declares only the shim's plain functions
   and three flat structs (a cell, a frame, a span of search highlight),
-  size-checked against the C compiler by a unit test. `build.rs` compiles the shim with the `cc` crate
-  and links `libghostty-vt.a` statically; nothing beyond libc is needed.
+  checked against the C compiler by a unit test: their sizes, and where
+  the cell's grapheme fields sit. `build.rs` compiles the shim with the
+  `cc` crate and links `libghostty-vt.a` statically; nothing beyond libc
+  is needed.
 - **`Engine`.** The safe owner of one terminal, with no display: VT
   parsing, resize with reflow, scrollback limit, viewport scrolling,
   selection, search, plain-text export, key, paste, mouse and focus
-  encoding, the mouse modes a program set, and a viewport
-  snapshot with colors resolved to RGB. Effects raised while parsing —
-  replies to queries (device attributes, status reports), BEL, OSC 0/2
+  encoding, the mouse modes a program set, and a viewport snapshot with
+  colors resolved to RGB. A snapshot cell holds its whole grapheme
+  cluster: the base codepoint, or for a longer cluster a slice of a
+  codepoint buffer that grows as needed and is reused frame to frame;
+  the tail cell of a wide character holds nothing. Effects raised while
+  parsing — replies to queries (device attributes, status reports), BEL,
+  OSC 0/2
   titles, OSC 7 directories — come back from the `write` that raised them
   and leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
   the view's directory hook instead.
@@ -256,9 +263,13 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   is the font's "M" rounded up to whole pixels; each glyph goes at its own
   cell, not where the font's advances would take it, since those are
   rarely whole pixels and would drift off the grid along a line. A
-  ligature sits at its first cell. Underline and strikethrough are
-  rectangles across the run, on whole pixels. A changed allocation
-  resizes the grid and sends `SizeChange` once per new grid.
+  ligature sits at its first cell. A cell's whole grapheme cluster — a
+  base with its combining marks, a ZWJ sequence, a flag, an emoji with
+  its variation selector — is shaped together and sits at that cell; a
+  wide cluster's tail cell adds a blank, so the cells after it keep their
+  columns. Underline and strikethrough are rectangles across the run, on
+  whole pixels. A changed allocation resizes the grid and sends
+  `SizeChange` once per new grid.
 - **Input.** Keys go through libghostty-vt's key encoder, so cursor-key
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
   Shift+Home/End jump to the top and bottom, as in VTE, instead of
@@ -313,6 +324,14 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   in for VTE's `commit`, `contents-changed` and
   `current-directory-uri-changed` signals, which the SFTP sidebar
   follows the shell by (doc 07 §Following the shell).
+- **Color schemes.** `set_color_scheme` looks the name up as VTE does
+  (§Color schemes) and makes the palette's foreground, background, cursor
+  and 16 ANSI colors libghostty-vt's default colors. The 256-color cube
+  and grayscale ramp stay xterm's, as in VTE, and colors a program set
+  (OSC 4, 10, 11, 12) stay in force. Every cell resolves its colors at
+  the next snapshot, so an open tab repaints at once. An unknown name
+  changes nothing, and a reset keeps the scheme. Until the first call a
+  terminal has libghostty-vt's built-in colors.
 
 ### libghostty-vt pin
 
@@ -421,17 +440,21 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
 - **VTE:** no Kitty graphics.
-- **Ghostty:** no color schemes, URL detection or image
-  drawing (`features()` says so, and the UI hides them); no input method
-  or compose support; only a grapheme's base codepoint is drawn; mouse
+- **Ghostty:** no URL detection or image drawing (`features()` says so,
+  and the UI hides them); no input method or compose support; mouse
   reporting covers the primary button and the wheel only, so middle and
-  right clicks and horizontal scrolling never reach the program.
+  right clicks and horizontal scrolling never reach the program; the
+  text under the cursor takes its cell's background color, since
+  libghostty-vt has no cursor text color (the scheme's matches the
+  default background in both palettes, so only a cell a program colored
+  differs from VTE).
 - **Ghostty search:** a query is plain text, not a regular expression as
-  on VTE. A match is not the selection, so Copy after a search copies
-  nothing new, where VTE copies the match. Only what the terminal keeps
-  can be found: libghostty-vt's byte limit on scrollback, which
-  `set_scrollback_limit` does not change, holds a few hundred lines at
-  120 columns.
+  on VTE, and matching is case-exact (libghostty-vt folds ASCII case, so
+  a match is read back and compared as typed). A match is not the
+  selection, so Copy after a search copies nothing new, where VTE copies
+  the match. Only what the terminal keeps can be found: libghostty-vt's
+  byte limit on scrollback, which `set_scrollback_limit` does not
+  change, holds a few hundred lines at 120 columns.
 - **Ghostty text:** box-drawing and block characters come from the font,
   so a line of them shows faint seams wherever the cell is wider than
   the glyph, as it is at the default font. Once font settings apply

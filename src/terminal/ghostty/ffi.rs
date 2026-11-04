@@ -1,7 +1,8 @@
 //! Raw bindings to `shim.c`, the narrow C layer over libghostty-vt; use
 //! [`Engine`](super::engine::Engine) instead of calling these directly.
 //! The structs mirror `WtCell`/`WtFrame`/`WtSpan` there; the unit tests
-//! check the sizes against the C compiler's.
+//! check the sizes, and where the cell's grapheme fields sit, against the
+//! C compiler's.
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -48,13 +49,19 @@ pub const BUTTON_WHEEL_DOWN: u32 = 5;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WtCell {
-    /// 0 = empty.
+    /// The grapheme's base codepoint; 0 = empty.
     pub codepoint: u32,
     pub fg: [u8; 3],
     pub bg: [u8; 3],
     pub flags: u8,
     /// 0 = the default background.
     pub has_bg: u8,
+    /// Codepoints in the cluster, base included: 0 = empty, 1 = just
+    /// `codepoint`.
+    pub grapheme_len: u16,
+    /// With `grapheme_len` > 1: where the whole cluster starts in the
+    /// snapshot's grapheme buffer.
+    pub grapheme: u32,
 }
 
 /// Frame-wide render state.
@@ -141,6 +148,14 @@ extern "C" {
     pub fn wt_ghostty_size(g: *mut WtGhostty, cols: *mut u16, rows: *mut u16);
     pub fn wt_ghostty_reset(g: *mut WtGhostty);
     pub fn wt_ghostty_set_scrollback_lines(g: *mut WtGhostty, lines: usize) -> c_int;
+    /// `fg`, `bg` and `cursor` point at 3 bytes (RGB), `ansi` at 16 × 3.
+    pub fn wt_ghostty_set_colors(
+        g: *mut WtGhostty,
+        fg: *const u8,
+        bg: *const u8,
+        cursor: *const u8,
+        ansi: *const u8,
+    ) -> c_int;
     pub fn wt_ghostty_scroll(g: *mut WtGhostty, place: c_int, delta: isize);
     pub fn wt_ghostty_free_bytes(ptr: *mut u8, len: usize);
     pub fn wt_ghostty_screen_text(g: *mut WtGhostty, out: *mut *mut u8, len: *mut usize) -> c_int;
@@ -206,6 +221,9 @@ extern "C" {
         frame: *mut WtFrame,
         cells: *mut WtCell,
         cap: usize,
+        graphemes: *mut u32,
+        graphemes_cap: usize,
+        graphemes_len: *mut usize,
     ) -> c_int;
 }
 
@@ -215,4 +233,6 @@ extern "C" {
     pub fn wt_ghostty_cell_size() -> usize;
     pub fn wt_ghostty_frame_size() -> usize;
     pub fn wt_ghostty_span_size() -> usize;
+    pub fn wt_ghostty_cell_grapheme_offset() -> usize;
+    pub fn wt_ghostty_cell_grapheme_len_offset() -> usize;
 }

@@ -13,7 +13,8 @@ Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe),
 Each SSH tab owns its sidebar, but the tab's page holds only the
 terminal: the side dock's SFTP panel hosts the current tab's sidebar and
 swaps it as the notebook switches tabs. Tabs without one (local, serial,
-RDP, VNC, Home) get a placeholder. A redial replaces the page's sidebar,
+RDP, VNC, Home) get a placeholder. A redial, or the tab's shell exiting
+(doc 03 §Session end), replaces the page's sidebar with an empty one,
 ending the old SFTP task, and the panel hosts the new one.
 
 The sidebar, top to bottom:
@@ -41,8 +42,8 @@ The sidebar runs over the tab's **shared** `SshConnection` (doc 04
 spawns one SFTP task per sidebar; until then the sidebar is empty with its
 toolbar disabled. The task opens a session channel with the `sftp`
 subsystem and turns it into a `russh_sftp` session on the first command.
-Dropping the last sidebar handle ends the task; the connection stays with
-the supervisor.
+Dropping the last sidebar handle ends the task, once any transfer still
+running has finished; the connection stays with the supervisor.
 
 When it attaches depends on the `sftp_on_connect` setting (on by default,
 doc 13 §Settings rows):
