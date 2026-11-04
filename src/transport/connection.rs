@@ -4,6 +4,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use russh::client::{self, Handle, Msg};
 use russh::keys::{load_secret_key, HashAlg, PublicKeyOrCertificate};
@@ -41,6 +42,9 @@ pub struct SshConnection {
     host: String,
     port: u16,
     username: String,
+    /// The hop this session's channel runs over (doc 04 §Jump hosts). After
+    /// `handle` so the session closes before its bastion is let go.
+    jump: Option<Arc<SshConnection>>,
 }
 
 impl SshConnection {
@@ -55,7 +59,14 @@ impl SshConnection {
             host,
             port,
             username,
+            jump: None,
         }
+    }
+
+    /// Keep `jump` alive for as long as this connection lives.
+    pub(crate) fn holding_jump(mut self, jump: Arc<SshConnection>) -> Self {
+        self.jump = Some(jump);
+        self
     }
 
     pub fn host(&self) -> &str {

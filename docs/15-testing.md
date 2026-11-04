@@ -57,6 +57,9 @@ Highlights:
 - **Keepalives:** an in-process russh server behind a proxy that goes
   silent: keepalives close the connection, and the pool dials fresh while
   the dead one is still held (`tests/keepalive.rs`).
+- **Jumped sessions:** an in-process russh server playing both hops: a
+  target dialed by `dial_with_jump` survives the supervisor's release
+  poll, and dropping it releases the bastion (`tests/jump_bastion.rs`).
 - **Hotkeys:** registry, conflict rules, the default table's invariants,
   trigger parsing, persistence and JSON layouts; end to end through a real
   SQLite file (`tests/hotkeys.rs`) and the settings page's view model
@@ -194,9 +197,6 @@ CI runs all but the benchmark (§CI).
 - Of the display tests, CI runs only VTE search and the Ghostty widget:
   the widget suite (`ui::gtk_tests::widgets`) and the VTE scrollback test
   (`tests/terminal_polish.rs`) run locally only, as does the benchmark.
-- `jump_sshd` dials through `dial_via_jump` while the test itself holds
-  the jump connection, so the app's path — where nothing holds the jump
-  hop after the dial (doc 04 §Limitations) — is not exercised.
 - The serial hardware path has not run against real hardware; Tight/ZRLE
   VNC decoding is exercised only against real servers, not the mock.
 - No fuzzing yet: `known_hosts` handling and SFTP path joining are the

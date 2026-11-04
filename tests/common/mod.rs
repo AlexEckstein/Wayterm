@@ -6,11 +6,14 @@
 // Each suite uses a different subset.
 #![allow(dead_code)]
 
+use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use russh::client::{self, Config, Handle};
+use russh::keys::ssh_key::private::Ed25519Keypair;
+use russh::keys::PrivateKey;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use zeroize::Zeroizing;
@@ -52,6 +55,16 @@ pub fn fixture() -> Option<Fixture> {
         );
     }
     fixture
+}
+
+/// A throwaway host key for in-process servers, generated per run so none
+/// is ever committed.
+pub fn host_key() -> PrivateKey {
+    let mut seed = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut urandom| urandom.read_exact(&mut seed))
+        .expect("read /dev/urandom");
+    PrivateKey::from(Ed25519Keypair::from_seed(&seed))
 }
 
 pub fn accept_all_verifier() -> HostKeyVerifier {
