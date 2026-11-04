@@ -101,9 +101,8 @@ pub fn hop_auth_method(config: &SessionConfig) -> AuthMethod {
 /// [`TransportError::Cancelled`].
 ///
 /// The returned connection is NOT pooled: it is backed by a jump channel,
-/// not a TCP endpoint the pool key could describe. It does not hold the
-/// jump hop either, so the supervisor may release the hop once this
-/// returns (doc 04 §Limitations).
+/// not a TCP endpoint the pool key could describe. It holds the jump hop
+/// itself, so the supervisor keeps the hop until the target is dropped.
 pub async fn dial_with_jump(
     supervisor: &ConnectionSupervisor,
     jump_config: &SessionConfig,
@@ -126,7 +125,8 @@ pub async fn dial_with_jump(
 /// Dial `target` over an already-connected jump hop: open direct-tcpip to
 /// it, run its SSH session over the channel stream with the SAME dial
 /// semantics as a direct dial (host-key verification + auth chain via the
-/// supervisor's shared helpers), and return the target's connection.
+/// supervisor's shared helpers), and return the target's connection, which
+/// holds `jump_conn` for as long as it runs over that channel.
 ///
 /// When the direct-tcpip open fails and `ssh_w_fallback` is set
 /// (`sessions.ssh_options.ssh_w_fallback`), spawn `ssh -W` as the stream
@@ -135,7 +135,8 @@ pub async fn dial_with_jump(
 /// [`TransportError::ConnectionFailed`] as well as
 /// [`TransportError::ChannelError`]: `open_direct_tcpip` maps russh errors
 /// through `TransportError::from_russh` (always `ConnectionFailed`), so
-/// matching `ChannelError` alone would leave the fallback dead code.
+/// matching `ChannelError` alone would leave the fallback dead code. That
+/// stream does not use `jump_conn`, so a fallback target does not hold it.
 pub async fn dial_via_jump(
     jump_conn: &Arc<SshConnection>,
     jump: &ConnectParams,
@@ -144,7 +145,9 @@ pub async fn dial_via_jump(
     ssh_w_fallback: bool,
 ) -> Result<SshConnection, TransportError> {
     match jump_conn.open_direct_tcpip(&target.host, target.port).await {
-        Ok(channel) => connect_inner(channel.into_stream(), target, auth).await,
+        Ok(channel) => connect_inner(channel.into_stream(), target, auth)
+            .await
+            .map(|conn| conn.holding_jump(Arc::clone(jump_conn))),
         Err(err @ (TransportError::ChannelError(_) | TransportError::ConnectionFailed(_)))
             if ssh_w_fallback =>
         {
