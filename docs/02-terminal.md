@@ -455,10 +455,10 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 
 ## Limitations
 
-- **No control sets font, opacity or scrollback.** Tabs apply the rows
-  and columns (§Font, opacity and scrollback), but neither the Settings
-  window nor the session dialog edits them (doc 13 §Limitations, doc 09
-  §Limitations).
+- **No per-session font or opacity control.** Tabs honor the session
+  columns (§Font, opacity and scrollback), but the session dialog does not
+  edit them (doc 09 §Limitations); Settings edits the global rows (doc 13
+  §General).
 - **Opacity needs a compositor.** Every Wayland session has one; on X11
   without a compositing manager the cleared areas draw dark instead of
   showing the desktop.
