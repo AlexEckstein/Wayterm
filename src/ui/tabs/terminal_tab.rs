@@ -139,7 +139,6 @@ impl TerminalTab {
 
         let pump_cancel = cancel.clone();
         let pump_task = tokio::spawn(async move {
-            let _notifications = notifications;
             if let Err(err) = transport.connect().await {
                 // Behind whatever the transport announced while failing, so
                 // the bridge delivers the error last: the tab ends on it.
@@ -165,6 +164,11 @@ impl TerminalTab {
                     }
                     Some(TerminalEvent::SizeChange { rows, cols }) => {
                         transport.resize(rows, cols).await.ok();
+                    }
+                    Some(TerminalEvent::Notification { title, body }) => {
+                        // Shed when the drain cannot keep up: a full queue
+                        // must not block the keystrokes behind it.
+                        let _ = notifications.try_send((title, body));
                     }
                     Some(TerminalEvent::Closed) | None => break,
                     Some(_) => {}

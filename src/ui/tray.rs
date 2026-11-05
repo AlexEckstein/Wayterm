@@ -119,17 +119,37 @@ pub fn disconnect_alert(session_name: &str) -> Alert {
 }
 
 pub fn terminal_alert(tab_id: i64, session_name: &str, title: &str, body: &str) -> Option<Alert> {
-    let _ = session_name;
+    // The text is the remote side's: control characters out entirely
+    // (a NUL would cut GDK's string short, and OSC 9 has single-line
+    // bodies), then trimmed. A blank title falls back to the session's
+    // name, and nothing worth saying drops the alert.
+    let strip = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_control())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    let body = strip(body);
+    if body.is_empty() {
+        return None;
+    }
+    let title = strip(title);
+    let title = if title.is_empty() {
+        session_name.to_string()
+    } else {
+        title
+    };
     Some(Alert {
-        title: title.to_string(),
-        body: body.to_string(),
+        title,
+        body,
         notification_id: format!("wayterm-terminal-{tab_id}"),
     })
 }
 
+/// Only a tab the user is both looking at and has focused stays quiet.
 pub fn should_notify(window_active: bool, tab_current: bool) -> bool {
-    let _ = (window_active, tab_current);
-    true
+    !(window_active && tab_current)
 }
 
 #[derive(Debug, Default)]
@@ -138,9 +158,17 @@ pub struct NotificationLimit {
 }
 
 impl NotificationLimit {
+    /// One alert per [`NOTIFICATION_INTERVAL`]; a refused one does not
+    /// push the window back.
     pub fn allow(&mut self, now: Instant) -> bool {
-        self.last = Some(now);
-        true
+        let allow = match self.last {
+            None => true,
+            Some(last) => now.duration_since(last) >= NOTIFICATION_INTERVAL,
+        };
+        if allow {
+            self.last = Some(now);
+        }
+        allow
     }
 }
 
