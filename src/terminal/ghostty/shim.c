@@ -31,6 +31,7 @@
 #define WT_CELL_SELECTED (1u << 5)
 #define WT_CELL_INVISIBLE (1u << 6)
 #define WT_CELL_FAINT (1u << 7)
+#define WT_CELL_BLINK (1u << 8)
 
 /* Modifier bits accepted by wt_ghostty_encode_key (mirrored in ffi.rs). */
 #define WT_MOD_SHIFT (1u << 0)
@@ -79,7 +80,7 @@ typedef struct {
   uint32_t codepoint; /* the grapheme's base codepoint; 0 = empty */
   uint8_t fg[3];
   uint8_t bg[3];
-  uint8_t flags;
+  uint16_t flags;
   uint8_t has_bg;        /* 0 = default background */
   uint16_t grapheme_len; /* codepoints in the cluster, base included:
                             0 = empty, 1 = just `codepoint` */
@@ -1017,6 +1018,7 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
           if (style.inverse) cell->flags |= WT_CELL_INVERSE;
           if (style.invisible) cell->flags |= WT_CELL_INVISIBLE;
           if (style.faint) cell->flags |= WT_CELL_FAINT;
+          if (style.blink) cell->flags |= WT_CELL_BLINK;
         }
       }
       bool selected = false;

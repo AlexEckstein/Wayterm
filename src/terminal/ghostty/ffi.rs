@@ -22,14 +22,16 @@ pub const EFFECT_BELL: c_int = 2;
 pub const EFFECT_TITLE: c_int = 3;
 pub const EFFECT_PWD: c_int = 4;
 
-pub const CELL_BOLD: u8 = 1 << 0;
-pub const CELL_ITALIC: u8 = 1 << 1;
-pub const CELL_UNDERLINE: u8 = 1 << 2;
-pub const CELL_STRIKE: u8 = 1 << 3;
-pub const CELL_INVERSE: u8 = 1 << 4;
-pub const CELL_SELECTED: u8 = 1 << 5;
-pub const CELL_INVISIBLE: u8 = 1 << 6;
-pub const CELL_FAINT: u8 = 1 << 7;
+pub const CELL_BOLD: u16 = 1 << 0;
+pub const CELL_ITALIC: u16 = 1 << 1;
+pub const CELL_UNDERLINE: u16 = 1 << 2;
+pub const CELL_STRIKE: u16 = 1 << 3;
+pub const CELL_INVERSE: u16 = 1 << 4;
+pub const CELL_SELECTED: u16 = 1 << 5;
+pub const CELL_INVISIBLE: u16 = 1 << 6;
+pub const CELL_FAINT: u16 = 1 << 7;
+/// SGR 5 or 6: libghostty-vt keeps one flag for both.
+pub const CELL_BLINK: u16 = 1 << 8;
 
 pub const MOD_SHIFT: u32 = 1 << 0;
 pub const MOD_CTRL: u32 = 1 << 1;
@@ -53,7 +55,7 @@ pub struct WtCell {
     pub codepoint: u32,
     pub fg: [u8; 3],
     pub bg: [u8; 3],
-    pub flags: u8,
+    pub flags: u16,
     /// 0 = the default background.
     pub has_bg: u8,
     /// Codepoints in the cluster, base included: 0 = empty, 1 = just

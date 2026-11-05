@@ -789,11 +789,11 @@ struct Painted<'a> {
     fg: [u8; 3],
     /// `None` = the frame background already painted underneath.
     bg: Option<[u8; 3]>,
-    flags: u8,
+    flags: u16,
 }
 
 /// Flags that change how text is drawn (not just its colors).
-const TEXT_FLAGS: u8 = ffi::CELL_BOLD
+const TEXT_FLAGS: u16 = ffi::CELL_BOLD
     | ffi::CELL_ITALIC
     | ffi::CELL_UNDERLINE
     | ffi::CELL_STRIKE
