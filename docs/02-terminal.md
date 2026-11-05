@@ -58,7 +58,7 @@ pub enum TerminalEvent { DataOut(Vec<u8>), SizeChange { rows: u32, cols: u32 },
 - `send_input` is input that was not typed (macro playback, doc 12). It
   leaves as `DataOut` through the same queue as keystrokes.
 - `TerminalFeatures` (search, color schemes, SIXEL, Kitty graphics,
-  reflow, …) is queried once per tab; the UI hides what is false.
+  reflow, …) says what a backend supports; nothing in the UI reads it yet.
 - Backends are held as `Arc<dyn TerminalBackend>`: the tab, the output
   drain and the terminal actions share them.
 
@@ -256,11 +256,11 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
 
 - **FFI.** `shim.c` wraps the C API, whose sized structs and tagged unions
   stay on the C side; `ffi.rs` declares only the shim's plain functions
-  and three flat structs (a cell, a frame, a span of search highlight),
-  checked against the C compiler by a unit test: their sizes, and where
-  the cell's grapheme fields sit. `build.rs` compiles the shim with the
-  `cc` crate and links `libghostty-vt.a` statically; nothing beyond libc
-  is needed.
+  and five flat structs (a cell, a frame, a span of search highlight, an
+  image placement, an image's pixels), checked against the C compiler by a
+  unit test: their sizes, and where the fields after any padding sit.
+  `build.rs` compiles the shim with the `cc` crate and links
+  `libghostty-vt.a` statically; nothing beyond libc is needed.
 - **`Engine`.** The safe owner of one terminal, with no display: VT
   parsing, resize with reflow, scrollback limit, viewport scrolling,
   selection, search, plain-text export, key, paste, mouse and focus
@@ -268,7 +268,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   colors resolved to RGB. A snapshot cell holds its whole grapheme
   cluster: the base codepoint, or for a longer cluster a slice of a
   codepoint buffer that grows as needed and is reused frame to frame;
-  the tail cell of a wide character holds nothing. Effects raised while
+  the tail cell of a wide character holds nothing. A snapshot also lists
+  the Kitty images on screen (§Kitty graphics). Effects raised while
   parsing — replies to queries (device attributes, status reports), BEL,
   OSC 0/2
   titles, OSC 7 directories — come back from the `write` that raised them
@@ -287,8 +288,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   its variation selector — is shaped together and sits at that cell; a
   wide cluster's tail cell adds a blank, so the cells after it keep their
   columns. Underline and strikethrough are rectangles across the run, on
-  whole pixels. A changed allocation resizes the grid and sends
-  `SizeChange` once per new grid.
+  whole pixels. A frame paints the whole grid's backgrounds, then its
+  text, with images between them (§Kitty graphics). A changed allocation
+  resizes the grid and sends `SizeChange` once per new grid.
 - **Input.** Keys go through libghostty-vt's key encoder, so cursor-key
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
   Shift+Home/End jump to the top and bottom, as in VTE, instead of
@@ -361,6 +363,44 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   the next snapshot, so an open tab repaints at once. An unknown name
   changes nothing, and a reset keeps the scheme. Until the first call a
   terminal has libghostty-vt's built-in colors.
+
+### Kitty graphics
+
+libghostty-vt parses and stores the images; the view draws them, driven
+by the render state each frame like the cells, so an image scrolls with
+its text, follows the viewport through the scrollback and goes when it is
+deleted, with nothing to track on Wayterm's side.
+
+- **Placements.** Each snapshot reads the render state's image list:
+  images placed at a cell, placed relative to another image, and shown
+  through Unicode placeholder cells. It gives each one's cell, pixel offset
+  and size, source rectangle, layer and z. Placeholder cells draw no glyph.
+  A list needs the terminal's cell size, which `fit_grid` gives it, so
+  nothing shows before the first allocation.
+- **Layers.** Images below backgrounds go over the frame's default
+  background, then the cell backgrounds, then images below text, the text,
+  and images above it. Within a layer they go by z, then by image ID, as
+  in Ghostty's renderer.
+- **Pixels.** Stored images are always decoded, so a texture is an upload
+  of RGB, RGBA, gray or gray-and-alpha bytes. The view holds the textures of
+  the last frame only, keyed by image ID and pixel generation: pixels are
+  read once per generation, and what a frame does not draw is released.
+  Each image is drawn whole, scaled so that its source rectangle lands on
+  the target, and clipped to the target and the grid.
+- **PNG.** libghostty-vt leaves PNG decoding to the embedder, through one
+  process-wide callback set before the first terminal. `gdk::Texture`
+  decodes in `Engine`, which still needs no display. The payload is the
+  remote side's, so the header is checked first: only PNG reaches GDK, and
+  only if its pixels could fit the storage limit.
+- **Limits.** Each screen stores up to 320 MB of images, Ghostty's default;
+  libghostty-vt's own is 10 MB. The oldest unused images go first. Only
+  images sent in the stream are accepted: the file, temporary-file and
+  shared-memory media stay off, since they would let a remote program name
+  local paths.
+- **Animation.** Each paint ticks libghostty-vt's animations before the
+  snapshot. A new frame changes the image's generation, so it uploads like
+  any new pixels. A one-shot timeout asks for a redraw when the next frame
+  is due; a tab that is not shown draws nothing, so its animations wait.
 
 ### libghostty-vt pin
 
@@ -468,14 +508,22 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   override already in the store (imported, restored) is honored.
 - **VTE:** no Kitty graphics. Search steps between rows, reaching only
   the first match on each.
-- **Ghostty:** no URL detection or image drawing (`features()` says so,
-  and the UI hides them); no input method or compose support; mouse
-  reporting covers the primary button and the wheel only, so middle and
-  right clicks and horizontal scrolling never reach the program; the
+- **Ghostty:** no URL detection or SIXEL (`features()` says so); no input
+  method or compose support; mouse reporting covers the primary button and
+  the wheel only, so middle and right clicks and horizontal scrolling never
+  reach the program; the
   text under the cursor takes its cell's background color, since
   libghostty-vt has no cursor text color (the scheme's matches the
   default background in both palettes, so only a cell a program colored
   differs from VTE).
+- **Ghostty images:** programs cannot learn the cell's size in pixels, so
+  tools that size images from it may refuse or misjudge them: `CSI 14 t`,
+  `16 t` and `18 t` go unanswered, and a PTY or SSH window size carries no
+  pixels (`SizeChange` has none). Only mode 2048 reports them. Images
+  are sent in the stream or not at all (§Kitty graphics), and a PNG decodes
+  on the main thread, so a large one stalls the tab's window while it does.
+  On a scaled display an image is drawn at logical pixels and upscaled.
+  Selecting across placeholder cells copies their U+10EEEE characters.
 - **Ghostty selection:** word boundaries are libghostty-vt's defaults,
   where `:` ends a word, so a double click takes part of a URL. A drag
   past the top or bottom edge does not scroll the viewport.
