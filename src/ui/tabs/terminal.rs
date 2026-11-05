@@ -25,7 +25,6 @@ use crate::macros::InputTap;
 use crate::store::model::SessionConfig;
 #[cfg(feature = "backend-ghostty")]
 use crate::terminal::ghostty::view::GhosttyView;
-use crate::terminal::{create_terminal, TerminalBackend};
 use crate::terminal::{backend_preference, create_terminal_for, BackendKind, TerminalBackend};
 use crate::transport::connection::SshConnection;
 use crate::transport::reconnect::{ConnectFn, ConnectFuture};
