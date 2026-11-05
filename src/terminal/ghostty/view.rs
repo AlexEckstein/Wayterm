@@ -9,7 +9,9 @@
 //! cell. Strikethrough is a rectangle; underlines run on across changes of
 //! text color, in the SGR style and underline color of their cells. Search
 //! matches are lit in Ghostty's colors, the current one apart, under the
-//! selection and the cursor.
+//! selection and the cursor. The cursor takes the shape the terminal asks
+//! for and blinks on a timer that runs only while a blink can show; without
+//! focus it is a steady hollow block.
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
@@ -27,6 +29,7 @@
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
@@ -44,6 +47,8 @@ use crate::terminal::TerminalEvent;
 const DEFAULT_FONT: &str = "Monospace 12";
 /// Rows per wheel notch.
 const WHEEL_ROWS: f64 = 3.0;
+/// How long a blinking cursor stays on, and off; Ghostty's default.
+const BLINK_INTERVAL: Duration = Duration::from_millis(600);
 /// The arrow keysyms alternate scroll sends.
 const ARROW_UP: u32 = 0xff52;
 const ARROW_DOWN: u32 = 0xff54;
@@ -87,6 +92,12 @@ mod imp {
         pub(super) pointer: Cell<(f64, f64)>,
         /// The cell of the last reported motion, so each cell is sent once.
         pub(super) motion_cell: Cell<Option<(u16, u16)>>,
+        /// Whether the view has keyboard focus, from the focus controller.
+        pub(super) focused: Cell<bool>,
+        /// The blink's off phase; a stopped timer leaves it false.
+        pub(super) blink_off: Cell<bool>,
+        /// The blink timer; see [`super::needs_blink_timer`].
+        pub(super) blink: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -111,6 +122,11 @@ mod imp {
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             self.parent_size_allocate(width, height, baseline);
             self.obj().fit_grid(width, height);
+        }
+
+        fn unmap(&self) {
+            self.obj().stop_blink();
+            self.parent_unmap();
         }
 
         fn snapshot(&self, snapshot: &gtk4::Snapshot) {
@@ -555,11 +571,50 @@ impl GhosttyView {
     }
 
     /// Keyboard focus entered or left: reported when the program enabled
-    /// mode 1004.
+    /// mode 1004. The cursor turns hollow, or back, and a blink starts over
+    /// with it on.
     fn focus_changed(&self, gained: bool) {
         if let Some(shared) = self.shared() {
             shared.input(shared.engine.encode_focus(gained));
         }
+        self.imp().focused.set(gained);
+        self.stop_blink();
+        self.queue_draw();
+    }
+
+    /// Start the blink timer when the frame needs it and stop it when not;
+    /// the paint after a map or a focus change is what starts it again.
+    fn sync_blink(&self, info: &FrameInfo) {
+        let imp = self.imp();
+        if !needs_blink_timer(info, imp.focused.get(), self.is_mapped()) {
+            self.stop_blink();
+        } else if imp.blink.borrow().is_none() {
+            let view = self.downgrade();
+            let tick = glib::timeout_add_local(BLINK_INTERVAL, move || {
+                let Some(view) = view.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                view.blink_tick();
+                glib::ControlFlow::Continue
+            });
+            imp.blink.replace(Some(tick));
+        }
+    }
+
+    /// Flip the blink phase; the next paint draws it, whole, like any other
+    /// change.
+    fn blink_tick(&self) {
+        let off = &self.imp().blink_off;
+        off.set(!off.get());
+        self.queue_draw();
+    }
+
+    /// Stop the timer, leaving the cursor on.
+    fn stop_blink(&self) {
+        if let Some(tick) = self.imp().blink.take() {
+            tick.remove();
+        }
+        self.imp().blink_off.set(false);
     }
 
     /// One wheel event: rows of it scroll the viewport, go to the program
@@ -717,6 +772,9 @@ impl GhosttyView {
             return;
         }
         let info = frame.info;
+        self.sync_blink(&info);
+        let imp = self.imp();
+        let cursor = cursor_shape(&info, imp.focused.get(), imp.blink_off.get());
         let metrics = self.metrics();
         let (cw, ch) = (metrics.width as f32, metrics.height as f32);
         snapshot.append_color(
@@ -729,7 +787,7 @@ impl GhosttyView {
         let marks = search_marks(&shared.engine.search_spans(), cols, rows);
         for row in 0..rows {
             let y = row as f32 * ch;
-            let cells = painted_row(&frame, row, &marks);
+            let cells = painted_row(&frame, row, &marks, cursor == Some(CursorShape::Block));
 
             // Backgrounds: one rectangle per run of equal, non-default color.
             let mut col = 0;
@@ -788,6 +846,18 @@ impl GhosttyView {
                 }
                 if let Some((style, color)) = underline {
                     self.draw_underline(snapshot, style, &color, start..col, y);
+                }
+            }
+
+            // The cursor's outline, over the row's text.
+            if row == usize::from(info.cursor_y) {
+                let col = usize::from(info.cursor_x);
+                if let (Some(shape), Some(cell)) = (cursor, cells.get(col)) {
+                    let color = rgba(cursor_color(&info, cell), 1.0);
+                    let origin = (col as f32 * cw, y);
+                    for rect in cursor_rects(shape, origin, (cw, ch), metrics.underline.1) {
+                        snapshot.append_color(&color, &rect);
+                    }
                 }
             }
         }
@@ -968,14 +1038,21 @@ fn run_text(cells: &[Painted]) -> (String, Vec<usize>) {
 
 /// One viewport row's cells as painted, search marks included: per cell,
 /// `Some(current)` lights it for the search, the current match apart, and
-/// the selection and the cursor still draw on top.
-fn painted_row<'a>(frame: &'a Frame, row: usize, marks: &[Option<bool>]) -> Vec<Painted<'a>> {
+/// the selection and the cursor still draw on top. `block` says this frame
+/// has a solid block cursor, the one shape that recolors its cell; the
+/// others go over the cell as [`cursor_rects`].
+fn painted_row<'a>(
+    frame: &'a Frame,
+    row: usize,
+    marks: &[Option<bool>],
+    block: bool,
+) -> Vec<Painted<'a>> {
     let info = &frame.info;
     let cols = usize::from(info.cols);
     (0..cols)
         .filter_map(|col| frame.cell(row, col).map(|cell| (col, cell)))
         .map(|(col, cell)| {
-            let cursor = is_cursor(info, row, col);
+            let cursor = block && is_cursor(info, row, col);
             let painted = Painted::new(info, cell, frame.grapheme(row, col), cursor);
             match marks.get(row * cols + col) {
                 Some(&Some(current)) if !cursor && cell.flags & ffi::CELL_SELECTED == 0 => {
@@ -1128,6 +1205,15 @@ impl<'a> Painted<'a> {
     }
 }
 
+/// How the cursor is drawn in one frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CursorShape {
+    Block,
+    Underline,
+    Bar,
+    Hollow,
+}
+
 /// Where a mouse event goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Route {
@@ -1226,6 +1312,63 @@ fn is_cursor(info: &FrameInfo, row: usize, col: usize) -> bool {
     info.cursor_visible != 0
         && usize::from(info.cursor_y) == row
         && usize::from(info.cursor_x) == col
+}
+
+/// How the frame's cursor is drawn, if at all: hidden by the terminal or
+/// in the blink's off phase it is not, and without focus it stays up as a
+/// hollow block, as in Ghostty.
+fn cursor_shape(info: &FrameInfo, focused: bool, blink_off: bool) -> Option<CursorShape> {
+    if info.cursor_visible == 0 {
+        return None;
+    }
+    if !focused {
+        return Some(CursorShape::Hollow);
+    }
+    if info.cursor_blinking != 0 && blink_off {
+        return None;
+    }
+    Some(match info.cursor_style {
+        ffi::CURSOR_UNDERLINE => CursorShape::Underline,
+        ffi::CURSOR_BAR => CursorShape::Bar,
+        ffi::CURSOR_BLOCK_HOLLOW => CursorShape::Hollow,
+        _ => CursorShape::Block,
+    })
+}
+
+/// Whether a blink can show: anywhere else the timer would only wake the
+/// main loop.
+fn needs_blink_timer(info: &FrameInfo, focused: bool, mapped: bool) -> bool {
+    info.cursor_visible != 0 && info.cursor_blinking != 0 && focused && mapped
+}
+
+/// The color of a cursor drawn over `cell`: the terminal's cursor color,
+/// else the cell's text as painted, which shows on its background.
+fn cursor_color(info: &FrameInfo, cell: &Painted) -> [u8; 3] {
+    if info.cursor_has_rgb != 0 {
+        info.cursor_rgb
+    } else {
+        cell.fg
+    }
+}
+
+/// The rectangles of a cursor `line` thick in the cell at `origin`; none
+/// for the block, which recolors the cell instead (see [`painted_row`]).
+fn cursor_rects(
+    shape: CursorShape,
+    (x, y): (f32, f32),
+    (width, height): (f32, f32),
+    line: f32,
+) -> Vec<graphene::Rect> {
+    let top = graphene::Rect::new(x, y, width, line);
+    let bottom = graphene::Rect::new(x, y + height - line, width, line);
+    let left = graphene::Rect::new(x, y, line, height);
+    let right = graphene::Rect::new(x + width - line, y, line, height);
+    match shape {
+        CursorShape::Block => Vec::new(),
+        CursorShape::Underline => vec![bottom],
+        CursorShape::Bar => vec![left],
+        CursorShape::Hollow => vec![top, bottom, left, right],
+    }
 }
 
 fn rgba([r, g, b]: [u8; 3], alpha: f32) -> gdk::RGBA {
@@ -1373,6 +1516,119 @@ mod tests {
         assert_eq!(scroll_key(gdk::Key::Page_Up, ctrl_shift, 24), None);
     }
 
+    /// A shown cursor's frame state, as the shim fills it.
+    fn cursor_info(style: u8, blinking: bool) -> FrameInfo {
+        FrameInfo {
+            cursor_visible: 1,
+            cursor_style: style,
+            cursor_blinking: u8::from(blinking),
+            ..FrameInfo::default()
+        }
+    }
+
+    #[test]
+    fn the_cursor_shape_follows_the_terminal_the_focus_and_the_blink() {
+        use CursorShape::{Bar, Block, Hollow, Underline};
+        for (style, shape) in [
+            (ffi::CURSOR_BLOCK, Block),
+            (ffi::CURSOR_UNDERLINE, Underline),
+            (ffi::CURSOR_BAR, Bar),
+            (ffi::CURSOR_BLOCK_HOLLOW, Hollow),
+        ] {
+            let (steady, blinking) = (cursor_info(style, false), cursor_info(style, true));
+            assert_eq!(cursor_shape(&steady, true, false), Some(shape));
+            assert_eq!(cursor_shape(&steady, true, true), Some(shape));
+            assert_eq!(cursor_shape(&blinking, true, false), Some(shape));
+            assert_eq!(cursor_shape(&blinking, true, true), None);
+            // Without focus it stays up as a hollow block, whatever the phase.
+            assert_eq!(cursor_shape(&steady, false, false), Some(Hollow));
+            assert_eq!(cursor_shape(&blinking, false, true), Some(Hollow));
+        }
+        let hidden = FrameInfo {
+            cursor_visible: 0,
+            ..cursor_info(ffi::CURSOR_BAR, false)
+        };
+        assert_eq!(cursor_shape(&hidden, true, false), None);
+        assert_eq!(cursor_shape(&hidden, false, false), None);
+    }
+
+    #[test]
+    fn the_blink_timer_runs_only_while_a_blink_can_show() {
+        let blinking = cursor_info(ffi::CURSOR_BLOCK, true);
+        assert!(needs_blink_timer(&blinking, true, true));
+        assert!(!needs_blink_timer(&blinking, false, true), "unfocused");
+        assert!(!needs_blink_timer(&blinking, true, false), "unmapped");
+        let steady = cursor_info(ffi::CURSOR_BLOCK, false);
+        assert!(!needs_blink_timer(&steady, true, true));
+        let hidden = FrameInfo {
+            cursor_visible: 0,
+            ..blinking
+        };
+        assert!(!needs_blink_timer(&hidden, true, true));
+    }
+
+    #[test]
+    fn cursor_shapes_sit_on_the_edges_of_their_cell() {
+        let rects = |shape| {
+            cursor_rects(shape, (20.0, 40.0), (10.0, 18.0), 2.0)
+                .iter()
+                .map(|r| (r.x(), r.y(), r.width(), r.height()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rects(CursorShape::Block), [], "it recolors the cell");
+        assert_eq!(rects(CursorShape::Underline), [(20.0, 56.0, 10.0, 2.0)]);
+        assert_eq!(rects(CursorShape::Bar), [(20.0, 40.0, 2.0, 18.0)]);
+        assert_eq!(
+            rects(CursorShape::Hollow),
+            [
+                (20.0, 40.0, 10.0, 2.0),
+                (20.0, 56.0, 10.0, 2.0),
+                (20.0, 40.0, 2.0, 18.0),
+                (28.0, 40.0, 2.0, 18.0),
+            ]
+        );
+    }
+
+    /// Only a solid block takes over its cell: any other frame paints the
+    /// cell as usual, search mark included, for the cursor to go on top.
+    #[test]
+    fn only_a_solid_block_recolors_the_cell_under_the_cursor() {
+        let engine = super::super::engine::Engine::new(4, 1).expect("engine");
+        engine.write(b"ab\x1b[D");
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        let cell = *frame.cell(0, 1).unwrap();
+        let marks = [None, Some(true), None, None];
+
+        let block = &painted_row(&frame, 0, &marks, true)[1];
+        assert_eq!((block.fg, block.bg), (cell.bg, Some(cell.fg)));
+        let plain = &painted_row(&frame, 0, &[], false)[1];
+        assert_eq!((plain.fg, plain.bg), (cell.fg, None));
+        let marked = &painted_row(&frame, 0, &marks, false)[1];
+        assert_eq!((marked.fg, marked.bg), (SEARCH_FG, Some(SEARCH_CURRENT_BG)));
+    }
+
+    /// An outline takes the cursor color, else the text color its cell is
+    /// painted in, so it shows on an inverse cell too.
+    #[test]
+    fn an_outline_cursor_shows_on_any_cell() {
+        let engine = super::super::engine::Engine::new(4, 1).expect("engine");
+        engine.write(b"\x1b[7;31;42ma\x1b[0m\x1b[D");
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        let cells = painted_row(&frame, 0, &[], false);
+        let cell = frame.cell(0, 0).unwrap();
+        assert_eq!(cells[0].bg, Some(cell.fg));
+        assert_eq!(cursor_color(&frame.info, &cells[0]), cell.bg);
+
+        let info = FrameInfo {
+            cursor_rgb: [1, 2, 3],
+            cursor_has_rgb: 1,
+            ..frame.info
+        };
+        assert_eq!(cursor_color(&info, &cells[0]), [1, 2, 3]);
+    }
+
     #[test]
     fn search_spans_mark_their_cells() {
         let span = |row, start, end, current| Span {
@@ -1412,7 +1668,7 @@ mod tests {
         engine.write(format!("\x1b[?2027hx{family}e\u{301}y").as_bytes());
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let (text, columns) = run_text(&painted_row(&frame, 0, &[])[..5]);
+        let (text, columns) = run_text(&painted_row(&frame, 0, &[], true)[..5]);
         // The family's tail is a space, so é and y keep their columns.
         let cells = [("x", 0), (family, 1), (" ", 2), ("e\u{301}", 3), ("y", 4)];
         assert_eq!(text, cells.map(|(cluster, _)| cluster).concat());
@@ -1433,7 +1689,7 @@ mod tests {
         );
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let cells = painted_row(&frame, 0, &[]);
+        let cells = painted_row(&frame, 0, &[], false);
         assert_eq!(
             cells[0].underline(),
             Some((ffi::UNDERLINE_CURLY, rgba([1, 2, 3], 1.0)))
@@ -1451,7 +1707,7 @@ mod tests {
         assert_eq!(cells[4].underline(), None, "a color but no style");
 
         let marks = [Some(true), Some(true)];
-        let cells = painted_row(&frame, 0, &marks);
+        let cells = painted_row(&frame, 0, &marks, false);
         assert_eq!(
             cells[0].underline(),
             Some((ffi::UNDERLINE_CURLY, rgba(SEARCH_FG, 1.0)))
@@ -1616,6 +1872,7 @@ mod ghostty_display {
         other_buttons(&backend, &view, &mut rx);
         sideways_wheel(&backend, &view, &mut rx);
         glyphs_on_the_grid(&backend, &view);
+        cursor_shapes(&backend, &view);
         underline_styles(&backend, &view);
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
@@ -2013,6 +2270,117 @@ mod ghostty_display {
         }
     }
 
+    /// The cursor's shapes on an empty cell, the hollow block of an unfocused
+    /// view, and the blink: painted whole, on a timer that runs only while
+    /// the cursor blinks in a focused, mapped view.
+    fn cursor_shapes(backend: &GhosttyBackend, view: &GhosttyView) {
+        let metrics = view.metrics();
+        let (cw, ch) = (metrics.width as usize, metrics.height as usize);
+        let line = metrics.underline.1 as usize;
+        let (x, y) = (cw / 2, ch / 2);
+        // Which of the cursor cell's middle and its four edges have ink.
+        let shape = || {
+            let inked = render(view);
+            [
+                inked(x..x + 1, y..y + 1),
+                inked(x..x + 1, 0..line),
+                inked(x..x + 1, ch - line..ch),
+                inked(0..line, y..y + 1),
+                inked(cw - line..cw, y..y + 1),
+            ]
+        };
+        const BLOCK: [bool; 5] = [true; 5];
+        const NOTHING: [bool; 5] = [false; 5];
+        const UNDERLINE: [bool; 5] = [false, false, true, false, false];
+        const BAR: [bool; 5] = [false, false, false, true, false];
+        const HOLLOW: [bool; 5] = [false, true, true, true, true];
+        let timer = || view.imp().blink.borrow().is_some();
+
+        backend.reset();
+        view.focus_changed(true);
+        assert_eq!(shape(), BLOCK, "the default");
+        for (decscusr, expected) in [(2, BLOCK), (4, UNDERLINE), (6, BAR)] {
+            backend.write(format!("\x1b[{decscusr} q").as_bytes());
+            assert_eq!(shape(), expected, "DECSCUSR {decscusr}");
+            assert!(!timer(), "a steady cursor needs no timer");
+            view.focus_changed(false);
+            assert_eq!(shape(), HOLLOW, "unfocused after DECSCUSR {decscusr}");
+            view.focus_changed(true);
+        }
+
+        // Each phase is one whole frame; DECSCUSR's blink variants and mode
+        // 12 both start it.
+        for (start, on) in [("\x1b[1 q", BLOCK), ("\x1b[3 q", UNDERLINE)] {
+            backend.write(start.as_bytes());
+            assert_eq!(shape(), on);
+            assert!(timer());
+            view.blink_tick();
+            assert_eq!(shape(), NOTHING);
+            view.blink_tick();
+            assert_eq!(shape(), on);
+        }
+        backend.write(b"\x1b[6 q\x1b[?12h");
+        assert_eq!(shape(), BAR);
+        assert!(timer());
+
+        // The real timer flips the phase and redraws.
+        let context = glib::MainContext::default();
+        let start = std::time::Instant::now();
+        while !view.imp().blink_off.get() && start.elapsed() < 3 * BLINK_INTERVAL {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(view.imp().blink_off.get(), "the timer never ticked");
+        assert_eq!(shape(), NOTHING);
+
+        // Focus lost in the off phase: hollow at once, no timer; focus back
+        // starts over with the cursor on.
+        view.focus_changed(false);
+        assert_eq!(shape(), HOLLOW);
+        assert!(!timer());
+        view.focus_changed(true);
+        assert_eq!(shape(), BAR);
+        assert!(timer());
+
+        // The blink's end stops the timer, in the off phase too.
+        view.blink_tick();
+        backend.write(b"\x1b[?12l");
+        assert_eq!(shape(), BAR);
+        assert!(!timer());
+        assert!(!view.imp().blink_off.get());
+
+        // So does hiding the cursor, until it is back.
+        backend.write(b"\x1b[1 q");
+        assert_eq!(shape(), BLOCK);
+        assert!(timer());
+        backend.write(b"\x1b[?25l");
+        assert_eq!(shape(), NOTHING);
+        assert!(!timer());
+        backend.write(b"\x1b[?25h");
+        assert_eq!(shape(), BLOCK);
+        assert!(timer());
+
+        // Unmapped, nothing ticks; the paint after the map starts it again.
+        view.blink_tick();
+        view.set_visible(false);
+        assert!(!view.is_mapped());
+        assert!(!timer());
+        assert!(!view.imp().blink_off.get());
+        view.paint(&gtk4::Snapshot::new());
+        assert!(!timer());
+        view.set_visible(true);
+        for _ in 0..50 {
+            context.iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(view.is_mapped());
+        assert!(timer());
+
+        backend.reset();
+        assert_eq!(shape(), BLOCK);
+        assert!(!timer());
+    }
+
     /// Each SGR underline style has its own shape, sharp and in its full
     /// color: the cell's underline color when it has one, the text's
     /// otherwise. The rows hold only blanks, so all that is lit is the line.
@@ -2305,7 +2673,7 @@ mod ghostty_display {
         assert!(view.shared().unwrap().engine.snapshot(&mut frame));
         // Each glyph of a row's first four cells: (glyph, column, x).
         let shaped = |row: usize| {
-            let (text, columns) = run_text(&painted_row(&frame, row, &[])[..4]);
+            let (text, columns) = run_text(&painted_row(&frame, row, &[], true)[..4]);
             let mut glyphs = Vec::new();
             view.shape(&text, &columns, &view.font(), |_, string, columns| {
                 for (glyph, &col) in string.glyph_info().iter().zip(columns) {

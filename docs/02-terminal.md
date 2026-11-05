@@ -269,8 +269,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   parsing, resize with reflow, scrollback limit, viewport scrolling,
   selection, search, plain-text export, key, paste, mouse and focus
   encoding, the mouse modes a program set, and a viewport snapshot with
-  colors resolved to RGB. A snapshot cell holds its whole grapheme
-  cluster: the base codepoint, or for a longer cluster a slice of a
+  colors resolved to RGB and the cursor's style and blink. A snapshot
+  cell holds its whole grapheme cluster: the base codepoint, or for a
+  longer cluster a slice of a
   codepoint buffer that grows as needed and is reused frame to frame;
   the tail cell of a wide character holds nothing. A cell also holds its
   underline style (`GHOSTTY_SGR_UNDERLINE_*`: none, single, double, curly,
@@ -305,6 +306,23 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   is a stroked wave, a crest and a trough per cell, reaching to the cell's
   bottom. A changed allocation resizes the grid and sends `SizeChange`
   once per new grid.
+- **Cursor.** It takes the shape the terminal asks for: block, underline
+  or bar, per DECSCUSR. The block swaps its cell's colors. The others are
+  rectangles as thick as the font's underline, on the cell's bottom or
+  left edge, over the cell as painted, so a search match stays lit under
+  them; they take the cursor color a scheme or program set, else the
+  color of the cell's text. Without focus the cursor is a hollow block in
+  the same way, on all four edges, whatever its shape, and it does not
+  blink (`cursor_shape` in `view.rs`, in the order Ghostty's renderer
+  decides it).
+
+  A blink (DECSCUSR's blinking variants, or mode 12) is 600 ms on and
+  600 ms off, Ghostty's period. A timer flips the phase and queues a
+  draw, so a phase is a whole frame like any other change. The paint
+  starts the timer when a frame's cursor blinks, and stops it once the
+  cursor stops blinking, is hidden or leaves the viewport. Losing focus
+  and unmapping stop it too, so hidden tabs wake nothing, and gaining
+  focus starts the blink over with the cursor on.
 - **Input.** Keys go through libghostty-vt's key encoder, so cursor-key
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
   Shift+Home/End jump to the top and bottom, as in VTE, instead of
@@ -498,6 +516,10 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   libghostty-vt has no cursor text color (the scheme's matches the
   default background in both palettes, so only a cell a program colored
   differs from VTE).
+- **Ghostty cursor:** the blink period is fixed and GTK's cursor blink
+  settings are not read, where VTE follows them. Typing does not restart
+  a blink, so the cursor can be in its off phase as it moves. On a wide
+  character it covers one cell.
 - **Ghostty selection:** word boundaries are libghostty-vt's defaults,
   where `:` ends a word, so a double click takes part of a URL. A drag
   past the top or bottom edge does not scroll the viewport.
