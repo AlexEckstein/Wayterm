@@ -12,6 +12,7 @@
 //! selection and the cursor. The cursor takes the shape the terminal asks
 //! for and blinks on a timer that runs only while a blink can show; without
 //! focus it is a steady hollow block.
+//! The link under the pointer is underlined.
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
@@ -25,6 +26,10 @@
 //! steps accumulate). Shift keeps them local. Focus
 //! changes are reported when the program asks. A press or a typed key ends
 //! the search, as it clears the selection.
+//!
+//! Links: [`scan_links`] finds URLs in the text on screen, soft-wrapped rows
+//! joined. While mouse events are local, hovering one underlines it and
+//! Ctrl+click opens it through the desktop's URI handler.
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -34,7 +39,7 @@ use std::time::Duration;
 use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
-use gtk4::{gdk, glib, graphene, gsk, pango};
+use gtk4::{gdk, gio, glib, graphene, gsk, pango};
 
 use super::engine::{
     push_cluster, Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll, Span,
@@ -60,6 +65,20 @@ const DASHED: (i32, i32) = (4, 2);
 const SEARCH_FG: [u8; 3] = [0, 0, 0];
 const SEARCH_BG: [u8; 3] = [0xff, 0xe0, 0x82];
 const SEARCH_CURRENT_BG: [u8; 3] = [0xf2, 0xa5, 0x7e];
+/// The mail scheme, whose target is an address, not an authority.
+const MAILTO: &str = "mailto:";
+/// What starts a link, in any case.
+const LINK_SCHEMES: [&str; 3] = ["https://", "http://", MAILTO];
+/// Punctuation that reads as the sentence's when it ends a link.
+const LINK_TRAILING: &str = ".,;:!?'*([";
+/// What a link may hold besides letters, digits and brackets: RFC 3986's
+/// other unreserved and reserved characters, and `%`.
+const LINK_PUNCTUATION: &str = "-._~:/?#@!$&'*+,;=%";
+/// The cursor over a link.
+const LINK_CURSOR: &str = "pointer";
+
+/// Opens a link's URI; [`launch_uri`] unless a test stands in.
+type Launcher = Rc<dyn Fn(&GhosttyView, &str)>;
 
 mod imp {
     use super::*;
@@ -92,6 +111,14 @@ mod imp {
         pub(super) pointer: Cell<(f64, f64)>,
         /// The cell of the last reported motion, so each cell is sent once.
         pub(super) motion_cell: Cell<Option<(u16, u16)>>,
+        /// The modifiers of the last pointer motion; `None` while the
+        /// pointer is outside the widget.
+        pub(super) hover: Cell<Option<gdk::ModifierType>>,
+        /// The link under the pointer, underlined.
+        pub(super) link: RefCell<Option<super::Link>>,
+        /// The link a Ctrl+press landed on, until its release.
+        pub(super) pressed_link: RefCell<Option<super::Link>>,
+        pub(super) launcher: RefCell<Option<super::Launcher>>,
         /// Whether the view has keyboard focus, from the focus controller.
         pub(super) focused: Cell<bool>,
         /// The blink's off phase; a stopped timer leaves it false.
@@ -148,6 +175,7 @@ impl GhosttyView {
         let imp = view.imp();
         imp.requested.set(shared.engine.size());
         imp.opacity.set(1.0);
+        imp.launcher.replace(Some(Rc::new(launch_uri)));
         imp.shared.replace(Some(shared));
         view.set_focusable(true);
         view.set_hexpand(true);
@@ -377,6 +405,18 @@ impl GhosttyView {
                 view.hover(motion.current_event_state(), (x, y));
             }
         });
+        let view = self.downgrade();
+        motion.connect_enter(move |motion, x, y| {
+            if let Some(view) = view.upgrade() {
+                view.hover(motion.current_event_state(), (x, y));
+            }
+        });
+        let view = self.downgrade();
+        motion.connect_leave(move |_| {
+            if let Some(view) = view.upgrade() {
+                view.pointer_left();
+            }
+        });
         self.add_controller(motion);
 
         let focus = gtk4::EventControllerFocus::new();
@@ -429,6 +469,10 @@ impl GhosttyView {
             let repeat_ms = self.settings().gtk_double_click_time().unsigned_abs();
             let repeat_px = f64::from(self.cell_size().0);
             let cell = self.cell_at(at.0, at.1);
+            let link = state
+                .contains(gdk::ModifierType::CONTROL_MASK)
+                .then(|| link_at(&imp.frame.borrow(), cell.1.into(), cell.0.into()));
+            imp.pressed_link.replace(link.flatten());
             shared
                 .engine
                 .selection_press(cell, at, time, repeat_ms, repeat_px);
@@ -463,10 +507,33 @@ impl GhosttyView {
                 self.report(&shared, ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, state, at);
             }
             Some(_) => {
-                shared.engine.selection_release(self.cell_at(at.0, at.1));
+                let cell = self.cell_at(at.0, at.1);
+                shared.engine.selection_release(cell);
                 self.copy_primary();
+                self.open_pressed_link(&shared, cell);
             }
             None => {}
+        }
+    }
+
+    /// A local release at `cell`: a Ctrl+press on a link opens it, unless
+    /// the press became a selection or the link is no longer here.
+    fn open_pressed_link(&self, shared: &Shared, (col, row): (u16, u16)) {
+        let imp = self.imp();
+        let Some(link) = imp.pressed_link.take() else {
+            return;
+        };
+        let selected = shared
+            .engine
+            .selection_text()
+            .is_some_and(|text| !text.is_empty());
+        let here = link_at(&imp.frame.borrow(), row.into(), col.into());
+        if selected || here.as_ref() != Some(&link) {
+            return;
+        }
+        let launcher = imp.launcher.borrow().clone();
+        if let Some(launch) = launcher {
+            launch(self, &link.uri);
         }
     }
 
@@ -558,16 +625,54 @@ impl GhosttyView {
         });
     }
 
-    /// The pointer moved to `at` with no drag in progress: motion for a
-    /// program tracking every move (mode 1003); drags report their own.
+    /// The pointer moved to `at`: the link under it lights up, and with no
+    /// drag in progress a program tracking every move (mode 1003) gets the
+    /// motion; drags report their own.
     fn hover(&self, state: gdk::ModifierType, at: (f64, f64)) {
         let imp = self.imp();
         imp.pointer.set(at);
+        imp.hover.set(Some(state));
         let Some(shared) = self.shared() else { return };
         if !self.button_held() && route(shared.engine.mouse_modes(), state, false) == Route::Report
         {
             self.report_motion(&shared, ffi::BUTTON_NONE, state, at);
         }
+        let link = self.link_under(&shared, &imp.frame.borrow());
+        if self.show_link(link) {
+            self.queue_draw();
+        }
+    }
+
+    /// The pointer left the widget.
+    fn pointer_left(&self) {
+        self.imp().hover.set(None);
+        if self.show_link(None) {
+            self.queue_draw();
+        }
+    }
+
+    /// The link in `frame` under the pointer. A program tracking the mouse
+    /// owns it, so links wait for the Shift that keeps events local.
+    fn link_under(&self, shared: &Shared, frame: &Frame) -> Option<Link> {
+        let state = self.imp().hover.get()?;
+        if route(shared.engine.mouse_modes(), state, false) != Route::Local {
+            return None;
+        }
+        let (x, y) = self.imp().pointer.get();
+        let (col, row) = self.cell_at(x, y);
+        link_at(frame, row.into(), col.into())
+    }
+
+    /// Make `link` the one underlined, with the cursor to match; `true` if
+    /// that changed anything.
+    fn show_link(&self, link: Option<Link>) -> bool {
+        let current = &self.imp().link;
+        if *current.borrow() == link {
+            return false;
+        }
+        self.set_cursor_from_name(link.is_some().then_some(LINK_CURSOR));
+        current.replace(link);
+        true
     }
 
     /// Keyboard focus entered or left: reported when the program enabled
@@ -771,6 +876,9 @@ impl GhosttyView {
         if !shared.engine.snapshot(&mut frame) {
             return;
         }
+        // Output and scrolling move text under a pointer that stays put.
+        self.show_link(self.link_under(&shared, &frame));
+        let link = self.imp().link.borrow();
         let info = frame.info;
         self.sync_blink(&info);
         let imp = self.imp();
@@ -787,7 +895,10 @@ impl GhosttyView {
         let marks = search_marks(&shared.engine.search_spans(), cols, rows);
         for row in 0..rows {
             let y = row as f32 * ch;
-            let cells = painted_row(&frame, row, &marks, cursor == Some(CursorShape::Block));
+            let mut cells = painted_row(&frame, row, &marks, cursor == Some(CursorShape::Block));
+            if let Some(link) = link.as_ref() {
+                link.underline(row, &mut cells);
+            }
 
             // Backgrounds: one rectangle per run of equal, non-default color.
             let mut col = 0;
@@ -1389,6 +1500,195 @@ fn px(pixels: i32) -> u32 {
     u32::try_from(pixels).unwrap_or(0)
 }
 
+/// A link on screen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Link {
+    uri: String,
+    /// Its viewport cells, row-major: a wrapped link spans rows.
+    cells: Range<usize>,
+}
+
+impl Link {
+    /// Underline this link's cells among `cells`, viewport row `row`.
+    fn underline(&self, row: usize, cells: &mut [Painted<'_>]) {
+        let line = row * cells.len();
+        for (col, cell) in cells.iter_mut().enumerate() {
+            if self.cells.contains(&(line + col)) {
+                // Single, in the text color; main's renderer draws it per
+                // run of equal style.
+                cell.underline = ffi::UNDERLINE_SINGLE;
+                cell.underline_rgb = None;
+            }
+        }
+    }
+}
+
+/// The link covering a viewport cell, if any: its logical line, the rows
+/// soft-wrapped together around `row`, is scanned whole.
+fn link_at(frame: &Frame, row: usize, col: usize) -> Option<Link> {
+    let (cols, rows) = (usize::from(frame.info.cols), usize::from(frame.info.rows));
+    if row >= rows || col >= cols {
+        return None;
+    }
+    let wraps = |row| {
+        frame
+            .cell(row, cols - 1)
+            .is_some_and(|cell| cell.wraps != 0)
+    };
+    let mut first = row;
+    while first > 0 && wraps(first - 1) {
+        first -= 1;
+    }
+    let mut last = row;
+    while last + 1 < rows && wraps(last) {
+        last += 1;
+    }
+    let line: Vec<char> = (first..=last)
+        .flat_map(|row| (0..cols).map(move |col| link_char(frame, row, col)))
+        .collect();
+    let target = (row - first) * cols + col;
+    let range = scan_links(&line, wraps(last))
+        .into_iter()
+        .find(|range| range.contains(&target))?;
+    let start = first * cols;
+    Some(Link {
+        uri: line[range.clone()].iter().collect(),
+        cells: start + range.start..start + range.end,
+    })
+}
+
+/// What a cell adds to a logical line, one `char` per cell so an index maps
+/// back to its cell: its character, or a space, which ends a link, for a
+/// cell that holds none, a whole cluster, or text a program hid.
+fn link_char(frame: &Frame, row: usize, col: usize) -> char {
+    let hidden = frame
+        .cell(row, col)
+        .is_some_and(|cell| cell.flags & ffi::CELL_INVISIBLE != 0);
+    match frame.grapheme(row, col) {
+        &[codepoint] if !hidden => char::from_u32(codepoint).unwrap_or(' '),
+        _ => ' ',
+    }
+}
+
+/// The links in a logical line, as ranges of it. Prose must never open
+/// anything, so text is a link only if all of this holds:
+///
+/// - It starts with one of [`LINK_SCHEMES`], in any case, and no scheme
+///   character comes right before that, so `git+https://` is not one.
+/// - It runs over ASCII URL characters. Anything else ends it, and so does
+///   a closing bracket that closes nothing in the link: `(https://a.b/c)`
+///   stops before the `)`, `https://a.b/c_(d)` keeps it.
+/// - [`LINK_TRAILING`] punctuation at its end is left out.
+/// - What remains has a target: a host for `http` and `https`, an address
+///   for `mailto`.
+///
+/// `cut_off` says the line goes on past `line`'s end, below the viewport:
+/// a link reaching that far is left out, its tail unknown.
+fn scan_links(line: &[char], cut_off: bool) -> Vec<Range<usize>> {
+    let mut links = Vec::new();
+    let mut start = 0;
+    while start < line.len() {
+        let Some(scheme) = scheme_at(line, start) else {
+            start += 1;
+            continue;
+        };
+        let target = start + scheme.len();
+        let run = link_run(line, target);
+        let mut end = run;
+        while end > target && LINK_TRAILING.contains(line[end - 1]) {
+            end -= 1;
+        }
+        let text: String = line[target..end].iter().collect();
+        if !(cut_off && run == line.len()) && link_target_valid(scheme, &text) {
+            links.push(start..end);
+        }
+        start = run;
+    }
+    links
+}
+
+/// The scheme of [`LINK_SCHEMES`] starting at `at`, on a word's start.
+fn scheme_at(line: &[char], at: usize) -> Option<&'static str> {
+    let in_word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.');
+    if at > 0 && in_word(line[at - 1]) {
+        return None;
+    }
+    LINK_SCHEMES.into_iter().find(|scheme| {
+        line.get(at..at + scheme.len()).is_some_and(|text| {
+            text.iter()
+                .zip(scheme.chars())
+                .all(|(c, s)| c.eq_ignore_ascii_case(&s))
+        })
+    })
+}
+
+/// Where the URL characters starting at `from` end.
+fn link_run(line: &[char], from: usize) -> usize {
+    let mut open = Vec::new();
+    for (at, &c) in line.iter().enumerate().skip(from) {
+        match c {
+            '(' | '[' => open.push(c),
+            ')' if open.pop() != Some('(') => return at,
+            ']' if open.pop() != Some('[') => return at,
+            ')' | ']' => {}
+            c if c.is_ascii_alphanumeric() || LINK_PUNCTUATION.contains(c) => {}
+            _ => return at,
+        }
+    }
+    line.len()
+}
+
+/// Whether `text`, what follows `scheme`, goes anywhere.
+fn link_target_valid(scheme: &str, text: &str) -> bool {
+    if scheme == MAILTO {
+        let address = text.split('?').next().unwrap_or(text);
+        address
+            .split_once('@')
+            .is_some_and(|(user, domain)| !user.is_empty() && host_valid(domain))
+    } else {
+        let authority = text.split(['/', '?', '#']).next().unwrap_or(text);
+        authority_valid(authority)
+    }
+}
+
+/// `[user@]host[:port]`, the host a name or a bracketed IPv6 address.
+fn authority_valid(authority: &str) -> bool {
+    let address = authority.rsplit('@').next().unwrap_or(authority);
+    let (host, port) = match address.rsplit_once(':') {
+        Some((host, port)) if !address.ends_with(']') => (host, Some(port)),
+        _ => (address, None),
+    };
+    let ipv6 = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .is_some_and(|host| host.parse::<std::net::Ipv6Addr>().is_ok());
+    let port_valid =
+        port.is_none_or(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()));
+    port_valid && (ipv6 || host_valid(host))
+}
+
+/// Dot-separated labels of letters, digits and inner hyphens.
+fn host_valid(host: &str) -> bool {
+    host.split('.').all(|label| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
+}
+
+/// Hand `uri` to the desktop's URI handler and go on: the handler runs
+/// outside Wayterm, which stays open. The failure is logged without the
+/// error's text, which may quote the URI, and a URI can carry a token.
+fn launch_uri(view: &GhosttyView, uri: &str) {
+    let parent = view.root().and_downcast::<gtk4::Window>();
+    gtk4::UriLauncher::new(uri).launch(parent.as_ref(), gio::Cancellable::NONE, |result| {
+        if result.is_err() {
+            eprintln!("Wayterm: could not open a link");
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1757,6 +2057,271 @@ mod tests {
             vec![0, advance, cell]
         );
     }
+
+    /// The links `scan_links` finds in `text`.
+    fn links(text: &str) -> Vec<String> {
+        let line: Vec<char> = text.chars().collect();
+        scan_links(&line, false)
+            .into_iter()
+            .map(|range| line[range].iter().collect())
+            .collect()
+    }
+
+    /// `text` written to a `cols` × `rows` terminal, as a frame.
+    fn written(cols: u16, rows: u16, text: &str) -> Frame {
+        let engine = super::super::engine::Engine::new(cols, rows).expect("engine");
+        engine.write(text.as_bytes());
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        frame
+    }
+
+    fn uri_at(frame: &Frame, row: usize, col: usize) -> Option<String> {
+        link_at(frame, row, col).map(|link| link.uri)
+    }
+
+    #[test]
+    fn the_known_schemes_make_links() {
+        for url in [
+            "https://example.com",
+            "http://example.com/a/b?c=d&e=%20#f",
+            "http://localhost:8080/",
+            "http://192.168.0.1/x",
+            "http://[::1]:8080/x",
+            "https://user@example.com/",
+            "HTTPS://EXAMPLE.COM/",
+            "mailto:someone@example.com",
+            "mailto:someone@example.com?subject=hi",
+        ] {
+            assert_eq!(links(url), [url]);
+            assert_eq!(links(&format!("see {url} now")), [url]);
+        }
+        assert_eq!(
+            links("http://a.example mailto:b@c.example https://d.example"),
+            [
+                "http://a.example",
+                "mailto:b@c.example",
+                "https://d.example"
+            ]
+        );
+    }
+
+    #[test]
+    fn anything_else_is_no_link() {
+        for text in [
+            "",
+            "   ",
+            "example.com",
+            "www.example.com",
+            "ftp://example.com/",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ssh://example.com",
+            // The scheme must start the word.
+            "xhttps://example.com",
+            "git+https://example.com",
+            "no-mailto:a@b.example",
+            // Nothing to go to.
+            "https://",
+            "https:///path",
+            "https://.",
+            "https://...",
+            "https://-",
+            "https://?q",
+            "https://:80",
+            "https://example.com:port/",
+            "http://[nope]/",
+            "mailto:",
+            "mailto:nobody",
+            "mailto:@example.com",
+            "mailto:someone@",
+            "mailto:a@b@c.example",
+        ] {
+            assert_eq!(links(text), [] as [&str; 0], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn trailing_punctuation_stays_out_of_a_link() {
+        let url = "https://example.com/a";
+        for text in [
+            "https://example.com/a.",
+            "https://example.com/a,",
+            "https://example.com/a;",
+            "https://example.com/a:",
+            "https://example.com/a!",
+            "https://example.com/a?",
+            "https://example.com/a...",
+            "https://example.com/a).",
+            "(https://example.com/a)",
+            "(https://example.com/a).",
+            "(see https://example.com/a), then",
+            "(https://example.com/a),more",
+            "[https://example.com/a]",
+            "<https://example.com/a>",
+            "\"https://example.com/a\"",
+            "'https://example.com/a'",
+            "`https://example.com/a`",
+            "*https://example.com/a*",
+            "https://example.com/a(",
+        ] {
+            assert_eq!(links(text), [url], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn closed_brackets_and_inner_punctuation_stay_in_a_link() {
+        for url in [
+            "https://en.example.org/wiki/Rust_(language)",
+            "https://example.com/a[1]/b",
+            "https://example.com/a.b,c;d:e!f",
+            "https://example.com/~me/?q=(a)(b)",
+        ] {
+            assert_eq!(links(url), [url]);
+            assert_eq!(links(&format!("({url})")), [url]);
+        }
+    }
+
+    #[test]
+    fn a_link_stops_at_what_a_url_cannot_hold() {
+        for (text, url) in [
+            ("https://example.com/a b", "https://example.com/a"),
+            ("https://example.com/a\"b", "https://example.com/a"),
+            ("https://example.com/a<b", "https://example.com/a"),
+            ("https://example.com/a|b", "https://example.com/a"),
+            ("https://example.com/a\\b", "https://example.com/a"),
+            ("https://example.com/\u{e9}", "https://example.com/"),
+            (
+                "https://example.com/\u{65e5}\u{672c}",
+                "https://example.com/",
+            ),
+        ] {
+            assert_eq!(links(text), [url], "{text:?}");
+        }
+        // Non-ASCII before the scheme is no scheme character.
+        assert_eq!(
+            links("\u{65e5}\u{672c}https://example.com/"),
+            ["https://example.com/"]
+        );
+    }
+
+    #[test]
+    fn a_link_running_off_the_line_end_is_dropped_when_cut_off() {
+        let scan = |text: &str, cut_off| {
+            let line: Vec<char> = text.chars().collect();
+            scan_links(&line, cut_off).len()
+        };
+        assert_eq!(scan("https://example.com/a", false), 1);
+        assert_eq!(scan("https://example.com/a", true), 0);
+        // Trailing punctuation does not hide that it runs on.
+        assert_eq!(scan("https://example.com/a.", true), 0);
+        // One that ended before the cut stands.
+        assert_eq!(scan("https://example.com/a b", true), 1);
+        assert_eq!(scan("(https://example.com/a)", true), 1);
+    }
+
+    #[test]
+    fn the_snapshot_marks_soft_wrapped_rows_on_their_last_cell() {
+        let frame = written(10, 4, "0123456789abc\r\n0123456789\r\nx");
+        let wraps = |row, col| frame.cell(row, col).unwrap().wraps != 0;
+        assert!(wraps(0, 9));
+        assert!(!wraps(0, 8));
+        assert!(!wraps(1, 9), "a soft wrap's last row");
+        assert!(!wraps(2, 9), "full, but ended by a line feed");
+    }
+
+    #[test]
+    fn a_soft_wrapped_link_is_one_link_from_any_of_its_cells() {
+        let url = "https://example.com/some/long/path";
+        let frame = written(16, 4, &format!("go {url} ok"));
+        for (row, col) in [(0, 3), (0, 15), (1, 0), (1, 15), (2, 0), (2, 4)] {
+            assert_eq!(
+                uri_at(&frame, row, col).as_deref(),
+                Some(url),
+                "{row},{col}"
+            );
+        }
+        assert_eq!(uri_at(&frame, 0, 2), None);
+        assert_eq!(uri_at(&frame, 2, 6), None, "the word after it");
+        assert_eq!(uri_at(&frame, 3, 0), None);
+        let link = link_at(&frame, 1, 0).unwrap();
+        assert_eq!(link.cells, 3..3 + url.len());
+    }
+
+    #[test]
+    fn a_hard_line_break_ends_a_link_at_the_last_column() {
+        let url = "https://example.com/";
+        let frame = written(20, 3, &format!("{url}\r\nmore"));
+        assert_eq!(uri_at(&frame, 0, 0).as_deref(), Some(url));
+        assert_eq!(uri_at(&frame, 1, 0), None);
+    }
+
+    #[test]
+    fn a_link_cut_by_the_bottom_of_the_viewport_is_not_opened() {
+        let engine = super::super::engine::Engine::new(16, 2).expect("engine");
+        engine.write(b"https://example.com/some/long/path");
+        let mut frame = Frame::default();
+        // The bottom of the screen: the scheme is gone above it.
+        assert!(engine.snapshot(&mut frame));
+        assert_eq!(uri_at(&frame, 0, 0), None);
+        // Scrolled back: the tail is gone below it.
+        engine.scroll(Scroll::By(-1));
+        assert!(engine.snapshot(&mut frame));
+        assert!(frame.row_text(0).starts_with("https://"));
+        assert_eq!(uri_at(&frame, 0, 0), None);
+    }
+
+    #[test]
+    fn cells_that_hold_no_single_character_end_a_link() {
+        // Nothing, or off the grid.
+        let frame = written(20, 2, "");
+        assert_eq!(uri_at(&frame, 0, 0), None);
+        assert_eq!(uri_at(&frame, 5, 0), None);
+        assert_eq!(uri_at(&frame, 0, 50), None);
+        assert_eq!(link_at(&Frame::default(), 0, 0), None);
+
+        // Wide characters before and after, and their tail cells.
+        let frame = written(40, 2, "\u{65e5}\u{672c}https://example.com/a\u{65e5}");
+        assert_eq!(
+            uri_at(&frame, 0, 4).as_deref(),
+            Some("https://example.com/a")
+        );
+        assert_eq!(uri_at(&frame, 0, 1), None);
+        assert_eq!(uri_at(&frame, 0, 25), None);
+
+        // A cluster is not the character it starts with.
+        let frame = written(40, 2, "https://example.com/e\u{301}x");
+        assert_eq!(
+            uri_at(&frame, 0, 0).as_deref(),
+            Some("https://example.com/")
+        );
+        assert_eq!(uri_at(&frame, 0, 20), None);
+
+        // Text a program hid is not there to click.
+        let frame = written(40, 2, "\x1b[8mhttps://example.com/\x1b[0m");
+        assert_eq!(uri_at(&frame, 0, 0), None);
+    }
+
+    #[test]
+    fn a_link_underlines_its_cells_on_each_of_its_rows() {
+        let frame = written(8, 3, "ab http://c.example d");
+        let link = link_at(&frame, 0, 3).unwrap();
+        let underlined = |row| -> Vec<bool> {
+            let mut cells = painted_row(&frame, row, &[], false);
+            link.underline(row, &mut cells);
+            cells
+                .iter()
+                .map(|cell| cell.underline != ffi::UNDERLINE_NONE)
+                .collect()
+        };
+        let cells = |n: usize, start: usize, end: usize| -> Vec<bool> {
+            (0..n).map(|col| (start..end).contains(&col)).collect()
+        };
+        assert_eq!(link.uri, "http://c.example");
+        assert_eq!(underlined(0), cells(8, 3, 8));
+        assert_eq!(underlined(1), cells(8, 0, 8));
+        assert_eq!(underlined(2), cells(8, 0, 3));
+    }
 }
 
 /// The widget check needs a display. It is its own test, not part of
@@ -1878,6 +2443,7 @@ mod ghostty_display {
         shell_watchers(&backend, &view);
         search_highlight(&backend, &view);
         primary_selection(&backend, &view, &mut rx);
+        links_hover_and_open(&backend, &view, &mut rx);
         window.close();
 
         // The factory follows the installed preference; VTE is the default.
@@ -2583,6 +3149,115 @@ mod ghostty_display {
         click(shift, 30_300, 7);
         assert_eq!(backend.selected_text().as_deref(), Some("beta"));
         backend.write(b"\x1b[?1000l");
+        while rx.try_recv().is_ok() {}
+    }
+
+    /// Hovering a link underlines it and sets the cursor, Ctrl+click opens
+    /// it, and a program tracking the mouse keeps both until Shift. The
+    /// desktop's handler is stubbed out: nothing here leaves the process.
+    fn links_hover_and_open(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+        let log = Rc::clone(&opened);
+        let stub: Launcher = Rc::new(move |_, uri| log.borrow_mut().push(uri.to_owned()));
+        let desktop = view.imp().launcher.replace(Some(stub));
+        assert!(desktop.is_some(), "the desktop's handler is the default");
+        assert!(backend.features().url_detection);
+
+        let none = gdk::ModifierType::empty();
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+        let metrics = view.metrics();
+        let (cell_w, cell_h) = (metrics.width, metrics.height);
+        let at = |col: i32| (f64::from(col * cell_w + cell_w / 2), f64::from(cell_h / 2));
+        let click = |state, time, col| {
+            view.press(state, time, at(col));
+            view.release(state, at(col));
+        };
+        let cursor = || view.cursor().and_then(|cursor| cursor.name());
+        let pointer = || cursor().as_deref() == Some(LINK_CURSOR);
+        let underlined = |col: i32| {
+            let (x, y) = (
+                (col * cell_w + cell_w / 2) as usize,
+                metrics.underline.0 as usize,
+            );
+            render(view)(x..x + 1, y..y + 1)
+        };
+        let took = || std::mem::take(&mut *opened.borrow_mut());
+        let url = "https://example.com/x";
+
+        view.pointer_left();
+        backend.reset();
+        backend.write(format!("see {url} now").as_bytes());
+        assert!(!underlined(4), "no hover, no underline");
+        assert_eq!(cursor(), None);
+
+        // On and off the link.
+        view.hover(none, at(4));
+        assert!(pointer());
+        for col in [4, 14, 24] {
+            assert!(underlined(col), "column {col}");
+        }
+        assert!(!underlined(1) && !underlined(25));
+        view.hover(none, at(1));
+        assert_eq!(cursor(), None);
+        assert!(!underlined(4));
+
+        // Output moves the text under a pointer that stays put.
+        view.hover(none, at(4));
+        backend.reset();
+        backend.write(b"nothing to see");
+        assert!(!underlined(4));
+        assert_eq!(cursor(), None);
+        backend.reset();
+        backend.write(format!("see {url} now").as_bytes());
+        assert!(underlined(4));
+        assert!(pointer());
+
+        // Leaving the widget restores everything.
+        view.pointer_left();
+        assert_eq!(cursor(), None);
+        assert!(!underlined(4));
+
+        // Only a Ctrl+click on the link opens it.
+        click(none, 40_000, 5);
+        click(ctrl, 41_000, 1);
+        assert_eq!(took(), [] as [&str; 0]);
+        click(ctrl, 42_000, 5);
+        assert_eq!(took(), [url]);
+
+        // A drag selects instead, and a release off the link opens nothing.
+        view.press(ctrl, 43_000, at(5));
+        view.drag_to(ctrl, at(9));
+        view.release(ctrl, at(9));
+        assert!(backend.selected_text().is_some_and(|text| !text.is_empty()));
+        assert_eq!(took(), [] as [&str; 0]);
+        view.press(ctrl, 44_000, at(5));
+        view.release(ctrl, at(1));
+        assert_eq!(took(), [] as [&str; 0]);
+
+        // A program tracking the mouse gets the click, until Shift.
+        backend.write(b"\x1b[?1000h\x1b[?1006h");
+        view.hover(none, at(4));
+        assert_eq!(cursor(), None);
+        while rx.try_recv().is_ok() {}
+        click(ctrl, 45_000, 5);
+        assert_eq!(took(), [] as [&str; 0]);
+        let report = std::iter::from_fn(|| rx.try_recv().ok()).any(|event| {
+            matches!(event, TerminalEvent::DataOut(bytes) if is_pointer_or_focus_report(&bytes))
+        });
+        assert!(report, "the press went to the program");
+        view.hover(shift, at(4));
+        assert!(pointer());
+        click(ctrl | shift, 46_000, 5);
+        assert_eq!(took(), [url]);
+        backend.write(b"\x1b[?1000l\x1b[?1006l");
+
+        view.pointer_left();
+        view.imp().launcher.replace(desktop);
         while rx.try_recv().is_ok() {}
     }
 

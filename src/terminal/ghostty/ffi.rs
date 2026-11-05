@@ -81,6 +81,8 @@ pub struct WtCell {
     /// Codepoints in the cluster, base included: 0 = empty, 1 = just
     /// `codepoint`.
     pub grapheme_len: u16,
+    /// Non-zero on a row's last cell when the row soft-wraps into the next.
+    pub wraps: u8,
     /// With `grapheme_len` > 1: where the whole cluster starts in the
     /// snapshot's grapheme buffer.
     pub grapheme: u32,
@@ -276,7 +278,20 @@ extern "C" {
     pub fn wt_ghostty_span_size() -> usize;
     pub fn wt_ghostty_cell_grapheme_offset() -> usize;
     pub fn wt_ghostty_cell_grapheme_len_offset() -> usize;
+    pub fn wt_ghostty_cell_wraps_offset() -> usize;
     pub fn wt_ghostty_cell_underline_offset() -> usize;
     pub fn wt_ghostty_cell_underline_rgb_offset() -> usize;
     pub fn wt_ghostty_cell_underline_has_rgb_offset() -> usize;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wrap_flag_sits_where_c_puts_it() {
+        // SAFETY: a plain getter.
+        let wraps = unsafe { wt_ghostty_cell_wraps_offset() };
+        assert_eq!(std::mem::offset_of!(WtCell, wraps), wraps);
+    }
 }

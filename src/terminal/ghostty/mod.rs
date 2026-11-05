@@ -151,7 +151,7 @@ impl TerminalBackend for GhosttyBackend {
             search: true,
             color_schemes: true,
             scrollback_search: true,
-            url_detection: false,
+            url_detection: true,
             sixel_graphics: false,
             // libghostty-vt parses Kitty graphics; the widget draws no
             // images.
