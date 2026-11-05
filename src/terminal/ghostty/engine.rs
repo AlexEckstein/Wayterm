@@ -566,6 +566,20 @@ mod tests {
         };
         assert_eq!(std::mem::offset_of!(Cell, grapheme), grapheme);
         assert_eq!(std::mem::offset_of!(Cell, grapheme_len), grapheme_len);
+        // SAFETY: plain getters.
+        let (underline, underline_rgb, underline_has_rgb) = unsafe {
+            (
+                ffi::wt_ghostty_cell_underline_offset(),
+                ffi::wt_ghostty_cell_underline_rgb_offset(),
+                ffi::wt_ghostty_cell_underline_has_rgb_offset(),
+            )
+        };
+        assert_eq!(std::mem::offset_of!(Cell, underline), underline);
+        assert_eq!(std::mem::offset_of!(Cell, underline_rgb), underline_rgb);
+        assert_eq!(
+            std::mem::offset_of!(Cell, underline_has_rgb),
+            underline_has_rgb
+        );
     }
 
     #[test]
@@ -684,6 +698,64 @@ mod tests {
         let y = frame.cell(0, 1).unwrap();
         assert_eq!(y.flags, 0);
         assert_eq!(y.has_bg, 0);
+    }
+
+    /// Each SGR underline form reaches the cell as its own style, and the
+    /// forms that turn it off export none.
+    #[test]
+    fn sgr_underline_styles_are_exported() {
+        let engine = engine();
+        engine.write(
+            b"\x1b[4ma\x1b[4:1mb\x1b[4:2mc\x1b[21md\x1b[4:3me\x1b[4:4mf\x1b[4:5mg\
+              \x1b[4:0mh\x1b[4:3mi\x1b[24mj\x1b[4:3mk\x1b[0ml",
+        );
+        let frame = frame(&engine);
+        let styles: Vec<u8> = (0..12)
+            .map(|col| frame.cell(0, col).unwrap().underline)
+            .collect();
+        assert_eq!(
+            styles,
+            [
+                ffi::UNDERLINE_SINGLE,
+                ffi::UNDERLINE_SINGLE,
+                ffi::UNDERLINE_DOUBLE,
+                ffi::UNDERLINE_DOUBLE,
+                ffi::UNDERLINE_CURLY,
+                ffi::UNDERLINE_DOTTED,
+                ffi::UNDERLINE_DASHED,
+                ffi::UNDERLINE_NONE,
+                ffi::UNDERLINE_CURLY,
+                ffi::UNDERLINE_NONE,
+                ffi::UNDERLINE_CURLY,
+                ffi::UNDERLINE_NONE,
+            ]
+        );
+    }
+
+    /// SGR 58 sets the underline color in each of its forms, a palette
+    /// index through the palette in effect, and SGR 59 and 0 drop it.
+    #[test]
+    fn sgr_underline_color_is_resolved_and_reset() {
+        let engine = engine();
+        engine.write(b"\x1b]4;1;rgb:12/34/56\x07");
+        engine.write(
+            b"\x1b[4ma\x1b[58;2;255;128;0mb\x1b[58:2::1:2:3mc\x1b[58;5;1md\x1b[58:5:1me\
+              \x1b[59mf\x1b[58;2;9;9;9mg\x1b[0mh",
+        );
+        let frame = frame(&engine);
+        let color = |col| {
+            let cell = frame.cell(0, col).unwrap();
+            (cell.underline_has_rgb != 0).then_some(cell.underline_rgb)
+        };
+        assert_eq!(color(0), None);
+        assert_eq!(color(1), Some([255, 128, 0]));
+        assert_eq!(color(2), Some([1, 2, 3]));
+        assert_eq!(color(3), Some([0x12, 0x34, 0x56]));
+        assert_eq!(color(4), Some([0x12, 0x34, 0x56]));
+        assert_eq!(color(5), None, "SGR 59");
+        assert_eq!(frame.cell(0, 5).unwrap().underline, ffi::UNDERLINE_SINGLE);
+        assert_eq!(color(6), Some([9, 9, 9]));
+        assert_eq!(color(7), None, "SGR 0");
     }
 
     fn rgb([r, g, b]: [u8; 3]) -> Rgb {

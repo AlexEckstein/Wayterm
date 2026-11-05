@@ -25,7 +25,6 @@
 /* Cell flags (mirrored in ffi.rs). */
 #define WT_CELL_BOLD (1u << 0)
 #define WT_CELL_ITALIC (1u << 1)
-#define WT_CELL_UNDERLINE (1u << 2)
 #define WT_CELL_STRIKE (1u << 3)
 #define WT_CELL_INVERSE (1u << 4)
 #define WT_CELL_SELECTED (1u << 5)
@@ -83,8 +82,11 @@ typedef struct {
   uint32_t codepoint; /* the grapheme's base codepoint; 0 = empty */
   uint8_t fg[3];
   uint8_t bg[3];
+  uint8_t underline_rgb[3];
   uint8_t flags;
-  uint8_t has_bg;        /* 0 = default background */
+  uint8_t has_bg;            /* 0 = default background */
+  uint8_t underline_has_rgb; /* 0 = the line takes the text color */
+  uint8_t underline;         /* GHOSTTY_SGR_UNDERLINE_*; 0 = none */
   uint16_t grapheme_len; /* codepoints in the cluster, base included:
                             0 = empty, 1 = just `codepoint` */
   uint32_t grapheme;     /* with grapheme_len > 1: where the whole cluster
@@ -923,11 +925,35 @@ size_t wt_ghostty_cell_grapheme_offset(void) {
 size_t wt_ghostty_cell_grapheme_len_offset(void) {
   return offsetof(WtCell, grapheme_len);
 }
+size_t wt_ghostty_cell_underline_offset(void) {
+  return offsetof(WtCell, underline);
+}
+size_t wt_ghostty_cell_underline_rgb_offset(void) {
+  return offsetof(WtCell, underline_rgb);
+}
+size_t wt_ghostty_cell_underline_has_rgb_offset(void) {
+  return offsetof(WtCell, underline_has_rgb);
+}
 
 static void rgb(uint8_t out[3], GhosttyColorRgb c) {
   out[0] = c.r;
   out[1] = c.g;
   out[2] = c.b;
+}
+
+/* A style color in RGB, a palette index through `palette`; false if unset. */
+static bool style_rgb(uint8_t out[3], GhosttyStyleColor c,
+                      const GhosttyColorRgb *palette) {
+  switch (c.tag) {
+    case GHOSTTY_STYLE_COLOR_PALETTE:
+      rgb(out, palette[c.value.palette]);
+      return true;
+    case GHOSTTY_STYLE_COLOR_RGB:
+      rgb(out, c.value.rgb);
+      return true;
+    default:
+      return false;
+  }
 }
 
 /* Snapshot the viewport into `cells` (row-major, frame->cols per row),
@@ -1028,8 +1054,9 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
             GHOSTTY_SUCCESS) {
           if (style.bold) cell->flags |= WT_CELL_BOLD;
           if (style.italic) cell->flags |= WT_CELL_ITALIC;
-          if (style.underline != GHOSTTY_SGR_UNDERLINE_NONE)
-            cell->flags |= WT_CELL_UNDERLINE;
+          cell->underline = (uint8_t)style.underline;
+          cell->underline_has_rgb = style_rgb(
+              cell->underline_rgb, style.underline_color, colors.palette);
           if (style.strikethrough) cell->flags |= WT_CELL_STRIKE;
           if (style.inverse) cell->flags |= WT_CELL_INVERSE;
           if (style.invisible) cell->flags |= WT_CELL_INVISIBLE;
