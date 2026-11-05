@@ -73,6 +73,7 @@ mod gtk_tests {
         super::icons::gtk_tests::custom_svg_resolves_and_picker_round_trips();
         super::dialogs::folder::gtk_tests::edit_folder_prefills_name_and_icon();
         super::settings::gtk_tests::pages_and_general_switches();
+        super::tabs::gtk_tests::terminal_notifications_reach_the_desktop_hook();
         super::tabs::gtk_tests::focusing_a_tab_moves_focus_to_its_terminal();
         super::tabs::gtk_tests::reconnect_does_not_steal_focus();
         super::tabs::gtk_tests::closing_a_tab_focuses_the_next_terminal();

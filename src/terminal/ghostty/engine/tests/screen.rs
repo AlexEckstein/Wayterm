@@ -415,6 +415,170 @@ fn reset_clears_the_screen() {
     assert_eq!(frame(&engine).row_text(0).trim(), "");
 }
 
+use super::selection::drag_select;
+
+/// A prompt as a shell marks it, `$ ` then the input.
+fn shell_prompt(engine: &Engine) {
+    engine.write(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+}
+
+/// A finished command as a shell marks it: prompt, input, output, end.
+fn shell_command(engine: &Engine, command: &str, output: &str) {
+    shell_prompt(engine);
+    let text = format!("{command}\r\n\x1b]133;C\x07{output}\x1b]133;D;0\x07");
+    engine.write(text.as_bytes());
+}
+
+/// Three commands of four lines each, idle at a fourth prompt. Five
+/// rows on screen: `three`'s prompt is the newest in the scrollback.
+fn shell_session() -> Engine {
+    let engine = engine();
+    for name in ["one", "two", "three"] {
+        let output: String = (1..=4).map(|n| format!("{name} {n}\r\n")).collect();
+        shell_command(&engine, name, &output);
+    }
+    shell_prompt(&engine);
+    engine
+}
+
+fn output_of(name: &str) -> String {
+    (1..=4)
+        .map(|n| format!("{name} {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn top_row(engine: &Engine) -> String {
+    frame(engine).row_text(0).trim_end().to_string()
+}
+
+#[test]
+fn prompt_scrolling_steps_between_prompts_and_clamps() {
+    let engine = shell_session();
+    let bottom = top_row(&engine);
+    for expected in ["$ three", "$ two", "$ one", "$ one"] {
+        engine.scroll(Scroll::Prompts(-1));
+        assert_eq!(top_row(&engine), expected);
+    }
+    for expected in ["$ two", "$ three"] {
+        engine.scroll(Scroll::Prompts(1));
+        assert_eq!(top_row(&engine), expected);
+    }
+    // The idle prompt is on screen: the viewport goes back to the bottom.
+    engine.scroll(Scroll::Prompts(1));
+    assert_eq!(top_row(&engine), bottom);
+    engine.scroll(Scroll::Prompts(1));
+    assert_eq!(top_row(&engine), bottom);
+
+    engine.scroll(Scroll::Prompts(-2));
+    assert_eq!(top_row(&engine), "$ two");
+    engine.scroll(Scroll::Prompts(0));
+    assert_eq!(top_row(&engine), "$ two");
+}
+
+#[test]
+fn prompt_scrolling_stays_put_without_marks() {
+    let engine = engine();
+    for line in 0..20 {
+        engine.write(format!("line {line}\r\n").as_bytes());
+    }
+    let bottom = top_row(&engine);
+    engine.scroll(Scroll::Prompts(-1));
+    assert_eq!(top_row(&engine), bottom);
+    engine.scroll(Scroll::By(-3));
+    let scrolled = top_row(&engine);
+    assert_ne!(scrolled, bottom);
+    engine.scroll(Scroll::Prompts(-1));
+    assert_eq!(top_row(&engine), scrolled);
+    engine.scroll(Scroll::Prompts(1));
+    assert_eq!(top_row(&engine), scrolled);
+}
+
+#[test]
+fn at_the_bottom_the_last_output_is_selected() {
+    let engine = shell_session();
+    assert!(engine.select_output());
+    assert_eq!(engine.selection_text(), Some(output_of("three")));
+    // The prompts of commands that printed nothing are passed over.
+    shell_command(&engine, "true", "");
+    shell_prompt(&engine);
+    assert!(engine.select_output());
+    assert_eq!(engine.selection_text(), Some(output_of("three")));
+}
+
+#[test]
+fn after_a_jump_that_prompts_output_is_selected() {
+    let engine = shell_session();
+    engine.scroll(Scroll::Prompts(-2));
+    assert_eq!(top_row(&engine), "$ two");
+    assert!(engine.select_output());
+    assert_eq!(engine.selection_text(), Some(output_of("two")));
+}
+
+#[test]
+fn scrolled_into_output_that_output_is_selected() {
+    let engine = shell_session();
+    engine.scroll(Scroll::Top);
+    engine.scroll(Scroll::By(2));
+    assert_eq!(top_row(&engine), "one 2");
+    assert!(engine.select_output());
+    assert_eq!(engine.selection_text(), Some(output_of("one")));
+}
+
+#[test]
+fn the_next_prompt_ends_output_without_a_command_end() {
+    let engine = engine();
+    shell_prompt(&engine);
+    engine.write(b"old\r\n\x1b]133;C\x07no end\r\n");
+    shell_prompt(&engine);
+    assert!(engine.select_output());
+    assert_eq!(engine.selection_text().as_deref(), Some("no end"));
+}
+
+#[test]
+fn a_running_commands_output_so_far_is_selected() {
+    let engine = engine();
+    shell_prompt(&engine);
+    engine.write(b"run\r\n\x1b]133;C\x07so far\r\nstill");
+    assert!(engine.select_output());
+    assert_eq!(engine.selection_text().as_deref(), Some("so far\nstill"));
+}
+
+#[test]
+fn wrapped_output_is_selected_whole() {
+    let engine = engine();
+    let long = "x".repeat(30);
+    shell_command(&engine, "long", &format!("{long}\r\n"));
+    shell_prompt(&engine);
+    assert!(engine.select_output());
+    assert_eq!(engine.selection_text(), Some(long));
+}
+
+#[test]
+fn nothing_is_selected_without_marks_or_output() {
+    let engine = engine();
+    engine.write(b"plain\r\nbash");
+    assert!(!engine.select_output());
+    assert_eq!(engine.selection_text(), None);
+
+    // An existing selection stays.
+    drag_select(&engine, (0, 0), (4, 0));
+    assert!(!engine.select_output());
+    assert_eq!(engine.selection_text().as_deref(), Some("plain"));
+
+    // Marks, but nothing printed yet.
+    let engine = self::engine();
+    shell_prompt(&engine);
+    assert!(!engine.select_output());
+    assert_eq!(engine.selection_text(), None);
+
+    // The alternate screen has no marks of its own.
+    let engine = shell_session();
+    engine.write(b"\x1b[?1049hfull screen");
+    assert!(!engine.select_output());
+    assert_eq!(engine.selection_text(), None);
+}
+
 #[test]
 fn scrolling_moves_the_viewport() {
     let engine = engine();

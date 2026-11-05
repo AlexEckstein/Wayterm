@@ -14,6 +14,12 @@ pub enum Effect {
     Title(String),
     /// The directory the shell reported, raw: a `file://` URI for OSC 7.
     Pwd(String),
+    /// A desktop notification (OSC 9, OSC 777); OSC 9 has no title, so
+    /// `title` is empty.
+    Notification {
+        title: String,
+        body: String,
+    },
     /// A program set a clipboard (OSC 52, OSC 1337 Copy).
     ClipboardWrite {
         destination: ClipboardDestination,

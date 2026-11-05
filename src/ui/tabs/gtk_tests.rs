@@ -7,13 +7,51 @@ use gtk4::glib;
 
 use super::ssh::{follow_terminal_directory, mark_sidebar_attached};
 use super::terminal::{
-    focus_after_connect, focus_terminal, keep_shell_directory, show_session_ended, terminal_state,
+    focus_after_connect, focus_terminal, keep_shell_directory, show_session_ended,
+    spawn_notification_drain, terminal_state,
 };
 use super::*;
 use crate::hotkeys::engine::focus_within;
 use crate::terminal::color_scheme::{Brightness, Rgb, DARK, LIGHT};
 use crate::terminal::{create_terminal, TerminalDefaults};
 use vte4::prelude::*;
+
+/// A tab out of view posts through the drain, named by its session when
+/// the program gave no title; a burst posts once; the drain ends with the
+/// channel. The window here is never active, so every tab is out of view
+/// (`tray::should_notify` covers the rest without a display).
+pub(in crate::ui) fn terminal_notifications_reach_the_desktop_hook() {
+    let notebook = gtk4::Notebook::new();
+    let window = gtk4::Window::new();
+    window.set_child(Some(&notebook));
+    let session = SessionConfig {
+        id: 1,
+        name: "prod-web".into(),
+        session_type: SessionType::LocalShell,
+        ..Default::default()
+    };
+    let page = page_content(&Rc::new(session.clone()));
+    notebook.append_page(&page, None::<&gtk4::Widget>);
+
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    let posted: Rc<RefCell<Vec<crate::ui::tray::Alert>>> = Rc::default();
+    let sink = posted.clone();
+    spawn_notification_drain(&notebook, &page, &session, rx, move |alert| {
+        sink.borrow_mut().push(alert.clone());
+    });
+    for body in ["done", "dropped by the limit"] {
+        tx.try_send((String::new(), body.to_string())).unwrap();
+    }
+    drop(tx);
+    let context = glib::MainContext::default();
+    while context.iteration(false) {}
+
+    let posted = posted.borrow();
+    assert_eq!(posted.len(), 1, "{posted:?}");
+    assert_eq!(posted[0].title, "prod-web");
+    assert_eq!(posted[0].body, "done");
+    window.close();
+}
 
 /// Focusing the current tab hands keyboard focus from the session tree
 /// to its terminal; a tab in the background never takes it.

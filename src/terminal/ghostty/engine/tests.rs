@@ -2,6 +2,7 @@ mod clipboard;
 mod graphics;
 mod input;
 mod links;
+mod notifications;
 mod screen;
 mod search;
 mod selection;

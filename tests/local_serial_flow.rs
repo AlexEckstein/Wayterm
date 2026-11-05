@@ -35,8 +35,9 @@ fn local_flow() -> Flow {
         backend: Arc::new(backend.clone()),
         events,
     };
-    let (tab, state_rx) =
-        TerminalTab::new(&config, None, terminal, &ctx, 24, 80).expect("local tab wires");
+    let (notifications, _) = mpsc::channel(1);
+    let (tab, state_rx) = TerminalTab::new(&config, None, terminal, notifications, &ctx, 24, 80)
+        .expect("local tab wires");
     Flow {
         tab,
         state_rx,

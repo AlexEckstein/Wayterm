@@ -217,6 +217,7 @@ pub struct WtMouse {
 
 pub type EffectFn =
     unsafe extern "C" fn(userdata: *mut c_void, kind: c_int, data: *const u8, len: usize);
+pub type NotificationFn = unsafe extern "C" fn(*mut c_void, *const u8, usize, *const u8, usize);
 
 /// Decodes a PNG into the buffer `wt_ghostty_png_pixels` gives for `sink`.
 pub type PngFn = unsafe extern "C" fn(data: *const u8, len: usize, sink: *mut c_void) -> bool;
@@ -229,6 +230,7 @@ extern "C" {
         effect: Option<EffectFn>,
         userdata: *mut c_void,
     );
+    pub fn wt_ghostty_set_notification(g: *mut WtGhostty, notification: Option<NotificationFn>);
     pub fn wt_ghostty_write(g: *mut WtGhostty, data: *const u8, len: usize);
     pub fn wt_ghostty_resize(
         g: *mut WtGhostty,
@@ -257,6 +259,7 @@ extern "C" {
         len: *mut usize,
     ) -> c_int;
     pub fn wt_ghostty_select_all(g: *mut WtGhostty) -> c_int;
+    pub fn wt_ghostty_select_output(g: *mut WtGhostty) -> c_int;
     pub fn wt_ghostty_clear_selection(g: *mut WtGhostty);
     pub fn wt_ghostty_selection_press(
         g: *mut WtGhostty,

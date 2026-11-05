@@ -265,6 +265,20 @@ is never fatal: closing the window quits.
 A dropped connection posts a desktop notification through
 `gio::Notification`: "Wayterm" / "`session` connection lost".
 
+A program's own notifications reach the tray too (doc 02:
+`TerminalEvent::Notification`): OSC 9 and OSC 777 (`notify`) from a
+remote shell arrive as `(title, body)`, raised as engine effects like
+any other, and a bounded queue hands them from the tab's pump to a
+drain on the main context. The drain keeps one alert a second at
+most (`NOTIFICATION_INTERVAL`), a refused one pushing the window
+back; an alert is dropped when its body says nothing to say, when
+the tab is the one in view, and when the queue has shed it. The
+text arrives from the remote side: control characters — a NUL would
+cut GDK's string short — are stripped, so titles and bodies are
+single lines of text; a blank title falls back to the session's
+name. The id is stable per tab, in the pattern of the disconnect
+alert's, so repeated alerts replace each other.
+
 ## Limitations
 
 - Only global shortcuts reach RDP and VNC tabs; there is no per-tab

@@ -29,6 +29,9 @@ use crate::transport::connection::SshConnection;
 use crate::transport::factory::create_transport;
 use crate::transport::types::{Transport, TransportError, TransportEvent};
 
+/// A program's desktop notification, as `(title, body)`.
+pub type Notification = (String, String);
+
 /// How long [`TerminalTab::close`] lets the pump disconnect before aborting it.
 const CLOSE_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -47,12 +50,14 @@ impl TerminalTab {
     /// `initial_cols` are the widget's measured grid (never a hardcoded
     /// 80×24). Returns the tab and its state channel: every transport event
     /// that is not terminal output, including the pump's connect failure.
+    /// The terminal's desktop notifications go to `notifications`.
     ///
     /// Must run on the thread that owns `main_ctx`, inside a tokio runtime.
     pub fn new(
         config: &SessionConfig,
         connection: Option<Arc<SshConnection>>,
         terminal: TerminalHandle,
+        notifications: mpsc::Sender<Notification>,
         main_ctx: &glib::MainContext,
         initial_rows: u32,
         initial_cols: u32,
@@ -66,7 +71,12 @@ impl TerminalTab {
             initial_cols,
         )?;
         Ok(Self::wire(
-            transport, event_tx, event_rx, terminal, main_ctx,
+            transport,
+            event_tx,
+            event_rx,
+            terminal,
+            notifications,
+            main_ctx,
         ))
     }
 
@@ -77,6 +87,7 @@ impl TerminalTab {
         events: mpsc::Sender<TransportEvent>,
         mut event_rx: mpsc::Receiver<TransportEvent>,
         terminal: TerminalHandle,
+        notifications: mpsc::Sender<Notification>,
         main_ctx: &glib::MainContext,
     ) -> (Self, mpsc::UnboundedReceiver<TransportEvent>) {
         let TerminalHandle {
@@ -153,6 +164,11 @@ impl TerminalTab {
                     }
                     Some(TerminalEvent::SizeChange { rows, cols }) => {
                         transport.resize(rows, cols).await.ok();
+                    }
+                    Some(TerminalEvent::Notification { title, body }) => {
+                        // Shed when the drain cannot keep up: a full queue
+                        // must not block the keystrokes behind it.
+                        let _ = notifications.try_send((title, body));
                     }
                     Some(TerminalEvent::Closed) | None => break,
                     Some(_) => {}

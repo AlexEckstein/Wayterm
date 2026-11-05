@@ -30,6 +30,9 @@ pub enum Scroll {
     Bottom,
     /// Rows; up is negative.
     By(isize),
+    /// Shell prompts from the viewport's top; up is negative. Clamped to
+    /// the oldest and newest, and nothing moves without OSC 133 marks.
+    Prompts(isize),
 }
 
 /// The mouse tracking mode a program enabled.
@@ -66,6 +69,40 @@ pub struct Engine {
     effects: Box<RefCell<Vec<Effect>>>,
 }
 
+/// A byte slice the shim lends for the length of a callback.
+///
+/// # Safety
+/// `data`/`len` is null or empty, or valid for reads for `'a`.
+unsafe fn borrowed<'a>(data: *const u8, len: usize) -> &'a [u8] {
+    if data.is_null() || len == 0 {
+        &[]
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { std::slice::from_raw_parts(data, len) }
+    }
+}
+
+/// Notification callback: records like [`on_effect`]. The terminal's
+/// parser drops control bytes, so the strings hold no NUL.
+unsafe extern "C" fn on_notification(
+    userdata: *mut c_void,
+    title: *const u8,
+    title_len: usize,
+    body: *const u8,
+    body_len: usize,
+) {
+    // SAFETY: as in `on_effect`; both strings are borrowed for the call.
+    let effects = unsafe { &*(userdata as *const RefCell<Vec<Effect>>) };
+    let text = |bytes| String::from_utf8_lossy(bytes).into_owned();
+    let effect = Effect::Notification {
+        title: text(unsafe { borrowed(title, title_len) }),
+        body: text(unsafe { borrowed(body, body_len) }),
+    };
+    if let Ok(mut effects) = effects.try_borrow_mut() {
+        effects.push(effect);
+    }
+}
+
 /// Take ownership of a buffer libghostty-vt allocated.
 fn take_bytes(ptr: *mut u8, len: usize) -> Vec<u8> {
     if ptr.is_null() {
@@ -95,6 +132,7 @@ impl Engine {
                 Some(on_effect),
                 &*effects as *const RefCell<Vec<Effect>> as *mut c_void,
             );
+            ffi::wt_ghostty_set_notification(raw.as_ptr(), Some(on_notification));
         }
         Some(Self { raw, effects })
     }
@@ -171,6 +209,7 @@ impl Engine {
             Scroll::Top => (0, 0),
             Scroll::Bottom => (1, 0),
             Scroll::By(rows) => (2, rows),
+            Scroll::Prompts(prompts) => (3, prompts),
         };
         // SAFETY: valid terminal.
         unsafe { ffi::wt_ghostty_scroll(self.ptr(), place, delta) };
@@ -197,6 +236,16 @@ impl Engine {
     pub fn select_all(&self) -> bool {
         // SAFETY: valid terminal.
         unsafe { ffi::wt_ghostty_select_all(self.ptr()) == ffi::SUCCESS }
+    }
+
+    /// Select one command's output by its OSC 133 marks. Scrolled back,
+    /// that is the first output from the viewport's top down, so a jump to
+    /// a prompt selects what that command printed; at the bottom, the last
+    /// output from the cursor up. `false`, the selection left alone, when
+    /// no marks show one.
+    pub fn select_output(&self) -> bool {
+        // SAFETY: valid terminal.
+        unsafe { ffi::wt_ghostty_select_output(self.ptr()) == ffi::SUCCESS }
     }
 
     pub fn clear_selection(&self) {

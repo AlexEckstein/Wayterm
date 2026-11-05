@@ -71,6 +71,7 @@ impl Shared {
                 Effect::Pty(reply) => TerminalEvent::DataOut(reply),
                 Effect::Bell => TerminalEvent::Bell,
                 Effect::Title(title) => TerminalEvent::TitleChanged(title),
+                Effect::Notification { title, body } => TerminalEvent::Notification { title, body },
                 Effect::Pwd(dir) => {
                     for watch in each(&self.watchers.directory) {
                         watch(&dir);
@@ -262,5 +263,36 @@ impl TerminalBackend for GhosttyBackend {
 
     fn description(&self) -> &str {
         "libghostty-vt engine with a GTK4 render widget (experimental)"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared() -> (Shared, mpsc::Receiver<TerminalEvent>) {
+        let (tx, rx) = mpsc::channel(8);
+        let shared = Shared {
+            engine: Engine::new(INITIAL_GRID.0, INITIAL_GRID.1).expect("engine"),
+            events: EventSender::new(tx),
+            watchers: Watchers::default(),
+        };
+        (shared, rx)
+    }
+
+    /// OSC 9 and OSC 777 leave the backend as `Notification`, on the same
+    /// queue as every other event and in order with them.
+    #[test]
+    fn notifications_leave_as_terminal_events() {
+        let (shared, mut rx) = shared();
+        shared.output(b"\x1b]9;done\x1b\\\x07\x1b]777;notify;CI;green\x1b\\");
+        let notification = |title: &str, body: &str| TerminalEvent::Notification {
+            title: title.into(),
+            body: body.into(),
+        };
+        assert_eq!(rx.try_recv(), Ok(notification("", "done")));
+        assert_eq!(rx.try_recv(), Ok(TerminalEvent::Bell));
+        assert_eq!(rx.try_recv(), Ok(notification("CI", "green")));
+        assert!(rx.try_recv().is_err());
     }
 }

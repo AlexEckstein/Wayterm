@@ -1,4 +1,5 @@
-//! Tray icon and disconnect notifications (doc 03 §Tray).
+//! Tray icon and desktop notifications (doc 03 §Tray, doc 02 §Desktop
+//! notifications).
 //!
 //! The icon is a StatusNotifierItem over D-Bus via `ksni` (pure Rust,
 //! tokio-native); notifications go through `gio::Notification`. Without a
@@ -14,6 +15,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc as std_mpsc;
+use std::time::{Duration, Instant};
 
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
@@ -24,6 +26,8 @@ use crate::store::SessionStore;
 /// Settings row; a missing row means on (not seeded).
 pub const MINIMIZE_TO_TRAY_KEY: &str = "minimize_to_tray";
 pub const NOTIFICATION_TITLE: &str = "Wayterm";
+/// The least time between one tab's terminal notifications.
+pub const NOTIFICATION_INTERVAL: Duration = Duration::from_secs(1);
 /// The SNI id: unique and stable.
 pub const TRAY_ID: &str = crate::app::APP_ID;
 /// The app icon, which the packages install into hicolor.
@@ -99,18 +103,72 @@ pub fn should_minimize_to_tray(tray_available: bool, setting_enabled: bool) -> b
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DisconnectAlert {
+pub struct Alert {
     pub title: String,
     pub body: String,
-    /// Per session, so repeated alerts replace each other.
+    /// Stable per source, so repeated alerts replace each other.
     pub notification_id: String,
 }
 
-pub fn disconnect_alert(session_name: &str) -> DisconnectAlert {
-    DisconnectAlert {
+pub fn disconnect_alert(session_name: &str) -> Alert {
+    Alert {
         title: NOTIFICATION_TITLE.to_string(),
         body: format!("{session_name} connection lost"),
         notification_id: format!("wayterm-disconnect-{session_name}"),
+    }
+}
+
+pub fn terminal_alert(tab_id: i64, session_name: &str, title: &str, body: &str) -> Option<Alert> {
+    // The text is the remote side's: control characters out entirely
+    // (a NUL would cut GDK's string short, and OSC 9 has single-line
+    // bodies), then trimmed. A blank title falls back to the session's
+    // name, and nothing worth saying drops the alert.
+    let strip = |text: &str| {
+        text.chars()
+            .filter(|c| !c.is_control())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    let body = strip(body);
+    if body.is_empty() {
+        return None;
+    }
+    let title = strip(title);
+    let title = if title.is_empty() {
+        session_name.to_string()
+    } else {
+        title
+    };
+    Some(Alert {
+        title,
+        body,
+        notification_id: format!("wayterm-terminal-{tab_id}"),
+    })
+}
+
+/// Only a tab the user is both looking at and has focused stays quiet.
+pub fn should_notify(window_active: bool, tab_current: bool) -> bool {
+    !(window_active && tab_current)
+}
+
+#[derive(Debug, Default)]
+pub struct NotificationLimit {
+    last: Option<Instant>,
+}
+
+impl NotificationLimit {
+    /// One alert per [`NOTIFICATION_INTERVAL`]; a refused one does not
+    /// push the window back.
+    pub fn allow(&mut self, now: Instant) -> bool {
+        let allow = match self.last {
+            None => true,
+            Some(last) => now.duration_since(last) >= NOTIFICATION_INTERVAL,
+        };
+        if allow {
+            self.last = Some(now);
+        }
+        allow
     }
 }
 
@@ -259,7 +317,11 @@ pub fn install_close_handler(
 /// Post the disconnect notification for `session_name` (its tab's state
 /// drain calls this on `ConnectionLost` only). Main thread only.
 pub fn send_disconnect_notification(app: &gtk4::Application, session_name: &str) {
-    let alert = disconnect_alert(session_name);
+    send_alert(app, &disconnect_alert(session_name));
+}
+
+/// Post `alert` to the desktop. Main thread only.
+pub fn send_alert(app: &gtk4::Application, alert: &Alert) {
     let notification = gio::Notification::new(&alert.title);
     notification.set_body(Some(&alert.body));
     app.send_notification(Some(&alert.notification_id), &notification);

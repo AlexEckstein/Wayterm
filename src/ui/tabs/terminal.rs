@@ -7,11 +7,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gtk4::glib;
 use gtk4::prelude::*;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender, WeakUnboundedSender};
+use tokio::sync::mpsc::{self, Receiver, UnboundedReceiver, UnboundedSender, WeakUnboundedSender};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use vte4::prelude::*;
@@ -34,7 +34,7 @@ use crate::ui::panels::sftp_sidebar::DirectoryFollower;
 use crate::ui::tabs::ended::{self, EndedChoice};
 use crate::ui::tabs::label;
 use crate::ui::tabs::resilience;
-use crate::ui::tabs::terminal_tab::TerminalTab;
+use crate::ui::tabs::terminal_tab::{Notification, TerminalTab};
 use crate::ui::translucency;
 use crate::ui::tray;
 use crate::ui::widgets::{centered_label, data, data_or_default, window_of};
@@ -45,6 +45,10 @@ const TERMINAL_PAGE_KEY: &str = "wayterm-terminal-page";
 /// An unallocated VTE reports 24×80, so measuring waits (≈2 s at most)
 /// for the widget to get a size.
 const ALLOC_WAIT_STEPS: u32 = 125;
+
+/// Notifications waiting for the main thread; the pump sheds what does not
+/// fit, so a flood costs neither memory nor the transport's time.
+const NOTIFICATION_QUEUE: usize = 8;
 
 /// What a terminal page keeps about its terminal, on the page widget
 /// beside its [`PageState`](super::PageState). Main thread only.
@@ -143,7 +147,16 @@ pub(super) async fn finish_connect(
     let main_ctx = glib::MainContext::default();
     // Macro recording listens between the terminal and the pump (doc 12).
     let (handle, input_tap) = InputTap::wrap(handle, &main_ctx);
-    let wired = TerminalTab::new(session, conn.clone(), handle, &main_ctx, rows, cols);
+    let (notify_tx, notify_rx) = mpsc::channel(NOTIFICATION_QUEUE);
+    let wired = TerminalTab::new(
+        session,
+        conn.clone(),
+        handle,
+        notify_tx,
+        &main_ctx,
+        rows,
+        cols,
+    );
     let (terminal_tab, state_rx) = match wired {
         Ok(wired) => wired,
         Err(err) => return show_error_view(notebook, page, session, &err.to_string()),
@@ -157,6 +170,12 @@ pub(super) async fn finish_connect(
     let cancel = resilience::register_connected_tab(tab_id, redial_fn(notebook, page, tab_id));
     let events = page_events(notebook, page, session, host, port);
     spawn_state_forward(page.clone(), gen, cancel, state_rx, events);
+    let app = window_of(page).and_then(|window| window.application());
+    spawn_notification_drain(notebook, page, session, notify_rx, move |alert| {
+        if let Some(app) = &app {
+            tray::send_alert(app, alert);
+        }
+    });
 
     // Only the SSH dial passes a connection: its forward engine and
     // sidebar.
@@ -337,6 +356,40 @@ fn spawn_state_drain(
                     show_session_ended(&notebook, &page);
                 }
                 TransportEvent::DataReceived(_) => {}
+            }
+        }
+    });
+}
+
+/// Whether the user is looking at `page`: the current page of an active
+/// window.
+fn tab_in_view(notebook: &gtk4::Notebook, page: &gtk4::Widget) -> (bool, bool) {
+    let window_active = window_of(page).is_some_and(|window| window.is_active());
+    (window_active, current_page(notebook).as_ref() == Some(page))
+}
+
+/// Hand the terminal's notifications to `post` while the tab is out of view
+/// (§Tray, Desktop notifications). Ends with the attempt's pump.
+pub(super) fn spawn_notification_drain(
+    notebook: &gtk4::Notebook,
+    page: &gtk4::Widget,
+    session: &SessionConfig,
+    mut rx: Receiver<Notification>,
+    post: impl Fn(&tray::Alert) + 'static,
+) {
+    let tab_id = state(page).tab_id.get();
+    let (notebook, name, page) = (notebook.clone(), session.name.clone(), page.downgrade());
+    glib::MainContext::default().spawn_local(async move {
+        let mut limit = tray::NotificationLimit::default();
+        while let Some((title, body)) = rx.recv().await {
+            let Some(page) = page.upgrade() else { break };
+            let (window_active, tab_current) = tab_in_view(&notebook, &page);
+            if !tray::should_notify(window_active, tab_current) {
+                continue;
+            }
+            let alert = tray::terminal_alert(tab_id, &name, &title, &body);
+            if let Some(alert) = alert.filter(|_| limit.allow(Instant::now())) {
+                post(&alert);
             }
         }
     });
