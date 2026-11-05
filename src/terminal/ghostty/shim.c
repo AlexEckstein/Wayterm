@@ -8,9 +8,11 @@
  * Compiled by build.rs only with the `backend-ghostty` feature.
  */
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,6 +23,8 @@
 #define WT_EFFECT_BELL 2
 #define WT_EFFECT_TITLE 3 /* the new title, UTF-8 */
 #define WT_EFFECT_PWD 4   /* the reported directory, raw (OSC 7: a URI) */
+#define WT_EFFECT_CLIPBOARD_SYSTEM 5  /* decoded text for the clipboard */
+#define WT_EFFECT_CLIPBOARD_PRIMARY 6 /* decoded text for PRIMARY */
 
 /* Cell flags (mirrored in ffi.rs). */
 #define WT_CELL_BOLD (1u << 0)
@@ -117,6 +121,8 @@ typedef struct {
   uint8_t underline;         /* GHOSTTY_SGR_UNDERLINE_*; 0 = none */
   uint16_t grapheme_len; /* codepoints in the cluster, base included:
                             0 = empty, 1 = just `codepoint` */
+  uint16_t link;         /* 0 = no OSC 8 hyperlink, else its entry, from 1,
+                            in the snapshot's links (wt_ghostty_links) */
   uint8_t wraps;         /* on a row's last cell: the row soft-wraps into
                             the next */
   uint32_t grapheme;     /* with grapheme_len > 1: where the whole cluster
@@ -202,6 +208,15 @@ typedef struct {
   GhosttyTerminalScreen found_screen;
   GhosttySelection *matches; /* reused buffer for match lists */
   size_t matches_cap;
+  /* The last snapshot's OSC 8 links, the buffers reused frame to frame:
+   * entry n, from 1, is link_uris up to link_ends[n - 1], starting where
+   * the entry before it ends. */
+  uint8_t *link_uris;
+  size_t link_uris_cap;
+  size_t link_uris_len;
+  size_t *link_ends;
+  size_t link_ends_cap;
+  size_t link_count;
 } WtGhostty;
 
 static void on_write_pty(GhosttyTerminal t, void *ud, const uint8_t *data,
@@ -233,6 +248,59 @@ static void on_pwd(GhosttyTerminal t, void *ud) {
   emit_string(t, ud, GHOSTTY_TERMINAL_DATA_PWD, WT_EFFECT_PWD);
 }
 
+/* One write of text. libghostty-vt has decoded it, and has dropped malformed
+ * base64 whole. OSC 52 and OSC 1337 Copy arrive here, and any OSC 5522 write
+ * that gets past the limit wt_ghostty_new sets, which holds no data: refused,
+ * as a clear is, since the two protocols' clears look alike. */
+static void on_clipboard_write(GhosttyTerminal t, void *ud,
+                               const GhosttyClipboardWrite *write) {
+  (void)t;
+  WtGhostty *g = ud;
+  static const char text_plain[] = "text/plain";
+  int kind = 0;
+  switch (write->location) {
+    case GHOSTTY_CLIPBOARD_LOCATION_STANDARD:
+      kind = WT_EFFECT_CLIPBOARD_SYSTEM;
+      break;
+    case GHOSTTY_CLIPBOARD_LOCATION_SELECTION:
+    case GHOSTTY_CLIPBOARD_LOCATION_PRIMARY:
+      kind = WT_EFFECT_CLIPBOARD_PRIMARY;
+      break;
+    default:
+      break;
+  }
+  GhosttyClipboardWriteReply reply = {
+      .size = sizeof(reply),
+      .result = GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED,
+  };
+  if (kind != 0 && write->contents_len == 1) {
+    const GhosttyClipboardContent *content = &write->contents[0];
+    if (content->data.len > 0 &&
+        content->mime.len == sizeof(text_plain) - 1 &&
+        memcmp(content->mime.ptr, text_plain, content->mime.len) == 0) {
+      if (g->effect)
+        g->effect(g->userdata, kind, content->data.ptr, content->data.len);
+      reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+    }
+  }
+  write->reply(write, &reply);
+}
+
+/* libghostty-vt's note on a dropped OSC 52. Its log is process-wide and
+ * discarded by default, and everything else in it stays discarded. */
+static void on_log(void *ud, GhosttySysLogLevel level, const uint8_t *scope,
+                   size_t scope_len, const uint8_t *message,
+                   size_t message_len) {
+  (void)ud;
+  (void)level;
+  (void)scope;
+  (void)scope_len;
+  static const char osc_52[] = "OSC 52";
+  if (message_len >= sizeof(osc_52) - 1 &&
+      memcmp(message, osc_52, sizeof(osc_52) - 1) == 0)
+    fprintf(stderr, "Wayterm: %.*s\n", (int)message_len, (const char *)message);
+}
+
 void wt_ghostty_search_clear(WtGhostty *g);
 
 void wt_ghostty_free(WtGhostty *g) {
@@ -240,6 +308,8 @@ void wt_ghostty_free(WtGhostty *g) {
   wt_ghostty_search_clear(g);
   ghostty_search_free(g->search);
   free(g->matches);
+  free(g->link_uris);
+  free(g->link_ends);
   ghostty_mouse_event_free(g->mouse_event);
   ghostty_mouse_encoder_free(g->mouse_encoder);
   ghostty_key_event_free(g->key_event);
@@ -254,6 +324,9 @@ void wt_ghostty_free(WtGhostty *g) {
 }
 
 WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
+  static atomic_flag log_installed = ATOMIC_FLAG_INIT;
+  if (!atomic_flag_test_and_set(&log_installed))
+    ghostty_sys_set(GHOSTTY_SYS_OPT_LOG, (const void *)on_log);
   WtGhostty *g = calloc(1, sizeof(WtGhostty));
   if (!g) return NULL;
   if (ghostty_terminal_new(NULL, &g->terminal, cols, rows) != GHOSTTY_SUCCESS ||
@@ -285,6 +358,15 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
   uint64_t limit = WT_KITTY_STORAGE_LIMIT;
   ghostty_terminal_set(g->terminal,
                        GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &limit);
+  /* No clipboard_read callback, ever: clipboard contents must not leave the
+   * machine, so an OSC 52 query goes unanswered. The write callback also
+   * opens OSC 5522 writes, which a zero limit keeps shut: no data fits. */
+  size_t no_kitty_write_data = 0;
+  ghostty_terminal_set(g->terminal,
+                       GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES,
+                       &no_kitty_write_data);
+  ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
+                       (const void *)on_clipboard_write);
   return g;
 }
 
@@ -1135,6 +1217,7 @@ uint64_t wt_ghostty_storage_limit(WtGhostty *g) {
   return limit;
 }
 
+size_t wt_ghostty_cell_link_offset(void) { return offsetof(WtCell, link); }
 size_t wt_ghostty_cell_wraps_offset(void) { return offsetof(WtCell, wraps); }
 size_t wt_ghostty_cell_underline_offset(void) {
   return offsetof(WtCell, underline);
@@ -1151,6 +1234,66 @@ static void rgb(uint8_t out[3], GhosttyColorRgb c) {
   out[1] = c.g;
   out[2] = c.b;
 }
+
+/* Read the URI of the hyperlink at a viewport cell into the free end of
+ * link_uris, growing it as needed; its length, 0 if the cell has none. */
+static size_t read_link(WtGhostty *g, size_t x, size_t y) {
+  GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT};
+  point.value.coordinate.x = (uint16_t)x;
+  point.value.coordinate.y = (uint32_t)y;
+  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  if (ghostty_terminal_grid_ref(g->terminal, point, &ref) != GHOSTTY_SUCCESS)
+    return 0;
+  size_t start = g->link_uris_len, len = 0;
+  int r = ghostty_grid_ref_hyperlink_uri(
+      &ref, g->link_uris ? g->link_uris + start : NULL,
+      g->link_uris_cap - start, &len);
+  if (r == GHOSTTY_OUT_OF_SPACE) {
+    size_t cap = (start + len) * 2;
+    uint8_t *grown = realloc(g->link_uris, cap);
+    if (!grown) return 0;
+    g->link_uris = grown;
+    g->link_uris_cap = cap;
+    r = ghostty_grid_ref_hyperlink_uri(&ref, grown + start, cap - start, &len);
+  }
+  return r == GHOSTTY_SUCCESS ? len : 0;
+}
+
+/* The links entry for the hyperlink at a viewport cell, 0 if it has none.
+ * The C API exposes no link id, so a URI is what identifies a link. Cells
+ * come in reading order and only the latest entry is compared: a link's
+ * cells share one entry, however long the screen's list of links is. */
+static uint16_t link_entry(WtGhostty *g, size_t x, size_t y) {
+  size_t len = read_link(g, x, y);
+  if (len == 0) return 0;
+  size_t start = g->link_uris_len;
+  if (g->link_count > 0) {
+    size_t last = g->link_count > 1 ? g->link_ends[g->link_count - 2] : 0;
+    if (start - last == len &&
+        memcmp(g->link_uris + last, g->link_uris + start, len) == 0)
+      return (uint16_t)g->link_count;
+  }
+  if (g->link_count == UINT16_MAX) return 0;
+  if (g->link_count == g->link_ends_cap) {
+    size_t cap = g->link_ends_cap ? g->link_ends_cap * 2 : 16;
+    size_t *grown = realloc(g->link_ends, cap * sizeof(size_t));
+    if (!grown) return 0;
+    g->link_ends = grown;
+    g->link_ends_cap = cap;
+  }
+  g->link_uris_len = start + len;
+  g->link_ends[g->link_count++] = g->link_uris_len;
+  return (uint16_t)g->link_count;
+}
+
+/* The last snapshot's links, valid until the next one: `*count` entries,
+ * entry n, from 1, being `uris` up to `ends[n - 1]`, starting where the
+ * entry before it ends. Cells point at them by `link`. */
+void wt_ghostty_links(WtGhostty *g, const uint8_t **uris, const size_t **ends,
+                      size_t *count) {
+  *uris = g->link_uris;
+  *ends = g->link_ends;
+  *count = g->link_count;}
 
 /* A style color in RGB, a palette index through `palette`; false if unset. */
 static bool style_rgb(uint8_t out[3], GhosttyStyleColor c,
@@ -1210,6 +1353,8 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
                                &g->rows);
   if (r != GHOSTTY_SUCCESS) return r;
   size_t used = 0; /* grapheme slots filled, or needed past the cap */
+  g->link_uris_len = 0;
+  g->link_count = 0;
   size_t y = 0;
   while (y < frame->rows && ghostty_render_state_row_iterator_next(g->rows)) {
     if (ghostty_render_state_row_get(g->rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
@@ -1217,6 +1362,12 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
       y++;
       continue;
     }
+    /* May be a false positive; saves every other row the per-cell check. */
+    GhosttyRow row;
+    bool row_links = false;
+    if (ghostty_render_state_row_get(g->rows, GHOSTTY_RENDER_STATE_ROW_DATA_RAW,
+                                     &row) == GHOSTTY_SUCCESS)
+      ghostty_row_get(row, GHOSTTY_ROW_DATA_HYPERLINK, &row_links);
     size_t x = 0;
     while (x < cols && ghostty_render_state_row_cells_next(g->cells)) {
       WtCell *cell = &cells[y * cols + x];
@@ -1280,9 +1431,19 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
       ghostty_render_state_row_cells_get(
           g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected);
       if (selected) cell->flags |= WT_CELL_SELECTED;
+      if (row_links) {
+        GhosttyCell raw;
+        bool linked = false;
+        if (ghostty_render_state_row_cells_get(
+                g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw) ==
+                GHOSTTY_SUCCESS &&
+            ghostty_cell_get(raw, GHOSTTY_CELL_DATA_HAS_HYPERLINK, &linked) ==
+                GHOSTTY_SUCCESS &&
+            linked)
+          cell->link = link_entry(g, x, y);
+      }
       x++;
     }
-    GhosttyRow row;
     bool wraps = false;
     if (cols > 0 &&
         ghostty_render_state_row_get(g->rows, GHOSTTY_RENDER_STATE_ROW_DATA_RAW,

@@ -288,7 +288,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   stay on the C side; `ffi.rs` declares only the shim's plain functions
   and five flat structs (a cell, a frame, a span of search highlight, an
   image placement, an image's pixels), checked against the C compiler by
-  unit tests: their sizes, and where the cell's grapheme, wrap and
+  unit tests: their sizes, and where the cell's grapheme, link, wrap and
   underline fields, and the fields after any padding, sit. `build.rs`
   compiles
   nothing beyond libc is needed.
@@ -300,7 +300,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   cell holds its whole grapheme cluster: the base codepoint, or for a
   longer cluster a slice of a
   codepoint buffer that grows as needed and is reused frame to frame;
-  the tail cell of a wide character holds nothing. A cell also holds its
+  the tail cell of a wide character holds nothing. A cell with an OSC 8
+  hyperlink points at its entry in the snapshot's list of links. A cell
+  also holds its
   underline style (`GHOSTTY_SGR_UNDERLINE_*`: none, single, double, curly,
   dotted or dashed) and its SGR 58 underline color, if it has one, a
   palette index resolved through the active palette; SGR 59 drops the
@@ -309,9 +311,11 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   the Kitty images on screen (§Kitty graphics). Effects raised while
   parsing — replies to queries (device attributes, status reports), BEL,
   OSC 0/2
-  titles, OSC 7 directories — come back from the `write` that raised them
-  and leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
-  the view's directory hook instead (§Reported directory).
+  titles, OSC 7 directories, clipboard writes — come back from the `write`
+  that raised them and leave as `DataOut`, `Bell` and `TitleChanged`; a
+  directory goes to the view's directory hook instead (§Reported
+  directory), and a clipboard write to the view (§GhosttyBackend,
+  Program clipboard).
 - **`GhosttyView`.** The GTK4 widget. Each frame snapshots the engine and
   paints it with `GtkSnapshot`: one background rectangle per run of equal
   color, and per run of equal style (bold, italic, strikethrough, faint;
@@ -413,11 +417,18 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   draws on top, as does the cursor. An empty query, a press, a typed key
   or a reset ends the search; the UI never sends an empty query, so the
   press and the key are how a highlight goes away.
-- **Links.** `scan_links` in `view.rs` finds URLs in the text of the last
-  frame, with no help from the program. It reads a logical line, the rows
-  joined by their soft-wrap flag, so a wrapped link is one link and a line
-  that only fills its last column does not run into the next. False
-  positives must not open anything, so text is a link only if:
+- **Links.** A program marks text as a link with OSC 8. The snapshot
+  lists the URIs of the links on screen, and each linked cell points at
+  its own entry. The C API has no link id, so the URI identifies a link:
+  linked cells in reading order share an entry for as long as the URI
+  stays the same, with or without unlinked cells between them, so a link
+  a program broke over two rows stays one link. A URI that is not UTF-8
+  is no link. When the program marks nothing, `scan_links` finds URLs in
+  the text of the last frame, with no help from it: it reads a logical
+  line, the rows joined by their soft-wrap flag, so a wrapped link is
+  one link and a line that only fills its last column does not run into
+  the next. False positives must not open anything, so text is a link
+  only if:
   - it starts with `https://`, `http://` or `mailto:`, in any case, with
     no scheme character (letter, digit, `+`, `-`, `.`) right before it;
   - it runs over ASCII URL characters: anything else ends it, including
@@ -427,16 +438,53 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   - trailing `.` `,` `;` `:` `!` `?` `'` `*` `(` `[` are left out;
   - what remains has a target: a host name or bracketed IPv6 address, with
     an optional user and numeric port, or for `mailto:` an address.
+  An OSC 8 link's URI is the program's word: it is not put through
+  these rules, only through `may_open`.
 
-  While mouse events are local (`route`), the link under the pointer is
-  underlined on all its rows and the cursor becomes `pointer`. Moving off
-  it or leaving the widget restores both, and so does output or scrolling
-  that takes the link away: each frame checks again. Ctrl+click opens the
-  link through `gtk::UriLauncher`, on release, without waiting for the
-  handler; a press that turned into a selection, or a release off the
-  link, opens nothing. While a program tracks the mouse the press is the
-  program's, so Shift brings links back: hover with Shift, Ctrl+Shift+click.
-  A failure to open is logged without the URI, which can carry a token.
+  While mouse events are local (`route`), the link under the pointer shows
+  its URI in a tooltip, is underlined on all its cells, and turns the
+  cursor to `pointer`. Moving off it or leaving the widget clears all
+  three, and so does output or scrolling that takes the link away: each
+  frame checks again. Links are read from the last frame drawn, so what
+  opens is what is on screen. Ctrl+click opens the link through
+  `gtk::UriLauncher`, on release, without waiting for the handler; a press
+  that turned into a selection, or a release off the link, opens nothing.
+  While a program tracks the mouse the press is the program's, so Shift
+  brings links back: hover with Shift, Ctrl+Shift+click. A failure to open
+  is logged without the URI, which can carry a token.
+
+  `may_open` in `view.rs` decides what reaches the handler. A link comes
+  from whatever is on the far side of the tab, and the view does not know
+  the transport, so one rule covers every tab: a `file:` URI, in any case,
+  opens only if its authority is exactly this machine's name
+  (`glib::host_name`). Any other authority is refused, and so are an empty
+  one (`file:///path`), `localhost`, a user or a port in it, and the forms
+  with none (`file:/path`). A refused link still shows its tooltip and
+  underline, so the target can be read. Text with no URI scheme is refused;
+  every other scheme goes to the handler.
+
+- **Program clipboard.** An OSC 52 write sets a GTK clipboard, so a remote
+  Neovim yank or tmux copy reaches the desktop: `p` and `s` go to PRIMARY,
+  `c` and any other selection letter to the system clipboard. OSC 1337
+  Copy takes the same path; libghostty-vt reports both through one
+  callback. A write lands whole or not at all:
+  - libghostty-vt decodes the base64 and drops a payload with any character
+    outside its alphabet, whitespace included; missing padding is fine, and
+    a control byte inside the sequence never reaches the decoder. The shim
+    passes that note to stderr, the only part of libghostty-vt's log
+    Wayterm shows.
+  - libghostty-vt drops a sequence over 8 MiB, about 6 MiB of text, without
+    a note. The engine also refuses over 8 MiB decoded, a backstop OSC 52
+    cannot reach while the parser's limit stands.
+  - The engine drops decoded bytes that are not UTF-8, or that hold a NUL,
+    which would cut GDK's text short. Notes never carry the contents.
+
+  Clipboard contents never leave the machine: the shim installs no
+  `clipboard_read` callback, so an OSC 52 query (`?`) gets no reply at all.
+  The kitty clipboard protocol stays off. The write callback would open
+  OSC 5522 writes, so the shim sets their limit to zero: a write with data
+  is answered `EFBIG`, one without `ENOSYS`, and neither reaches a
+  clipboard. Wayterm's own Copy and Paste are unrelated.
 - **Backend.** Events go through the same never-blocking sender as VTE's
   (§Backpressure). `send_input` and `paste` queue `DataOut` like a key
   press, so macros work unchanged; `paste` is bracketed when the program
@@ -632,7 +680,20 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **Ghostty selection:** word boundaries are libghostty-vt's defaults,
   where `:` ends a word, so a double click takes part of a URL. A drag
   past the top or bottom edge does not scroll the viewport.
-- **Ghostty links:** plain text only: no OSC 8 hyperlinks, and no tooltip
+- **Ghostty hyperlinks:** the `file:` check compares names and nothing
+  more. A remote machine with this machine's name, or a program that
+  learned it, gets its link opened here, where the path means a local
+  file; so does `file://localhost/` on a machine named `localhost`. The
+  comparison is exact, so a fully qualified or differently cased name is
+  refused. The view cannot tell a local tab from a remote one, so a local
+  program's `file:///path` link is refused too. Schemes other than `file:`
+  are not filtered. A link is marked only on hover. Without a link id,
+  OSC 8's `id=` is not honored: parts of a link with another link between
+  them light apart, and neighbors with one URI light as one. URIs are read
+  cell by cell through the grid reference API, which upstream does not
+  mean for render loops: a 200×50 screen of links adds about 0.7 ms a
+  frame.
+- **Ghostty URL detection:** no OSC 8 hyperlinks, and no tooltip
   showing the target. A URL with non-ASCII characters ends at the first
   one, and a host with an underscore is no link. A link cut off by the
   viewport is not detected: scrolled so its tail is below the bottom edge
@@ -645,6 +706,10 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   a match is read back and compared as typed). A match is not the
   selection, so Copy after a search copies nothing new, where VTE copies
   the match.
+- **Ghostty clipboard:** a program writes without asking: there is no
+  prompt and no setting to turn it off. An OSC 52 clear (an empty payload)
+  is ignored, since it looks the same as an OSC 5522 one. Only text is
+  taken, and queries go unanswered, so a program waiting on one times out.
 - **Ghostty scrollback:** `set_scrollback_limit` drops libghostty-vt's
   byte limit, so lines alone bound it, but it prunes whole pages: what is
   kept lands within a page of the limit, often just under it (a page is

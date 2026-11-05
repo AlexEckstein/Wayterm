@@ -1,9 +1,9 @@
 //! Raw bindings to `shim.c`, the narrow C layer over libghostty-vt; use
 //! [`Engine`](super::engine::Engine) instead of calling these directly.
 //! The structs mirror `WtCell`/`WtFrame`/`WtSpan`/`WtPlacement`/`WtPixels`
-//! there; the unit tests check the sizes, and where the cell's grapheme and
-//! underline fields, and the fields after any padding, sit, against the C
-//! compiler's.
+//! there; the unit tests check the sizes, and where the cell's grapheme,
+//! link and underline fields, and the fields after any padding, sit, against
+//! the C compiler's.
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -22,6 +22,8 @@ pub const EFFECT_PTY: c_int = 1;
 pub const EFFECT_BELL: c_int = 2;
 pub const EFFECT_TITLE: c_int = 3;
 pub const EFFECT_PWD: c_int = 4;
+pub const EFFECT_CLIPBOARD_SYSTEM: c_int = 5;
+pub const EFFECT_CLIPBOARD_PRIMARY: c_int = 6;
 
 pub const CELL_BOLD: u8 = 1 << 0;
 pub const CELL_ITALIC: u8 = 1 << 1;
@@ -94,6 +96,9 @@ pub struct WtCell {
     /// Codepoints in the cluster, base included: 0 = empty, 1 = just
     /// `codepoint`.
     pub grapheme_len: u16,
+    /// 0 = no OSC 8 hyperlink; else its entry, from 1, in the snapshot's
+    /// links ([`wt_ghostty_links`]).
+    pub link: u16,
     /// Non-zero on a row's last cell when the row soft-wraps into the next.
     pub wraps: u8,
     /// With `grapheme_len` > 1: where the whole cluster starts in the
@@ -333,6 +338,15 @@ extern "C" {
         len: *mut usize,
     ) -> c_int;
     pub fn wt_ghostty_image_pixels(g: *mut WtGhostty, image_id: u32, out: *mut WtPixels) -> c_int;
+    /// The last snapshot's links, valid until the next one: `count`
+    /// entries, entry n, from 1, being `uris` up to `ends[n - 1]`, starting
+    /// where the entry before it ends. Null while there are none.
+    pub fn wt_ghostty_links(
+        g: *mut WtGhostty,
+        uris: *mut *const u8,
+        ends: *mut *const usize,
+        count: *mut usize,
+    );
 }
 
 // ABI checks for the mirrors above (engine tests).
@@ -348,6 +362,7 @@ extern "C" {
     pub fn wt_ghostty_placement_layer_offset() -> usize;
     pub fn wt_ghostty_pixels_format_offset() -> usize;
     pub fn wt_ghostty_storage_limit(g: *mut WtGhostty) -> u64;
+    pub fn wt_ghostty_cell_link_offset() -> usize;
     pub fn wt_ghostty_cell_wraps_offset() -> usize;
     pub fn wt_ghostty_cell_underline_offset() -> usize;
     pub fn wt_ghostty_cell_underline_rgb_offset() -> usize;
