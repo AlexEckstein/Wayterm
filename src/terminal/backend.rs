@@ -122,7 +122,10 @@ pub const DEFAULT_BACKEND_SETTING: &str = "default_backend";
 /// (`backend-ghostty` feature).
 pub const GHOSTTY_COMPILED: bool = cfg!(feature = "backend-ghostty");
 
-/// A terminal backend [`create_terminal`] can build.
+/// The stderr note when Ghostty was asked for and VTE is built instead.
+const GHOSTTY_UNAVAILABLE: &str = "Wayterm: libghostty-vt terminal unavailable; using VTE";
+
+/// A terminal backend [`create_terminal_for`] can build.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BackendKind {
     #[default]
@@ -133,12 +136,21 @@ pub enum BackendKind {
 impl BackendKind {
     /// Parse a `default_backend` value; missing or unknown is VTE.
     pub fn from_setting(raw: Option<&str>) -> Self {
-        match raw
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("ghostty") => Self::Ghostty,
-            _ => Self::Vte,
+        Self::parse(raw).unwrap_or_default()
+    }
+
+    /// The backend for a session: its `terminal_backend` value, `global`
+    /// when that is empty or unknown.
+    pub fn for_session(preferred: Option<&str>, global: Self) -> Self {
+        Self::parse(preferred).unwrap_or(global)
+    }
+
+    /// The backend `raw` names (case and surrounding space ignored).
+    fn parse(raw: Option<&str>) -> Option<Self> {
+        match raw?.trim().to_ascii_lowercase().as_str() {
+            "vte" => Some(Self::Vte),
+            "ghostty" => Some(Self::Ghostty),
+            _ => None,
         }
     }
 
@@ -163,7 +175,7 @@ impl BackendKind {
 static PREFER_GHOSTTY: AtomicBool = AtomicBool::new(false);
 
 /// Record the stored `default_backend` preference; tabs created afterwards
-/// use it, open tabs keep their backend.
+/// use it unless their session names its own, open tabs keep their backend.
 pub fn install_backend_preference(kind: BackendKind) {
     PREFER_GHOSTTY.store(kind == BackendKind::Ghostty, Ordering::SeqCst);
 }
@@ -177,13 +189,22 @@ pub fn backend_preference() -> BackendKind {
     }
 }
 
-/// Build the terminal backend and its event channel: the installed
-/// [`backend_preference`] when this build has it, VTE otherwise or when
-/// libghostty-vt cannot allocate a terminal. Main thread only.
+/// Build the installed [`backend_preference`] ([`create_terminal_for`]).
+/// Main thread only.
 pub fn create_terminal() -> TerminalHandle {
+    create_terminal_for(backend_preference())
+}
+
+/// Build the terminal backend and its event channel: `kind` when this
+/// build has it, VTE otherwise or when libghostty-vt cannot allocate a
+/// terminal. Main thread only.
+pub fn create_terminal_for(kind: BackendKind) -> TerminalHandle {
     let (tx, events) = mpsc::channel(256);
+    if kind.effective() != kind {
+        eprintln!("{GHOSTTY_UNAVAILABLE}");
+    }
     #[cfg(feature = "backend-ghostty")]
-    if backend_preference().effective() == BackendKind::Ghostty {
+    if kind.effective() == BackendKind::Ghostty {
         match crate::terminal::GhosttyBackend::new(tx.clone()) {
             Some(backend) => {
                 // !Send by design, like VteBackend; the Arc shares the trait
@@ -194,7 +215,7 @@ pub fn create_terminal() -> TerminalHandle {
                     events,
                 };
             }
-            None => eprintln!("Wayterm: libghostty-vt terminal unavailable; using VTE"),
+            None => eprintln!("{GHOSTTY_UNAVAILABLE}"),
         }
     }
     // VteBackend is !Send by design; Arc is still the right owner for the
@@ -223,6 +244,29 @@ mod tests {
         for kind in [BackendKind::Vte, BackendKind::Ghostty] {
             assert_eq!(BackendKind::from_setting(Some(kind.as_setting())), kind);
         }
+    }
+
+    #[test]
+    fn a_session_value_wins_over_the_global_row() {
+        use BackendKind::{Ghostty, Vte};
+        assert_eq!(BackendKind::for_session(Some("ghostty"), Vte), Ghostty);
+        assert_eq!(BackendKind::for_session(Some(" Ghostty "), Vte), Ghostty);
+        assert_eq!(BackendKind::for_session(Some("vte"), Ghostty), Vte);
+    }
+
+    #[test]
+    fn an_empty_or_unknown_session_value_follows_the_global_row() {
+        for global in [BackendKind::Vte, BackendKind::Ghostty] {
+            for preferred in [None, Some(""), Some("  "), Some("alacritty")] {
+                assert_eq!(BackendKind::for_session(preferred, global), global);
+            }
+        }
+    }
+
+    #[test]
+    fn a_session_asking_for_ghostty_is_built_only_when_compiled_in() {
+        let built = BackendKind::for_session(Some("ghostty"), BackendKind::Vte).effective();
+        assert_eq!(built == BackendKind::Ghostty, GHOSTTY_COMPILED);
     }
 
     #[test]

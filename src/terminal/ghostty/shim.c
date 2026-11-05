@@ -8,9 +8,11 @@
  * Compiled by build.rs only with the `backend-ghostty` feature.
  */
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,22 +23,52 @@
 #define WT_EFFECT_BELL 2
 #define WT_EFFECT_TITLE 3 /* the new title, UTF-8 */
 #define WT_EFFECT_PWD 4   /* the reported directory, raw (OSC 7: a URI) */
+#define WT_EFFECT_CLIPBOARD_SYSTEM 5  /* decoded text for the clipboard */
+#define WT_EFFECT_CLIPBOARD_PRIMARY 6 /* decoded text for PRIMARY */
 
 /* Cell flags (mirrored in ffi.rs). */
 #define WT_CELL_BOLD (1u << 0)
 #define WT_CELL_ITALIC (1u << 1)
-#define WT_CELL_UNDERLINE (1u << 2)
 #define WT_CELL_STRIKE (1u << 3)
 #define WT_CELL_INVERSE (1u << 4)
 #define WT_CELL_SELECTED (1u << 5)
 #define WT_CELL_INVISIBLE (1u << 6)
 #define WT_CELL_FAINT (1u << 7)
+#define WT_CELL_BLINK (1u << 8)
 
 /* Modifier bits accepted by wt_ghostty_encode_key (mirrored in ffi.rs). */
 #define WT_MOD_SHIFT (1u << 0)
 #define WT_MOD_CTRL (1u << 1)
 #define WT_MOD_ALT (1u << 2)
 #define WT_MOD_SUPER (1u << 3)
+
+/* Image placement layers, in drawing order (mirrored in ffi.rs). */
+#define WT_LAYER_BELOW_BG 0
+#define WT_LAYER_BELOW_TEXT 1
+#define WT_LAYER_ABOVE_TEXT 2
+_Static_assert(WT_LAYER_BELOW_BG ==
+                       GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_BACKGROUND &&
+                   WT_LAYER_BELOW_TEXT ==
+                       GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_TEXT &&
+                   WT_LAYER_ABOVE_TEXT ==
+                       GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT,
+               "image layers");
+
+/* Bytes of Kitty images each screen holds, Ghostty's default (mirrored in
+ * ffi.rs). */
+#define WT_KITTY_STORAGE_LIMIT 320000000u
+
+/* Stored image pixel formats (mirrored in ffi.rs). */
+#define WT_FORMAT_RGB 0
+#define WT_FORMAT_RGBA 1
+#define WT_FORMAT_GRAY_ALPHA 3
+#define WT_FORMAT_GRAY 4
+_Static_assert(WT_FORMAT_RGB == GHOSTTY_KITTY_IMAGE_FORMAT_RGB &&
+                   WT_FORMAT_RGBA == GHOSTTY_KITTY_IMAGE_FORMAT_RGBA &&
+                   WT_FORMAT_GRAY_ALPHA ==
+                       GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA &&
+                   WT_FORMAT_GRAY == GHOSTTY_KITTY_IMAGE_FORMAT_GRAY,
+               "image formats");
 
 /* One key press for wt_ghostty_encode_key. */
 typedef struct {
@@ -54,8 +86,12 @@ typedef struct {
 #define WT_MOUSE_MOTION 2
 #define WT_BUTTON_NONE 0
 #define WT_BUTTON_LEFT 1
+#define WT_BUTTON_RIGHT 2
+#define WT_BUTTON_MIDDLE 3
 #define WT_BUTTON_WHEEL_UP 4
 #define WT_BUTTON_WHEEL_DOWN 5
+#define WT_BUTTON_WHEEL_LEFT 6
+#define WT_BUTTON_WHEEL_RIGHT 7
 
 /* One mouse event for wt_ghostty_encode_mouse. */
 typedef struct {
@@ -83,10 +119,17 @@ typedef struct {
   uint32_t codepoint; /* the grapheme's base codepoint; 0 = empty */
   uint8_t fg[3];
   uint8_t bg[3];
-  uint8_t flags;
-  uint8_t has_bg;        /* 0 = default background */
+  uint8_t underline_rgb[3];
+  uint16_t flags; /* one bit per SGR flag; bit 8 = blink (SGR 5/6) */
+  uint8_t has_bg;            /* 0 = default background */
+  uint8_t underline_has_rgb; /* 0 = the line takes the text color */
+  uint8_t underline;         /* GHOSTTY_SGR_UNDERLINE_*; 0 = none */
   uint16_t grapheme_len; /* codepoints in the cluster, base included:
                             0 = empty, 1 = just `codepoint` */
+  uint16_t link;         /* 0 = no OSC 8 hyperlink, else its entry, from 1,
+                            in the snapshot's links (wt_ghostty_links) */
+  uint8_t wraps;         /* on a row's last cell: the row soft-wraps into
+                            the next */
   uint32_t grapheme;     /* with grapheme_len > 1: where the whole cluster
                             starts in the snapshot's grapheme buffer */
 } WtCell;
@@ -102,6 +145,8 @@ typedef struct {
   uint8_t bg[3];
   uint8_t cursor_rgb[3];
   uint8_t cursor_has_rgb;
+  uint8_t cursor_style; /* GhosttyRenderStateCursorVisualStyle */
+  uint8_t cursor_blinking;
 } WtFrame;
 
 /* One viewport row's run of search highlight, cells [start, end). */
@@ -112,11 +157,42 @@ typedef struct {
   uint8_t current; /* part of the current match */
 } WtSpan;
 
+/* One image placement to draw, from the render state's image list. */
+typedef struct {
+  uint64_t generation; /* of the image's pixels */
+  uint32_t image_id;
+  int32_t z;
+  int32_t col; /* the top-left cell, negative when it starts off screen */
+  int32_t row;
+  uint32_t offset_x; /* pixels into that cell */
+  uint32_t offset_y;
+  uint32_t width; /* the size to draw at, in pixels */
+  uint32_t height;
+  uint32_t source_x; /* the part of the image to draw, in image pixels */
+  uint32_t source_y;
+  uint32_t source_width;
+  uint32_t source_height;
+  uint8_t layer; /* WT_LAYER_* */
+} WtPlacement;
+
+/* A stored image's pixels, borrowed until the terminal next changes. */
+typedef struct {
+  const uint8_t *data;
+  size_t len;
+  uint32_t width;
+  uint32_t height;
+  uint8_t format; /* WT_FORMAT_* */
+} WtPixels;
+
+/* Decodes a PNG, asking wt_ghostty_png_pixels for where its pixels go. */
+typedef bool (*WtPngFn)(const uint8_t *data, size_t len, void *sink);
+
 typedef struct {
   GhosttyTerminal terminal;
   GhosttyRenderState render;
   GhosttyRenderStateRowIterator rows;
   GhosttyRenderStateRowCells cells;
+  GhosttyRenderStateImageIterator images;
   GhosttyKeyEncoder encoder;
   GhosttyKeyEvent key_event;
   GhosttyMouseEncoder mouse_encoder;
@@ -138,6 +214,15 @@ typedef struct {
   GhosttyTerminalScreen found_screen;
   GhosttySelection *matches; /* reused buffer for match lists */
   size_t matches_cap;
+  /* The last snapshot's OSC 8 links, the buffers reused frame to frame:
+   * entry n, from 1, is link_uris up to link_ends[n - 1], starting where
+   * the entry before it ends. */
+  uint8_t *link_uris;
+  size_t link_uris_cap;
+  size_t link_uris_len;
+  size_t *link_ends;
+  size_t link_ends_cap;
+  size_t link_count;
 } WtGhostty;
 
 static void on_write_pty(GhosttyTerminal t, void *ud, const uint8_t *data,
@@ -179,6 +264,59 @@ static void on_notification(GhosttyTerminal t, void *ud,
                   (const uint8_t *)n->body.ptr, n->body.len);
 }
 
+/* One write of text. libghostty-vt has decoded it, and has dropped malformed
+ * base64 whole. OSC 52 and OSC 1337 Copy arrive here, and any OSC 5522 write
+ * that gets past the limit wt_ghostty_new sets, which holds no data: refused,
+ * as a clear is, since the two protocols' clears look alike. */
+static void on_clipboard_write(GhosttyTerminal t, void *ud,
+                               const GhosttyClipboardWrite *write) {
+  (void)t;
+  WtGhostty *g = ud;
+  static const char text_plain[] = "text/plain";
+  int kind = 0;
+  switch (write->location) {
+    case GHOSTTY_CLIPBOARD_LOCATION_STANDARD:
+      kind = WT_EFFECT_CLIPBOARD_SYSTEM;
+      break;
+    case GHOSTTY_CLIPBOARD_LOCATION_SELECTION:
+    case GHOSTTY_CLIPBOARD_LOCATION_PRIMARY:
+      kind = WT_EFFECT_CLIPBOARD_PRIMARY;
+      break;
+    default:
+      break;
+  }
+  GhosttyClipboardWriteReply reply = {
+      .size = sizeof(reply),
+      .result = GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED,
+  };
+  if (kind != 0 && write->contents_len == 1) {
+    const GhosttyClipboardContent *content = &write->contents[0];
+    if (content->data.len > 0 &&
+        content->mime.len == sizeof(text_plain) - 1 &&
+        memcmp(content->mime.ptr, text_plain, content->mime.len) == 0) {
+      if (g->effect)
+        g->effect(g->userdata, kind, content->data.ptr, content->data.len);
+      reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+    }
+  }
+  write->reply(write, &reply);
+}
+
+/* libghostty-vt's note on a dropped OSC 52. Its log is process-wide and
+ * discarded by default, and everything else in it stays discarded. */
+static void on_log(void *ud, GhosttySysLogLevel level, const uint8_t *scope,
+                   size_t scope_len, const uint8_t *message,
+                   size_t message_len) {
+  (void)ud;
+  (void)level;
+  (void)scope;
+  (void)scope_len;
+  static const char osc_52[] = "OSC 52";
+  if (message_len >= sizeof(osc_52) - 1 &&
+      memcmp(message, osc_52, sizeof(osc_52) - 1) == 0)
+    fprintf(stderr, "Wayterm: %.*s\n", (int)message_len, (const char *)message);
+}
+
 void wt_ghostty_search_clear(WtGhostty *g);
 
 void wt_ghostty_free(WtGhostty *g) {
@@ -186,10 +324,13 @@ void wt_ghostty_free(WtGhostty *g) {
   wt_ghostty_search_clear(g);
   ghostty_search_free(g->search);
   free(g->matches);
+  free(g->link_uris);
+  free(g->link_ends);
   ghostty_mouse_event_free(g->mouse_event);
   ghostty_mouse_encoder_free(g->mouse_encoder);
   ghostty_key_event_free(g->key_event);
   ghostty_key_encoder_free(g->encoder);
+  ghostty_render_state_image_iterator_free(g->images);
   ghostty_render_state_row_cells_free(g->cells);
   ghostty_render_state_row_iterator_free(g->rows);
   ghostty_render_state_free(g->render);
@@ -199,6 +340,9 @@ void wt_ghostty_free(WtGhostty *g) {
 }
 
 WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
+  static atomic_flag log_installed = ATOMIC_FLAG_INIT;
+  if (!atomic_flag_test_and_set(&log_installed))
+    ghostty_sys_set(GHOSTTY_SYS_OPT_LOG, (const void *)on_log);
   WtGhostty *g = calloc(1, sizeof(WtGhostty));
   if (!g) return NULL;
   if (ghostty_terminal_new(NULL, &g->terminal, cols, rows) != GHOSTTY_SUCCESS ||
@@ -206,6 +350,8 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
       ghostty_render_state_row_iterator_new(NULL, &g->rows) !=
           GHOSTTY_SUCCESS ||
       ghostty_render_state_row_cells_new(NULL, &g->cells) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_image_iterator_new(NULL, &g->images) !=
+          GHOSTTY_SUCCESS ||
       ghostty_key_encoder_new(NULL, &g->encoder) != GHOSTTY_SUCCESS ||
       ghostty_key_event_new(NULL, &g->key_event) != GHOSTTY_SUCCESS ||
       ghostty_mouse_encoder_new(NULL, &g->mouse_encoder) != GHOSTTY_SUCCESS ||
@@ -225,6 +371,20 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
                        (const void *)on_pwd);
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION,
                        (const void *)on_notification);
+  /* Only images sent in the stream: the media that read local files or
+   * shared memory stay off, as a remote program could name anything. */
+  uint64_t limit = WT_KITTY_STORAGE_LIMIT;
+  ghostty_terminal_set(g->terminal,
+                       GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &limit);
+  /* No clipboard_read callback, ever: clipboard contents must not leave the
+   * machine, so an OSC 52 query goes unanswered. The write callback also
+   * opens OSC 5522 writes, which a zero limit keeps shut: no data fits. */
+  size_t no_kitty_write_data = 0;
+  ghostty_terminal_set(g->terminal,
+                       GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES,
+                       &no_kitty_write_data);
+  ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
+                       (const void *)on_clipboard_write);
   return g;
 }
 
@@ -845,11 +1005,24 @@ int wt_ghostty_encode_mouse(WtGhostty *g, const WtMouse *mouse, char *out,
     case WT_BUTTON_LEFT:
       ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_LEFT);
       break;
+    case WT_BUTTON_RIGHT:
+      ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_RIGHT);
+      break;
+    case WT_BUTTON_MIDDLE:
+      ghostty_mouse_event_set_button(g->mouse_event,
+                                     GHOSTTY_MOUSE_BUTTON_MIDDLE);
+      break;
     case WT_BUTTON_WHEEL_UP:
       ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_FOUR);
       break;
     case WT_BUTTON_WHEEL_DOWN:
       ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_FIVE);
+      break;
+    case WT_BUTTON_WHEEL_LEFT:
+      ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_SIX);
+      break;
+    case WT_BUTTON_WHEEL_RIGHT:
+      ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_SEVEN);
       break;
     default: ghostty_mouse_event_clear_button(g->mouse_event); break;
   }
@@ -917,10 +1090,135 @@ int wt_ghostty_encode_key(WtGhostty *g, const WtKey *key, char *out,
                                     written);
 }
 
+/* The PNG decoder, process-wide as libghostty-vt's own is. */
+static WtPngFn png_decoder;
+
+typedef struct {
+  const GhosttyAllocator *allocator;
+  GhosttySysImage *image;
+} PngSink;
+
+static bool decode_png(void *userdata, const GhosttyAllocator *allocator,
+                       const uint8_t *data, size_t len, GhosttySysImage *out) {
+  (void)userdata;
+  PngSink sink = {.allocator = allocator, .image = out};
+  return png_decoder && png_decoder(data, len, &sink);
+}
+
+/* Install the decoder Kitty's PNG payloads go through; set it before any
+ * terminal gets one. */
+void wt_ghostty_set_png_decoder(WtPngFn decoder) {
+  png_decoder = decoder;
+  ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, (const void *)decode_png);
+}
+
+/* Where a decoder puts a `width` x `height` image's RGBA rows, for
+ * libghostty-vt to own; NULL if it cannot be allocated. A decoder that
+ * gets a buffer must fill it and return true. */
+uint8_t *wt_ghostty_png_pixels(void *sink, uint32_t width, uint32_t height) {
+  PngSink *png = sink;
+  size_t len = (size_t)width * height * 4;
+  uint8_t *data = ghostty_alloc(png->allocator, len);
+  if (!data) return NULL;
+  png->image->width = width;
+  png->image->height = height;
+  png->image->data = data;
+  png->image->data_len = len;
+  return data;
+}
+
+/* Move playing animations on to `now_ms`, a clock of the caller's that only
+ * goes forward, once per frame and before the snapshot, so that it sees the
+ * new frames. `next_ms` is when the next is due; GHOSTTY_NO_VALUE when
+ * nothing is playing. */
+int wt_ghostty_animation_tick(WtGhostty *g, uint64_t now_ms,
+                              uint64_t *next_ms) {
+  GhosttyKittyGraphics graphics = NULL;
+  int r = ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+                               &graphics);
+  if (r != GHOSTTY_SUCCESS) return r;
+  return ghostty_kitty_graphics_animation_tick(graphics, now_ms, next_ms);
+}
+
+/* The last snapshot's image placements into `out`, in no drawing order.
+ * `len` is how many there are; when that is more than `cap`,
+ * GHOSTTY_OUT_OF_SPACE, and only `cap` were written. */
+int wt_ghostty_placements(WtGhostty *g, WtPlacement *out, size_t cap,
+                          size_t *len) {
+  *len = 0;
+  int r = ghostty_render_state_get(
+      g->render, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &g->images);
+  if (r != GHOSTTY_SUCCESS) return r;
+  while (ghostty_render_state_image_iterator_next(g->images)) {
+    GhosttyImageProtocol protocol = GHOSTTY_IMAGE_PROTOCOL_KITTY;
+    GhosttyRenderStateImageLayer layer =
+        GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT;
+    WtPlacement p = {0};
+    GhosttyRenderStateImageData keys[] = {
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_Z,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT,
+    };
+    void *values[] = {
+        &protocol,      &p.image_id,     &p.generation, &layer,
+        &p.z,           &p.col,          &p.row,        &p.offset_x,
+        &p.offset_y,    &p.width,        &p.height,     &p.source_x,
+        &p.source_y,    &p.source_width, &p.source_height,
+    };
+    size_t count = sizeof keys / sizeof keys[0];
+    if (ghostty_render_state_image_get_multi(g->images, count, keys, values,
+                                             NULL) != GHOSTTY_SUCCESS ||
+        protocol != GHOSTTY_IMAGE_PROTOCOL_KITTY)
+      continue;
+    p.layer = (uint8_t)layer;
+    if (*len < cap) out[*len] = p;
+    (*len)++;
+  }
+  return *len > cap ? GHOSTTY_OUT_OF_SPACE : GHOSTTY_SUCCESS;
+}
+
+/* A Kitty image's pixels, always decoded and uncompressed; for an animation
+ * those of its current frame. GHOSTTY_NO_VALUE when the image is gone or
+ * its pixels have not all arrived. */
+int wt_ghostty_image_pixels(WtGhostty *g, uint32_t image_id, WtPixels *out) {
+  GhosttyKittyGraphics graphics = NULL;
+  int r = ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+                               &graphics);
+  if (r != GHOSTTY_SUCCESS) return r;
+  GhosttyKittyGraphicsImage image =
+      ghostty_kitty_graphics_image(graphics, image_id);
+  if (!image) return GHOSTTY_NO_VALUE;
+  GhosttyKittyImageFormat format = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA;
+  GhosttyKittyGraphicsImageData keys[] = {
+      GHOSTTY_KITTY_IMAGE_DATA_WIDTH,    GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
+      GHOSTTY_KITTY_IMAGE_DATA_FORMAT,   GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
+      GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN,
+  };
+  void *values[] = {&out->width, &out->height, &format, &out->data, &out->len};
+  r = ghostty_kitty_graphics_image_get_multi(
+      image, sizeof keys / sizeof keys[0], keys, values, NULL);
+  out->format = (uint8_t)format;
+  return r;
+}
+
 /* ABI checks for the Rust mirrors (ffi.rs tests). */
 size_t wt_ghostty_cell_size(void) { return sizeof(WtCell); }
 size_t wt_ghostty_frame_size(void) { return sizeof(WtFrame); }
 size_t wt_ghostty_span_size(void) { return sizeof(WtSpan); }
+size_t wt_ghostty_placement_size(void) { return sizeof(WtPlacement); }
+size_t wt_ghostty_pixels_size(void) { return sizeof(WtPixels); }
 /* The size alone misses a field moved into the padding. */
 size_t wt_ghostty_cell_grapheme_offset(void) {
   return offsetof(WtCell, grapheme);
@@ -928,11 +1226,111 @@ size_t wt_ghostty_cell_grapheme_offset(void) {
 size_t wt_ghostty_cell_grapheme_len_offset(void) {
   return offsetof(WtCell, grapheme_len);
 }
+size_t wt_ghostty_placement_layer_offset(void) {
+  return offsetof(WtPlacement, layer);
+}
+size_t wt_ghostty_pixels_format_offset(void) {
+  return offsetof(WtPixels, format);
+}
+/* The limit a terminal really has, for the mirror of it. */
+uint64_t wt_ghostty_storage_limit(WtGhostty *g) {
+  uint64_t limit = 0;
+  ghostty_terminal_get(g->terminal,
+                       GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_STORAGE_LIMIT, &limit);
+  return limit;
+}
+
+size_t wt_ghostty_cell_link_offset(void) { return offsetof(WtCell, link); }
+size_t wt_ghostty_cell_wraps_offset(void) { return offsetof(WtCell, wraps); }
+size_t wt_ghostty_cell_underline_offset(void) {
+  return offsetof(WtCell, underline);
+}
+size_t wt_ghostty_cell_underline_rgb_offset(void) {
+  return offsetof(WtCell, underline_rgb);
+}
+size_t wt_ghostty_cell_underline_has_rgb_offset(void) {
+  return offsetof(WtCell, underline_has_rgb);
+}
 
 static void rgb(uint8_t out[3], GhosttyColorRgb c) {
   out[0] = c.r;
   out[1] = c.g;
   out[2] = c.b;
+}
+
+/* Read the URI of the hyperlink at a viewport cell into the free end of
+ * link_uris, growing it as needed; its length, 0 if the cell has none. */
+static size_t read_link(WtGhostty *g, size_t x, size_t y) {
+  GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT};
+  point.value.coordinate.x = (uint16_t)x;
+  point.value.coordinate.y = (uint32_t)y;
+  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  if (ghostty_terminal_grid_ref(g->terminal, point, &ref) != GHOSTTY_SUCCESS)
+    return 0;
+  size_t start = g->link_uris_len, len = 0;
+  int r = ghostty_grid_ref_hyperlink_uri(
+      &ref, g->link_uris ? g->link_uris + start : NULL,
+      g->link_uris_cap - start, &len);
+  if (r == GHOSTTY_OUT_OF_SPACE) {
+    size_t cap = (start + len) * 2;
+    uint8_t *grown = realloc(g->link_uris, cap);
+    if (!grown) return 0;
+    g->link_uris = grown;
+    g->link_uris_cap = cap;
+    r = ghostty_grid_ref_hyperlink_uri(&ref, grown + start, cap - start, &len);
+  }
+  return r == GHOSTTY_SUCCESS ? len : 0;
+}
+
+/* The links entry for the hyperlink at a viewport cell, 0 if it has none.
+ * The C API exposes no link id, so a URI is what identifies a link. Cells
+ * come in reading order and only the latest entry is compared: a link's
+ * cells share one entry, however long the screen's list of links is. */
+static uint16_t link_entry(WtGhostty *g, size_t x, size_t y) {
+  size_t len = read_link(g, x, y);
+  if (len == 0) return 0;
+  size_t start = g->link_uris_len;
+  if (g->link_count > 0) {
+    size_t last = g->link_count > 1 ? g->link_ends[g->link_count - 2] : 0;
+    if (start - last == len &&
+        memcmp(g->link_uris + last, g->link_uris + start, len) == 0)
+      return (uint16_t)g->link_count;
+  }
+  if (g->link_count == UINT16_MAX) return 0;
+  if (g->link_count == g->link_ends_cap) {
+    size_t cap = g->link_ends_cap ? g->link_ends_cap * 2 : 16;
+    size_t *grown = realloc(g->link_ends, cap * sizeof(size_t));
+    if (!grown) return 0;
+    g->link_ends = grown;
+    g->link_ends_cap = cap;
+  }
+  g->link_uris_len = start + len;
+  g->link_ends[g->link_count++] = g->link_uris_len;
+  return (uint16_t)g->link_count;
+}
+
+/* The last snapshot's links, valid until the next one: `*count` entries,
+ * entry n, from 1, being `uris` up to `ends[n - 1]`, starting where the
+ * entry before it ends. Cells point at them by `link`. */
+void wt_ghostty_links(WtGhostty *g, const uint8_t **uris, const size_t **ends,
+                      size_t *count) {
+  *uris = g->link_uris;
+  *ends = g->link_ends;
+  *count = g->link_count;}
+
+/* A style color in RGB, a palette index through `palette`; false if unset. */
+static bool style_rgb(uint8_t out[3], GhosttyStyleColor c,
+                      const GhosttyColorRgb *palette) {
+  switch (c.tag) {
+    case GHOSTTY_STYLE_COLOR_PALETTE:
+      rgb(out, palette[c.value.palette]);
+      return true;
+    case GHOSTTY_STYLE_COLOR_RGB:
+      rgb(out, c.value.rgb);
+      return true;
+    default:
+      return false;
+  }
 }
 
 /* Snapshot the viewport into `cells` (row-major, frame->cols per row),
@@ -967,6 +1365,8 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
   frame->cursor_visible = cursor.visible && cursor.viewport_has_value;
   frame->cursor_x = cursor.viewport_x;
   frame->cursor_y = cursor.viewport_y;
+  frame->cursor_style = (uint8_t)cursor.visual_style;
+  frame->cursor_blinking = cursor.blinking;
 
   size_t cols = frame->cols;
   if (cap < cols * (size_t)frame->rows) return GHOSTTY_OUT_OF_SPACE;
@@ -976,6 +1376,8 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
                                &g->rows);
   if (r != GHOSTTY_SUCCESS) return r;
   size_t used = 0; /* grapheme slots filled, or needed past the cap */
+  g->link_uris_len = 0;
+  g->link_count = 0;
   size_t y = 0;
   while (y < frame->rows && ghostty_render_state_row_iterator_next(g->rows)) {
     if (ghostty_render_state_row_get(g->rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
@@ -983,6 +1385,12 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
       y++;
       continue;
     }
+    /* May be a false positive; saves every other row the per-cell check. */
+    GhosttyRow row;
+    bool row_links = false;
+    if (ghostty_render_state_row_get(g->rows, GHOSTTY_RENDER_STATE_ROW_DATA_RAW,
+                                     &row) == GHOSTTY_SUCCESS)
+      ghostty_row_get(row, GHOSTTY_ROW_DATA_HYPERLINK, &row_links);
     size_t x = 0;
     while (x < cols && ghostty_render_state_row_cells_next(g->cells)) {
       WtCell *cell = &cells[y * cols + x];
@@ -1033,20 +1441,41 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
             GHOSTTY_SUCCESS) {
           if (style.bold) cell->flags |= WT_CELL_BOLD;
           if (style.italic) cell->flags |= WT_CELL_ITALIC;
-          if (style.underline != GHOSTTY_SGR_UNDERLINE_NONE)
-            cell->flags |= WT_CELL_UNDERLINE;
+          cell->underline = (uint8_t)style.underline;
+          cell->underline_has_rgb = style_rgb(
+              cell->underline_rgb, style.underline_color, colors.palette);
           if (style.strikethrough) cell->flags |= WT_CELL_STRIKE;
           if (style.inverse) cell->flags |= WT_CELL_INVERSE;
           if (style.invisible) cell->flags |= WT_CELL_INVISIBLE;
           if (style.faint) cell->flags |= WT_CELL_FAINT;
+          if (style.blink) cell->flags |= WT_CELL_BLINK;
         }
       }
       bool selected = false;
       ghostty_render_state_row_cells_get(
           g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected);
       if (selected) cell->flags |= WT_CELL_SELECTED;
+      if (row_links) {
+        GhosttyCell raw;
+        bool linked = false;
+        if (ghostty_render_state_row_cells_get(
+                g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw) ==
+                GHOSTTY_SUCCESS &&
+            ghostty_cell_get(raw, GHOSTTY_CELL_DATA_HAS_HYPERLINK, &linked) ==
+                GHOSTTY_SUCCESS &&
+            linked)
+          cell->link = link_entry(g, x, y);
+      }
       x++;
     }
+    bool wraps = false;
+    if (cols > 0 &&
+        ghostty_render_state_row_get(g->rows, GHOSTTY_RENDER_STATE_ROW_DATA_RAW,
+                                     &row) == GHOSTTY_SUCCESS &&
+        ghostty_row_get(row, GHOSTTY_ROW_DATA_WRAP, &wraps) ==
+            GHOSTTY_SUCCESS &&
+        wraps)
+      cells[y * cols + cols - 1].wraps = 1;
     y++;
   }
   *graphemes_len = used;

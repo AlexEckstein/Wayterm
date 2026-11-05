@@ -1,13 +1,14 @@
 //! Widget checks; they need a display and run from `ui::gtk_tests`.
 
+use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 use gtk4::glib;
 
 use super::ssh::{follow_terminal_directory, mark_sidebar_attached};
 use super::terminal::{
-    focus_after_connect, focus_terminal, show_session_ended, spawn_notification_drain,
-    terminal_state,
+    focus_after_connect, focus_terminal, keep_shell_directory, show_session_ended,
+    spawn_notification_drain, terminal_state,
 };
 use super::*;
 use crate::hotkeys::engine::focus_within;
@@ -257,6 +258,110 @@ fn sidebar_follows_the_shell_directory(backend_name: &str) {
     assert_eq!(sidebar.path_text(), "/var/log");
 }
 
+/// A connected tab keeps the directory its shell reports, decoded, through
+/// the real connect path on each backend.
+pub(in crate::ui) fn a_terminal_tab_keeps_the_shell_directory() {
+    tab_keeps_the_shell_directory("vte");
+    #[cfg(feature = "backend-ghostty")]
+    {
+        use crate::terminal::{install_backend_preference, BackendKind};
+        install_backend_preference(BackendKind::Ghostty);
+        tab_keeps_the_shell_directory("ghostty");
+        install_backend_preference(BackendKind::Vte);
+    }
+}
+
+fn tab_keeps_the_shell_directory(backend_name: &str) {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let _entered = runtime.enter();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let shell = dir.path().join("reporting-shell");
+    std::fs::write(
+        &shell,
+        "#!/bin/sh\nprintf '\\033]7;file://box/srv/my%%20site\\007'\nexec sleep 30\n",
+    )
+    .expect("write the shell");
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let notebook = gtk4::Notebook::new();
+    let window = gtk4::Window::new();
+    window.set_child(Some(&notebook));
+    window.present();
+    let session = SessionConfig {
+        id: 7_002,
+        name: "local".into(),
+        session_type: SessionType::LocalShell,
+        local_shell: Some(shell.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let store = Rc::new(SessionStore::in_memory().expect("in-memory store"));
+
+    let page = SessionTab::open(&notebook, &session, &store);
+    assert_eq!(SessionTab::shell_directory_for_page(&page), None);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while SessionTab::shell_directory_for_page(&page).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{backend_name}: the tab never kept the report"
+        );
+        glib::MainContext::default().iteration(false);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        SessionTab::active_terminal(&notebook).unwrap().name(),
+        backend_name
+    );
+    assert_eq!(
+        SessionTab::shell_directory_for_page(&page).as_deref(),
+        Some("/srv/my site")
+    );
+    close_tab(&notebook, &page);
+    window.destroy();
+    for _ in 0..20 {
+        glib::MainContext::default().iteration(false);
+    }
+}
+
+/// A new terminal on the page starts with no directory, and a report the
+/// one it replaced still had in flight does not land on it.
+pub(in crate::ui) fn a_replaced_terminal_no_longer_reports_to_the_tab() {
+    let session = SessionConfig {
+        id: 1,
+        name: "ssh-1".into(),
+        session_type: SessionType::SSH,
+        ..Default::default()
+    };
+    let page = page_content(&Rc::new(session));
+    let report = |backend: &Arc<dyn TerminalBackend>, uri: &str| {
+        backend.write(format!("\x1b]7;{uri}\x07").as_bytes());
+        // VTE parses fed bytes on a timer, not inline.
+        for _ in 0..100 {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+
+    let old = create_terminal().backend;
+    set_terminal_area(&page, &old.widget());
+    keep_shell_directory(&page, &old.widget());
+    report(&old, "file://box/srv");
+    assert_eq!(
+        SessionTab::shell_directory_for_page(&page).as_deref(),
+        Some("/srv")
+    );
+
+    let new = create_terminal().backend;
+    set_terminal_area(&page, &new.widget());
+    keep_shell_directory(&page, &new.widget());
+    assert_eq!(SessionTab::shell_directory_for_page(&page), None);
+    report(&old, "file://box/tmp");
+    assert_eq!(SessionTab::shell_directory_for_page(&page), None);
+    report(&new, "file://box/var/log");
+    assert_eq!(
+        SessionTab::shell_directory_for_page(&page).as_deref(),
+        Some("/var/log")
+    );
+}
+
 /// The shell exiting lets go of the page's SFTP sidebar: an empty one
 /// takes its place, keeping the follow setting, and the old one is freed
 /// with its SFTP task.
@@ -399,7 +504,58 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
         gone.upgrade().is_none(),
         "a tab closed on its error is freed"
     );
+    tabs_honor_the_session_backend(&notebook, &store);
     window.destroy();
+}
+
+/// A session's `preferred_backend` picks its tab's terminal; an empty or
+/// unknown value follows the installed row. Ghostty is VTE in a build
+/// without it, so only a `backend-ghostty` run tells the two apart.
+fn tabs_honor_the_session_backend(notebook: &gtk4::Notebook, store: &Rc<SessionStore>) {
+    use crate::terminal::{install_backend_preference, BackendKind};
+    use BackendKind::{Ghostty, Vte};
+
+    let ghostty = Ghostty.effective().as_setting();
+    for (global, preferred, expected) in [
+        (Vte, Some("ghostty"), ghostty),
+        (Ghostty, Some("vte"), "vte"),
+        (Vte, None, "vte"),
+        (Ghostty, None, ghostty),
+        (Ghostty, Some(""), ghostty),
+        (Vte, Some("alacritty"), "vte"),
+        (Ghostty, Some("alacritty"), ghostty),
+    ] {
+        install_backend_preference(global);
+        let session = SessionConfig {
+            id: 7_003,
+            name: "backend".into(),
+            session_type: SessionType::LocalShell,
+            local_shell: Some("/bin/sh".into()),
+            preferred_backend: preferred.map(str::to_string),
+            ..Default::default()
+        };
+        let page = SessionTab::open(notebook, &session, store);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while SessionTab::page_status(&page).map(|status| status.state)
+            != Some(TransportState::Connected)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the local shell never connected"
+            );
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let terminal = SessionTab::active_terminal(notebook).expect("a connected terminal");
+        assert_eq!(
+            terminal.name(),
+            expected,
+            "session {preferred:?} over global {global:?}"
+        );
+        drop(terminal);
+        close_tab(notebook, &page);
+    }
+    install_backend_preference(Vte);
 }
 
 /// The background VTE paints, as 8-bit RGB.
@@ -450,6 +606,7 @@ pub(in crate::ui) fn terminals_follow_the_font_opacity_and_scrollback_rows() {
         font_size: 20.0,
         opacity: 0.5,
         scrollback_lines: 321,
+        ..Default::default()
     };
     crate::ui::appearance::install_terminal_defaults(rows.clone());
     assert_eq!(font(&follows).as_deref(), Some("Monospace 20"));

@@ -323,6 +323,7 @@ mod tests {
                 font_size: 14.5,
                 opacity: 0.57,
                 scrollback_lines: u32::MAX,
+                ..Default::default()
             }
         );
 

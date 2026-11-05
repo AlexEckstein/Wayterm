@@ -1,8 +1,9 @@
 //! Font, opacity and scrollback for terminal tabs (doc 02 §Font, opacity
 //! and scrollback): the global settings rows and a session's overrides on
-//! them. Display-free.
+//! them. Also the Ghostty view's options (doc 02 §View options). Display-free.
 
 use std::str::FromStr;
+use std::time::Duration;
 
 use gtk4::pango;
 
@@ -23,6 +24,51 @@ pub struct TerminalDefaults {
     pub font_size: f64,
     pub opacity: f64,
     pub scrollback_lines: u32,
+    pub ghostty: GhosttyOptions,
+}
+
+/// What only the Ghostty view draws or decides for itself; global, with no
+/// session override (doc 02 §View options).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GhosttyOptions {
+    /// Rows per wheel notch.
+    pub wheel_rows: f64,
+    /// How long a blinking cursor stays on, and off; Ghostty's default.
+    pub cursor_blink: Duration,
+    /// How long blinking text stays on, and off: one cycle a second, SGR 5's
+    /// slow blink. SGR 6 blinks the same, as libghostty-vt keeps one flag.
+    pub text_blink: Duration,
+    pub search: SearchColors,
+}
+
+/// Search highlight colors, Ghostty's defaults: dark text on yellow, on
+/// orange for the current match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchColors {
+    pub fg: [u8; 3],
+    pub bg: [u8; 3],
+    pub current_bg: [u8; 3],
+}
+
+impl Default for GhosttyOptions {
+    fn default() -> Self {
+        Self {
+            wheel_rows: 3.0,
+            cursor_blink: Duration::from_millis(600),
+            text_blink: Duration::from_millis(500),
+            search: SearchColors::default(),
+        }
+    }
+}
+
+impl Default for SearchColors {
+    fn default() -> Self {
+        Self {
+            fg: [0, 0, 0],
+            bg: [0xff, 0xe0, 0x82],
+            current_bg: [0xf2, 0xa5, 0x7e],
+        }
+    }
 }
 
 impl Default for TerminalDefaults {
@@ -32,6 +78,7 @@ impl Default for TerminalDefaults {
             font_size: 12.0,
             opacity: 1.0,
             scrollback_lines: 10_000,
+            ghostty: GhosttyOptions::default(),
         }
     }
 }
@@ -52,6 +99,7 @@ impl TerminalDefaults {
                 .unwrap_or(seed.opacity),
             scrollback_lines: parsed(row(SCROLLBACK_LIMIT_SETTING))
                 .unwrap_or(seed.scrollback_lines),
+            ghostty: seed.ghostty,
         }
     }
 
@@ -112,8 +160,20 @@ mod tests {
                 font_size: 14.5,
                 opacity: 0.8,
                 scrollback_lines: 0,
+                ..Default::default()
             }
         );
+    }
+
+    /// Ghostty's own values, which a tab keeps until a row says otherwise.
+    #[test]
+    fn view_options_start_at_ghosttys_defaults() {
+        let options = TerminalDefaults::from_rows(|_| None).ghostty;
+        assert_eq!(options.wheel_rows, 3.0);
+        assert_eq!(options.cursor_blink, Duration::from_millis(600));
+        assert_eq!(options.text_blink, Duration::from_millis(500));
+        assert_eq!(options.search.bg, [0xff, 0xe0, 0x82]);
+        assert_eq!(options.search.current_bg, [0xf2, 0xa5, 0x7e]);
     }
 
     #[test]

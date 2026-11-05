@@ -23,7 +23,7 @@ live; there is no Apply button.
 | Reconnect automatically | `reconnect_on_drop` | at the next drop, open tabs included (doc 03 §Reconnect) |
 | Open SFTP on connect | `sftp_on_connect` | to tabs connected afterwards (doc 07 §Connection model) |
 | Minimize to tray on close | `minimize_to_tray` | at each window close (doc 03 §Tray) |
-| Experimental Ghostty terminal | `default_backend` (`ghostty`/`vte`) | to tabs opened afterwards; disabled with a "rebuild with the backend-ghostty feature to enable" tooltip in a default build (doc 02 §Backend selection) |
+| Experimental Ghostty terminal | `default_backend` (`ghostty`/`vte`) | to tabs opened afterwards, for sessions without their own; disabled with a "rebuild with the backend-ghostty feature to enable" tooltip in a default build (doc 02 §Backend selection) |
 | Clear all reminders | writes `1` to `duplicate_tmux_notice` and `confirm_close_notice` | every "Do not show me again" notice shows again; greyed out while none is silenced |
 
 Each switch writes `1`/`0`. The stored values are pushed to the modules
@@ -48,6 +48,9 @@ save re-applies to every tab and a size change resizes every remote's grid.
 The mouse wheel over them scrolls the page and leaves the value alone, since
 a lowered scrollback drops lines from open tabs.
 
+The page has no Ghostty-only controls yet. One saves like the rows above,
+and doc 02 §View options takes its row the rest of the way to open tabs.
+
 ### Credentials
 
 The Bitwarden switch and CLI path, and whether the keyring and the CLI
@@ -71,7 +74,7 @@ inserts 28 informational hotkey rows (doc 11 §Persistence).
 
 | Row | Seed | Meaning |
 |---|---|---|
-| `default_backend` | `vte` | terminal backend for new tabs (doc 02 §Backend selection) |
+| `default_backend` | `vte` | terminal backend for new tabs of sessions without their own (doc 02 §Backend selection) |
 | `default_color_scheme` | `System` | `System`, `Light` or `Dark` (doc 02 §Color schemes) |
 | `default_font_family` / `default_font_size` | `Monospace` / `12.0` | terminal font, in points, for sessions without their own (doc 02 §Font, opacity and scrollback) |
 | `default_opacity` | `1.0` | terminal background opacity, 0–1, for sessions without their own (doc 02 §Opacity) |

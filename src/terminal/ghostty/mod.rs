@@ -6,8 +6,9 @@
 //! - [`engine::Engine`] owns one terminal, and its search, safely and needs
 //!   no display.
 //! - [`view::GhosttyView`] is the GTK4 widget that paints the engine's
-//!   grid snapshot, lights search matches, and turns keys, mouse, wheel
-//!   and focus events into input or local selection and scrolling.
+//!   grid snapshot and its Kitty images, lights search matches, and turns
+//!   keys, mouse, wheel and focus events into input or local selection and
+//!   scrolling.
 //! - [`GhosttyBackend`] puts them behind [`TerminalBackend`].
 
 pub mod engine;
@@ -26,7 +27,8 @@ use super::backend::{
 };
 use super::color_scheme;
 use super::vte::EventSender;
-use engine::{Effect, Engine, Scroll};
+use engine::{ClipboardDestination, Effect, Engine, Scroll};
+pub use view::install_options;
 use view::GhosttyView;
 
 /// The grid a backend starts with, before its widget is allocated.
@@ -47,9 +49,12 @@ struct Watchers {
     input: WatchList<InputWatch>,
     output: WatchList<dyn Fn()>,
     directory: WatchList<dyn Fn(&str)>,
+    /// A program's clipboard write; [`GhosttyView`] applies it.
+    clipboard: WatchList<ClipboardWatch>,
 }
 
 type InputWatch = dyn Fn(&[u8]);
+type ClipboardWatch = dyn Fn(ClipboardDestination, &str);
 type WatchList<F> = RefCell<Vec<Rc<F>>>;
 
 /// A copy of the list, so a watcher may connect another while it runs.
@@ -59,7 +64,7 @@ fn each<F: ?Sized>(list: &WatchList<F>) -> Vec<Rc<F>> {
 
 impl Shared {
     /// Forward an engine effect as a terminal event; a reported directory
-    /// goes to the watchers instead.
+    /// and a clipboard write go to the watchers instead.
     fn emit(&self, effects: Vec<Effect>) {
         for effect in effects {
             let event = match effect {
@@ -70,6 +75,12 @@ impl Shared {
                 Effect::Pwd(dir) => {
                     for watch in each(&self.watchers.directory) {
                         watch(&dir);
+                    }
+                    continue;
+                }
+                Effect::ClipboardWrite { destination, text } => {
+                    for watch in each(&self.watchers.clipboard) {
+                        watch(destination, &text);
                     }
                     continue;
                 }
@@ -152,11 +163,9 @@ impl TerminalBackend for GhosttyBackend {
             search: true,
             color_schemes: true,
             scrollback_search: true,
-            url_detection: false,
+            url_detection: true,
             sixel_graphics: false,
-            // libghostty-vt parses Kitty graphics; the widget draws no
-            // images.
-            kitty_graphics: false,
+            kitty_graphics: true,
             custom_fonts: true,
             reflow: true,
             alternate_screen: true,

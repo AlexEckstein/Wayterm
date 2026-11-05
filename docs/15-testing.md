@@ -74,8 +74,9 @@ Highlights:
 - **RDP:** the argv builder (order, toggles, never `/cert:ignore` or
   `/p:`, no password), the certificate decisions and fingerprint parsing,
   the version gate (`src/rdp/*/tests.rs`, `tests/rdp_tab_flow.rs`).
-- **Ghostty:** with `--features backend-ghostty`, the engine suite drives
-  the FFI end to end and checks the C struct layouts.
+- **Ghostty:** with `--features backend-ghostty`, the engine suite
+  (`src/terminal/ghostty/engine/tests/`) drives the FFI end to end and
+  checks the C struct layouts.
 
 ### Macros
 
