@@ -6,8 +6,9 @@
 //! - [`engine::Engine`] owns one terminal, and its search, safely and needs
 //!   no display.
 //! - [`view::GhosttyView`] is the GTK4 widget that paints the engine's
-//!   grid snapshot, lights search matches, and turns keys, mouse, wheel
-//!   and focus events into input or local selection and scrolling.
+//!   grid snapshot and its Kitty images, lights search matches, and turns
+//!   keys, mouse, wheel and focus events into input or local selection and
+//!   scrolling.
 //! - [`GhosttyBackend`] puts them behind [`TerminalBackend`].
 
 pub mod engine;
@@ -162,9 +163,7 @@ impl TerminalBackend for GhosttyBackend {
             scrollback_search: true,
             url_detection: true,
             sixel_graphics: false,
-            // libghostty-vt parses Kitty graphics; the widget draws no
-            // images.
-            kitty_graphics: false,
+            kitty_graphics: true,
             custom_fonts: true,
             reflow: true,
             alternate_screen: true,

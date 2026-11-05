@@ -41,6 +41,34 @@
 #define WT_MOD_ALT (1u << 2)
 #define WT_MOD_SUPER (1u << 3)
 
+/* Image placement layers, in drawing order (mirrored in ffi.rs). */
+#define WT_LAYER_BELOW_BG 0
+#define WT_LAYER_BELOW_TEXT 1
+#define WT_LAYER_ABOVE_TEXT 2
+_Static_assert(WT_LAYER_BELOW_BG ==
+                       GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_BACKGROUND &&
+                   WT_LAYER_BELOW_TEXT ==
+                       GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_TEXT &&
+                   WT_LAYER_ABOVE_TEXT ==
+                       GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT,
+               "image layers");
+
+/* Bytes of Kitty images each screen holds, Ghostty's default (mirrored in
+ * ffi.rs). */
+#define WT_KITTY_STORAGE_LIMIT 320000000u
+
+/* Stored image pixel formats (mirrored in ffi.rs). */
+#define WT_FORMAT_RGB 0
+#define WT_FORMAT_RGBA 1
+#define WT_FORMAT_GRAY_ALPHA 3
+#define WT_FORMAT_GRAY 4
+_Static_assert(WT_FORMAT_RGB == GHOSTTY_KITTY_IMAGE_FORMAT_RGB &&
+                   WT_FORMAT_RGBA == GHOSTTY_KITTY_IMAGE_FORMAT_RGBA &&
+                   WT_FORMAT_GRAY_ALPHA ==
+                       GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA &&
+                   WT_FORMAT_GRAY == GHOSTTY_KITTY_IMAGE_FORMAT_GRAY,
+               "image formats");
+
 /* One key press for wt_ghostty_encode_key. */
 typedef struct {
   uint32_t keysym;    /* GDK keyval = X11 keysym */
@@ -124,11 +152,42 @@ typedef struct {
   uint8_t current; /* part of the current match */
 } WtSpan;
 
+/* One image placement to draw, from the render state's image list. */
+typedef struct {
+  uint64_t generation; /* of the image's pixels */
+  uint32_t image_id;
+  int32_t z;
+  int32_t col; /* the top-left cell, negative when it starts off screen */
+  int32_t row;
+  uint32_t offset_x; /* pixels into that cell */
+  uint32_t offset_y;
+  uint32_t width; /* the size to draw at, in pixels */
+  uint32_t height;
+  uint32_t source_x; /* the part of the image to draw, in image pixels */
+  uint32_t source_y;
+  uint32_t source_width;
+  uint32_t source_height;
+  uint8_t layer; /* WT_LAYER_* */
+} WtPlacement;
+
+/* A stored image's pixels, borrowed until the terminal next changes. */
+typedef struct {
+  const uint8_t *data;
+  size_t len;
+  uint32_t width;
+  uint32_t height;
+  uint8_t format; /* WT_FORMAT_* */
+} WtPixels;
+
+/* Decodes a PNG, asking wt_ghostty_png_pixels for where its pixels go. */
+typedef bool (*WtPngFn)(const uint8_t *data, size_t len, void *sink);
+
 typedef struct {
   GhosttyTerminal terminal;
   GhosttyRenderState render;
   GhosttyRenderStateRowIterator rows;
   GhosttyRenderStateRowCells cells;
+  GhosttyRenderStateImageIterator images;
   GhosttyKeyEncoder encoder;
   GhosttyKeyEvent key_event;
   GhosttyMouseEncoder mouse_encoder;
@@ -255,6 +314,7 @@ void wt_ghostty_free(WtGhostty *g) {
   ghostty_mouse_encoder_free(g->mouse_encoder);
   ghostty_key_event_free(g->key_event);
   ghostty_key_encoder_free(g->encoder);
+  ghostty_render_state_image_iterator_free(g->images);
   ghostty_render_state_row_cells_free(g->cells);
   ghostty_render_state_row_iterator_free(g->rows);
   ghostty_render_state_free(g->render);
@@ -274,6 +334,8 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
       ghostty_render_state_row_iterator_new(NULL, &g->rows) !=
           GHOSTTY_SUCCESS ||
       ghostty_render_state_row_cells_new(NULL, &g->cells) != GHOSTTY_SUCCESS ||
+      ghostty_render_state_image_iterator_new(NULL, &g->images) !=
+          GHOSTTY_SUCCESS ||
       ghostty_key_encoder_new(NULL, &g->encoder) != GHOSTTY_SUCCESS ||
       ghostty_key_event_new(NULL, &g->key_event) != GHOSTTY_SUCCESS ||
       ghostty_mouse_encoder_new(NULL, &g->mouse_encoder) != GHOSTTY_SUCCESS ||
@@ -291,6 +353,11 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
                        (const void *)on_title);
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
                        (const void *)on_pwd);
+  /* Only images sent in the stream: the media that read local files or
+   * shared memory stay off, as a remote program could name anything. */
+  uint64_t limit = WT_KITTY_STORAGE_LIMIT;
+  ghostty_terminal_set(g->terminal,
+                       GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &limit);
   /* No clipboard_read callback, ever: clipboard contents must not leave the
    * machine, so an OSC 52 query goes unanswered. The write callback also
    * opens OSC 5522 writes, which a zero limit keeps shut: no data fits. */
@@ -1000,10 +1067,135 @@ int wt_ghostty_encode_key(WtGhostty *g, const WtKey *key, char *out,
                                     written);
 }
 
+/* The PNG decoder, process-wide as libghostty-vt's own is. */
+static WtPngFn png_decoder;
+
+typedef struct {
+  const GhosttyAllocator *allocator;
+  GhosttySysImage *image;
+} PngSink;
+
+static bool decode_png(void *userdata, const GhosttyAllocator *allocator,
+                       const uint8_t *data, size_t len, GhosttySysImage *out) {
+  (void)userdata;
+  PngSink sink = {.allocator = allocator, .image = out};
+  return png_decoder && png_decoder(data, len, &sink);
+}
+
+/* Install the decoder Kitty's PNG payloads go through; set it before any
+ * terminal gets one. */
+void wt_ghostty_set_png_decoder(WtPngFn decoder) {
+  png_decoder = decoder;
+  ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, (const void *)decode_png);
+}
+
+/* Where a decoder puts a `width` x `height` image's RGBA rows, for
+ * libghostty-vt to own; NULL if it cannot be allocated. A decoder that
+ * gets a buffer must fill it and return true. */
+uint8_t *wt_ghostty_png_pixels(void *sink, uint32_t width, uint32_t height) {
+  PngSink *png = sink;
+  size_t len = (size_t)width * height * 4;
+  uint8_t *data = ghostty_alloc(png->allocator, len);
+  if (!data) return NULL;
+  png->image->width = width;
+  png->image->height = height;
+  png->image->data = data;
+  png->image->data_len = len;
+  return data;
+}
+
+/* Move playing animations on to `now_ms`, a clock of the caller's that only
+ * goes forward, once per frame and before the snapshot, so that it sees the
+ * new frames. `next_ms` is when the next is due; GHOSTTY_NO_VALUE when
+ * nothing is playing. */
+int wt_ghostty_animation_tick(WtGhostty *g, uint64_t now_ms,
+                              uint64_t *next_ms) {
+  GhosttyKittyGraphics graphics = NULL;
+  int r = ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+                               &graphics);
+  if (r != GHOSTTY_SUCCESS) return r;
+  return ghostty_kitty_graphics_animation_tick(graphics, now_ms, next_ms);
+}
+
+/* The last snapshot's image placements into `out`, in no drawing order.
+ * `len` is how many there are; when that is more than `cap`,
+ * GHOSTTY_OUT_OF_SPACE, and only `cap` were written. */
+int wt_ghostty_placements(WtGhostty *g, WtPlacement *out, size_t cap,
+                          size_t *len) {
+  *len = 0;
+  int r = ghostty_render_state_get(
+      g->render, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &g->images);
+  if (r != GHOSTTY_SUCCESS) return r;
+  while (ghostty_render_state_image_iterator_next(g->images)) {
+    GhosttyImageProtocol protocol = GHOSTTY_IMAGE_PROTOCOL_KITTY;
+    GhosttyRenderStateImageLayer layer =
+        GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT;
+    WtPlacement p = {0};
+    GhosttyRenderStateImageData keys[] = {
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_Z,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH,
+        GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT,
+    };
+    void *values[] = {
+        &protocol,      &p.image_id,     &p.generation, &layer,
+        &p.z,           &p.col,          &p.row,        &p.offset_x,
+        &p.offset_y,    &p.width,        &p.height,     &p.source_x,
+        &p.source_y,    &p.source_width, &p.source_height,
+    };
+    size_t count = sizeof keys / sizeof keys[0];
+    if (ghostty_render_state_image_get_multi(g->images, count, keys, values,
+                                             NULL) != GHOSTTY_SUCCESS ||
+        protocol != GHOSTTY_IMAGE_PROTOCOL_KITTY)
+      continue;
+    p.layer = (uint8_t)layer;
+    if (*len < cap) out[*len] = p;
+    (*len)++;
+  }
+  return *len > cap ? GHOSTTY_OUT_OF_SPACE : GHOSTTY_SUCCESS;
+}
+
+/* A Kitty image's pixels, always decoded and uncompressed; for an animation
+ * those of its current frame. GHOSTTY_NO_VALUE when the image is gone or
+ * its pixels have not all arrived. */
+int wt_ghostty_image_pixels(WtGhostty *g, uint32_t image_id, WtPixels *out) {
+  GhosttyKittyGraphics graphics = NULL;
+  int r = ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+                               &graphics);
+  if (r != GHOSTTY_SUCCESS) return r;
+  GhosttyKittyGraphicsImage image =
+      ghostty_kitty_graphics_image(graphics, image_id);
+  if (!image) return GHOSTTY_NO_VALUE;
+  GhosttyKittyImageFormat format = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA;
+  GhosttyKittyGraphicsImageData keys[] = {
+      GHOSTTY_KITTY_IMAGE_DATA_WIDTH,    GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
+      GHOSTTY_KITTY_IMAGE_DATA_FORMAT,   GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
+      GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN,
+  };
+  void *values[] = {&out->width, &out->height, &format, &out->data, &out->len};
+  r = ghostty_kitty_graphics_image_get_multi(
+      image, sizeof keys / sizeof keys[0], keys, values, NULL);
+  out->format = (uint8_t)format;
+  return r;
+}
+
 /* ABI checks for the Rust mirrors (ffi.rs tests). */
 size_t wt_ghostty_cell_size(void) { return sizeof(WtCell); }
 size_t wt_ghostty_frame_size(void) { return sizeof(WtFrame); }
 size_t wt_ghostty_span_size(void) { return sizeof(WtSpan); }
+size_t wt_ghostty_placement_size(void) { return sizeof(WtPlacement); }
+size_t wt_ghostty_pixels_size(void) { return sizeof(WtPixels); }
 /* The size alone misses a field moved into the padding. */
 size_t wt_ghostty_cell_grapheme_offset(void) {
   return offsetof(WtCell, grapheme);
@@ -1011,6 +1203,20 @@ size_t wt_ghostty_cell_grapheme_offset(void) {
 size_t wt_ghostty_cell_grapheme_len_offset(void) {
   return offsetof(WtCell, grapheme_len);
 }
+size_t wt_ghostty_placement_layer_offset(void) {
+  return offsetof(WtPlacement, layer);
+}
+size_t wt_ghostty_pixels_format_offset(void) {
+  return offsetof(WtPixels, format);
+}
+/* The limit a terminal really has, for the mirror of it. */
+uint64_t wt_ghostty_storage_limit(WtGhostty *g) {
+  uint64_t limit = 0;
+  ghostty_terminal_get(g->terminal,
+                       GHOSTTY_TERMINAL_DATA_KITTY_IMAGE_STORAGE_LIMIT, &limit);
+  return limit;
+}
+
 size_t wt_ghostty_cell_link_offset(void) { return offsetof(WtCell, link); }
 size_t wt_ghostty_cell_wraps_offset(void) { return offsetof(WtCell, wraps); }
 size_t wt_ghostty_cell_underline_offset(void) {
