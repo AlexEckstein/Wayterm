@@ -45,7 +45,8 @@ use gtk4::subclass::prelude::*;
 use gtk4::{gdk, gio, glib, graphene, gsk, pango};
 
 use super::engine::{
-    push_cluster, Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll, Span,
+    push_cluster, Cell as GridCell, ClipboardDestination, Frame, FrameInfo, MouseEvent, MouseModes,
+    Scroll, Span,
 };
 use super::ffi;
 use super::Shared;
@@ -185,7 +186,26 @@ impl GhosttyView {
         view.set_vexpand(true);
         view.set_overflow(gtk4::Overflow::Hidden);
         view.install_input();
+        view.install_clipboard();
         view
+    }
+
+    /// Apply what programs write to the clipboards. The watcher holds the
+    /// view weakly, since the view holds the shared state it lives in.
+    fn install_clipboard(&self) {
+        let view = self.downgrade();
+        let apply = move |destination, text: &str| {
+            let Some(view) = view.upgrade() else {
+                return;
+            };
+            match destination {
+                ClipboardDestination::System => view.clipboard().set_text(text),
+                ClipboardDestination::Selection => view.primary_clipboard().set_text(text),
+            }
+        };
+        if let Some(shared) = self.shared() {
+            shared.watchers.clipboard.borrow_mut().push(Rc::new(apply));
+        }
     }
 
     fn shared(&self) -> Option<Rc<Shared>> {
@@ -2573,6 +2593,7 @@ mod ghostty_display {
         underline_styles(&backend, &view);
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
+        program_clipboard(&backend, &view, &mut rx);
         search_highlight(&backend, &view);
         primary_selection(&backend, &view, &mut rx);
         hyperlinks_hover_and_open(&backend, &view, &mut rx);
@@ -2934,6 +2955,46 @@ mod ghostty_display {
                 "output"
             ]
         );
+    }
+
+    /// OSC 52 sets the clipboard or PRIMARY, a malformed write leaves them
+    /// alone, and a query gets no answer.
+    fn program_clipboard(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let context = glib::MainContext::default();
+        let read = |clipboard: gdk::Clipboard| {
+            let text = context.block_on(clipboard.read_text_future());
+            text.unwrap().map(String::from)
+        };
+        view.clipboard().set_text("system before");
+        view.primary_clipboard().set_text("primary before");
+
+        backend.write(b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(read(view.clipboard()).as_deref(), Some("hello"));
+        assert_eq!(
+            read(view.primary_clipboard()).as_deref(),
+            Some("primary before")
+        );
+
+        backend.write(b"\x1b]52;p;d29ybGQ=\x07");
+        assert_eq!(read(view.clipboard()).as_deref(), Some("hello"));
+        assert_eq!(read(view.primary_clipboard()).as_deref(), Some("world"));
+        backend.write(b"\x1b]52;s;Ym90aA==\x07");
+        assert_eq!(read(view.primary_clipboard()).as_deref(), Some("both"));
+
+        backend.write(b"\x1b]52;c;SGVs!!!bG8=\x07");
+        backend.write(b"\x1b]52;c;YQBi\x07");
+        backend.write(b"\x1b]52;c;\x07");
+        assert_eq!(read(view.clipboard()).as_deref(), Some("hello"));
+
+        while rx.try_recv().is_ok() {}
+        backend.write(b"\x1b]52;c;?\x07");
+        backend.write(b"\x1b]52;p;?\x07");
+        while context.iteration(false) {}
+        assert!(rx.try_recv().is_err(), "a query must go unanswered");
     }
 
     /// Glyphs, the cursor and text lines sit on the cell grid, however far
