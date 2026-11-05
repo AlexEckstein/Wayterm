@@ -1107,8 +1107,10 @@ fn link_at(frame: &Frame, row: usize, col: usize) -> Option<Link> {
     }
     let uri = frame.link(row, col)?.to_owned();
     let entry = frame.cell(row, col)?.link;
-    let cells = frame.cells[..cols * rows]
+    let cells = frame
+        .cells
         .iter()
+        .take(cols * rows)
         .enumerate()
         .filter(|(_, cell)| cell.link == entry)
         .map(|(index, _)| index)
@@ -1935,8 +1937,6 @@ mod ghostty_display {
         assert_eq!(at(&decomposed, 2).len(), 1, "y follows in the next cell");
     }
 
-    /// Paint the view now; the result tells whether any pixel in a box
-    /// differs from the background.
     /// Hovering a hyperlink shows its URI, underlines it and sets the
     /// cursor, Ctrl+click opens it, a `file://` link for another host stays
     /// shut, and a program tracking the mouse keeps all of it until Shift.
@@ -2034,6 +2034,7 @@ mod ghostty_display {
         let there = format!("file://not-{host}/etc/hosts");
         backend.reset();
         backend.write(linked(&here).as_bytes());
+        assert!(!underlined(5), "painted, and no hover");
         click(ctrl, 55_000, 5);
         assert_eq!(took(), [here.as_str()]);
         backend.reset();
@@ -2049,6 +2050,7 @@ mod ghostty_display {
         backend.reset();
         backend.write(linked(uri).as_bytes());
         backend.write(b"\x1b[?1000h\x1b[?1006h");
+        assert!(!underlined(5), "painted, and no hover");
         view.hover(none, at(5));
         assert_eq!(tooltip(), None);
         while rx.try_recv().is_ok() {}
@@ -2067,6 +2069,8 @@ mod ghostty_display {
         while rx.try_recv().is_ok() {}
     }
 
+    /// Paint the view now; the result tells whether any pixel in a box
+    /// differs from the background.
     fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool {
         let (width, height) = (view.width() as usize, view.height() as usize);
         let at = pixels(view);
