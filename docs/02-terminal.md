@@ -352,7 +352,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   them; they take the cursor color a scheme or program set, else the
   color of the cell's text. Without focus the cursor is a hollow block in
   the same way, on all four edges, whatever its shape, and it does not
-  blink (`cursor_shape` in `view.rs`, in the order Ghostty's renderer
+  blink (`cursor_shape` in `view/cursor.rs`, in the order Ghostty's renderer
   decides it).
 
   A blink (DECSCUSR's blinking variants, or mode 12) is 600 ms on and
@@ -366,7 +366,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
   Shift+Home/End jump to the top and bottom, as in VTE, instead of
   reaching the remote side. Each mouse event goes one of three ways
-  (`route` in `view.rs`, read from the terminal's modes per event):
+  (`route` in `view/input.rs`, read from the terminal's modes per event):
   - **Reported** while the program tracks the mouse (mode 9, 1000, 1002
     or 1003): presses, drags and releases of the primary, middle and
     right buttons, motion, and the wheel (vertical as buttons 4 and 5,
@@ -416,7 +416,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   scrolled to the middle of the viewport.
 
   Every visible match is lit in Ghostty's colors, the current one in its
-  own (`search_marks` in `view.rs`), with the search caught up on each
+  own (`search_marks` in `view/paint.rs`), with the search caught up on each
   frame. It only colors cells: the terminal's selection is untouched and
   draws on top, as does the cursor. An empty query, a press, a typed key
   or a reset ends the search; the UI never sends an empty query, so the
@@ -457,7 +457,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   brings links back: hover with Shift, Ctrl+Shift+click. A failure to open
   is logged without the URI, which can carry a token.
 
-  `may_open` in `view.rs` decides what reaches the handler. A link comes
+  `may_open` in `view/links.rs` decides what reaches the handler. A link comes
   from whatever is on the far side of the tab, and the view does not know
   the transport, so one rule covers every tab: a `file:` URI, in any case,
   opens only if its authority is exactly this machine's name
@@ -547,6 +547,32 @@ deleted, with nothing to track on Wayterm's side.
   snapshot. A new frame changes the image's generation, so it uploads like
   any new pixels. A one-shot timeout asks for a redraw when the next frame
   is due; a tab that is not shown draws nothing, so its animations wait.
+
+### View options
+
+`GhosttyOptions` (`src/terminal/defaults.rs`) holds what only this view
+draws or decides for itself: rows per wheel notch, the periods of the
+cursor's blink and of blinking text, and the search colors. Their defaults
+are the values the sections above give. They are global, with no session
+override, and sit in `TerminalDefaults`, so they are read with the other
+rows.
+
+They do not cross `TerminalBackend`: VTE has no use for them, and the trait
+carries what every backend takes per session. When the rows change,
+`install_terminal_defaults` hands them to `install_options`
+(`view/options.rs`), which keeps them for new views and gives them to open
+ones. Colors repaint at once and the wheel follows at its next event. A
+changed blink period stops that timer, and the next paint restarts it, on.
+
+No row writes them yet, so every tab has the defaults. To add a setting:
+
+1. Add the field and its default to `GhosttyOptions`, and have the view
+   read it from `imp().options`. A change that takes more than a repaint
+   goes in `set_options`.
+2. Read its row in `TerminalDefaults::from_rows`, keeping the default for a
+   value the view cannot use: a blink period of zero would spin the main
+   loop.
+3. Add its control to the Customize page (doc 13 §Customize).
 
 ### libghostty-vt pin
 
@@ -677,8 +703,8 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   window while it does. On a scaled display an image is drawn at
   logical pixels and upscaled. Selecting across placeholder cells
   copies their U+10EEEE characters.
-- **Ghostty cursor:** the blink period is fixed and GTK's cursor blink
-  settings are not read, where VTE follows them. Typing does not restart
+- **Ghostty cursor:** no setting changes the blink period (§View options),
+  and GTK's cursor blink settings are not read, where VTE follows them. Typing does not restart
   a blink, so the cursor can be in its off phase as it moves. On a wide
   character it covers one cell.
 - **Ghostty selection:** word boundaries are libghostty-vt's defaults,

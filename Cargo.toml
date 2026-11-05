@@ -38,7 +38,7 @@ x11rb = "0.14"
 gdk4-x11 = "0.11"
 serde_yaml_ng = "0.10"
 # Secret Service / Flatpak portal keyring (doc 05).
-oo7 = "0.6"
+oo7 = "0.7"
 pollster = "1.0"
 
 [build-dependencies]

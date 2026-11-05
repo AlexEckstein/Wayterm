@@ -48,6 +48,9 @@ save re-applies to every tab and a size change resizes every remote's grid.
 The mouse wheel over them scrolls the page and leaves the value alone, since
 a lowered scrollback drops lines from open tabs.
 
+The page has no Ghostty-only controls yet. One saves like the rows above,
+and doc 02 §View options takes its row the rest of the way to open tabs.
+
 ### Credentials
 
 The Bitwarden switch and CLI path, and whether the keyring and the CLI

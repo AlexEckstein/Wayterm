@@ -568,6 +568,7 @@ pub(in crate::ui) fn terminals_follow_the_font_opacity_and_scrollback_rows() {
         font_size: 20.0,
         opacity: 0.5,
         scrollback_lines: 321,
+        ..Default::default()
     };
     crate::ui::appearance::install_terminal_defaults(rows.clone());
     assert_eq!(font(&follows).as_deref(), Some("Monospace 20"));
