@@ -152,7 +152,7 @@ impl TerminalBackend for GhosttyBackend {
             search: true,
             color_schemes: true,
             scrollback_search: true,
-            url_detection: false,
+            url_detection: true,
             sixel_graphics: false,
             kitty_graphics: true,
             custom_fonts: true,

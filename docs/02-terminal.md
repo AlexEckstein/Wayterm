@@ -57,8 +57,9 @@ pub enum TerminalEvent { DataOut(Vec<u8>), SizeChange { rows: u32, cols: u32 },
   on a bounded channel.
 - `send_input` is input that was not typed (macro playback, doc 12). It
   leaves as `DataOut` through the same queue as keystrokes.
-- `TerminalFeatures` (search, color schemes, SIXEL, Kitty graphics,
-  reflow, …) says what a backend supports; nothing in the UI reads it yet.
+- `TerminalFeatures` (search, color schemes, URL detection, SIXEL, Kitty
+  graphics, reflow, …) states what a backend supports. No UI reads it yet;
+  each backend's section says what the user gets.
 - Backends are held as `Arc<dyn TerminalBackend>`: the tab, the output
   drain and the terminal actions share them.
 
@@ -287,9 +288,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   stay on the C side; `ffi.rs` declares only the shim's plain functions
   and five flat structs (a cell, a frame, a span of search highlight, an
   image placement, an image's pixels), checked against the C compiler by
-  unit tests: their sizes, and where the cell's grapheme and underline
-  fields, and the fields after any padding, sit. `build.rs` compiles the
-  shim with the `cc` crate and links `libghostty-vt.a` statically;
+  unit tests: their sizes, and where the cell's grapheme, wrap and
+  underline fields, and the fields after any padding, sit. `build.rs`
+  compiles
   nothing beyond libc is needed.
 - **`Engine`.** The safe owner of one terminal, with no display: VT
   parsing, resize with reflow, scrollback limit, viewport scrolling,
@@ -303,7 +304,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   underline style (`GHOSTTY_SGR_UNDERLINE_*`: none, single, double, curly,
   dotted or dashed) and its SGR 58 underline color, if it has one, a
   palette index resolved through the active palette; SGR 59 drops the
-  color, and SGR 24 and 4:0 the style. A snapshot also lists
+  color, and SGR 24 and 4:0 the style. A row's last cell
+  says whether the row soft-wraps into the next. A snapshot also lists
   the Kitty images on screen (§Kitty graphics). Effects raised while
   parsing — replies to queries (device attributes, status reports), BEL,
   OSC 0/2
@@ -411,6 +413,30 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   draws on top, as does the cursor. An empty query, a press, a typed key
   or a reset ends the search; the UI never sends an empty query, so the
   press and the key are how a highlight goes away.
+- **Links.** `scan_links` in `view.rs` finds URLs in the text of the last
+  frame, with no help from the program. It reads a logical line, the rows
+  joined by their soft-wrap flag, so a wrapped link is one link and a line
+  that only fills its last column does not run into the next. False
+  positives must not open anything, so text is a link only if:
+  - it starts with `https://`, `http://` or `mailto:`, in any case, with
+    no scheme character (letter, digit, `+`, `-`, `.`) right before it;
+  - it runs over ASCII URL characters: anything else ends it, including
+    an empty cell, a cell holding a longer cluster, text hidden with SGR 8,
+    and a closing bracket that closes nothing in the link, so
+    `(https://a.b/c)` stops before the `)` and `https://a.b/c_(d)` keeps it;
+  - trailing `.` `,` `;` `:` `!` `?` `'` `*` `(` `[` are left out;
+  - what remains has a target: a host name or bracketed IPv6 address, with
+    an optional user and numeric port, or for `mailto:` an address.
+
+  While mouse events are local (`route`), the link under the pointer is
+  underlined on all its rows and the cursor becomes `pointer`. Moving off
+  it or leaving the widget restores both, and so does output or scrolling
+  that takes the link away: each frame checks again. Ctrl+click opens the
+  link through `gtk::UriLauncher`, on release, without waiting for the
+  handler; a press that turned into a selection, or a release off the
+  link, opens nothing. While a program tracks the mouse the press is the
+  program's, so Shift brings links back: hover with Shift, Ctrl+Shift+click.
+  A failure to open is logged without the URI, which can carry a token.
 - **Backend.** Events go through the same never-blocking sender as VTE's
   (§Backpressure). `send_input` and `paste` queue `DataOut` like a key
   press, so macros work unchanged; `paste` is bracketed when the program
@@ -576,8 +602,11 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   OSC 7 fills it: a shell that reports nothing, as many do over SSH (doc
   07 §Following the shell), leaves it empty, and probes do not update it.
 - **VTE:** no Kitty graphics. Search steps between rows, reaching only
-  the first match on each.
-- **Ghostty:** no URL detection or SIXEL (`features()` says so); no
+- **VTE:** no Kitty graphics. Search steps between rows, reaching only
+  the first match on each. `features()` reports URL detection, but no
+  match is registered with the widget, so links are not lit or opened.
+- **Ghostty:**
+- **Ghostty:** no SIXEL (`features()` says so); no input method or
   input method or compose support; no local use of a right click or the
   horizontal wheel, which only reach a program tracking the mouse; a
   second button pressed during a drag resets GTK's gesture for the
@@ -603,6 +632,14 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **Ghostty selection:** word boundaries are libghostty-vt's defaults,
   where `:` ends a word, so a double click takes part of a URL. A drag
   past the top or bottom edge does not scroll the viewport.
+- **Ghostty links:** plain text only: no OSC 8 hyperlinks, and no tooltip
+  showing the target. A URL with non-ASCII characters ends at the first
+  one, and a host with an underscore is no link. A link cut off by the
+  viewport is not detected: scrolled so its tail is below the bottom edge
+  it would open the wrong address, and with its scheme above the top edge
+  nothing marks it as a link. A row broken by the program instead of
+  soft-wrapped ends a link, so one split by a pager or `tmux` pane is only
+  its first row.
 - **Ghostty search:** a query is plain text, not a regular expression as
   on VTE, and matching is case-exact (libghostty-vt folds ASCII case, so
   a match is read back and compared as typed). A match is not the
