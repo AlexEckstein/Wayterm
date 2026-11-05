@@ -127,6 +127,7 @@ fn view_draws_sizes_and_types() {
     hyperlinks_hover_and_open(&backend, &view, &mut rx);
     notifications(&backend, &mut rx);
     links_hover_and_open(&backend, &view, &mut rx);
+    shell_marks(&backend, &view, &mut rx);
     window.close();
 
     // The factory follows the installed preference; VTE is the default.
@@ -1604,4 +1605,65 @@ fn pixels(view: &GhosttyView) -> impl Fn(usize, usize) -> [u8; 4] {
         let i = y * stride + x * 4;
         [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
     }
+}
+
+/// The prompt keys jump between OSC 133 prompts and select a command's
+/// output, reaching PRIMARY; none of them reaches the remote side, and
+/// without marks they do nothing.
+fn shell_marks(
+    backend: &GhosttyBackend,
+    view: &GhosttyView,
+    rx: &mut mpsc::Receiver<TerminalEvent>,
+) {
+    let keys = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
+    let context = glib::MainContext::default();
+    let primary = || {
+        let read = view.primary_clipboard().read_text_future();
+        context.block_on(read).unwrap().map(String::from)
+    };
+    let top_row = || {
+        let mut frame = Frame::default();
+        assert!(view.shared().unwrap().engine.snapshot(&mut frame));
+        frame.row_text(0).trim_end().to_string()
+    };
+    while rx.try_recv().is_ok() {}
+
+    backend.reset();
+    view.primary_clipboard().set_text("before");
+    backend.write(b"plain\r\nbash");
+    assert!(view.key(gdk::Key::O, keys));
+    assert!(view.key(gdk::Key::Up, keys));
+    assert_eq!(backend.selected_text(), None);
+    assert_eq!(top_row(), "plain");
+    assert_eq!(primary().as_deref(), Some("before"));
+
+    backend.reset();
+    let (_, rows) = view.shared().unwrap().engine.size();
+    for command in ["first", "second"] {
+        backend.write(format!("\x1b]133;A\x07$ \x1b]133;B\x07{command}\r\n").as_bytes());
+        backend.write(b"\x1b]133;C\x07");
+        for line in 0..rows {
+            backend.write(format!("{command} {line}\r\n").as_bytes());
+        }
+        backend.write(b"\x1b]133;D;0\x07");
+    }
+    backend.write(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+    assert!(view.key(gdk::Key::Up, keys));
+    assert_eq!(top_row(), "$ second");
+    assert!(view.key(gdk::Key::Up, keys));
+    assert_eq!(top_row(), "$ first");
+    assert!(view.key(gdk::Key::Down, keys));
+    assert_eq!(top_row(), "$ second");
+
+    assert!(view.key(gdk::Key::O, keys));
+    let selected = backend.selected_text().expect("the command's output");
+    assert!(selected.starts_with("second 0\n"), "{selected:?}");
+    assert_eq!(primary().as_deref(), Some(selected.as_str()));
+
+    // The keys are local: the selection survives and nothing is sent.
+    assert!(
+        !std::iter::from_fn(|| rx.try_recv().ok()).any(|e| matches!(e, TerminalEvent::DataOut(_))),
+        "prompt keys stay local"
+    );
+    backend.reset();
 }

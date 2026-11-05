@@ -2,7 +2,9 @@
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
-//! PageDown/Home/End scroll the viewport as in VTE. Mouse events go where
+//! PageDown/Home/End scroll the viewport as in VTE; Ctrl+Shift+Up/Down
+//! jump between OSC 133 shell prompts and Ctrl+Shift+O selects a
+//! command's output. Mouse events go where
 //! [`route`] says: to the program through the mouse encoder while it
 //! tracks the mouse (every button, and the wheel on both axes), as arrow
 //! keys for the wheel under alternate scroll, else local, where a
@@ -489,6 +491,13 @@ impl GhosttyView {
             self.queue_draw();
             return true;
         }
+        if select_output_key(keyval, state) {
+            if shared.engine.select_output() {
+                self.copy_primary();
+                self.queue_draw();
+            }
+            return true;
+        }
         let mods = mods(state);
         let text: String = keyval
             .to_unicode()
@@ -573,13 +582,28 @@ fn wheel_rows(
 
 /// Shift+PageUp/PageDown scroll a page of `rows`, Shift+Home/End to the
 /// top/bottom, as VTE does; other modifiers let the key reach the remote.
-fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<Scroll> {
-    let mods = state
+/// The modifiers a local key is told apart by; Caps Lock does not count.
+fn key_mods(state: gdk::ModifierType) -> gdk::ModifierType {
+    state
         & (gdk::ModifierType::SHIFT_MASK
             | gdk::ModifierType::CONTROL_MASK
             | gdk::ModifierType::ALT_MASK
-            | gdk::ModifierType::SUPER_MASK);
-    if mods != gdk::ModifierType::SHIFT_MASK {
+            | gdk::ModifierType::SUPER_MASK)
+}
+
+fn ctrl_shift(state: gdk::ModifierType) -> bool {
+    key_mods(state) == gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK
+}
+
+fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<Scroll> {
+    if ctrl_shift(state) {
+        return match keyval {
+            gdk::Key::Up => Some(Scroll::Prompts(-1)),
+            gdk::Key::Down => Some(Scroll::Prompts(1)),
+            _ => None,
+        };
+    }
+    if key_mods(state) != gdk::ModifierType::SHIFT_MASK {
         return None;
     }
     let page = isize::try_from(rows.max(1)).unwrap_or(isize::MAX);
@@ -590,6 +614,11 @@ fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<S
         gdk::Key::End => Some(Scroll::Bottom),
         _ => None,
     }
+}
+
+/// Ctrl+Shift+O selects a command's output.
+fn select_output_key(keyval: gdk::Key, state: gdk::ModifierType) -> bool {
+    ctrl_shift(state) && matches!(keyval, gdk::Key::O | gdk::Key::o)
 }
 
 #[cfg(test)]
@@ -723,5 +752,31 @@ mod tests {
         );
         let ctrl_shift = shift | gdk::ModifierType::CONTROL_MASK;
         assert_eq!(scroll_key(gdk::Key::Page_Up, ctrl_shift, 24), None);
+    }
+
+    #[test]
+    fn ctrl_shift_keys_reach_prompts_and_others_pass_through() {
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let alt = gdk::ModifierType::ALT_MASK;
+        let lock = gdk::ModifierType::LOCK_MASK;
+        let up = |state| scroll_key(gdk::Key::Up, state, 24);
+        assert_eq!(up(ctrl | shift), Some(Scroll::Prompts(-1)));
+        assert_eq!(up(ctrl | shift | lock), Some(Scroll::Prompts(-1)));
+        assert_eq!(
+            scroll_key(gdk::Key::Down, ctrl | shift, 24),
+            Some(Scroll::Prompts(1))
+        );
+        for state in [gdk::ModifierType::empty(), shift, ctrl, ctrl | shift | alt] {
+            assert_eq!(up(state), None, "{state:?}");
+        }
+
+        assert!(select_output_key(gdk::Key::O, ctrl | shift));
+        // Caps Lock turns the letter back to lower case.
+        assert!(select_output_key(gdk::Key::o, ctrl | shift | lock));
+        assert!(!select_output_key(gdk::Key::O, shift));
+        assert!(!select_output_key(gdk::Key::o, ctrl));
+        assert!(!select_output_key(gdk::Key::O, ctrl | shift | alt));
+        assert!(!select_output_key(gdk::Key::P, ctrl | shift));
     }
 }

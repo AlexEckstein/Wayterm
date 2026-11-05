@@ -30,6 +30,9 @@ pub enum Scroll {
     Bottom,
     /// Rows; up is negative.
     By(isize),
+    /// Shell prompts from the viewport's top; up is negative. Clamped to
+    /// the oldest and newest, and nothing moves without OSC 133 marks.
+    Prompts(isize),
 }
 
 /// The mouse tracking mode a program enabled.
@@ -206,6 +209,7 @@ impl Engine {
             Scroll::Top => (0, 0),
             Scroll::Bottom => (1, 0),
             Scroll::By(rows) => (2, rows),
+            Scroll::Prompts(prompts) => (3, prompts),
         };
         // SAFETY: valid terminal.
         unsafe { ffi::wt_ghostty_scroll(self.ptr(), place, delta) };
@@ -232,6 +236,16 @@ impl Engine {
     pub fn select_all(&self) -> bool {
         // SAFETY: valid terminal.
         unsafe { ffi::wt_ghostty_select_all(self.ptr()) == ffi::SUCCESS }
+    }
+
+    /// Select one command's output by its OSC 133 marks. Scrolled back,
+    /// that is the first output from the viewport's top down, so a jump to
+    /// a prompt selects what that command printed; at the bottom, the last
+    /// output from the cursor up. `false`, the selection left alone, when
+    /// no marks show one.
+    pub fn select_output(&self) -> bool {
+        // SAFETY: valid terminal.
+        unsafe { ffi::wt_ghostty_select_output(self.ptr()) == ffi::SUCCESS }
     }
 
     pub fn clear_selection(&self) {

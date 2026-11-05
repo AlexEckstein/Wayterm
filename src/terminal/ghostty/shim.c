@@ -461,12 +461,17 @@ int wt_ghostty_set_colors(WtGhostty *g, const uint8_t *fg, const uint8_t *bg,
   return r;
 }
 
-/* where: 0 = top, 1 = bottom, 2 = by `delta` rows (up is negative). */
+/* where: 0 = top, 1 = bottom, 2 = by `delta` rows, 3 = by `delta` shell
+ * prompts (up is negative for both). */
 void wt_ghostty_scroll(WtGhostty *g, int where, intptr_t delta) {
   GhosttyTerminalScrollViewport s = {0};
   switch (where) {
     case 0: s.tag = GHOSTTY_SCROLL_VIEWPORT_TOP; break;
     case 1: s.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM; break;
+    case 3:
+      s.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT;
+      s.value.delta_prompt = delta;
+      break;
     default:
       s.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA;
       s.value.delta = delta;
@@ -515,6 +520,74 @@ int wt_ghostty_select_all(WtGhostty *g) {
   if (r != GHOSTTY_SUCCESS) return r;
   return ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION,
                               &sel);
+}
+
+/* The screen row (0 is the oldest scrollback line) of row `y` in `tag`'s space. */
+static bool screen_row(WtGhostty *g, GhosttyPointTag tag, uint32_t y,
+                       uint32_t *row) {
+  GhosttyPoint p = {.tag = tag, .value = {.coordinate = {.x = 0, .y = y}}};
+  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  GhosttyPointCoordinate c;
+  if (ghostty_terminal_grid_ref(g->terminal, p, &ref) != GHOSTTY_SUCCESS ||
+      ghostty_terminal_point_from_grid_ref(g->terminal, &ref,
+                                           GHOSTTY_POINT_TAG_SCREEN,
+                                           &c) != GHOSTTY_SUCCESS)
+    return false;
+  *row = c.y;
+  return true;
+}
+
+/* The screen row at the top of the viewport. */
+static bool viewport_top(WtGhostty *g, uint32_t *top) {
+  return screen_row(g, GHOSTTY_POINT_TAG_VIEWPORT, 0, top);
+}
+
+/* Whether a screen row holds command output: no prompt on it, and output
+ * in its first cell, which `ref` is left pointing at. */
+static bool output_row(WtGhostty *g, uint32_t y, GhosttyGridRef *ref) {
+  GhosttyPoint p = {.tag = GHOSTTY_POINT_TAG_SCREEN,
+                    .value = {.coordinate = {.x = 0, .y = y}}};
+  GhosttyRow row = 0;
+  GhosttyCell cell = 0;
+  GhosttyRowSemanticPrompt prompt = GHOSTTY_ROW_SEMANTIC_NONE;
+  GhosttyCellSemanticContent content = GHOSTTY_CELL_SEMANTIC_OUTPUT;
+  return ghostty_terminal_grid_ref(g->terminal, p, ref) == GHOSTTY_SUCCESS &&
+         ghostty_grid_ref_row(ref, &row) == GHOSTTY_SUCCESS &&
+         ghostty_row_get(row, GHOSTTY_ROW_DATA_SEMANTIC_PROMPT, &prompt) ==
+             GHOSTTY_SUCCESS &&
+         prompt == GHOSTTY_ROW_SEMANTIC_NONE &&
+         ghostty_grid_ref_cell(ref, &cell) == GHOSTTY_SUCCESS &&
+         ghostty_cell_get(cell, GHOSTTY_CELL_DATA_SEMANTIC_CONTENT, &content) ==
+             GHOSTTY_SUCCESS &&
+         content == GHOSTTY_CELL_SEMANTIC_OUTPUT;
+}
+
+/* Select one command's output. Only prompt rows are passed over, so the
+ * walk ends at once on a screen without marks, where every row is output
+ * and libghostty-vt answers GHOSTTY_NO_VALUE. Scrolled back it goes down
+ * from the viewport's top, at the bottom up from the cursor. */
+int wt_ghostty_select_output(WtGhostty *g) {
+  uint16_t cursor_y = 0;
+  uint32_t top = 0, active = 0, cursor = 0;
+  int r = ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_CURSOR_Y,
+                               &cursor_y);
+  if (r != GHOSTTY_SUCCESS) return r;
+  if (!viewport_top(g, &top) ||
+      !screen_row(g, GHOSTTY_POINT_TAG_ACTIVE, 0, &active) ||
+      !screen_row(g, GHOSTTY_POINT_TAG_ACTIVE, cursor_y, &cursor))
+    return GHOSTTY_NO_VALUE;
+  bool scrolled = top != active;
+  int64_t step = scrolled ? 1 : -1;
+  for (int64_t y = scrolled ? top : cursor; y >= 0 && y <= cursor; y += step) {
+    GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    if (!output_row(g, (uint32_t)y, &ref)) continue;
+    GhosttySelection sel = GHOSTTY_INIT_SIZED(GhosttySelection);
+    r = ghostty_terminal_select_output(g->terminal, ref, &sel);
+    if (r != GHOSTTY_SUCCESS) return r;
+    return ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION,
+                                &sel);
+  }
+  return GHOSTTY_NO_VALUE;
 }
 
 void wt_ghostty_clear_selection(WtGhostty *g) {
@@ -713,21 +786,6 @@ static bool extent(WtGhostty *g, const GhosttySelection *m, Extent *e) {
 static bool same_extent(const Extent *a, const Extent *b) {
   return a->first.x == b->first.x && a->first.y == b->first.y &&
          a->last.x == b->last.x && a->last.y == b->last.y;
-}
-
-/* The screen row at the top of the viewport. */
-static bool viewport_top(WtGhostty *g, uint32_t *top) {
-  GhosttyPoint p = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
-                    .value = {.coordinate = {.x = 0, .y = 0}}};
-  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
-  GhosttyPointCoordinate c;
-  if (ghostty_terminal_grid_ref(g->terminal, p, &ref) != GHOSTTY_SUCCESS ||
-      ghostty_terminal_point_from_grid_ref(g->terminal, &ref,
-                                           GHOSTTY_POINT_TAG_SCREEN,
-                                           &c) != GHOSTTY_SUCCESS)
-    return false;
-  *top = c.y;
-  return true;
 }
 
 /* A match list (all, or the viewport's) into g->matches; its length, 0 on

@@ -368,7 +368,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
 - **Input.** Keys go through libghostty-vt's key encoder, so cursor-key
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
   Shift+Home/End jump to the top and bottom, as in VTE, instead of
-  reaching the remote side. Each mouse event goes one of three ways
+  reaching the remote side. Ctrl+Shift+Up/Down jump between shell prompts
+  and Ctrl+Shift+O selects a command's output (§Prompt marks and command
+  output). Each mouse event goes one of three ways
   (`route` in `view/input.rs`, read from the terminal's modes per event):
   - **Reported** while the program tracks the mouse (mode 9, 1000, 1002
     or 1003): presses, drags and releases of the primary, middle and
@@ -470,6 +472,19 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   underline, so the target can be read. Text with no URI scheme is refused;
   every other scheme goes to the handler.
 
+- **Prompt marks and command output.** A shell that wraps its prompts and
+  finished commands in OSC 133 marks (`A`, `B`, `C`, `D`) gives the view
+  jump targets. Ctrl+Shift+Up scrolls up one shell prompt, from the
+  viewport's top, and Ctrl+Shift+Down back down; each step lands on a
+  prompt, clamped to the oldest and newest, and at the bottom the
+  viewport follows the cursor. Without marks nothing moves, scrolled
+  state stays as it is. Ctrl+Shift+O selects one command's output onto
+  PRIMARY: scrolled back, the output that follows the viewport's top
+  down to the next prompt; at the bottom, the last output above the
+  cursor up. Without marks the selection is left alone. None of these
+  keys reaches the program (`scroll_key` and `select_output_key` in
+  `view.rs`, `Scroll::Prompts` and `Engine::select_output` in
+  `engine.rs`).
 - **Program clipboard.** An OSC 52 write sets a GTK clipboard, so a remote
   Neovim yank or tmux copy reaches the desktop: `p` and `s` go to PRIMARY,
   `c` and any other selection letter to the system clipboard. OSC 1337
@@ -683,12 +698,12 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   OSC 7 fills it: a shell that reports nothing, as many do over SSH (doc
   07 §Following the shell), leaves it empty, and probes do not update it.
 - **VTE:** no Kitty graphics. Search steps between rows, reaching only
-- **VTE:** no Kitty graphics. Search steps between rows, reaching only
   the first match on each. `features()` reports URL detection, but no
   match is registered with the widget, so links are not lit or opened.
-- **Ghostty:**
+  There are no OSC 133 prompt marks either, so prompt scrolling and
+  Ctrl+Shift+O select nothing (§Prompt marks and command output).
 - **Ghostty:** no SIXEL (`features()` says so); no input method or
-  input method or compose support; no local use of a right click or the
+  compose support; no local use of a right click or the
   horizontal wheel, which only reach a program tracking the mouse; a
   second button pressed during a drag resets GTK's gesture for the
   first, so that button's release is reported then, and the second's
@@ -726,9 +741,8 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   cell by cell through the grid reference API, which upstream does not
   mean for render loops: a 200×50 screen of links adds about 0.7 ms a
   frame.
-- **Ghostty URL detection:** no OSC 8 hyperlinks, and no tooltip
-  showing the target. A URL with non-ASCII characters ends at the first
-  one, and a host with an underscore is no link. A link cut off by the
+- **Ghostty URL detection:** a URL with non-ASCII characters ends at the
+  first one, and a host with an underscore is no link. A link cut off by the
   viewport is not detected: scrolled so its tail is below the bottom edge
   it would open the wrong address, and with its scheme above the top edge
   nothing marks it as a link. A row broken by the program instead of
