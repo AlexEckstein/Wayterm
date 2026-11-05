@@ -26,6 +26,7 @@ use crate::store::model::SessionConfig;
 #[cfg(feature = "backend-ghostty")]
 use crate::terminal::ghostty::view::GhosttyView;
 use crate::terminal::{create_terminal, TerminalBackend};
+use crate::terminal::{backend_preference, create_terminal_for, BackendKind, TerminalBackend};
 use crate::transport::connection::SshConnection;
 use crate::transport::reconnect::{ConnectFn, ConnectFuture};
 use crate::transport::types::{TransportError, TransportEvent, TransportState};
@@ -115,7 +116,8 @@ pub(super) async fn finish_connect(
     conn: Option<Arc<SshConnection>>,
 ) {
     let gen = current_gen(page);
-    let handle = create_terminal();
+    let kind = BackendKind::for_session(session.preferred_backend.as_deref(), backend_preference());
+    let handle = create_terminal_for(kind);
     let backend = handle.backend.clone();
     appearance::apply_to(&*backend, session);
     let widget = backend.widget();
