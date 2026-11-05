@@ -26,7 +26,7 @@ use super::backend::{
 };
 use super::color_scheme;
 use super::vte::EventSender;
-use engine::{Effect, Engine, Scroll};
+use engine::{ClipboardDestination, Effect, Engine, Scroll};
 use view::GhosttyView;
 
 /// The grid a backend starts with, before its widget is allocated.
@@ -47,6 +47,8 @@ struct Watchers {
     input: WatchList<InputWatch>,
     output: WatchList<dyn Fn()>,
     directory: WatchList<dyn Fn(&str)>,
+    /// A program's clipboard write; [`GhosttyView`] applies it.
+    clipboard: WatchList<dyn Fn(ClipboardDestination, &str)>,
 }
 
 type InputWatch = dyn Fn(&[u8]);
@@ -59,7 +61,7 @@ fn each<F: ?Sized>(list: &WatchList<F>) -> Vec<Rc<F>> {
 
 impl Shared {
     /// Forward an engine effect as a terminal event; a reported directory
-    /// goes to the watchers instead.
+    /// and a clipboard write go to the watchers instead.
     fn emit(&self, effects: Vec<Effect>) {
         for effect in effects {
             let event = match effect {
@@ -69,6 +71,12 @@ impl Shared {
                 Effect::Pwd(dir) => {
                     for watch in each(&self.watchers.directory) {
                         watch(&dir);
+                    }
+                    continue;
+                }
+                Effect::ClipboardWrite { destination, text } => {
+                    for watch in each(&self.watchers.clipboard) {
+                        watch(destination, &text);
                     }
                     continue;
                 }

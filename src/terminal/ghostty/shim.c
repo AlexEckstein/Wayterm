@@ -8,9 +8,11 @@
  * Compiled by build.rs only with the `backend-ghostty` feature.
  */
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,6 +23,8 @@
 #define WT_EFFECT_BELL 2
 #define WT_EFFECT_TITLE 3 /* the new title, UTF-8 */
 #define WT_EFFECT_PWD 4   /* the reported directory, raw (OSC 7: a URI) */
+#define WT_EFFECT_CLIPBOARD_SYSTEM 5  /* decoded text for the clipboard */
+#define WT_EFFECT_CLIPBOARD_PRIMARY 6 /* decoded text for PRIMARY */
 
 /* Cell flags (mirrored in ffi.rs). */
 #define WT_CELL_BOLD (1u << 0)
@@ -164,6 +168,59 @@ static void on_pwd(GhosttyTerminal t, void *ud) {
   emit_string(t, ud, GHOSTTY_TERMINAL_DATA_PWD, WT_EFFECT_PWD);
 }
 
+/* One write of text. libghostty-vt has decoded it, and has dropped malformed
+ * base64 whole. OSC 52 and OSC 1337 Copy arrive here, and any OSC 5522 write
+ * that gets past the limit wt_ghostty_new sets, which holds no data: refused,
+ * as a clear is, since the two protocols' clears look alike. */
+static void on_clipboard_write(GhosttyTerminal t, void *ud,
+                               const GhosttyClipboardWrite *write) {
+  (void)t;
+  WtGhostty *g = ud;
+  static const char text_plain[] = "text/plain";
+  int kind = 0;
+  switch (write->location) {
+    case GHOSTTY_CLIPBOARD_LOCATION_STANDARD:
+      kind = WT_EFFECT_CLIPBOARD_SYSTEM;
+      break;
+    case GHOSTTY_CLIPBOARD_LOCATION_SELECTION:
+    case GHOSTTY_CLIPBOARD_LOCATION_PRIMARY:
+      kind = WT_EFFECT_CLIPBOARD_PRIMARY;
+      break;
+    default:
+      break;
+  }
+  GhosttyClipboardWriteReply reply = {
+      .size = sizeof(reply),
+      .result = GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED,
+  };
+  if (kind != 0 && write->contents_len == 1) {
+    const GhosttyClipboardContent *content = &write->contents[0];
+    if (content->data.len > 0 &&
+        content->mime.len == sizeof(text_plain) - 1 &&
+        memcmp(content->mime.ptr, text_plain, content->mime.len) == 0) {
+      if (g->effect)
+        g->effect(g->userdata, kind, content->data.ptr, content->data.len);
+      reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+    }
+  }
+  write->reply(write, &reply);
+}
+
+/* libghostty-vt's note on a dropped OSC 52. Its log is process-wide and
+ * discarded by default, and everything else in it stays discarded. */
+static void on_log(void *ud, GhosttySysLogLevel level, const uint8_t *scope,
+                   size_t scope_len, const uint8_t *message,
+                   size_t message_len) {
+  (void)ud;
+  (void)level;
+  (void)scope;
+  (void)scope_len;
+  static const char osc_52[] = "OSC 52";
+  if (message_len >= sizeof(osc_52) - 1 &&
+      memcmp(message, osc_52, sizeof(osc_52) - 1) == 0)
+    fprintf(stderr, "Wayterm: %.*s\n", (int)message_len, (const char *)message);
+}
+
 void wt_ghostty_search_clear(WtGhostty *g);
 
 void wt_ghostty_free(WtGhostty *g) {
@@ -184,6 +241,9 @@ void wt_ghostty_free(WtGhostty *g) {
 }
 
 WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
+  static atomic_flag log_installed = ATOMIC_FLAG_INIT;
+  if (!atomic_flag_test_and_set(&log_installed))
+    ghostty_sys_set(GHOSTTY_SYS_OPT_LOG, (const void *)on_log);
   WtGhostty *g = calloc(1, sizeof(WtGhostty));
   if (!g) return NULL;
   if (ghostty_terminal_new(NULL, &g->terminal, cols, rows) != GHOSTTY_SUCCESS ||
@@ -208,6 +268,15 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
                        (const void *)on_title);
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
                        (const void *)on_pwd);
+  /* No clipboard_read callback, ever: clipboard contents must not leave the
+   * machine, so an OSC 52 query goes unanswered. The write callback also
+   * opens OSC 5522 writes, which a zero limit keeps shut: no data fits. */
+  size_t no_kitty_write_data = 0;
+  ghostty_terminal_set(g->terminal,
+                       GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES,
+                       &no_kitty_write_data);
+  ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
+                       (const void *)on_clipboard_write);
   return g;
 }
 
