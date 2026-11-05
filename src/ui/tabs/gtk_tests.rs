@@ -1,11 +1,14 @@
 //! Widget checks; they need a display and run from `ui::gtk_tests`.
 
+use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 use gtk4::glib;
 
 use super::ssh::{follow_terminal_directory, mark_sidebar_attached};
-use super::terminal::{focus_after_connect, focus_terminal, show_session_ended, terminal_state};
+use super::terminal::{
+    focus_after_connect, focus_terminal, keep_shell_directory, show_session_ended, terminal_state,
+};
 use super::*;
 use crate::hotkeys::engine::focus_within;
 use crate::terminal::color_scheme::{Brightness, Rgb, DARK, LIGHT};
@@ -215,6 +218,110 @@ fn sidebar_follows_the_shell_directory(backend_name: &str) {
     assert_eq!(sidebar.path_text(), "/srv/my site", "another host");
     report("file://box/var/log");
     assert_eq!(sidebar.path_text(), "/var/log");
+}
+
+/// A connected tab keeps the directory its shell reports, decoded, through
+/// the real connect path on each backend.
+pub(in crate::ui) fn a_terminal_tab_keeps_the_shell_directory() {
+    tab_keeps_the_shell_directory("vte");
+    #[cfg(feature = "backend-ghostty")]
+    {
+        use crate::terminal::{install_backend_preference, BackendKind};
+        install_backend_preference(BackendKind::Ghostty);
+        tab_keeps_the_shell_directory("ghostty");
+        install_backend_preference(BackendKind::Vte);
+    }
+}
+
+fn tab_keeps_the_shell_directory(backend_name: &str) {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let _entered = runtime.enter();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let shell = dir.path().join("reporting-shell");
+    std::fs::write(
+        &shell,
+        "#!/bin/sh\nprintf '\\033]7;file://box/srv/my%%20site\\007'\nexec sleep 30\n",
+    )
+    .expect("write the shell");
+    std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let notebook = gtk4::Notebook::new();
+    let window = gtk4::Window::new();
+    window.set_child(Some(&notebook));
+    window.present();
+    let session = SessionConfig {
+        id: 7_002,
+        name: "local".into(),
+        session_type: SessionType::LocalShell,
+        local_shell: Some(shell.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let store = Rc::new(SessionStore::in_memory().expect("in-memory store"));
+
+    let page = SessionTab::open(&notebook, &session, &store);
+    assert_eq!(SessionTab::shell_directory_for_page(&page), None);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while SessionTab::shell_directory_for_page(&page).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{backend_name}: the tab never kept the report"
+        );
+        glib::MainContext::default().iteration(false);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        SessionTab::active_terminal(&notebook).unwrap().name(),
+        backend_name
+    );
+    assert_eq!(
+        SessionTab::shell_directory_for_page(&page).as_deref(),
+        Some("/srv/my site")
+    );
+    close_tab(&notebook, &page);
+    window.destroy();
+    for _ in 0..20 {
+        glib::MainContext::default().iteration(false);
+    }
+}
+
+/// A new terminal on the page starts with no directory, and a report the
+/// one it replaced still had in flight does not land on it.
+pub(in crate::ui) fn a_replaced_terminal_no_longer_reports_to_the_tab() {
+    let session = SessionConfig {
+        id: 1,
+        name: "ssh-1".into(),
+        session_type: SessionType::SSH,
+        ..Default::default()
+    };
+    let page = page_content(&Rc::new(session));
+    let report = |backend: &Arc<dyn TerminalBackend>, uri: &str| {
+        backend.write(format!("\x1b]7;{uri}\x07").as_bytes());
+        // VTE parses fed bytes on a timer, not inline.
+        for _ in 0..100 {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+
+    let old = create_terminal().backend;
+    set_terminal_area(&page, &old.widget());
+    keep_shell_directory(&page, &old.widget());
+    report(&old, "file://box/srv");
+    assert_eq!(
+        SessionTab::shell_directory_for_page(&page).as_deref(),
+        Some("/srv")
+    );
+
+    let new = create_terminal().backend;
+    set_terminal_area(&page, &new.widget());
+    keep_shell_directory(&page, &new.widget());
+    assert_eq!(SessionTab::shell_directory_for_page(&page), None);
+    report(&old, "file://box/tmp");
+    assert_eq!(SessionTab::shell_directory_for_page(&page), None);
+    report(&new, "file://box/var/log");
+    assert_eq!(
+        SessionTab::shell_directory_for_page(&page).as_deref(),
+        Some("/var/log")
+    );
 }
 
 /// The shell exiting lets go of the page's SFTP sidebar: an empty one

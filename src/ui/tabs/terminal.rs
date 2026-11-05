@@ -23,11 +23,14 @@ use super::{
 };
 use crate::macros::InputTap;
 use crate::store::model::SessionConfig;
+#[cfg(feature = "backend-ghostty")]
+use crate::terminal::ghostty::view::GhosttyView;
 use crate::terminal::{create_terminal, TerminalBackend};
 use crate::transport::connection::SshConnection;
 use crate::transport::reconnect::{ConnectFn, ConnectFuture};
 use crate::transport::types::{TransportError, TransportEvent, TransportState};
 use crate::ui::appearance;
+use crate::ui::panels::sftp_sidebar::DirectoryFollower;
 use crate::ui::tabs::ended::{self, EndedChoice};
 use crate::ui::tabs::label;
 use crate::ui::tabs::resilience;
@@ -54,6 +57,43 @@ pub(super) struct TerminalPageState {
     /// The connected terminal and the tap on its input (doc 12).
     pub(super) terminal: RefCell<Option<Arc<dyn TerminalBackend>>>,
     pub(super) input_tap: RefCell<Option<InputTap>>,
+    /// What the connected terminal's shell reports; replaced with the
+    /// terminal ([`keep_shell_directory`]).
+    shell_directory: RefCell<Rc<ShellDirectory>>,
+}
+
+/// The directory one terminal's shell last reported over OSC 7 (doc 02
+/// §Reported directory). Both backends hand over the raw URI: the
+/// [`DirectoryFollower`] decodes its path and, as for the SFTP sidebar,
+/// drops what is not a `file://` URI for this session's host.
+#[derive(Default)]
+struct ShellDirectory {
+    follower: RefCell<DirectoryFollower>,
+    path: RefCell<Option<String>>,
+}
+
+impl ShellDirectory {
+    fn reported(&self, uri: &str) {
+        let path = self.follower.borrow_mut().report(uri);
+        if path.is_some() {
+            self.path.replace(path);
+        }
+    }
+
+    fn path(&self) -> Option<String> {
+        self.path.borrow().clone()
+    }
+}
+
+impl SessionTab {
+    /// The directory `page`'s shell last reported, decoded. `None` before
+    /// its terminal's first report, and on pages without a terminal; a
+    /// shell that has gone keeps its last one until the next terminal.
+    pub fn shell_directory_for_page(page: &gtk4::Widget) -> Option<String> {
+        let state = existing_terminal_state(page)?;
+        let shell = state.shell_directory.borrow().clone();
+        shell.path()
+    }
 }
 
 /// `page`'s terminal state, created on first use.
@@ -122,6 +162,7 @@ pub(super) async fn finish_connect(
     if let Some(conn) = conn {
         ssh::on_connect(notebook, page, session, conn, &widget);
     }
+    keep_shell_directory(page, &widget);
     follow_terminal_title(page, &widget, &session.name);
     focus_after_connect(notebook, page);
 }
@@ -398,6 +439,32 @@ fn follow_terminal_title(page: &gtk4::Widget, terminal: &gtk4::Widget, session_n
     vte.connect_window_title_changed(apply);
 }
 
+/// Keep what `terminal`'s shell reports on `page`, in place of what the
+/// previous terminal's did. Connected to the widget directly, as the SFTP
+/// sidebar is (doc 07 §Following the shell). The hooks hold it weakly: a
+/// late report from a replaced terminal goes nowhere.
+pub(super) fn keep_shell_directory(page: &gtk4::Widget, terminal: &gtk4::Widget) {
+    let shell = Rc::new(ShellDirectory::default());
+    let watch = Rc::downgrade(&shell);
+    terminal_state(page).shell_directory.replace(shell);
+    if let Some(vte) = terminal.downcast_ref::<vte4::Terminal>() {
+        let watch = watch.clone();
+        vte.connect_current_directory_uri_changed(move |term| {
+            if let (Some(shell), Some(uri)) = (watch.upgrade(), term.current_directory_uri()) {
+                shell.reported(&uri);
+            }
+        });
+    }
+    #[cfg(feature = "backend-ghostty")]
+    if let Some(view) = terminal.downcast_ref::<GhosttyView>() {
+        view.connect_directory(move |uri| {
+            if let Some(shell) = watch.upgrade() {
+                shell.reported(uri);
+            }
+        });
+    }
+}
+
 /// The terminal's title, or the session name when it is blank.
 fn tab_title(session_name: &str, terminal_title: &str) -> String {
     match terminal_title.trim() {
@@ -452,6 +519,26 @@ mod tests {
         assert_eq!(tab_title("db-prod", "root@db-prod:~"), "root@db-prod:~");
         assert_eq!(tab_title("db-prod", ""), "db-prod");
         assert_eq!(tab_title("db-prod", "   \n"), "db-prod");
+    }
+
+    #[test]
+    fn the_kept_directory_is_the_last_report_decoded() {
+        let shell = ShellDirectory::default();
+        assert_eq!(shell.path(), None);
+        shell.reported("file://box/srv/my%20site");
+        assert_eq!(shell.path().as_deref(), Some("/srv/my site"));
+        shell.reported("file://box/tmp");
+        assert_eq!(shell.path().as_deref(), Some("/tmp"));
+    }
+
+    #[test]
+    fn the_kept_directory_ignores_nested_hosts_and_other_reports() {
+        let shell = ShellDirectory::default();
+        shell.reported("file://box/srv");
+        shell.reported("file://inner/tmp");
+        shell.reported("kitty-shell-cwd://box/tmp");
+        shell.reported("/tmp");
+        assert_eq!(shell.path().as_deref(), Some("/srv"));
     }
 
     #[test]
