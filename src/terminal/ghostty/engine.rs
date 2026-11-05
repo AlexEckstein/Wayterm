@@ -5,9 +5,16 @@
 use std::cell::RefCell;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr::NonNull;
+use std::sync::Once;
+
+use gtk4::prelude::*;
+use gtk4::{gdk, glib};
 
 use super::ffi;
-pub use super::ffi::{WtCell as Cell, WtFrame as FrameInfo, WtMouse as MouseEvent, WtSpan as Span};
+pub use super::ffi::{
+    WtCell as Cell, WtFrame as FrameInfo, WtMouse as MouseEvent, WtPlacement as Placement,
+    WtSpan as Span,
+};
 use crate::terminal::color_scheme::{ColorScheme, Rgb};
 
 /// What the terminal asked for while processing bytes.
@@ -19,7 +26,24 @@ pub enum Effect {
     Title(String),
     /// The directory the shell reported, raw: a `file://` URI for OSC 7.
     Pwd(String),
+    /// A program set a clipboard (OSC 52, OSC 1337 Copy).
+    ClipboardWrite {
+        destination: ClipboardDestination,
+        text: String,
+    },
 }
+
+/// The clipboard a program's write goes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardDestination {
+    System,
+    /// PRIMARY: OSC 52's `p` and `s`.
+    Selection,
+}
+
+/// The most decoded bytes a clipboard write may carry. OSC 52 stops short
+/// of it: libghostty-vt drops a sequence over 8 MiB, about 6 MiB decoded.
+const CLIPBOARD_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// Where [`Engine::scroll`] moves the viewport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +91,24 @@ pub struct Frame {
     /// The clusters of cells holding more than one codepoint, where their
     /// `grapheme` fields point; grown as needed, never shrunk.
     pub graphemes: Vec<u32>,
+    /// The images on screen, in drawing order: by layer, then z, then
+    /// image, the tie-break Ghostty's own renderer uses.
+    pub placements: Vec<Placement>,
+    /// The URIs of the OSC 8 hyperlinks in the viewport, end to end.
+    uris: Vec<u8>,
+    /// Where each entry of `uris` ends; a cell's `link`, from 1, picks one.
+    link_ends: Vec<usize>,
+}
+
+/// A stored image's pixels, its current frame's for an animation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pixels {
+    pub width: u32,
+    pub height: u32,
+    /// `ffi::FORMAT_*`.
+    pub format: u8,
+    /// Rows from the top, with no padding between them.
+    pub data: Vec<u8>,
 }
 
 impl Frame {
@@ -95,6 +137,18 @@ impl Frame {
         }
     }
 
+    /// The URI of a cell's OSC 8 hyperlink. `None` without one, and for a
+    /// URI that is not UTF-8, which no handler could open as written.
+    pub fn link(&self, row: usize, col: usize) -> Option<&str> {
+        let entry = usize::from(self.cell(row, col)?.link).checked_sub(1)?;
+        let start = match entry.checked_sub(1) {
+            Some(previous) => *self.link_ends.get(previous)?,
+            None => 0,
+        };
+        let uri = self.uris.get(start..*self.link_ends.get(entry)?)?;
+        std::str::from_utf8(uri).ok()
+    }
+
     /// One viewport row as text, empty cells as spaces.
     pub fn row_text(&self, row: usize) -> String {
         let mut text = String::new();
@@ -102,6 +156,17 @@ impl Frame {
             push_cluster(&mut text, self.grapheme(row, col));
         }
         text
+    }
+
+    /// Whether blinking text shows on screen: cells past the grid are left
+    /// over from a larger one, and blank or invisible cells show no change.
+    pub fn blinks(&self) -> bool {
+        let grid = usize::from(self.info.cols) * usize::from(self.info.rows);
+        self.cells.iter().take(grid).any(|cell| {
+            cell.flags & ffi::CELL_BLINK != 0
+                && cell.flags & ffi::CELL_INVISIBLE == 0
+                && char::from_u32(cell.codepoint).is_some_and(|c| c != '\0' && !c.is_whitespace())
+        })
     }
 }
 
@@ -129,6 +194,30 @@ pub struct Engine {
     effects: Box<RefCell<Vec<Effect>>>,
 }
 
+/// A program's clipboard write, whole or not at all: one too large, not
+/// UTF-8, or holding a NUL, which would cut GDK's text short, is dropped
+/// with a note that leaves its contents out.
+fn clipboard_effect(destination: ClipboardDestination, bytes: &[u8]) -> Option<Effect> {
+    if bytes.len() > CLIPBOARD_MAX_BYTES {
+        eprintln!(
+            "Wayterm: ignored a clipboard write of {} bytes, over the {CLIPBOARD_MAX_BYTES} limit",
+            bytes.len()
+        );
+        return None;
+    }
+    let text = std::str::from_utf8(bytes)
+        .ok()
+        .filter(|t| !t.contains('\0'));
+    let Some(text) = text else {
+        eprintln!("Wayterm: ignored a clipboard write that is not text");
+        return None;
+    };
+    Some(Effect::ClipboardWrite {
+        destination,
+        text: text.to_owned(),
+    })
+}
+
 /// Effect callback: only records, so it never re-enters the terminal.
 unsafe extern "C" fn on_effect(userdata: *mut c_void, kind: c_int, data: *const u8, len: usize) {
     // SAFETY: userdata is the engine's boxed effect list, alive for as long
@@ -144,11 +233,90 @@ unsafe extern "C" fn on_effect(userdata: *mut c_void, kind: c_int, data: *const 
         ffi::EFFECT_BELL => Effect::Bell,
         ffi::EFFECT_TITLE => Effect::Title(String::from_utf8_lossy(bytes).into_owned()),
         ffi::EFFECT_PWD => Effect::Pwd(String::from_utf8_lossy(bytes).into_owned()),
+        ffi::EFFECT_CLIPBOARD_SYSTEM | ffi::EFFECT_CLIPBOARD_PRIMARY => {
+            let destination = if kind == ffi::EFFECT_CLIPBOARD_SYSTEM {
+                ClipboardDestination::System
+            } else {
+                ClipboardDestination::Selection
+            };
+            let Some(write) = clipboard_effect(destination, bytes) else {
+                return;
+            };
+            write
+        }
         _ => return,
     };
     if let Ok(mut effects) = effects.try_borrow_mut() {
         effects.push(effect);
     }
+}
+
+/// A PNG's size, read from its header; `None` if it does not start as one.
+fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR";
+    let size = png.strip_prefix(SIGNATURE)?;
+    let width = size.first_chunk::<4>()?;
+    let height = size.get(4..)?.first_chunk::<4>()?;
+    Some((u32::from_be_bytes(*width), u32::from_be_bytes(*height)))
+}
+
+/// Whether a payload is worth decoding. It is the remote side's, so its
+/// header is checked first: what the storage could never hold is not worth
+/// the memory a decode would take, and nothing but PNG reaches GDK's other
+/// image loaders.
+fn decodable(png: &[u8]) -> bool {
+    png_size(png).is_some_and(|(width, height)| {
+        let pixels = u64::from(width) * u64::from(height);
+        pixels
+            .checked_mul(4)
+            .is_some_and(|bytes| bytes <= ffi::KITTY_STORAGE_LIMIT)
+    })
+}
+
+/// Decode a PNG to `(width, height, stride, RGBA rows)`.
+fn decoded_png(png: &[u8]) -> Option<(u32, u32, usize, glib::Bytes)> {
+    if !decodable(png) {
+        return None;
+    }
+    let texture = gdk::Texture::from_bytes(&glib::Bytes::from(png)).ok()?;
+    let mut downloader = gdk::TextureDownloader::new(&texture);
+    downloader.set_format(gdk::MemoryFormat::R8g8b8a8);
+    let (bytes, stride) = downloader.download_bytes();
+    let width = u32::try_from(texture.width()).ok()?;
+    let height = u32::try_from(texture.height()).ok()?;
+    Some((width, height, stride, bytes))
+}
+
+/// PNG callback: runs on the thread feeding the terminal, inside
+/// [`Engine::write`], and fills the buffer the shim gives it for `sink`.
+unsafe extern "C" fn decode_png(data: *const u8, len: usize, sink: *mut c_void) -> bool {
+    if data.is_null() {
+        return false;
+    }
+    // SAFETY: data/len is the payload, borrowed for the call.
+    let png = unsafe { std::slice::from_raw_parts(data, len) };
+    let Some((width, height, stride, bytes)) = decoded_png(png) else {
+        return false;
+    };
+    let row = width as usize * 4;
+    // A panic here would abort the process, for the remote side to trigger.
+    if row == 0 || stride < row || bytes.len() < stride * height.saturating_sub(1) as usize + row {
+        return false;
+    }
+    // SAFETY: sink is the shim's for this call.
+    let out = unsafe { ffi::wt_ghostty_png_pixels(sink, width, height) };
+    if out.is_null() {
+        return false;
+    }
+    // SAFETY: `out` holds `height` rows of `row` bytes, and `bytes` was
+    // checked above to have them, `stride` apart.
+    unsafe {
+        let out = std::slice::from_raw_parts_mut(out, row * height as usize);
+        for (to, from) in out.chunks_exact_mut(row).zip(bytes.chunks(stride)) {
+            to.copy_from_slice(&from[..row]);
+        }
+    }
+    true
 }
 
 /// Take ownership of a buffer libghostty-vt allocated.
@@ -166,6 +334,9 @@ fn take_bytes(ptr: *mut u8, len: usize) -> Vec<u8> {
 impl Engine {
     /// A terminal of `cols` × `rows` cells; `None` if allocation fails.
     pub fn new(cols: u16, rows: u16) -> Option<Self> {
+        static PNG_DECODER: Once = Once::new();
+        // SAFETY: a plain function, set once before any terminal uses it.
+        PNG_DECODER.call_once(|| unsafe { ffi::wt_ghostty_set_png_decoder(Some(decode_png)) });
         // SAFETY: plain constructor; null on failure.
         let raw = NonNull::new(unsafe { ffi::wt_ghostty_new(cols.max(1), rows.max(1)) })?;
         let effects: Box<RefCell<Vec<Effect>>> = Box::default();
@@ -497,6 +668,68 @@ impl Engine {
         })
     }
 
+    /// Move playing animations on to `now_ms`, a clock that only goes
+    /// forward; once per frame, before [`Self::snapshot`]. When the next
+    /// frame is due on that clock, `None` while nothing plays.
+    pub fn tick_animations(&self, now_ms: u64) -> Option<u64> {
+        let mut next_ms = 0;
+        // SAFETY: valid terminal and out-pointer.
+        let result = unsafe { ffi::wt_ghostty_animation_tick(self.ptr(), now_ms, &mut next_ms) };
+        (result == ffi::SUCCESS).then_some(next_ms)
+    }
+
+    /// An image's pixels; `None` once it is deleted.
+    pub fn image_pixels(&self, image_id: u32) -> Option<Pixels> {
+        let mut pixels = ffi::WtPixels {
+            data: std::ptr::null(),
+            len: 0,
+            width: 0,
+            height: 0,
+            format: 0,
+        };
+        // SAFETY: valid terminal and out-pointer.
+        let result = unsafe { ffi::wt_ghostty_image_pixels(self.ptr(), image_id, &mut pixels) };
+        if result != ffi::SUCCESS || pixels.data.is_null() {
+            return None;
+        }
+        // SAFETY: data/len stay valid until the terminal changes, and
+        // nothing touches it before the copy.
+        let data = unsafe { std::slice::from_raw_parts(pixels.data, pixels.len) }.to_vec();
+        Some(Pixels {
+            width: pixels.width,
+            height: pixels.height,
+            format: pixels.format,
+            data,
+        })
+    }
+
+    /// Refresh `placements` from the last snapshot, in drawing order.
+    fn read_placements(&self, placements: &mut Vec<Placement>) {
+        let mut needed = 0;
+        for _ in 0..2 {
+            // SAFETY: valid terminal; `placements` has `len` initialized
+            // slots.
+            let result = unsafe {
+                ffi::wt_ghostty_placements(
+                    self.ptr(),
+                    placements.as_mut_ptr(),
+                    placements.len(),
+                    &mut needed,
+                )
+            };
+            match result {
+                ffi::SUCCESS => {
+                    placements.truncate(needed);
+                    placements.sort_by_key(|p| (p.layer, p.z, p.image_id));
+                    return;
+                }
+                ffi::OUT_OF_SPACE => placements.resize(needed, Placement::default()),
+                _ => break,
+            }
+        }
+        placements.clear();
+    }
+
     /// Refresh `frame` from the terminal's viewport.
     pub fn snapshot(&self, frame: &mut Frame) -> bool {
         // The cells and then the graphemes may each need to grow once.
@@ -516,7 +749,11 @@ impl Engine {
                 )
             };
             match result {
-                ffi::SUCCESS => return true,
+                ffi::SUCCESS => {
+                    self.read_placements(&mut frame.placements);
+                    self.copy_links(frame);
+                    return true;
+                }
                 ffi::OUT_OF_SPACE => {
                     let needed = usize::from(frame.info.cols) * usize::from(frame.info.rows);
                     if frame.cells.len() < needed {
@@ -533,6 +770,29 @@ impl Engine {
             }
         }
         false
+    }
+
+    /// Copy the links of the snapshot just taken into `frame`.
+    fn copy_links(&self, frame: &mut Frame) {
+        frame.uris.clear();
+        frame.link_ends.clear();
+        let (mut uris, mut ends, mut count) = (std::ptr::null(), std::ptr::null(), 0);
+        // SAFETY: valid terminal; the out pointers are valid.
+        unsafe { ffi::wt_ghostty_links(self.ptr(), &mut uris, &mut ends, &mut count) };
+        if count == 0 {
+            return;
+        }
+        // SAFETY: with entries, the shim's buffers hold `count` ends, the
+        // last of them the length of `uris`, until the next snapshot.
+        unsafe {
+            frame
+                .link_ends
+                .extend_from_slice(std::slice::from_raw_parts(ends, count));
+            let len = frame.link_ends[count - 1];
+            frame
+                .uris
+                .extend_from_slice(std::slice::from_raw_parts(uris, len));
+        }
     }
 }
 
@@ -561,16 +821,20 @@ mod tests {
     #[test]
     fn rust_mirrors_match_the_c_layout() {
         // SAFETY: plain getters.
-        let (cell, info, span) = unsafe {
+        let (cell, info, span, placement, pixels) = unsafe {
             (
                 ffi::wt_ghostty_cell_size(),
                 ffi::wt_ghostty_frame_size(),
                 ffi::wt_ghostty_span_size(),
+                ffi::wt_ghostty_placement_size(),
+                ffi::wt_ghostty_pixels_size(),
             )
         };
         assert_eq!(std::mem::size_of::<Cell>(), cell);
         assert_eq!(std::mem::size_of::<FrameInfo>(), info);
         assert_eq!(std::mem::size_of::<Span>(), span);
+        assert_eq!(std::mem::size_of::<Placement>(), placement);
+        assert_eq!(std::mem::size_of::<ffi::WtPixels>(), pixels);
         // SAFETY: plain getters.
         let (grapheme, grapheme_len) = unsafe {
             (
@@ -580,6 +844,427 @@ mod tests {
         };
         assert_eq!(std::mem::offset_of!(Cell, grapheme), grapheme);
         assert_eq!(std::mem::offset_of!(Cell, grapheme_len), grapheme_len);
+        // SAFETY: plain getter.
+        let link = unsafe { ffi::wt_ghostty_cell_link_offset() };
+        assert_eq!(std::mem::offset_of!(Cell, link), link);
+        // SAFETY: plain getters.
+        let (layer, format) = unsafe {
+            (
+                ffi::wt_ghostty_placement_layer_offset(),
+                ffi::wt_ghostty_pixels_format_offset(),
+            )
+        };
+        assert_eq!(std::mem::offset_of!(Placement, layer), layer);
+        assert_eq!(std::mem::offset_of!(ffi::WtPixels, format), format);
+        let (underline, underline_rgb, underline_has_rgb) = unsafe {
+            (
+                ffi::wt_ghostty_cell_underline_offset(),
+                ffi::wt_ghostty_cell_underline_rgb_offset(),
+                ffi::wt_ghostty_cell_underline_has_rgb_offset(),
+            )
+        };
+        assert_eq!(std::mem::offset_of!(Cell, underline), underline);
+        assert_eq!(std::mem::offset_of!(Cell, underline_rgb), underline_rgb);
+        assert_eq!(
+            std::mem::offset_of!(Cell, underline_has_rgb),
+            underline_has_rgb
+        );
+    }
+
+    /// A Kitty graphics command; `payload` is base64-encoded.
+    fn kitty(control: &str, payload: &[u8]) -> Vec<u8> {
+        format!("\x1b_G{control};{}\x1b\\", glib::base64_encode(payload)).into_bytes()
+    }
+
+    /// A terminal that knows its cell size: 8 × 16 pixels.
+    fn sized_engine() -> Engine {
+        let engine = engine();
+        assert!(engine.resize(20, 5, 8, 16));
+        engine
+    }
+
+    /// `w` × `h` opaque red RGBA pixels.
+    fn red(w: usize, h: usize) -> Vec<u8> {
+        [255, 0, 0, 255].repeat(w * h)
+    }
+
+    /// Show image `id`, `w` × `h` RGBA pixels, at the cursor, replying to
+    /// nothing; `extra` adds to the command.
+    fn show(engine: &Engine, id: u32, (w, h): (usize, usize), extra: &str) {
+        let control = format!("a=T,f=32,i={id},s={w},v={h},q=2{extra}");
+        assert_eq!(engine.write(&kitty(&control, &red(w, h))), []);
+    }
+
+    fn placements(engine: &Engine) -> Vec<Placement> {
+        frame(engine).placements
+    }
+
+    #[test]
+    fn the_storage_limit_is_the_one_png_sizes_are_checked_against() {
+        let engine = engine();
+        // SAFETY: valid terminal.
+        let limit = unsafe { ffi::wt_ghostty_storage_limit(engine.ptr()) };
+        assert_eq!(limit, ffi::KITTY_STORAGE_LIMIT);
+    }
+
+    #[test]
+    fn a_placed_image_comes_out_at_its_cell() {
+        let engine = sized_engine();
+        engine.write(b"\x1b[2;4H");
+        show(&engine, 7, (16, 32), ",X=3,Y=5");
+        let [placement] = placements(&engine)[..] else {
+            panic!("{:?}", placements(&engine));
+        };
+        assert_eq!(placement.image_id, 7);
+        assert_ne!(placement.generation, 0);
+        assert_eq!((placement.col, placement.row), (3, 1));
+        assert_eq!((placement.offset_x, placement.offset_y), (3, 5));
+        assert_eq!((placement.width, placement.height), (16, 32));
+        assert_eq!((placement.source_x, placement.source_y), (0, 0));
+        assert_eq!((placement.source_width, placement.source_height), (16, 32));
+        assert_eq!(placement.layer, ffi::LAYER_ABOVE_TEXT);
+
+        let pixels = engine.image_pixels(7).expect("pixels");
+        assert_eq!((pixels.width, pixels.height), (16, 32));
+        assert_eq!(pixels.format, ffi::FORMAT_RGBA);
+        assert_eq!(pixels.data, red(16, 32));
+        assert_eq!(engine.image_pixels(8), None);
+    }
+
+    #[test]
+    fn a_placement_keeps_its_source_rectangle_and_size() {
+        let engine = sized_engine();
+        // Two by one cells of a 4 × 4 image's lower right quarter.
+        show(&engine, 1, (4, 4), ",x=2,y=2,w=2,h=2,c=2,r=1");
+        let [p] = placements(&engine)[..] else {
+            panic!("no placement");
+        };
+        assert_eq!((p.source_x, p.source_y), (2, 2));
+        assert_eq!((p.source_width, p.source_height), (2, 2));
+        assert_eq!((p.width, p.height), (16, 16));
+    }
+
+    #[test]
+    fn placements_sort_into_drawing_order_by_layer_and_z() {
+        let engine = sized_engine();
+        let below_bg = i32::MIN / 2 - 1;
+        for (id, z) in [(1, 5), (2, 1), (3, -1), (4, below_bg), (5, -7)] {
+            show(&engine, id, (1, 1), &format!(",z={z}"));
+        }
+        let order: Vec<(u32, u8)> = placements(&engine)
+            .iter()
+            .map(|p| (p.image_id, p.layer))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                (4, ffi::LAYER_BELOW_BG),
+                (5, ffi::LAYER_BELOW_TEXT),
+                (3, ffi::LAYER_BELOW_TEXT),
+                (2, ffi::LAYER_ABOVE_TEXT),
+                (1, ffi::LAYER_ABOVE_TEXT),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_placement_scrolls_with_the_text() {
+        let engine = sized_engine();
+        engine.write(b"\x1b[3;1H");
+        // Three rows tall, from the third row.
+        show(&engine, 1, (8, 48), ",C=1");
+        let row = |engine: &Engine| placements(engine).first().map(|p| p.row);
+        assert_eq!(row(&engine), Some(2));
+        engine.write(b"\x1b[5;1H\r\n");
+        assert_eq!(row(&engine), Some(1));
+        // Partly gone: still reported, from above the viewport.
+        engine.write(b"\r\n\r\n");
+        assert_eq!(row(&engine), Some(-1));
+        // Wholly gone, then back with the scrollback.
+        engine.write(b"\r\n\r\n\r\n");
+        assert_eq!(row(&engine), None);
+        engine.scroll(Scroll::By(-4));
+        assert_eq!(row(&engine), Some(0));
+    }
+
+    #[test]
+    fn a_deleted_image_disappears() {
+        let engine = sized_engine();
+        show(&engine, 1, (1, 1), "");
+        show(&engine, 2, (1, 1), "");
+        assert_eq!(placements(&engine).len(), 2);
+        engine.write(b"\x1b_Ga=d,d=I,i=1,q=2\x1b\\");
+        let ids: Vec<u32> = placements(&engine).iter().map(|p| p.image_id).collect();
+        assert_eq!(ids, [2]);
+        assert_eq!(engine.image_pixels(1), None);
+    }
+
+    #[test]
+    fn a_reset_clears_images_and_leaves_graphics_working() {
+        let engine = sized_engine();
+        show(&engine, 1, (1, 1), "");
+        engine.reset();
+        assert_eq!(placements(&engine), []);
+        show(&engine, 2, (1, 1), "");
+        assert_eq!(placements(&engine).len(), 1);
+    }
+
+    #[test]
+    fn each_screen_has_its_own_images() {
+        let engine = sized_engine();
+        show(&engine, 1, (1, 1), "");
+        engine.write(b"\x1b[?1049h");
+        assert_eq!(placements(&engine), []);
+        show(&engine, 2, (1, 1), "");
+        assert_eq!(placements(&engine)[0].image_id, 2);
+        engine.write(b"\x1b[?1049l");
+        assert_eq!(placements(&engine)[0].image_id, 1);
+    }
+
+    #[test]
+    fn placeholder_cells_give_a_placement_per_row() {
+        let engine = sized_engine();
+        // A virtual placement of image 3, then its two cells on the second
+        // row: the foreground names the image, the marks its row and column.
+        let control = "a=T,U=1,f=32,i=3,s=2,v=1,c=2,r=1,q=2";
+        assert_eq!(engine.write(&kitty(control, &red(2, 1))), []);
+        engine.write("\r\n\x1b[38;5;3m\u{10eeee}\u{305}\u{305}".as_bytes());
+        engine.write("\u{10eeee}\u{305}\u{30d}\x1b[39m".as_bytes());
+        let [p] = placements(&engine)[..] else {
+            panic!("{:?}", placements(&engine));
+        };
+        assert_eq!((p.image_id, p.col, p.row), (3, 0, 1));
+        assert_eq!(p.layer, ffi::LAYER_BELOW_TEXT);
+    }
+
+    #[test]
+    fn nothing_is_placed_before_the_cell_size_is_known() {
+        let engine = engine();
+        show(&engine, 1, (8, 16), "");
+        assert_eq!(placements(&engine), []);
+        assert!(engine.resize(20, 5, 8, 16));
+        assert_eq!(placements(&engine).len(), 1);
+    }
+
+    #[test]
+    fn a_program_can_ask_for_graphics_support() {
+        let engine = engine();
+        let replies = engine.write(&kitty("a=q,f=24,i=31,s=1,v=1", &[0, 0, 0]));
+        let reply = b"\x1b_Gi=31;OK\x1b\\".to_vec();
+        assert_eq!(replies, [Effect::Pty(reply)]);
+    }
+
+    #[test]
+    fn a_remote_program_cannot_read_local_files() {
+        let engine = sized_engine();
+        let file = std::env::temp_dir().join("wayterm-kitty-medium-test.rgba");
+        std::fs::write(&file, red(1, 1)).expect("write");
+        let path = file.to_str().expect("utf-8 path").as_bytes();
+        for medium in ["f", "t", "s"] {
+            let control = format!("a=T,t={medium},f=32,i=9,s=1,v=1");
+            let replies = engine.write(&kitty(&control, path));
+            let refused = matches!(&replies[..], [Effect::Pty(reply)]
+                if !reply.windows(2).any(|w| w == b"OK"));
+            assert!(refused, "medium {medium}: {replies:?}");
+            assert_eq!(engine.image_pixels(9), None, "medium {medium}");
+        }
+        assert!(file.exists(), "the temp-file medium deletes what it reads");
+        std::fs::remove_file(file).expect("remove");
+    }
+
+    /// A PNG of `pixels`, RGBA rows of `width`.
+    fn png(width: usize, pixels: &[u8]) -> Vec<u8> {
+        let height = pixels.len() / 4 / width;
+        gdk::MemoryTexture::new(
+            width as i32,
+            height as i32,
+            gdk::MemoryFormat::R8g8b8a8,
+            &glib::Bytes::from(pixels),
+            width * 4,
+        )
+        .save_to_png_bytes()
+        .to_vec()
+    }
+
+    #[test]
+    fn png_payloads_decode_to_rgba() {
+        let engine = sized_engine();
+        // Translucent pixels stay straight alpha.
+        let pixels = [255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 9, 8, 7, 255];
+        let control = "a=T,f=100,i=4,q=2";
+        assert_eq!(engine.write(&kitty(control, &png(2, &pixels))), []);
+        assert_eq!(placements(&engine).len(), 1);
+        let stored = engine.image_pixels(4).expect("pixels");
+        assert_eq!((stored.width, stored.height), (2, 2));
+        assert_eq!(stored.format, ffi::FORMAT_RGBA);
+        assert_eq!(stored.data[..4], pixels[..4]);
+        assert_eq!(stored.data[7], 128);
+        assert_eq!(stored.data[11], 0);
+        assert_eq!(stored.data[12..], pixels[12..]);
+    }
+
+    /// A reply naming an error, and no image `id`.
+    fn assert_refused(engine: &Engine, id: u32, payload: &[u8]) {
+        let replies = engine.write(&kitty(&format!("a=T,f=100,i={id}"), payload));
+        let refused = matches!(&replies[..], [Effect::Pty(reply)]
+            if !reply.windows(2).any(|w| w == b"OK"));
+        assert!(refused, "{replies:?}");
+        assert_eq!(engine.image_pixels(id), None);
+    }
+
+    #[test]
+    fn a_png_too_big_to_store_is_refused_before_decoding() {
+        let sized = |width: u32, height: u32| {
+            let mut png = png(1, &red(1, 1));
+            png[16..20].copy_from_slice(&width.to_be_bytes());
+            png[20..24].copy_from_slice(&height.to_be_bytes());
+            png
+        };
+        assert_eq!(png_size(&sized(30_000, 7)), Some((30_000, 7)));
+        // Exactly the limit, at four bytes a pixel, then one row more.
+        assert!(decodable(&sized(8_000, 10_000)));
+        assert!(!decodable(&sized(8_000, 10_001)));
+        // Past what 32 bits hold, which must not wrap around.
+        assert!(!decodable(&sized(u32::MAX, u32::MAX)));
+        assert_refused(&sized_engine(), 5, &sized(8_000, 10_001));
+    }
+
+    #[test]
+    fn only_png_is_decoded() {
+        let engine = sized_engine();
+        let jpeg = b"\xff\xd8\xff\xe0 not a PNG, long enough to parse";
+        assert!(!decodable(jpeg));
+        assert_refused(&engine, 6, jpeg);
+        assert_refused(&engine, 6, &png(1, &red(1, 1))[..30]);
+        assert_refused(&engine, 6, b"");
+    }
+
+    #[test]
+    fn animations_advance_by_tick_and_stop() {
+        let engine = sized_engine();
+        // Red, then a blue frame for 40 ms; the first shows for 30 ms; play
+        // on a loop.
+        engine.write(&kitty("a=T,f=32,i=2,s=1,v=1,q=2", &[255, 0, 0, 255]));
+        engine.write(&kitty("a=f,f=32,i=2,s=1,v=1,z=40,q=2", &[0, 0, 255, 255]));
+        engine.write(b"\x1b_Ga=a,i=2,r=1,z=30,q=2\x1b\\");
+        assert_eq!(engine.tick_animations(0), None, "not playing yet");
+        engine.write(b"\x1b_Ga=a,i=2,s=3,q=2\x1b\\");
+
+        let due = engine.tick_animations(0).expect("first tick");
+        let first = placements(&engine)[0].generation;
+        assert_eq!(engine.image_pixels(2).unwrap().data, [255, 0, 0, 255]);
+        let later = engine.tick_animations(due).expect("second tick");
+        assert!(later > due);
+        let second = placements(&engine)[0].generation;
+        assert_ne!(second, first, "a new frame is a new generation");
+        assert_eq!(engine.image_pixels(2).unwrap().data, [0, 0, 255, 255]);
+
+        engine.write(b"\x1b_Ga=a,i=2,s=1,q=2\x1b\\");
+        assert_eq!(engine.tick_animations(later), None, "stopped");
+    }
+
+    /// `text` as an OSC 8 hyperlink to `uri`.
+    fn hyperlink(uri: &str, text: &str) -> String {
+        format!("\x1b]8;;{uri}\x1b\\{text}\x1b]8;;\x1b\\")
+    }
+
+    #[test]
+    fn hyperlink_cells_resolve_to_their_uri() {
+        let e = engine();
+        let link = hyperlink("https://example.com/a", "ab");
+        e.write(format!("x{link}y").as_bytes());
+        let f = frame(&e);
+        assert_eq!(f.link(0, 0), None);
+        assert_eq!(f.link(0, 1), Some("https://example.com/a"));
+        assert_eq!(f.link(0, 2), Some("https://example.com/a"));
+        assert_eq!(f.link(0, 3), None);
+        assert_eq!(f.row_text(0).trim_end(), "xaby");
+    }
+
+    #[test]
+    fn plain_text_that_looks_like_a_url_is_no_hyperlink() {
+        let e = engine();
+        e.write(b"https://example.com/a");
+        let f = frame(&e);
+        assert_eq!(f.cell(0, 3).map(|cell| cell.link), Some(0));
+        assert_eq!(f.link(0, 3), None);
+    }
+
+    #[test]
+    fn a_link_shares_one_entry_and_each_uri_keeps_its_own() {
+        let e = engine();
+        let a = hyperlink("https://a.example/", "aaa");
+        let b = hyperlink("https://b.example/", "bbb");
+        e.write(format!("{a} {b}").as_bytes());
+        let f = frame(&e);
+        let entry = |col| f.cell(0, col).map(|cell| cell.link);
+        assert_eq!(entry(0), entry(2));
+        assert_ne!(entry(0), entry(4));
+        assert_eq!(f.link(0, 2), Some("https://a.example/"));
+        assert_eq!(f.link(0, 4), Some("https://b.example/"));
+    }
+
+    #[test]
+    fn a_wrapped_link_is_one_entry_on_both_rows() {
+        let e = Engine::new(4, 3).expect("engine");
+        e.write(hyperlink("https://example.com/", "abcdef").as_bytes());
+        let f = frame(&e);
+        assert_eq!(f.cell(0, 0).map(|c| c.link), f.cell(1, 1).map(|c| c.link));
+        assert_eq!(f.link(1, 1), Some("https://example.com/"));
+    }
+
+    #[test]
+    fn a_wide_character_keeps_its_link_on_both_cells() {
+        let e = engine();
+        e.write(hyperlink("https://example.com/", "日本").as_bytes());
+        let f = frame(&e);
+        for col in 0..4 {
+            assert_eq!(f.link(0, col), Some("https://example.com/"), "column {col}");
+        }
+    }
+
+    #[test]
+    fn links_follow_the_viewport_through_scrollback() {
+        let e = engine();
+        e.write(format!("{}\r\n", hyperlink("https://example.com/", "top")).as_bytes());
+        for line in 0..40 {
+            e.write(format!("line {line}\r\n").as_bytes());
+        }
+        assert_eq!(frame(&e).link(0, 0), None);
+        e.scroll(Scroll::Top);
+        assert_eq!(frame(&e).link(0, 0), Some("https://example.com/"));
+    }
+
+    #[test]
+    fn a_frame_reused_after_a_reset_holds_no_links() {
+        let e = engine();
+        e.write(hyperlink("https://example.com/", "ab").as_bytes());
+        let mut f = frame(&e);
+        assert!(f.link(0, 0).is_some());
+        e.reset();
+        e.write(b"ab");
+        assert!(e.snapshot(&mut f));
+        assert_eq!(f.link(0, 0), None);
+    }
+
+    #[test]
+    fn a_screenful_of_long_distinct_links_all_resolve() {
+        let e = Engine::new(20, 24).expect("engine");
+        let uri = |n: usize| format!("https://example.com/{}/{n}", "x".repeat(200));
+        for n in 0..23 {
+            e.write(format!("{}\r\n", hyperlink(&uri(n), "link")).as_bytes());
+        }
+        let f = frame(&e);
+        for n in 0..23 {
+            assert_eq!(f.link(n, 0), Some(uri(n).as_str()), "row {n}");
+        }
+    }
+
+    #[test]
+    fn a_uri_that_is_not_utf8_is_no_link() {
+        let e = engine();
+        e.write(b"\x1b]8;;https://ex\xffample/\x1b\\ab\x1b]8;;\x1b\\");
+        assert_eq!(frame(&e).link(0, 0), None);
     }
 
     #[test]
@@ -591,6 +1276,39 @@ mod tests {
         assert_eq!(frame.row_text(0).trim_end(), "hello");
         assert_eq!(frame.row_text(1).trim_end(), "world");
         assert_eq!((frame.info.cursor_x, frame.info.cursor_y), (5, 1));
+    }
+
+    /// DECSCUSR picks the shape and the blink, mode 12 the blink alone;
+    /// DECSCUSR 0 and a reset go back to a steady block.
+    #[test]
+    fn cursor_style_and_blink_follow_the_terminal() {
+        let engine = engine();
+        let cursor = || {
+            let info = frame(&engine).info;
+            (info.cursor_style, info.cursor_blinking != 0)
+        };
+        assert_eq!(cursor(), (ffi::CURSOR_BLOCK, false));
+        for (decscusr, style, blinking) in [
+            (1, ffi::CURSOR_BLOCK, true),
+            (2, ffi::CURSOR_BLOCK, false),
+            (3, ffi::CURSOR_UNDERLINE, true),
+            (4, ffi::CURSOR_UNDERLINE, false),
+            (5, ffi::CURSOR_BAR, true),
+            (6, ffi::CURSOR_BAR, false),
+        ] {
+            engine.write(format!("\x1b[{decscusr} q").as_bytes());
+            assert_eq!(cursor(), (style, blinking), "DECSCUSR {decscusr}");
+        }
+        engine.write(b"\x1b[?12h");
+        assert_eq!(cursor(), (ffi::CURSOR_BAR, true));
+        engine.write(b"\x1b[?12l");
+        assert_eq!(cursor(), (ffi::CURSOR_BAR, false));
+
+        engine.write(b"\x1b[5 q\x1b[0 q");
+        assert_eq!(cursor(), (ffi::CURSOR_BLOCK, false));
+        engine.write(b"\x1b[3 q");
+        engine.reset();
+        assert_eq!(cursor(), (ffi::CURSOR_BLOCK, false));
     }
 
     /// A cell's cluster as a string; empty for an empty cell.
@@ -698,6 +1416,105 @@ mod tests {
         let y = frame.cell(0, 1).unwrap();
         assert_eq!(y.flags, 0);
         assert_eq!(y.has_bg, 0);
+    }
+
+    #[test]
+    fn sgr_5_and_6_set_blink_and_sgr_25_clears_it() {
+        let engine = engine();
+        engine.write(b"\x1b[5ma\x1b[25mb\x1b[6mc\x1b[25md\x1b[5;6me\x1b[0mf");
+        let frame = frame(&engine);
+        let blink = |col| frame.cell(0, col).unwrap().flags & ffi::CELL_BLINK != 0;
+        assert_eq!(
+            [0, 1, 2, 3, 4, 5].map(blink),
+            [true, false, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn a_frame_blinks_only_while_blinking_text_shows() {
+        let engine = engine();
+        engine.write(b"plain");
+        assert!(!frame(&engine).blinks());
+        engine.write(b"\x1b[5m  \x1b[8mhidden\x1b[0m");
+        assert!(!frame(&engine).blinks(), "nothing there changes");
+        engine.write(b"\x1b[6mx\x1b[0m");
+        assert!(frame(&engine).blinks());
+
+        // Scrolled out of the viewport, and back.
+        engine.write(&b"\r\n".repeat(10));
+        assert!(!frame(&engine).blinks());
+        engine.scroll(Scroll::Top);
+        assert!(frame(&engine).blinks());
+    }
+
+    #[test]
+    fn cells_left_past_a_shrunk_grid_do_not_blink() {
+        let engine = engine();
+        engine.write(b"\x1b[5;1H\x1b[5mx\x1b[0m");
+        let mut frame = frame(&engine);
+        assert!(frame.blinks());
+        engine.reset();
+        assert!(engine.resize(20, 2, 10, 20));
+        assert!(engine.snapshot(&mut frame));
+        assert!(!frame.blinks());
+    }
+
+    /// Each SGR underline form reaches the cell as its own style, and the
+    /// forms that turn it off export none.
+    #[test]
+    fn sgr_underline_styles_are_exported() {
+        let engine = engine();
+        engine.write(
+            b"\x1b[4ma\x1b[4:1mb\x1b[4:2mc\x1b[21md\x1b[4:3me\x1b[4:4mf\x1b[4:5mg\
+              \x1b[4:0mh\x1b[4:3mi\x1b[24mj\x1b[4:3mk\x1b[0ml",
+        );
+        let frame = frame(&engine);
+        let styles: Vec<u8> = (0..12)
+            .map(|col| frame.cell(0, col).unwrap().underline)
+            .collect();
+        assert_eq!(
+            styles,
+            [
+                ffi::UNDERLINE_SINGLE,
+                ffi::UNDERLINE_SINGLE,
+                ffi::UNDERLINE_DOUBLE,
+                ffi::UNDERLINE_DOUBLE,
+                ffi::UNDERLINE_CURLY,
+                ffi::UNDERLINE_DOTTED,
+                ffi::UNDERLINE_DASHED,
+                ffi::UNDERLINE_NONE,
+                ffi::UNDERLINE_CURLY,
+                ffi::UNDERLINE_NONE,
+                ffi::UNDERLINE_CURLY,
+                ffi::UNDERLINE_NONE,
+            ]
+        );
+    }
+
+    /// SGR 58 sets the underline color in each of its forms, a palette
+    /// index through the palette in effect, and SGR 59 and 0 drop it.
+    #[test]
+    fn sgr_underline_color_is_resolved_and_reset() {
+        let engine = engine();
+        engine.write(b"\x1b]4;1;rgb:12/34/56\x07");
+        engine.write(
+            b"\x1b[4ma\x1b[58;2;255;128;0mb\x1b[58:2::1:2:3mc\x1b[58;5;1md\x1b[58:5:1me\
+              \x1b[59mf\x1b[58;2;9;9;9mg\x1b[0mh",
+        );
+        let frame = frame(&engine);
+        let color = |col| {
+            let cell = frame.cell(0, col).unwrap();
+            (cell.underline_has_rgb != 0).then_some(cell.underline_rgb)
+        };
+        assert_eq!(color(0), None);
+        assert_eq!(color(1), Some([255, 128, 0]));
+        assert_eq!(color(2), Some([1, 2, 3]));
+        assert_eq!(color(3), Some([0x12, 0x34, 0x56]));
+        assert_eq!(color(4), Some([0x12, 0x34, 0x56]));
+        assert_eq!(color(5), None, "SGR 59");
+        assert_eq!(frame.cell(0, 5).unwrap().underline, ffi::UNDERLINE_SINGLE);
+        assert_eq!(color(6), Some([9, 9, 9]));
+        assert_eq!(color(7), None, "SGR 0");
     }
 
     fn rgb([r, g, b]: [u8; 3]) -> Rgb {
@@ -810,6 +1627,186 @@ mod tests {
             engine.write(b"\x1b]7;file://box/srv/my%20site\x07"),
             vec![Effect::Pwd("file://box/srv/my%20site".into())]
         );
+    }
+
+    fn clipboard(destination: ClipboardDestination, text: &str) -> Effect {
+        Effect::ClipboardWrite {
+            destination,
+            text: text.into(),
+        }
+    }
+
+    /// What the terminal answered, all replies in order.
+    fn replies(effects: &[Effect]) -> Vec<u8> {
+        effects
+            .iter()
+            .filter_map(|effect| match effect {
+                Effect::Pty(reply) => Some(reply.as_slice()),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn osc_52_writes_carry_their_destination_and_decoded_text() {
+        use ClipboardDestination::{Selection, System};
+        let engine = engine();
+        for (sequence, destination) in [
+            (&b"\x1b]52;c;aGVsbG8=\x07"[..], System),
+            (b"\x1b]52;c;aGVsbG8=\x1b\\", System),
+            (b"\x1b]52;;aGVsbG8=\x07", System),
+            (b"\x1b]52;p;aGVsbG8=\x07", Selection),
+            (b"\x1b]52;s;aGVsbG8=\x07", Selection),
+        ] {
+            assert_eq!(
+                engine.write(sequence),
+                vec![clipboard(destination, "hello")],
+                "{}",
+                sequence.escape_ascii()
+            );
+        }
+    }
+
+    #[test]
+    fn an_osc_52_write_may_span_reads_and_lack_its_padding() {
+        let engine = engine();
+        assert!(engine.write(b"\x1b]52;c;aGVs").is_empty());
+        assert_eq!(
+            engine.write(b"bG8\x07"),
+            vec![clipboard(ClipboardDestination::System, "hello")]
+        );
+    }
+
+    #[test]
+    fn utf_8_survives_an_osc_52_write() {
+        // "grüße ✓"
+        assert_eq!(
+            engine().write(b"\x1b]52;c;Z3LDvMOfZSDinJM=\x07"),
+            vec![clipboard(ClipboardDestination::System, "grüße ✓")]
+        );
+    }
+
+    #[test]
+    fn malformed_base64_writes_nothing_at_all() {
+        let engine = engine();
+        for payload in ["***", "SGVs!!!bG8=", "aGVs bG8="] {
+            let sequence = format!("\x1b]52;c;{payload}\x07");
+            assert!(engine.write(sequence.as_bytes()).is_empty(), "{payload:?}");
+        }
+    }
+
+    #[test]
+    fn a_control_byte_inside_the_sequence_never_reaches_the_decoder() {
+        assert_eq!(
+            engine().write(b"\x1b]52;c;aGVs\nbG8=\x07"),
+            vec![clipboard(ClipboardDestination::System, "hello")]
+        );
+    }
+
+    #[test]
+    fn a_write_that_is_not_text_writes_nothing_at_all() {
+        let engine = engine();
+        // A lone 0xff, then "a\0b", which GDK would cut at the NUL.
+        assert!(engine.write(b"\x1b]52;c;/w==\x07").is_empty());
+        assert!(engine.write(b"\x1b]52;c;YQBi\x07").is_empty());
+    }
+
+    #[test]
+    fn the_size_guard_takes_the_limit_and_refuses_past_it() {
+        let system = ClipboardDestination::System;
+        let at_limit = vec![b'a'; CLIPBOARD_MAX_BYTES];
+        assert!(clipboard_effect(system, &at_limit).is_some());
+        let over = vec![b'a'; CLIPBOARD_MAX_BYTES + 1];
+        assert_eq!(clipboard_effect(system, &over), None);
+    }
+
+    #[test]
+    fn a_large_write_arrives_whole_and_one_past_the_parser_drops() {
+        // "QUJD" is "ABC".
+        let sequence = |quads: usize| {
+            let mut bytes = b"\x1b]52;c;".to_vec();
+            bytes.extend(b"QUJD".repeat(quads));
+            bytes.push(0x07);
+            bytes
+        };
+        let engine = engine();
+        let quads = 5 * 1024 * 1024 / 3;
+        // Compared here, not by assert_eq!, which would print all of it.
+        let whole = clipboard(ClipboardDestination::System, &"ABC".repeat(quads));
+        assert!(engine.write(&sequence(quads)) == [whole]);
+        assert!(engine.write(&sequence(2 * 1024 * 1024 + 1)).is_empty());
+        // The parser recovers: the next write goes through.
+        assert_eq!(
+            engine.write(b"\x1b]52;c;aGVsbG8=\x07"),
+            vec![clipboard(ClipboardDestination::System, "hello")]
+        );
+    }
+
+    #[test]
+    fn a_clipboard_query_is_never_answered() {
+        let engine = engine();
+        for sequence in [
+            &b"\x1b]52;c;?\x07"[..],
+            b"\x1b]52;p;?\x07",
+            b"\x1b]52;s;?\x1b\\",
+        ] {
+            assert!(engine.write(sequence).is_empty());
+        }
+    }
+
+    #[test]
+    fn an_osc_52_clear_changes_nothing() {
+        assert!(engine().write(b"\x1b]52;c;\x07").is_empty());
+    }
+
+    #[test]
+    fn osc_1337_copy_shares_the_write_path() {
+        assert_eq!(
+            engine().write(b"\x1b]1337;Copy=:aVRlcm0y\x1b\\"),
+            vec![clipboard(ClipboardDestination::System, "iTerm2")]
+        );
+    }
+
+    /// `text/plain` as OSC 5522 spells a MIME type, then a transaction of
+    /// the given data packets and its commit.
+    fn kitty_write(engine: &Engine, packets: &[&str]) -> Vec<Effect> {
+        let mut effects = engine.write(b"\x1b]5522;type=write\x1b\\");
+        for packet in packets {
+            let packet = format!("\x1b]5522;type=wdata:mime=dGV4dC9wbGFpbg==;{packet}\x1b\\");
+            effects.extend(engine.write(packet.as_bytes()));
+        }
+        effects.extend(engine.write(b"\x1b]5522;type=wdata\x1b\\"));
+        effects
+    }
+
+    #[test]
+    fn kitty_clipboard_writes_stay_refused() {
+        let engine = engine();
+        for _ in 0..2 {
+            let effects = kitty_write(&engine, &["R2hvc3R0eQ=="]);
+            assert_eq!(
+                String::from_utf8_lossy(&replies(&effects)),
+                "\x1b]5522;type=write:status=EFBIG\x1b\\"
+            );
+            assert!(effects.iter().all(|e| matches!(e, Effect::Pty(_))));
+            // A reset does not lift it.
+            engine.reset();
+        }
+    }
+
+    #[test]
+    fn kitty_clipboard_writes_without_data_stay_refused() {
+        let engine = engine();
+        for packets in [&[][..], &[""]] {
+            let effects = kitty_write(&engine, packets);
+            assert_eq!(
+                String::from_utf8_lossy(&replies(&effects)),
+                "\x1b]5522;type=write:status=ENOSYS\x1b\\"
+            );
+            assert!(effects.iter().all(|e| matches!(e, Effect::Pty(_))));
+        }
     }
 
     #[test]
@@ -1055,7 +2052,13 @@ mod tests {
             height: 100,
             cell_w: 10,
             cell_h: 20,
-            any_pressed: u32::from(action != ffi::MOUSE_RELEASE && button == ffi::BUTTON_LEFT),
+            any_pressed: u32::from(
+                action != ffi::MOUSE_RELEASE
+                    && matches!(
+                        button,
+                        ffi::BUTTON_LEFT | ffi::BUTTON_MIDDLE | ffi::BUTTON_RIGHT
+                    ),
+            ),
         }
     }
 
@@ -1133,6 +2136,64 @@ mod tests {
     }
 
     #[test]
+    fn middle_and_right_buttons_report_press_drag_and_release() {
+        let engine = engine();
+        engine.write(b"\x1b[?1002h\x1b[?1006h");
+        // Button codes 1 and 2; motion adds 32.
+        for (button, press, drag, release) in [
+            (
+                ffi::BUTTON_MIDDLE,
+                &b"\x1b[<1;4;3M"[..],
+                &b"\x1b[<33;5;3M"[..],
+                &b"\x1b[<1;5;3m"[..],
+            ),
+            (
+                ffi::BUTTON_RIGHT,
+                b"\x1b[<2;4;3M",
+                b"\x1b[<34;5;3M",
+                b"\x1b[<2;5;3m",
+            ),
+        ] {
+            let event = mouse(ffi::MOUSE_PRESS, button, 0, (3, 2));
+            assert_eq!(engine.encode_mouse(&event), press);
+            let event = mouse(ffi::MOUSE_MOTION, button, 0, (4, 2));
+            assert_eq!(engine.encode_mouse(&event), drag);
+            let event = mouse(ffi::MOUSE_RELEASE, button, 0, (4, 2));
+            assert_eq!(engine.encode_mouse(&event), release);
+        }
+    }
+
+    #[test]
+    fn a_held_button_reports_motion_past_the_widget() {
+        let engine = engine();
+        engine.write(b"\x1b[?1002h\x1b[?1006h");
+        for (button, drag) in [
+            (ffi::BUTTON_MIDDLE, &b"\x1b[<33;1;1M"[..]),
+            (ffi::BUTTON_RIGHT, b"\x1b[<34;1;1M"),
+        ] {
+            let mut event = mouse(ffi::MOUSE_MOTION, button, 0, (0, 0));
+            (event.x, event.y) = (-5.0, -5.0);
+            assert_eq!(engine.encode_mouse(&event), drag);
+            event.any_pressed = 0;
+            assert_eq!(engine.encode_mouse(&event), b"", "no button held");
+        }
+    }
+
+    #[test]
+    fn the_horizontal_wheel_is_buttons_six_and_seven() {
+        let engine = engine();
+        engine.write(b"\x1b[?1000h\x1b[?1006h");
+        let left = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_LEFT, 0, (0, 0));
+        let right = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_RIGHT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&left), b"\x1b[<66;1;1M");
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[<67;1;1M");
+        // 32 + 66 and 32 + 67 in the byte format.
+        engine.write(b"\x1b[?1006l");
+        assert_eq!(engine.encode_mouse(&left), b"\x1b[Mb!!");
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[Mc!!");
+    }
+
+    #[test]
     fn without_sgr_the_mouse_uses_the_x10_byte_format() {
         let engine = engine();
         engine.write(b"\x1b[?1000h");
@@ -1141,6 +2202,12 @@ mod tests {
         assert_eq!(engine.encode_mouse(&press), b"\x1b[M $#");
         // Legacy releases do not say which button: code 3.
         let release = mouse(ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&release), b"\x1b[M#$#");
+        let middle = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_MIDDLE, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&middle), b"\x1b[M!$#");
+        let right = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_RIGHT, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[M\"$#");
+        let release = mouse(ffi::MOUSE_RELEASE, ffi::BUTTON_RIGHT, 0, (3, 2));
         assert_eq!(engine.encode_mouse(&release), b"\x1b[M#$#");
     }
 
@@ -1156,6 +2223,12 @@ mod tests {
         assert_eq!(engine.encode_mouse(&release), b"");
         let wheel = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_UP, 0, (0, 0));
         assert_eq!(engine.encode_mouse(&wheel), b"");
+        let wheel = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_LEFT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&wheel), b"");
+        let middle = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_MIDDLE, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&middle), b"\x1b[M!!!");
+        let right = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_RIGHT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[M\"!!");
     }
 
     #[test]
