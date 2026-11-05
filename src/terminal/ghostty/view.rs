@@ -555,6 +555,13 @@ impl GhosttyView {
             self.queue_draw();
             return true;
         }
+        if select_output_key(keyval, state) {
+            if shared.engine.select_output() {
+                self.copy_primary();
+                self.queue_draw();
+            }
+            return true;
+        }
         let mods = mods(state);
         let text: String = keyval
             .to_unicode()
@@ -906,15 +913,32 @@ fn wheel_rows(carry: f64, dy: f64, unit: gdk::ScrollUnit, cell_h: i32) -> (isize
     (whole as isize, total - whole)
 }
 
-/// Shift+PageUp/PageDown scroll a page of `rows`, Shift+Home/End to the
-/// top/bottom, as VTE does; other modifiers let the key reach the remote.
-fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<Scroll> {
-    let mods = state
+/// The modifiers a local key is told apart by; Caps Lock does not count.
+fn key_mods(state: gdk::ModifierType) -> gdk::ModifierType {
+    state
         & (gdk::ModifierType::SHIFT_MASK
             | gdk::ModifierType::CONTROL_MASK
             | gdk::ModifierType::ALT_MASK
-            | gdk::ModifierType::SUPER_MASK);
-    if mods != gdk::ModifierType::SHIFT_MASK {
+            | gdk::ModifierType::SUPER_MASK)
+}
+
+fn ctrl_shift(state: gdk::ModifierType) -> bool {
+    key_mods(state) == gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK
+}
+
+/// Shift+PageUp/PageDown scroll a page of `rows`, Shift+Home/End to the
+/// top/bottom, as VTE does, and Ctrl+Shift+Up/Down to the previous/next
+/// shell prompt, as Ghostty does; other modifiers let the key reach the
+/// remote.
+fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<Scroll> {
+    if ctrl_shift(state) {
+        return match keyval {
+            gdk::Key::Up => Some(Scroll::Prompts(-1)),
+            gdk::Key::Down => Some(Scroll::Prompts(1)),
+            _ => None,
+        };
+    }
+    if key_mods(state) != gdk::ModifierType::SHIFT_MASK {
         return None;
     }
     let page = isize::try_from(rows.max(1)).unwrap_or(isize::MAX);
@@ -925,6 +949,11 @@ fn scroll_key(keyval: gdk::Key, state: gdk::ModifierType, rows: u16) -> Option<S
         gdk::Key::End => Some(Scroll::Bottom),
         _ => None,
     }
+}
+
+/// Ctrl+Shift+O selects a command's output.
+fn select_output_key(keyval: gdk::Key, state: gdk::ModifierType) -> bool {
+    ctrl_shift(state) && matches!(keyval, gdk::Key::O | gdk::Key::o)
 }
 
 /// Per viewport cell, row-major: `Some(current)` where a search match is
@@ -1094,6 +1123,32 @@ mod tests {
         );
         let ctrl_shift = shift | gdk::ModifierType::CONTROL_MASK;
         assert_eq!(scroll_key(gdk::Key::Page_Up, ctrl_shift, 24), None);
+    }
+
+    #[test]
+    fn ctrl_shift_keys_reach_prompts_and_others_pass_through() {
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let alt = gdk::ModifierType::ALT_MASK;
+        let lock = gdk::ModifierType::LOCK_MASK;
+        let up = |state| scroll_key(gdk::Key::Up, state, 24);
+        assert_eq!(up(ctrl | shift), Some(Scroll::Prompts(-1)));
+        assert_eq!(up(ctrl | shift | lock), Some(Scroll::Prompts(-1)));
+        assert_eq!(
+            scroll_key(gdk::Key::Down, ctrl | shift, 24),
+            Some(Scroll::Prompts(1))
+        );
+        for state in [gdk::ModifierType::empty(), shift, ctrl, ctrl | shift | alt] {
+            assert_eq!(up(state), None, "{state:?}");
+        }
+
+        assert!(select_output_key(gdk::Key::O, ctrl | shift));
+        // Caps Lock turns the letter back to lower case.
+        assert!(select_output_key(gdk::Key::o, ctrl | shift | lock));
+        assert!(!select_output_key(gdk::Key::O, shift));
+        assert!(!select_output_key(gdk::Key::o, ctrl));
+        assert!(!select_output_key(gdk::Key::O, ctrl | shift | alt));
+        assert!(!select_output_key(gdk::Key::P, ctrl | shift));
     }
 
     #[test]
@@ -1289,6 +1344,7 @@ mod ghostty_display {
         shell_watchers(&backend, &view);
         search_highlight(&backend, &view);
         primary_selection(&backend, &view, &mut rx);
+        shell_marks(&backend, &view, &mut rx);
         window.close();
 
         // The factory follows the installed preference; VTE is the default.
@@ -1547,6 +1603,68 @@ mod ghostty_display {
         assert_eq!(backend.selected_text().as_deref(), Some("beta"));
         backend.write(b"\x1b[?1000l");
         while rx.try_recv().is_ok() {}
+    }
+
+    /// The prompt keys jump between OSC 133 prompts and select a command's
+    /// output, reaching PRIMARY; none of them reaches the remote side, and
+    /// without marks they do nothing.
+    fn shell_marks(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let keys = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
+        let context = glib::MainContext::default();
+        let primary = || {
+            let read = view.primary_clipboard().read_text_future();
+            context.block_on(read).unwrap().map(String::from)
+        };
+        let top_row = || {
+            let mut frame = Frame::default();
+            assert!(view.shared().unwrap().engine.snapshot(&mut frame));
+            frame.row_text(0).trim_end().to_string()
+        };
+        while rx.try_recv().is_ok() {}
+
+        backend.reset();
+        view.primary_clipboard().set_text("before");
+        backend.write(b"plain\r\nbash");
+        assert!(view.key(gdk::Key::O, keys));
+        assert!(view.key(gdk::Key::Up, keys));
+        assert_eq!(backend.selected_text(), None);
+        assert_eq!(top_row(), "plain");
+        assert_eq!(primary().as_deref(), Some("before"));
+
+        backend.reset();
+        let (_, rows) = view.shared().unwrap().engine.size();
+        for command in ["first", "second"] {
+            backend.write(format!("\x1b]133;A\x07$ \x1b]133;B\x07{command}\r\n").as_bytes());
+            backend.write(b"\x1b]133;C\x07");
+            for line in 0..rows {
+                backend.write(format!("{command} {line}\r\n").as_bytes());
+            }
+            backend.write(b"\x1b]133;D;0\x07");
+        }
+        backend.write(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        assert!(view.key(gdk::Key::Up, keys));
+        assert_eq!(top_row(), "$ second");
+        assert!(view.key(gdk::Key::Up, keys));
+        assert_eq!(top_row(), "$ first");
+        assert!(view.key(gdk::Key::Down, keys));
+        assert_eq!(top_row(), "$ second");
+
+        assert!(view.key(gdk::Key::O, keys));
+        let selected = backend.selected_text().expect("the command's output");
+        assert!(selected.starts_with("second 0\n"), "{selected:?}");
+        assert_eq!(primary().as_deref(), Some(selected.as_str()));
+
+        // The keys are local: the selection survives and nothing is sent.
+        assert!(
+            !std::iter::from_fn(|| rx.try_recv().ok())
+                .any(|e| matches!(e, TerminalEvent::DataOut(_))),
+            "prompt keys stay local"
+        );
+        backend.reset();
     }
 
     /// Search lights its matches and the current one apart, under the

@@ -165,6 +165,7 @@ extern "C" {
         len: *mut usize,
     ) -> c_int;
     pub fn wt_ghostty_select_all(g: *mut WtGhostty) -> c_int;
+    pub fn wt_ghostty_select_output(g: *mut WtGhostty) -> c_int;
     pub fn wt_ghostty_clear_selection(g: *mut WtGhostty);
     pub fn wt_ghostty_selection_press(
         g: *mut WtGhostty,
