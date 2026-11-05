@@ -100,7 +100,11 @@ struct Harness {
     transport_tx: mpsc::Sender<TransportEvent>,
     term_tx: mpsc::Sender<TerminalEvent>,
     backend: FakeBackend,
+    notifications: mpsc::Receiver<Notification>,
 }
+
+/// Small, so a test can fill it.
+const NOTIFICATION_QUEUE: usize = 2;
 
 fn harness(fail_connect: bool) -> Harness {
     let ctx = glib::MainContext::new();
@@ -118,11 +122,13 @@ fn harness(fail_connect: bool) -> Harness {
         backend: Arc::new(backend.clone()),
         events,
     };
+    let (notify_tx, notifications) = mpsc::channel(NOTIFICATION_QUEUE);
     let (tab, state_rx) = TerminalTab::wire(
         Box::new(transport),
         transport_tx.clone(),
         event_rx,
         terminal,
+        notify_tx,
         &ctx,
     );
     Harness {
@@ -133,6 +139,7 @@ fn harness(fail_connect: bool) -> Harness {
         transport_tx,
         term_tx,
         backend,
+        notifications,
     }
 }
 
@@ -170,6 +177,55 @@ async fn pump_forwards_keystrokes_and_resizes_to_the_transport() {
     assert_eq!(h.calls.resizes(), vec![(40, 120)]);
     h.tab.close().await;
     assert_eq!(h.calls.disconnects(), 1);
+}
+
+fn notification(body: &str) -> TerminalEvent {
+    TerminalEvent::Notification {
+        title: "title".into(),
+        body: body.into(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pump_hands_notifications_over_and_sends_them_nowhere_else() {
+    let mut h = harness(false);
+    h.term_tx.try_send(notification("done")).unwrap();
+    h.term_tx
+        .try_send(TerminalEvent::DataOut(b"ls\r".to_vec()))
+        .unwrap();
+    drive(&h.ctx, "transport.write", || !h.calls.writes().is_empty());
+    assert_eq!(
+        h.notifications.try_recv(),
+        Ok(("title".to_string(), "done".to_string()))
+    );
+    assert_eq!(h.calls.writes(), vec![b"ls\r".to_vec()]);
+    h.tab.close().await;
+}
+
+/// A remote flood fills the queue and is shed: keystrokes behind it still
+/// reach the transport, with nothing draining the notifications.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_notification_queue_never_blocks_the_pump() {
+    let mut h = harness(false);
+    for n in 0..NOTIFICATION_QUEUE + 3 {
+        h.term_tx.try_send(notification(&n.to_string())).unwrap();
+    }
+    h.term_tx
+        .try_send(TerminalEvent::DataOut(b"ls\r".to_vec()))
+        .unwrap();
+    drive(&h.ctx, "transport.write", || !h.calls.writes().is_empty());
+    let queued = std::iter::from_fn(|| h.notifications.try_recv().ok()).count();
+    assert_eq!(queued, NOTIFICATION_QUEUE);
+    h.tab.close().await;
+}
+
+/// The drain on the other end ends with the tab.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closing_the_tab_ends_the_notification_channel() {
+    let mut h = harness(false);
+    drive(&h.ctx, "transport.connect", || h.calls.connects() == 1);
+    h.tab.close().await;
+    assert_eq!(h.notifications.recv().await, None);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -42,6 +42,71 @@ fn disconnect_notification_ids_are_stable_per_session() {
     assert_ne!(a.notification_id, c.notification_id);
 }
 
+#[test]
+fn terminal_alert_keeps_a_programs_title_and_body() {
+    let alert = tray::terminal_alert(7, "prod-web", "CI", "all green").expect("an alert");
+    assert_eq!(alert.title, "CI");
+    assert_eq!(alert.body, "all green");
+}
+
+/// OSC 9 has no title: the session names where the message came from.
+#[test]
+fn terminal_alert_without_a_title_falls_back_to_the_session() {
+    let alert = tray::terminal_alert(7, "prod-web", "", "done").expect("an alert");
+    assert_eq!(alert.title, "prod-web");
+    assert_eq!(alert.body, "done");
+    let blank = tray::terminal_alert(7, "prod-web", " \t", "done").expect("an alert");
+    assert_eq!(blank.title, "prod-web");
+}
+
+/// The text is the remote side's: glib panics on a NUL in a debug build
+/// and cuts the string there in a release one.
+#[test]
+fn terminal_alert_strips_control_characters() {
+    let alert = tray::terminal_alert(7, "s", "a\0b\x1b[31m", "x\ny\0z\u{9b}").expect("an alert");
+    assert_eq!(alert.title, "ab[31m");
+    assert_eq!(alert.body, "xyz");
+}
+
+#[test]
+fn terminal_alert_with_nothing_to_say_is_dropped() {
+    assert_eq!(tray::terminal_alert(7, "prod-web", "", ""), None);
+    assert_eq!(tray::terminal_alert(7, "prod-web", " ", "\0\x07 "), None);
+}
+
+#[test]
+fn terminal_notification_ids_are_stable_per_tab() {
+    let alert = |tab, body| tray::terminal_alert(tab, "s", "", body).unwrap();
+    assert_eq!(alert(1, "a").notification_id, alert(1, "b").notification_id);
+    assert_ne!(alert(1, "a").notification_id, alert(2, "a").notification_id);
+    assert_ne!(
+        alert(1, "a").notification_id,
+        tray::disconnect_alert("s").notification_id
+    );
+}
+
+/// Only a tab the user is looking at stays quiet.
+#[test]
+fn notifications_skip_only_the_tab_in_view() {
+    assert!(!tray::should_notify(true, true));
+    assert!(tray::should_notify(true, false));
+    assert!(tray::should_notify(false, true));
+    assert!(tray::should_notify(false, false));
+}
+
+#[test]
+fn notification_limit_lets_one_through_per_interval() {
+    let mut limit = tray::NotificationLimit::default();
+    let start = std::time::Instant::now();
+    assert!(limit.allow(start));
+    assert!(!limit.allow(start));
+    let almost = tray::NOTIFICATION_INTERVAL - std::time::Duration::from_millis(1);
+    assert!(!limit.allow(start + almost));
+    // A refused one does not push the window back.
+    assert!(limit.allow(start + tray::NOTIFICATION_INTERVAL));
+    assert!(!limit.allow(start + tray::NOTIFICATION_INTERVAL));
+}
+
 // --- minimize-to-tray setting logic -----------------------------------------
 
 #[test]

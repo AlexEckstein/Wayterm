@@ -1190,6 +1190,22 @@ mod ghostty_display {
     use std::ops::Range;
     use tokio::sync::mpsc;
 
+    /// OSC 9 and OSC 777 written to a live backend come out as events, and
+    /// paint nothing on the grid.
+    fn notifications(backend: &GhosttyBackend, rx: &mut mpsc::Receiver<TerminalEvent>) {
+        backend.reset();
+        while rx.try_recv().is_ok() {}
+        backend.write(b"\x1b]9;done\x1b\\\x1b]777;notify;CI;green\x07");
+        let notification = |title: &str, body: &str| TerminalEvent::Notification {
+            title: title.into(),
+            body: body.into(),
+        };
+        assert_eq!(rx.try_recv(), Ok(notification("", "done")));
+        assert_eq!(rx.try_recv(), Ok(notification("CI", "green")));
+        let text = backend.scrollback_text().unwrap_or_default();
+        assert!(text.trim().is_empty(), "{text:?}");
+    }
+
     /// The view paints a frame, reports its grid once allocated, and turns
     /// a key press into `DataOut`.
     #[test]
@@ -1283,6 +1299,7 @@ mod ghostty_display {
             rx.try_recv().unwrap(),
             TerminalEvent::DataOut(b"ls\r".to_vec())
         );
+        notifications(&backend, &mut rx);
         mouse_routing(&backend, &view, &mut rx);
         glyphs_on_the_grid(&backend, &view);
         clusters_shape_whole(&backend, &view);
