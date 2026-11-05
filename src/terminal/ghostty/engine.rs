@@ -1041,7 +1041,13 @@ mod tests {
             height: 100,
             cell_w: 10,
             cell_h: 20,
-            any_pressed: u32::from(action != ffi::MOUSE_RELEASE && button == ffi::BUTTON_LEFT),
+            any_pressed: u32::from(
+                action != ffi::MOUSE_RELEASE
+                    && matches!(
+                        button,
+                        ffi::BUTTON_LEFT | ffi::BUTTON_MIDDLE | ffi::BUTTON_RIGHT
+                    ),
+            ),
         }
     }
 
@@ -1119,6 +1125,64 @@ mod tests {
     }
 
     #[test]
+    fn middle_and_right_buttons_report_press_drag_and_release() {
+        let engine = engine();
+        engine.write(b"\x1b[?1002h\x1b[?1006h");
+        // Button codes 1 and 2; motion adds 32.
+        for (button, press, drag, release) in [
+            (
+                ffi::BUTTON_MIDDLE,
+                &b"\x1b[<1;4;3M"[..],
+                &b"\x1b[<33;5;3M"[..],
+                &b"\x1b[<1;5;3m"[..],
+            ),
+            (
+                ffi::BUTTON_RIGHT,
+                b"\x1b[<2;4;3M",
+                b"\x1b[<34;5;3M",
+                b"\x1b[<2;5;3m",
+            ),
+        ] {
+            let event = mouse(ffi::MOUSE_PRESS, button, 0, (3, 2));
+            assert_eq!(engine.encode_mouse(&event), press);
+            let event = mouse(ffi::MOUSE_MOTION, button, 0, (4, 2));
+            assert_eq!(engine.encode_mouse(&event), drag);
+            let event = mouse(ffi::MOUSE_RELEASE, button, 0, (4, 2));
+            assert_eq!(engine.encode_mouse(&event), release);
+        }
+    }
+
+    #[test]
+    fn a_held_button_reports_motion_past_the_widget() {
+        let engine = engine();
+        engine.write(b"\x1b[?1002h\x1b[?1006h");
+        for (button, drag) in [
+            (ffi::BUTTON_MIDDLE, &b"\x1b[<33;1;1M"[..]),
+            (ffi::BUTTON_RIGHT, b"\x1b[<34;1;1M"),
+        ] {
+            let mut event = mouse(ffi::MOUSE_MOTION, button, 0, (0, 0));
+            (event.x, event.y) = (-5.0, -5.0);
+            assert_eq!(engine.encode_mouse(&event), drag);
+            event.any_pressed = 0;
+            assert_eq!(engine.encode_mouse(&event), b"", "no button held");
+        }
+    }
+
+    #[test]
+    fn the_horizontal_wheel_is_buttons_six_and_seven() {
+        let engine = engine();
+        engine.write(b"\x1b[?1000h\x1b[?1006h");
+        let left = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_LEFT, 0, (0, 0));
+        let right = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_RIGHT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&left), b"\x1b[<66;1;1M");
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[<67;1;1M");
+        // 32 + 66 and 32 + 67 in the byte format.
+        engine.write(b"\x1b[?1006l");
+        assert_eq!(engine.encode_mouse(&left), b"\x1b[Mb!!");
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[Mc!!");
+    }
+
+    #[test]
     fn without_sgr_the_mouse_uses_the_x10_byte_format() {
         let engine = engine();
         engine.write(b"\x1b[?1000h");
@@ -1127,6 +1191,12 @@ mod tests {
         assert_eq!(engine.encode_mouse(&press), b"\x1b[M $#");
         // Legacy releases do not say which button: code 3.
         let release = mouse(ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&release), b"\x1b[M#$#");
+        let middle = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_MIDDLE, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&middle), b"\x1b[M!$#");
+        let right = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_RIGHT, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[M\"$#");
+        let release = mouse(ffi::MOUSE_RELEASE, ffi::BUTTON_RIGHT, 0, (3, 2));
         assert_eq!(engine.encode_mouse(&release), b"\x1b[M#$#");
     }
 
@@ -1142,6 +1212,12 @@ mod tests {
         assert_eq!(engine.encode_mouse(&release), b"");
         let wheel = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_UP, 0, (0, 0));
         assert_eq!(engine.encode_mouse(&wheel), b"");
+        let wheel = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_LEFT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&wheel), b"");
+        let middle = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_MIDDLE, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&middle), b"\x1b[M!!!");
+        let right = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_RIGHT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[M\"!!");
     }
 
     #[test]

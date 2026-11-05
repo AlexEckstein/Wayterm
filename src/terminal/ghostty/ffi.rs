@@ -42,8 +42,12 @@ pub const MOUSE_MOTION: u32 = 2;
 
 pub const BUTTON_NONE: u32 = 0;
 pub const BUTTON_LEFT: u32 = 1;
+pub const BUTTON_RIGHT: u32 = 2;
+pub const BUTTON_MIDDLE: u32 = 3;
 pub const BUTTON_WHEEL_UP: u32 = 4;
 pub const BUTTON_WHEEL_DOWN: u32 = 5;
+pub const BUTTON_WHEEL_LEFT: u32 = 6;
+pub const BUTTON_WHEEL_RIGHT: u32 = 7;
 
 /// One grid cell, colors resolved to RGB.
 #[repr(C)]

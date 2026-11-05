@@ -54,8 +54,12 @@ typedef struct {
 #define WT_MOUSE_MOTION 2
 #define WT_BUTTON_NONE 0
 #define WT_BUTTON_LEFT 1
+#define WT_BUTTON_RIGHT 2
+#define WT_BUTTON_MIDDLE 3
 #define WT_BUTTON_WHEEL_UP 4
 #define WT_BUTTON_WHEEL_DOWN 5
+#define WT_BUTTON_WHEEL_LEFT 6
+#define WT_BUTTON_WHEEL_RIGHT 7
 
 /* One mouse event for wt_ghostty_encode_mouse. */
 typedef struct {
@@ -823,11 +827,24 @@ int wt_ghostty_encode_mouse(WtGhostty *g, const WtMouse *mouse, char *out,
     case WT_BUTTON_LEFT:
       ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_LEFT);
       break;
+    case WT_BUTTON_RIGHT:
+      ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_RIGHT);
+      break;
+    case WT_BUTTON_MIDDLE:
+      ghostty_mouse_event_set_button(g->mouse_event,
+                                     GHOSTTY_MOUSE_BUTTON_MIDDLE);
+      break;
     case WT_BUTTON_WHEEL_UP:
       ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_FOUR);
       break;
     case WT_BUTTON_WHEEL_DOWN:
       ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_FIVE);
+      break;
+    case WT_BUTTON_WHEEL_LEFT:
+      ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_SIX);
+      break;
+    case WT_BUTTON_WHEEL_RIGHT:
+      ghostty_mouse_event_set_button(g->mouse_event, GHOSTTY_MOUSE_BUTTON_SEVEN);
       break;
     default: ghostty_mouse_event_clear_button(g->mouse_event); break;
   }

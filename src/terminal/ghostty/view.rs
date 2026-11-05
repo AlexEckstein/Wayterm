@@ -14,11 +14,12 @@
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
 //! PageDown/Home/End scroll the viewport as in VTE. Mouse events go where
 //! [`route`] says: to the program through the mouse encoder while it
-//! tracks the mouse, as arrow keys for the wheel under alternate scroll,
-//! else local, where a primary-button drag selects (by word after a double
-//! click, by line after a triple), a finished selection goes to PRIMARY, a
-//! middle click pastes PRIMARY, and the wheel scrolls the viewport three
-//! rows per notch (smooth steps accumulate). Shift keeps them local. Focus
+//! tracks the mouse (every button, and the wheel on both axes), as arrow
+//! keys for the wheel under alternate scroll, else local, where a
+//! primary-button drag selects (by word after a double click, by line after
+//! a triple), a finished selection goes to PRIMARY, a middle click pastes
+//! PRIMARY, and the wheel scrolls the viewport three rows per notch (smooth
+//! steps accumulate). Shift keeps them local. Focus
 //! changes are reported when the program asks. A press or a typed key ends
 //! the search, as it clears the selection.
 
@@ -70,8 +71,13 @@ mod imp {
         pub(super) reported: Cell<Option<(u16, u16)>>,
         /// Wheel rows not yet scrolled; see [`super::wheel_rows`].
         pub(super) wheel_carry: Cell<f64>,
+        /// The same for the sideways wheel, in columns.
+        pub(super) wheel_carry_x: Cell<f64>,
         /// Where the primary-button drag in progress goes.
         pub(super) drag: Cell<Option<super::Route>>,
+        /// Where the middle and right buttons' drags in progress go.
+        pub(super) middle_drag: Cell<Option<super::Route>>,
+        pub(super) right_drag: Cell<Option<super::Route>>,
         /// The last pointer position, for wheel reports.
         pub(super) pointer: Cell<(f64, f64)>,
         /// The cell of the last reported motion, so each cell is sent once.
@@ -293,8 +299,9 @@ impl GhosttyView {
         });
         let view = self.downgrade();
         drag.connect_drag_end(move |drag, dx, dy| {
-            if let (Some(view), Some((x, y))) = (view.upgrade(), drag.start_point()) {
-                view.release(drag.current_event_state(), (x + dx, y + dy));
+            if let Some(view) = view.upgrade() {
+                let at = view.drag_end_point(drag, dx, dy);
+                view.release(drag.current_event_state(), at);
             }
         });
         self.add_controller(drag);
@@ -309,6 +316,34 @@ impl GhosttyView {
             }
         });
         self.add_controller(middle);
+
+        for (gdk_button, button) in [
+            (gdk::BUTTON_MIDDLE, ffi::BUTTON_MIDDLE),
+            (gdk::BUTTON_SECONDARY, ffi::BUTTON_RIGHT),
+        ] {
+            let drag = gtk4::GestureDrag::new();
+            drag.set_button(gdk_button);
+            let view = self.downgrade();
+            drag.connect_drag_begin(move |drag, x, y| {
+                if let Some(view) = view.upgrade() {
+                    view.button_press(button, drag.current_event_state(), (x, y));
+                }
+            });
+            let view = self.downgrade();
+            drag.connect_drag_update(move |drag, dx, dy| {
+                if let (Some(view), Some((x, y))) = (view.upgrade(), drag.start_point()) {
+                    view.button_drag(button, drag.current_event_state(), (x + dx, y + dy));
+                }
+            });
+            let view = self.downgrade();
+            drag.connect_drag_end(move |drag, dx, dy| {
+                if let Some(view) = view.upgrade() {
+                    let at = view.drag_end_point(drag, dx, dy);
+                    view.button_release(button, drag.current_event_state(), at);
+                }
+            });
+            self.add_controller(drag);
+        }
 
         let motion = gtk4::EventControllerMotion::new();
         let view = self.downgrade();
@@ -334,14 +369,20 @@ impl GhosttyView {
         });
         self.add_controller(focus);
 
-        let wheel = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+        let wheel = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::BOTH_AXES);
         let view = self.downgrade();
-        wheel.connect_scroll(move |wheel, _, dy| {
+        wheel.connect_scroll(move |wheel, dx, dy| {
             let Some(view) = view.upgrade() else {
                 return glib::Propagation::Proceed;
             };
-            view.wheel(dy, wheel.unit(), wheel.current_event_state());
-            glib::Propagation::Stop
+            let (unit, state) = (wheel.unit(), wheel.current_event_state());
+            let reported = view.wheel_sideways(dx, unit, state);
+            view.wheel(dy, unit, state);
+            if reported || dy != 0.0 {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
         });
         self.add_controller(wheel);
     }
@@ -404,6 +445,64 @@ impl GhosttyView {
         }
     }
 
+    /// Where a drag ended. A second button down resets the gesture, which
+    /// ends the drag with its start point already gone: the pointer's then.
+    fn drag_end_point(&self, drag: &gtk4::GestureDrag, dx: f64, dy: f64) -> (f64, f64) {
+        drag.start_point()
+            .map_or(self.imp().pointer.get(), |(x, y)| (x + dx, y + dy))
+    }
+
+    /// Where the middle or right button's drag in progress goes.
+    fn button_route(&self, button: u32) -> &Cell<Option<Route>> {
+        let imp = self.imp();
+        if button == ffi::BUTTON_MIDDLE {
+            &imp.middle_drag
+        } else {
+            &imp.right_drag
+        }
+    }
+
+    /// Whether any button is down.
+    fn button_held(&self) -> bool {
+        let imp = self.imp();
+        [&imp.drag, &imp.middle_drag, &imp.right_drag]
+            .iter()
+            .any(|drag| drag.get().is_some())
+    }
+
+    /// Middle or right button down at `at`: report it, as for the primary.
+    /// The whole drag goes the same way; a local one does nothing here.
+    fn button_press(&self, button: u32, state: gdk::ModifierType, at: (f64, f64)) {
+        let Some(shared) = self.shared() else { return };
+        let route = route(shared.engine.mouse_modes(), state, false);
+        self.button_route(button).set(Some(route));
+        self.imp().pointer.set(at);
+        if route == Route::Report {
+            self.grab_focus();
+            shared.engine.clear_selection();
+            shared.engine.clear_search();
+            shared.engine.selection_cancel();
+            self.report(&shared, ffi::MOUSE_PRESS, button, state, at);
+        }
+    }
+
+    /// The middle or right button dragged to `at`.
+    fn button_drag(&self, button: u32, state: gdk::ModifierType, at: (f64, f64)) {
+        let Some(shared) = self.shared() else { return };
+        self.imp().pointer.set(at);
+        if self.button_route(button).get() == Some(Route::Report) {
+            self.report_motion(&shared, button, state, at);
+        }
+    }
+
+    /// The middle or right button released at `at`.
+    fn button_release(&self, button: u32, state: gdk::ModifierType, at: (f64, f64)) {
+        let Some(shared) = self.shared() else { return };
+        if self.button_route(button).take() == Some(Route::Report) {
+            self.report(&shared, ffi::MOUSE_RELEASE, button, state, at);
+        }
+    }
+
     /// Put the selection on PRIMARY; without one, PRIMARY keeps its text.
     pub(super) fn copy_primary(&self) {
         let text = self.shared().and_then(|s| s.engine.selection_text());
@@ -440,8 +539,7 @@ impl GhosttyView {
         let imp = self.imp();
         imp.pointer.set(at);
         let Some(shared) = self.shared() else { return };
-        if imp.drag.get().is_none()
-            && route(shared.engine.mouse_modes(), state, false) == Route::Report
+        if !self.button_held() && route(shared.engine.mouse_modes(), state, false) == Route::Report
         {
             self.report_motion(&shared, ffi::BUTTON_NONE, state, at);
         }
@@ -475,14 +573,7 @@ impl GhosttyView {
                 } else {
                     ffi::BUTTON_WHEEL_DOWN
                 };
-                let at = self.imp().pointer.get();
-                let event = self.mouse_event(ffi::MOUSE_PRESS, button, state, at);
-                let report = shared.engine.encode_mouse(&event);
-                // One report per chunk, as VTE sends them: the macro
-                // recorder skips reports chunk by chunk (doc 12).
-                for _ in 0..count {
-                    shared.input(report.clone());
-                }
+                self.report_wheel(&shared, button, count, state);
             }
             Route::Arrows => {
                 let keysym = if rows < 0 { ARROW_UP } else { ARROW_DOWN };
@@ -490,6 +581,41 @@ impl GhosttyView {
             }
         }
         self.queue_draw();
+    }
+
+    /// One sideways wheel event: columns of it go to a tracking program as
+    /// wheel buttons. Nothing local scrolls sideways, so `false` leaves the
+    /// event to whatever sits above the view.
+    fn wheel_sideways(&self, dx: f64, unit: gdk::ScrollUnit, state: gdk::ModifierType) -> bool {
+        let Some(shared) = self.shared() else {
+            return false;
+        };
+        if route(shared.engine.mouse_modes(), state, true) != Route::Report {
+            return false;
+        }
+        let (cell_w, _) = self.cell_size();
+        let carry = &self.imp().wheel_carry_x;
+        let (cols, rest) = wheel_rows(carry.get(), dx, unit, cell_w);
+        carry.set(rest);
+        let button = if cols < 0 {
+            ffi::BUTTON_WHEEL_LEFT
+        } else {
+            ffi::BUTTON_WHEEL_RIGHT
+        };
+        self.report_wheel(&shared, button, cols.unsigned_abs(), state);
+        true
+    }
+
+    /// Send `count` presses of a wheel button to the program.
+    fn report_wheel(&self, shared: &Shared, button: u32, count: usize, state: gdk::ModifierType) {
+        let at = self.imp().pointer.get();
+        let event = self.mouse_event(ffi::MOUSE_PRESS, button, state, at);
+        let report = shared.engine.encode_mouse(&event);
+        // One report per chunk, as VTE sends them: the macro recorder
+        // skips reports chunk by chunk (doc 12).
+        for _ in 0..count {
+            shared.input(report.clone());
+        }
     }
 
     /// A mouse event at widget pixels `at`, with the grid's geometry.
@@ -511,7 +637,7 @@ impl GhosttyView {
             height: px(self.height()),
             cell_w: px(cell_w),
             cell_h: px(cell_h),
-            any_pressed: u32::from(action != ffi::MOUSE_RELEASE && button == ffi::BUTTON_LEFT),
+            any_pressed: u32::from(self.button_held()),
         }
     }
 
@@ -892,13 +1018,14 @@ fn mods(state: gdk::ModifierType) -> u32 {
     .fold(0, |mods, (_, bit)| mods | bit)
 }
 
-/// Rows to scroll for one wheel event, and the fraction left for the next.
-/// High-resolution wheels and touchpads send many steps smaller than a row,
-/// so each one only adds to `carry`; reversing direction drops it.
-fn wheel_rows(carry: f64, dy: f64, unit: gdk::ScrollUnit, cell_h: i32) -> (isize, f64) {
+/// Rows to scroll for one wheel event, and the fraction left for the next;
+/// sideways, columns of `cell` pixels. High-resolution wheels and touchpads
+/// send many steps smaller than a row, so each one only adds to `carry`;
+/// reversing direction drops it.
+fn wheel_rows(carry: f64, delta: f64, unit: gdk::ScrollUnit, cell: i32) -> (isize, f64) {
     let rows = match unit {
-        gdk::ScrollUnit::Surface => dy / f64::from(cell_h.max(1)),
-        _ => dy * WHEEL_ROWS,
+        gdk::ScrollUnit::Surface => delta / f64::from(cell.max(1)),
+        _ => delta * WHEEL_ROWS,
     };
     let carry = if carry * rows < 0.0 { 0.0 } else { carry };
     let total = carry + rows;
@@ -1284,6 +1411,8 @@ mod ghostty_display {
             TerminalEvent::DataOut(b"ls\r".to_vec())
         );
         mouse_routing(&backend, &view, &mut rx);
+        other_buttons(&backend, &view, &mut rx);
+        sideways_wheel(&backend, &view, &mut rx);
         glyphs_on_the_grid(&backend, &view);
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
@@ -1396,6 +1525,228 @@ mod ghostty_display {
         let reports = chunks();
         assert_eq!(reports.concat(), b"\x1b[O\x1b[I");
         assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
+    }
+
+    /// The middle and right buttons reach a tracking program as the
+    /// primary does, and do nothing new otherwise.
+    fn other_buttons(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let mut chunks = || -> Vec<Vec<u8>> {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|e| match e {
+                    TerminalEvent::DataOut(bytes) => Some(bytes),
+                    _ => None,
+                })
+                .collect()
+        };
+        let none = gdk::ModifierType::empty();
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let (cell_w, cell_h) = view.cell_size();
+        let at = |col: i32, row: i32| {
+            (
+                f64::from(col * cell_w + cell_w / 2),
+                f64::from(row * cell_h + cell_h / 2),
+            )
+        };
+        let selected = || view.shared().unwrap().engine.selection_text();
+        let buttons = [(ffi::BUTTON_MIDDLE, 1), (ffi::BUTTON_RIGHT, 2)];
+        backend.reset();
+        backend.write(b"alpha beta gamma");
+        chunks();
+
+        // A gesture per button, and a wheel on both axes.
+        let controllers = view.observe_controllers();
+        let controllers = || (0..controllers.n_items()).filter_map(|i| controllers.item(i));
+        let drags: Vec<u32> = controllers()
+            .filter_map(|c| c.downcast::<gtk4::GestureDrag>().ok())
+            .map(|drag| drag.button())
+            .collect();
+        for button in [
+            gdk::BUTTON_PRIMARY,
+            gdk::BUTTON_MIDDLE,
+            gdk::BUTTON_SECONDARY,
+        ] {
+            assert!(drags.contains(&button), "{button} in {drags:?}");
+        }
+        assert!(controllers()
+            .filter_map(|c| c.downcast::<gtk4::EventControllerScroll>().ok())
+            .any(|wheel| wheel
+                .flags()
+                .contains(gtk4::EventControllerScrollFlags::BOTH_AXES)));
+
+        // No tracking: nothing is sent, and the selection stays.
+        view.press(none, 40_000, at(0, 0));
+        view.drag_to(none, at(2, 0));
+        view.release(none, at(2, 0));
+        let selection = selected();
+        assert!(selection.is_some());
+        chunks();
+        for (button, _) in buttons {
+            view.button_press(button, none, at(1, 1));
+            view.button_drag(button, none, at(3, 1));
+            view.button_release(button, none, at(3, 1));
+        }
+        assert_eq!(chunks().concat(), b"");
+        assert_eq!(selected(), selection);
+
+        backend.write(b"\x1b[?1002h\x1b[?1006h");
+        for (button, code) in buttons {
+            // Press, drag and release, each report a chunk of its own; a
+            // reported press clears the selection, as the primary's does.
+            view.button_press(button, none, at(1, 1));
+            view.button_drag(button, none, at(1, 1));
+            view.button_drag(button, none, at(3, 1));
+            view.button_release(button, none, at(3, 1));
+            let drag = code + 32;
+            let expected = format!("\x1b[<{code};2;2M\x1b[<{drag};4;2M\x1b[<{code};4;2m");
+            let reports = chunks();
+            assert_eq!(reports.concat(), expected.as_bytes());
+            assert_eq!(reports.len(), 3);
+            assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
+            assert_eq!(selected(), None);
+
+            // A drag out of the widget stays reported.
+            view.button_press(button, none, at(1, 1));
+            chunks();
+            view.button_drag(button, none, (-5.0, -5.0));
+            let expected = format!("\x1b[<{drag};1;1M");
+            assert_eq!(chunks().concat(), expected.as_bytes());
+            view.button_release(button, none, at(0, 0));
+            chunks();
+
+            // A held button is not hovering: the motion controller's view
+            // of a drag sends nothing, and leaves the drag its cell.
+            backend.write(b"\x1b[?1003h");
+            view.button_press(button, none, at(1, 1));
+            chunks();
+            view.hover(none, at(3, 1));
+            assert_eq!(chunks().concat(), b"", "hover during a drag");
+            view.button_drag(button, none, at(3, 1));
+            let expected = format!("\x1b[<{drag};4;2M");
+            assert_eq!(chunks().concat(), expected.as_bytes());
+            view.button_release(button, none, at(3, 1));
+            chunks();
+            view.hover(none, at(5, 1));
+            assert_eq!(chunks().concat(), b"\x1b[<35;6;2M", "hovering again");
+            backend.write(b"\x1b[?1003l\x1b[?1002h");
+
+            // The whole drag goes the way its press did. A reported press
+            // gets its release, Shift or not; Shift adds 4.
+            view.button_press(button, none, at(1, 1));
+            view.button_release(button, shift, at(1, 1));
+            let shifted = code + 4;
+            let expected = format!("\x1b[<{code};2;2M\x1b[<{shifted};2;2m");
+            assert_eq!(chunks().concat(), expected.as_bytes());
+
+            // Shift keeps it local to the end, Shift let go or not.
+            backend.write(b"\x1b[?1003h");
+            view.button_press(button, shift, at(1, 1));
+            view.hover(none, at(2, 1));
+            view.button_drag(button, none, at(3, 1));
+            view.button_release(button, none, at(3, 1));
+            assert_eq!(chunks().concat(), b"", "Shift keeps it local");
+            backend.write(b"\x1b[?1003l\x1b[?1002h");
+        }
+
+        // A second button resets the first's gesture, which ends with no
+        // start point: the press still gets its release, at the pointer,
+        // and nothing stays held. Emitted by hand, as an idle gesture has
+        // no start point either.
+        let drag_end = |button| {
+            let drag = controllers()
+                .filter_map(|c| c.downcast::<gtk4::GestureDrag>().ok())
+                .find(|drag| drag.button() == button)
+                .unwrap();
+            assert_eq!(drag.start_point(), None);
+            drag.emit_by_name::<()>("drag-end", &[&0.0f64, &0.0f64]);
+        };
+        view.hover(none, at(3, 1));
+        view.press(none, 35_000, at(3, 1));
+        drag_end(gdk::BUTTON_PRIMARY);
+        assert_eq!(chunks().concat(), b"\x1b[<0;4;2M\x1b[<0;4;2m");
+        view.button_press(ffi::BUTTON_RIGHT, none, at(3, 1));
+        drag_end(gdk::BUTTON_SECONDARY);
+        assert_eq!(chunks().concat(), b"\x1b[<2;4;2M\x1b[<2;4;2m");
+        view.button_press(ffi::BUTTON_MIDDLE, none, at(3, 1));
+        drag_end(gdk::BUTTON_MIDDLE);
+        assert_eq!(chunks().concat(), b"\x1b[<1;4;2M\x1b[<1;4;2m");
+        assert!(!view.button_held());
+
+        // A press with no tracking stays local after the program asks.
+        backend.write(b"\x1b[?1002l\x1b[?1006l");
+        view.button_press(ffi::BUTTON_RIGHT, none, at(1, 1));
+        backend.write(b"\x1b[?1002h\x1b[?1006h");
+        view.button_release(ffi::BUTTON_RIGHT, none, at(1, 1));
+        assert_eq!(chunks().concat(), b"", "no release without its press");
+        backend.write(b"\x1b[?1002l\x1b[?1006l");
+
+        // X10 mode takes the presses alone.
+        backend.write(b"\x1b[?9h");
+        view.button_press(ffi::BUTTON_MIDDLE, none, at(0, 0));
+        view.button_drag(ffi::BUTTON_MIDDLE, none, at(2, 0));
+        view.button_release(ffi::BUTTON_MIDDLE, none, at(2, 0));
+        assert_eq!(chunks().concat(), b"\x1b[M!!!");
+        backend.write(b"\x1b[?9l");
+    }
+
+    /// The sideways wheel goes to a tracking program as a report per
+    /// column, and is left alone otherwise: no scrolling, no arrow keys.
+    fn sideways_wheel(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let mut chunks = || -> Vec<Vec<u8>> {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|e| match e {
+                    TerminalEvent::DataOut(bytes) => Some(bytes),
+                    _ => None,
+                })
+                .collect()
+        };
+        let none = gdk::ModifierType::empty();
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let notch = gdk::ScrollUnit::Wheel;
+        let (cell_w, _) = view.cell_size();
+        backend.reset();
+        chunks();
+        view.hover(none, (0.0, 0.0));
+
+        // Not the program's: unclaimed, for whatever sits above the view.
+        assert!(!view.wheel_sideways(-1.0, notch, none));
+        backend.write(b"\x1b[?1049h");
+        assert!(!view.wheel_sideways(1.0, notch, none), "no arrow keys");
+        backend.write(b"\x1b[?1049l");
+        assert_eq!(chunks().concat(), b"");
+
+        backend.write(b"\x1b[?1000h\x1b[?1006h");
+        assert!(view.wheel_sideways(-1.0, notch, none));
+        assert_eq!(chunks(), vec![b"\x1b[<66;1;1M".to_vec(); 3]);
+        assert!(view.wheel_sideways(1.0, notch, none));
+        let reports = chunks();
+        assert_eq!(reports, vec![b"\x1b[<67;1;1M".to_vec(); 3]);
+        assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
+
+        // Steps add up on their own carry, pixels by cell width.
+        for _ in 0..8 {
+            assert!(view.wheel_sideways(0.125, notch, none));
+        }
+        assert_eq!(chunks().len(), 3);
+        view.wheel(0.125, notch, none);
+        assert!(view.wheel_sideways(-0.125, notch, none));
+        assert_eq!(chunks().concat(), b"", "the axes share no carry");
+        view.wheel(-0.125, notch, none);
+        let surface = gdk::ScrollUnit::Surface;
+        assert!(view.wheel_sideways(f64::from(cell_w), surface, none));
+        assert_eq!(chunks(), vec![b"\x1b[<67;1;1M".to_vec()]);
+
+        // Shift keeps it from the program.
+        assert!(!view.wheel_sideways(1.0, notch, shift));
+        assert_eq!(chunks().concat(), b"");
+        backend.write(b"\x1b[?1000l\x1b[?1006l");
     }
 
     /// The hooks the tab follows the shell by (doc 07 §Following the

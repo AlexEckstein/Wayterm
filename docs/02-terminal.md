@@ -299,20 +299,24 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   reaching the remote side. Each mouse event goes one of three ways
   (`route` in `view.rs`, read from the terminal's modes per event):
   - **Reported** while the program tracks the mouse (mode 9, 1000, 1002
-    or 1003): primary-button presses, drags and releases, motion, and the
-    wheel (as buttons 4 and 5) go through libghostty-vt's mouse encoder,
+    or 1003): presses, drags and releases of the primary, middle and
+    right buttons, motion, and the wheel (vertical as buttons 4 and 5,
+    horizontal as 6 and 7) go through libghostty-vt's mouse encoder,
     which the terminal's modes also give its format — X10 bytes unless
     the program picked SGR (1006), UTF-8, urxvt or SGR-pixels — and which
     drops what the tracking mode does not report. A reported press
-    selects nothing and ends any click sequence. Each report is a
-    `DataOut` chunk of its own, so macro recording skips it (doc 12
-    §Recording).
-  - **Arrow keys** for the wheel on the alternate screen (1047 or 1049)
-    under alternate scroll (mode 1007, on until the program resets it),
-    when no tracking mode is set: Up or Down per row, in the cursor-key
-    mode's form.
+    selects nothing and ends any click sequence. A press decides for its
+    whole drag, so a reported press always gets its release and a local
+    one never does. Each report is a `DataOut` chunk of its own, so macro
+    recording skips it (doc 12 §Recording).
+  - **Arrow keys** for the vertical wheel on the alternate screen (1047
+    or 1049) under alternate scroll (mode 1007, on until the program
+    resets it), when no tracking mode is set: Up or Down per row, in the
+    cursor-key mode's form.
   - **Local** otherwise: a primary-button drag selects, a middle click
-    pastes PRIMARY, and the wheel scrolls the viewport.
+    pastes PRIMARY, and the vertical wheel scrolls the viewport. A right
+    click does nothing, and the horizontal wheel is left to the widgets
+    above the view.
 
   Selection is libghostty-vt's gesture: it counts clicks by the desktop's
   double-click time and a cell's width of movement, and picks what the
@@ -327,7 +331,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   local even while the program tracks the mouse. The wheel counts three rows per notch,
   adding up the fractional steps of high-resolution wheels and touchpads
   (pixel deltas count by cell height); a reported or arrow-key wheel
-  sends one report or key per row. With mode 1004 set, keyboard focus
+  sends one report or key per row. The horizontal wheel counts columns
+  the same way, on its own carry and by cell width, one report per
+  column. With mode 1004 set, keyboard focus
   entering and leaving the widget sends `CSI I` and `CSI O`.
 - **Search.** libghostty-vt's search covers the active screen and its
   scrollback, and the shim builds VTE's behavior on it: case-sensitive,
@@ -471,10 +477,12 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **VTE:** no Kitty graphics. Search steps between rows, reaching only
   the first match on each.
 - **Ghostty:** no URL detection or image drawing (`features()` says so,
-  and the UI hides them); no input method or compose support; mouse
-  reporting covers the primary button and the wheel only, so middle and
-  right clicks and horizontal scrolling never reach the program; the
-  text under the cursor takes its cell's background color, since
+  and the UI hides them); no input method or compose support; no local
+  use of a right click or the horizontal wheel, which only reach a
+  program tracking the mouse; a second button pressed during a drag
+  resets GTK's gesture for the first, so that button's release is
+  reported then, and the second's when any other button changes, each
+  press still getting one release; the text under the cursor takes its cell's background color, since
   libghostty-vt has no cursor text color (the scheme's matches the
   default background in both palettes, so only a cell a program colored
   differs from VTE).
