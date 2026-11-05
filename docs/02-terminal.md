@@ -287,7 +287,11 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   its variation selector — is shaped together and sits at that cell; a
   wide cluster's tail cell adds a blank, so the cells after it keep their
   columns. Underline and strikethrough are rectangles across the run, on
-  whole pixels. A changed allocation resizes the grid and sends
+  whole pixels. Blinking text (SGR 5 or 6, until SGR 25) goes out and back
+  once a second, half a second each way, its lines with it; the cell keeps
+  its place and background, and selection and search reach it as ever. The
+  timer runs only while the view is mapped and text that would change
+  shows on screen. A changed allocation resizes the grid and sends
   `SizeChange` once per new grid.
 - **Input.** Keys go through libghostty-vt's key encoder, so cursor-key
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
@@ -494,4 +498,5 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   the glyph, as it is at the default font. The cell is measured from
   "M" alone, so a proportional font, or any glyph wider than "M",
   overlaps the next cell. Ligatures are drawn as the font shapes them,
-  at their first cell, and nothing turns them off.
+  at their first cell, and nothing turns them off. Rapid blink (SGR 6)
+  blinks at the slow rate, since libghostty-vt keeps one flag for both.
