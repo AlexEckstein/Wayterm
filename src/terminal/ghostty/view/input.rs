@@ -1,7 +1,8 @@
 //! Keys, mouse, wheel and focus.
 //!
-//! Input: keys go through libghostty-vt's key encoder (so cursor-key and
-//! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
+//! Input: keys go to the input method (see [`super::im`]), then through
+//! libghostty-vt's key encoder (so cursor-key and Kitty keyboard modes
+//! apply) and leave as `DataOut`; Shift+PageUp/
 //! PageDown/Home/End scroll the viewport as in VTE; Ctrl+Shift+Up/Down
 //! jump between OSC 133 shell prompts and Ctrl+Shift+O selects a
 //! command's output. Mouse events go where
@@ -35,12 +36,20 @@ impl GhosttyView {
     pub(super) fn install_input(&self) {
         let keys = gtk4::EventControllerKey::new();
         let view = self.downgrade();
-        keys.connect_key_pressed(move |_, keyval, _, state| {
-            let handled = view.upgrade().is_some_and(|view| view.key(keyval, state));
+        keys.connect_key_pressed(move |keys, keyval, _, state| {
+            let handled = view
+                .upgrade()
+                .is_some_and(|view| view.key_event(keyval, state, || view.im_filter(keys)));
             if handled {
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
+            }
+        });
+        let view = self.downgrade();
+        keys.connect_key_released(move |keys, _, _, _| {
+            if let Some(view) = view.upgrade() {
+                view.im_filter(keys);
             }
         });
         self.add_controller(keys);
@@ -348,6 +357,7 @@ impl GhosttyView {
     /// mode 1004. The cursor turns hollow, or back, and a blink starts over
     /// with it on.
     pub(super) fn focus_changed(&self, gained: bool) {
+        self.im_focus(gained);
         if let Some(shared) = self.shared() {
             shared.input(shared.engine.encode_focus(gained));
         }
@@ -481,8 +491,24 @@ impl GhosttyView {
         }
     }
 
-    /// Encode a key press; `false` lets it propagate (modifier-only keys).
+    /// Encode a key press with the text its keyval stands for.
     pub(super) fn key(&self, keyval: gdk::Key, state: gdk::ModifierType) -> bool {
+        let text: String = keyval
+            .to_unicode()
+            .filter(|c| !c.is_control())
+            .map(String::from)
+            .unwrap_or_default();
+        self.key_with_text(keyval, state, &text)
+    }
+
+    /// Encode a key press producing `text`; `false` lets it propagate
+    /// (modifier-only keys).
+    pub(super) fn key_with_text(
+        &self,
+        keyval: gdk::Key,
+        state: gdk::ModifierType,
+        text: &str,
+    ) -> bool {
         let Some(shared) = self.shared() else {
             return false;
         };
@@ -499,15 +525,10 @@ impl GhosttyView {
             return true;
         }
         let mods = mods(state);
-        let text: String = keyval
-            .to_unicode()
-            .filter(|c| !c.is_control())
-            .map(String::from)
-            .unwrap_or_default();
         let unshifted = keyval.to_lower().to_unicode().map_or(0, u32::from);
         let bytes = shared
             .engine
-            .encode_key(keyval.into_glib(), unshifted, mods, &text);
+            .encode_key(keyval.into_glib(), unshifted, mods, text);
         if bytes.is_empty() {
             return false;
         }

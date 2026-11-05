@@ -2,11 +2,13 @@
 //!
 //! This file holds the widget, its state and the grid's geometry; [`paint`]
 //! and [`text`] draw a frame, [`images`] its Kitty images and [`cursor`] its
-//! cursor, [`blink`] runs the timers, [`input`] takes events, [`links`]
-//! finds and opens links, and [`options`] carries the settings.
+//! cursor, [`blink`] runs the timers, [`input`] takes events, [`im`] talks
+//! to the input method, [`links`] finds and opens links, and [`options`]
+//! carries the settings.
 
 mod blink;
 mod cursor;
+mod im;
 mod images;
 mod input;
 mod links;
@@ -88,6 +90,7 @@ mod imp {
         /// Flips `text_blink_off`; runs only while a mapped view shows
         /// blinking text.
         pub(super) text_blink_timer: RefCell<Option<glib::SourceId>>,
+        pub(super) im: super::im::ImState,
     }
 
     #[glib::object_subclass]
@@ -112,6 +115,16 @@ mod imp {
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             self.parent_size_allocate(width, height, baseline);
             self.obj().fit_grid(width, height);
+        }
+
+        fn realize(&self) {
+            self.parent_realize();
+            self.obj().im_realized(true);
+        }
+
+        fn unrealize(&self) {
+            self.obj().im_realized(false);
+            self.parent_unrealize();
         }
 
         fn unmap(&self) {
@@ -147,6 +160,7 @@ impl GhosttyView {
         view.set_overflow(gtk4::Overflow::Hidden);
         view.follow_options();
         view.install_input();
+        view.install_im(gtk4::IMMulticontext::new().upcast());
         view.install_clipboard();
         view
     }

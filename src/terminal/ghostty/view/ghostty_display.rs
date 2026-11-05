@@ -128,6 +128,7 @@ fn view_draws_sizes_and_types() {
     notifications(&backend, &mut rx);
     links_hover_and_open(&backend, &view, &mut rx);
     shell_marks(&backend, &view, &mut rx);
+    input_method(&backend, &view, &mut rx);
     window.close();
 
     // The factory follows the installed preference; VTE is the default.
@@ -1665,5 +1666,238 @@ fn shell_marks(
         !std::iter::from_fn(|| rx.try_recv().ok()).any(|e| matches!(e, TerminalEvent::DataOut(_))),
         "prompt keys stay local"
     );
+    backend.reset();
+}
+
+/// An input method whose answers the test sets: what real ones do to a key
+/// is the test's `filter` closure, which raises their signals.
+mod fake_im {
+    use std::cell::{Cell, RefCell};
+
+    use gtk4::prelude::*;
+    use gtk4::subclass::prelude::*;
+    use gtk4::{gdk, glib, pango};
+
+    #[derive(Default)]
+    pub struct Imp {
+        pub preedit: RefCell<(String, Option<pango::AttrList>, i32)>,
+        pub location: Cell<Option<gdk::Rectangle>>,
+        pub resets: Cell<u32>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for Imp {
+        const NAME: &'static str = "WaytermFakeIm";
+        type Type = FakeIm;
+        type ParentType = gtk4::IMContext;
+    }
+
+    impl ObjectImpl for Imp {}
+
+    impl IMContextImpl for Imp {
+        fn preedit_string(&self) -> (glib::GString, pango::AttrList, i32) {
+            let (text, attrs, cursor) = &*self.preedit.borrow();
+            let attrs = attrs.clone().unwrap_or_else(pango::AttrList::new);
+            (text.as_str().into(), attrs, *cursor)
+        }
+
+        fn set_cursor_location(&self, area: &gdk::Rectangle) {
+            self.location.set(Some(*area));
+        }
+
+        fn reset(&self) {
+            self.resets.set(self.resets.get() + 1);
+            self.obj().compose("", None);
+        }
+    }
+
+    glib::wrapper! {
+        pub struct FakeIm(ObjectSubclass<Imp>) @extends gtk4::IMContext;
+    }
+
+    impl FakeIm {
+        pub fn compose(&self, text: &str, attrs: Option<pango::AttrList>) {
+            let cursor = text.chars().count() as i32;
+            self.imp().preedit.replace((text.into(), attrs, cursor));
+            self.emit_by_name::<()>("preedit-changed", &[]);
+        }
+
+        pub fn commit(&self, text: &str) {
+            self.emit_by_name::<()>("commit", &[&text]);
+        }
+    }
+}
+
+/// Plain typing keeps the key encoder, composed text leaves as text, and
+/// unfinished text shows at the cursor, which the input method follows.
+fn input_method(
+    backend: &GhosttyBackend,
+    view: &GhosttyView,
+    rx: &mut mpsc::Receiver<TerminalEvent>,
+) {
+    use fake_im::FakeIm;
+
+    let none = gdk::ModifierType::empty();
+    let context = glib::MainContext::default();
+    let im: FakeIm = glib::Object::new();
+    view.install_im(im.clone().upcast());
+    backend.reset();
+    view.focus_changed(true);
+    let mut sent = || -> Vec<Vec<u8>> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                TerminalEvent::DataOut(data) => Some(data),
+                _ => None,
+            })
+            .collect()
+    };
+    sent();
+
+    // Plain typing: the committed text rides on the key. Kitty's mode 8
+    // shows it went through the encoder, not out as text.
+    let typed = |im: &FakeIm, key, text: &'static str| {
+        assert!(view.key_event(key, none, || {
+            im.commit(text);
+            true
+        }));
+    };
+    typed(&im, gdk::Key::a, "a");
+    assert_eq!(sent(), [b"a".to_vec()]);
+    backend.write(b"\x1b[>8u");
+    typed(&im, gdk::Key::a, "a");
+    assert!(view.key(gdk::Key::a, none));
+    let reports = sent();
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0], reports[1]);
+    assert!(reports[0].starts_with(b"\x1b["), "{:?}", reports[0]);
+
+    // A dead key shows and sends nothing; its letter sends the composed
+    // text as text, under Kitty's mode too.
+    assert!(view.key_event(gdk::Key::dead_acute, none, || {
+        im.compose("\u{b4}", None);
+        true
+    }));
+    assert_eq!(sent(), [] as [Vec<u8>; 0]);
+    assert!(view.key_event(gdk::Key::e, none, || {
+        im.compose("", None);
+        im.commit("é");
+        true
+    }));
+    assert_eq!(sent(), ["é".as_bytes().to_vec()]);
+    backend.write(b"\x1b[<u");
+
+    // A text that does not match its key is still what is typed.
+    typed(&im, gdk::Key::a, "ა");
+    assert_eq!(sent(), ["ა".as_bytes().to_vec()]);
+
+    // A composed syllable and the Enter the input method declined.
+    im.compose("하", None);
+    assert!(view.key_event(gdk::Key::Return, none, || {
+        im.compose("", None);
+        im.commit("하");
+        false
+    }));
+    assert_eq!(sent(), ["하".as_bytes().to_vec(), b"\r".to_vec()]);
+
+    // A key the input method declines reaches the program mid-composition.
+    im.compose("ni", None);
+    let ctrl = gdk::ModifierType::CONTROL_MASK;
+    assert!(view.key_event(gdk::Key::c, ctrl, || false));
+    assert_eq!(sent(), [b"\x03".to_vec()]);
+    im.compose("", None);
+
+    // An asynchronous answer: the press is kept and the commit comes later.
+    assert!(view.key_event(gdk::Key::a, none, || true));
+    assert_eq!(sent(), [] as [Vec<u8>; 0]);
+    im.commit("你好");
+    assert_eq!(sent(), ["你好".as_bytes().to_vec()]);
+
+    // Keys nothing wants still propagate.
+    assert!(!view.key_event(gdk::Key::Shift_L, none, || false));
+
+    // The unfinished text covers the cell, the cursor included, and goes
+    // with the composition; the input method's own attributes apply.
+    let (cell_w, cell_h) = view.cell_size();
+    let (cw, ch) = (cell_w as usize, cell_h as usize);
+    backend.reset();
+    backend.write(b"$ ");
+    let ink = render(view);
+    assert!(!ink(3 * cw..6 * cw, 0..ch));
+    im.compose("你好", None);
+    let ink = render(view);
+    assert!(ink(3 * cw..6 * cw, 0..ch), "text from the cursor's cell");
+    assert!(!ink(0..2 * cw, ch..2 * ch), "one line");
+    im.compose("", None);
+    assert!(!render(view)(3 * cw..6 * cw, 0..ch));
+
+    backend.reset();
+    let blank = pixels(view)(view.width() as usize - 1, view.height() as usize - 1);
+    assert_ne!(pixels(view)(1, 1), blank, "the block cursor");
+    im.compose("a", None);
+    assert_eq!(pixels(view)(1, 1), blank, "the cell is covered");
+
+    im.compose("  ", None);
+    assert!(!render(view)(0..cw, 0..ch), "no line unless asked for");
+    let attrs = pango::AttrList::new();
+    attrs.insert(pango::AttrInt::new_underline(pango::Underline::Single));
+    im.compose("  ", Some(attrs));
+    assert!(render(view)(0..cw, 0..ch), "the input method's underline");
+    im.compose("", None);
+
+    // At the right edge it moves left to stay on screen.
+    let (cols, rows) = view.shared().unwrap().engine.size();
+    let last = usize::from(cols) - 1;
+    backend.write(format!("\x1b[1;{cols}H").as_bytes());
+    im.compose("你好", None);
+    assert!(render(view)((last - 3) * cw..last * cw, 0..ch));
+    im.compose("", None);
+
+    // Composing brings a scrolled viewport back to the cursor.
+    backend.reset();
+    for line in 0..200 {
+        backend.write(format!("line {line}\r\n").as_bytes());
+    }
+    let engine = &view.shared().unwrap().engine;
+    let top_row = || {
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        frame.row_text(0)
+    };
+    let bottom = top_row();
+    engine.scroll(Scroll::By(-5));
+    assert_ne!(top_row(), bottom);
+    im.compose("n", None);
+    assert_eq!(top_row(), bottom);
+    im.compose("", None);
+
+    // The input method follows the cursor, once per move, after the paint.
+    let settle = || {
+        let _ = render(view);
+        while context.iteration(false) {}
+        im.imp().location.take()
+    };
+    backend.reset();
+    backend.write(b"\x1b[3;5H");
+    let cell = |col, row| gdk::Rectangle::new(col * cell_w, row * cell_h, cell_w, cell_h);
+    assert_eq!(settle(), Some(cell(4, 2)));
+    assert_eq!(settle(), None, "unmoved");
+    backend.write(b"xy");
+    assert_eq!(settle(), Some(cell(6, 2)));
+
+    // Without focus nothing is composed or followed; focus resends it.
+    im.compose("ni", None);
+    let resets = im.imp().resets.get();
+    view.focus_changed(false);
+    assert_eq!(im.imp().resets.get(), resets + 1);
+    assert!(!view.imp().im.composing());
+    backend.write(b"z");
+    assert_eq!(settle(), None);
+    view.focus_changed(true);
+    assert_eq!(settle(), Some(cell(7, 2)));
+
+    assert_eq!(sent(), [] as [Vec<u8>; 0]);
+    assert!(rows > 3);
+    view.focus_changed(false);
+    view.install_im(gtk4::IMMulticontext::new().upcast());
     backend.reset();
 }
