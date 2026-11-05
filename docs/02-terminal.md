@@ -271,9 +271,10 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   the tail cell of a wide character holds nothing. Effects raised while
   parsing — replies to queries (device attributes, status reports), BEL,
   OSC 0/2
-  titles, OSC 7 directories — come back from the `write` that raised them
-  and leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
-  the view's directory hook instead.
+  titles, OSC 7 directories, clipboard writes — come back from the `write`
+  that raised them and leave as `DataOut`, `Bell` and `TitleChanged`; a
+  directory goes to the view's directory hook instead, and a clipboard
+  write to the view (§GhosttyBackend, Program clipboard).
 - **`GhosttyView`.** The GTK4 widget. Each frame snapshots the engine and
   paints it with `GtkSnapshot`: one background rectangle per run of equal
   color, and per run of equal style (bold, italic, underline,
@@ -342,6 +343,28 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   draws on top, as does the cursor. An empty query, a press, a typed key
   or a reset ends the search; the UI never sends an empty query, so the
   press and the key are how a highlight goes away.
+- **Program clipboard.** An OSC 52 write sets a GTK clipboard, so a remote
+  Neovim yank or tmux copy reaches the desktop: `p` and `s` go to PRIMARY,
+  `c` and any other selection letter to the system clipboard. OSC 1337
+  Copy takes the same path; libghostty-vt reports both through one
+  callback. A write lands whole or not at all:
+  - libghostty-vt decodes the base64 and drops a payload with any character
+    outside its alphabet, whitespace included; missing padding is fine, and
+    a control byte inside the sequence never reaches the decoder. The shim
+    passes that note to stderr, the only part of libghostty-vt's log
+    Wayterm shows.
+  - libghostty-vt drops a sequence over 8 MiB, about 6 MiB of text, without
+    a note. The engine also refuses over 8 MiB decoded, a backstop OSC 52
+    cannot reach while the parser's limit stands.
+  - The engine drops decoded bytes that are not UTF-8, or that hold a NUL,
+    which would cut GDK's text short. Notes never carry the contents.
+
+  Clipboard contents never leave the machine: the shim installs no
+  `clipboard_read` callback, so an OSC 52 query (`?`) gets no reply at all.
+  The kitty clipboard protocol stays off. The write callback would open
+  OSC 5522 writes, so the shim sets their limit to zero: a write with data
+  is answered `EFBIG`, one without `ENOSYS`, and neither reaches a
+  clipboard. Wayterm's own Copy and Paste are unrelated.
 - **Backend.** Events go through the same never-blocking sender as VTE's
   (§Backpressure). `send_input` and `paste` queue `DataOut` like a key
   press, so macros work unchanged; `paste` is bracketed when the program
@@ -484,6 +507,10 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   a match is read back and compared as typed). A match is not the
   selection, so Copy after a search copies nothing new, where VTE copies
   the match.
+- **Ghostty clipboard:** a program writes without asking: there is no
+  prompt and no setting to turn it off. An OSC 52 clear (an empty payload)
+  is ignored, since it looks the same as an OSC 5522 one. Only text is
+  taken, and queries go unanswered, so a program waiting on one times out.
 - **Ghostty scrollback:** `set_scrollback_limit` drops libghostty-vt's
   byte limit, so lines alone bound it, but it prunes whole pages: what is
   kept lands within a page of the limit, often just under it (a page is
