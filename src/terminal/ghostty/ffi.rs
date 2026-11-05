@@ -1,8 +1,9 @@
 //! Raw bindings to `shim.c`, the narrow C layer over libghostty-vt; use
 //! [`Engine`](super::engine::Engine) instead of calling these directly.
-//! The structs mirror `WtCell`/`WtFrame`/`WtSpan` there; the unit tests
-//! check the sizes, and where the cell's grapheme and underline fields
-//! sit, against the C compiler's.
+//! The structs mirror `WtCell`/`WtFrame`/`WtSpan`/`WtPlacement`/`WtPixels`
+//! there; the unit tests check the sizes, and where the cell's grapheme,
+//! link and underline fields, and the fields after any padding, sit, against
+//! the C compiler's.
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -21,6 +22,8 @@ pub const EFFECT_PTY: c_int = 1;
 pub const EFFECT_BELL: c_int = 2;
 pub const EFFECT_TITLE: c_int = 3;
 pub const EFFECT_PWD: c_int = 4;
+pub const EFFECT_CLIPBOARD_SYSTEM: c_int = 5;
+pub const EFFECT_CLIPBOARD_PRIMARY: c_int = 6;
 
 pub const CELL_BOLD: u16 = 1 << 0;
 pub const CELL_ITALIC: u16 = 1 << 1;
@@ -65,6 +68,18 @@ pub const BUTTON_WHEEL_DOWN: u32 = 5;
 pub const BUTTON_WHEEL_LEFT: u32 = 6;
 pub const BUTTON_WHEEL_RIGHT: u32 = 7;
 
+pub const LAYER_BELOW_BG: u8 = 0;
+pub const LAYER_BELOW_TEXT: u8 = 1;
+pub const LAYER_ABOVE_TEXT: u8 = 2;
+
+/// Bytes of images one screen holds; also bounds a PNG's decoded size.
+pub const KITTY_STORAGE_LIMIT: u64 = 320_000_000;
+
+pub const FORMAT_RGB: u8 = 0;
+pub const FORMAT_RGBA: u8 = 1;
+pub const FORMAT_GRAY_ALPHA: u8 = 3;
+pub const FORMAT_GRAY: u8 = 4;
+
 /// One grid cell, colors resolved to RGB.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -84,6 +99,9 @@ pub struct WtCell {
     /// Codepoints in the cluster, base included: 0 = empty, 1 = just
     /// `codepoint`.
     pub grapheme_len: u16,
+    /// 0 = no OSC 8 hyperlink; else its entry, from 1, in the snapshot's
+    /// links ([`wt_ghostty_links`]).
+    pub link: u16,
     /// Non-zero on a row's last cell when the row soft-wraps into the next.
     pub wraps: u8,
     /// With `grapheme_len` > 1: where the whole cluster starts in the
@@ -120,6 +138,45 @@ pub struct WtSpan {
     pub end: u16,
     /// Non-zero for the current match.
     pub current: u8,
+}
+
+/// One image placement to draw.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WtPlacement {
+    /// Of the image's pixels: a new one means new pixels.
+    pub generation: u64,
+    pub image_id: u32,
+    /// The order within a layer, lowest first.
+    pub z: i32,
+    /// The top-left cell, from the viewport's; negative when the placement
+    /// starts off screen.
+    pub col: i32,
+    pub row: i32,
+    /// Pixels into that cell.
+    pub offset_x: u32,
+    pub offset_y: u32,
+    /// The size to draw at, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// The part of the image to draw, in image pixels.
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+    /// `LAYER_*`.
+    pub layer: u8,
+}
+
+/// A stored image's pixels, borrowed until the terminal next changes.
+#[repr(C)]
+pub struct WtPixels {
+    pub data: *const u8,
+    pub len: usize,
+    pub width: u32,
+    pub height: u32,
+    /// `FORMAT_*`.
+    pub format: u8,
 }
 
 /// One key press for the encoder.
@@ -160,6 +217,9 @@ pub struct WtMouse {
 
 pub type EffectFn =
     unsafe extern "C" fn(userdata: *mut c_void, kind: c_int, data: *const u8, len: usize);
+
+/// Decodes a PNG into the buffer `wt_ghostty_png_pixels` gives for `sink`.
+pub type PngFn = unsafe extern "C" fn(data: *const u8, len: usize, sink: *mut c_void) -> bool;
 
 extern "C" {
     pub fn wt_ghostty_new(cols: u16, rows: u16) -> *mut WtGhostty;
@@ -271,6 +331,25 @@ extern "C" {
         graphemes_cap: usize,
         graphemes_len: *mut usize,
     ) -> c_int;
+    pub fn wt_ghostty_set_png_decoder(decoder: Option<PngFn>);
+    pub fn wt_ghostty_png_pixels(sink: *mut c_void, width: u32, height: u32) -> *mut u8;
+    pub fn wt_ghostty_animation_tick(g: *mut WtGhostty, now_ms: u64, next_ms: *mut u64) -> c_int;
+    pub fn wt_ghostty_placements(
+        g: *mut WtGhostty,
+        out: *mut WtPlacement,
+        cap: usize,
+        len: *mut usize,
+    ) -> c_int;
+    pub fn wt_ghostty_image_pixels(g: *mut WtGhostty, image_id: u32, out: *mut WtPixels) -> c_int;
+    /// The last snapshot's links, valid until the next one: `count`
+    /// entries, entry n, from 1, being `uris` up to `ends[n - 1]`, starting
+    /// where the entry before it ends. Null while there are none.
+    pub fn wt_ghostty_links(
+        g: *mut WtGhostty,
+        uris: *mut *const u8,
+        ends: *mut *const usize,
+        count: *mut usize,
+    );
 }
 
 // ABI checks for the mirrors above (engine tests).
@@ -279,8 +358,14 @@ extern "C" {
     pub fn wt_ghostty_cell_size() -> usize;
     pub fn wt_ghostty_frame_size() -> usize;
     pub fn wt_ghostty_span_size() -> usize;
+    pub fn wt_ghostty_placement_size() -> usize;
+    pub fn wt_ghostty_pixels_size() -> usize;
     pub fn wt_ghostty_cell_grapheme_offset() -> usize;
     pub fn wt_ghostty_cell_grapheme_len_offset() -> usize;
+    pub fn wt_ghostty_placement_layer_offset() -> usize;
+    pub fn wt_ghostty_pixels_format_offset() -> usize;
+    pub fn wt_ghostty_storage_limit(g: *mut WtGhostty) -> u64;
+    pub fn wt_ghostty_cell_link_offset() -> usize;
     pub fn wt_ghostty_cell_wraps_offset() -> usize;
     pub fn wt_ghostty_cell_underline_offset() -> usize;
     pub fn wt_ghostty_cell_underline_rgb_offset() -> usize;

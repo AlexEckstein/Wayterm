@@ -12,7 +12,9 @@
 //! selection and the cursor. The cursor takes the shape the terminal asks
 //! for and blinks on a timer that runs only while a blink can show; without
 //! focus it is a steady hollow block. Blinking text goes out and back on a
-//! timer that runs only while a mapped view shows some.
+//! timer that runs only while a mapped view shows some. Kitty images come
+//! from the same snapshot, each in its layer: over the default background,
+//! over the cell backgrounds, or over the text.
 //! The link under the pointer is underlined.
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
@@ -28,11 +30,15 @@
 //! changes are reported when the program asks. A press or a typed key ends
 //! the search, as it clears the selection.
 //!
-//! Links: [`scan_links`] finds URLs in the text on screen, soft-wrapped rows
+//! Links: [`link_at`] reads OSC 8 hyperlinks from the frame, and
+//! [`scan_links`] finds URLs in the text on screen, soft-wrapped rows
 //! joined. While mouse events are local, hovering one underlines it and
-//! Ctrl+click opens it through the desktop's URI handler.
+//! shows its URI in a tooltip, and Ctrl+click opens it through the
+//! desktop's URI handler unless [`may_open`] refuses it. A program
+//! tracking the mouse keeps both until Shift.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
@@ -43,7 +49,8 @@ use gtk4::subclass::prelude::*;
 use gtk4::{gdk, gio, glib, graphene, gsk, pango};
 
 use super::engine::{
-    push_cluster, Cell as GridCell, Frame, FrameInfo, MouseEvent, MouseModes, Scroll, Span,
+    push_cluster, Cell as GridCell, ClipboardDestination, Frame, FrameInfo, MouseEvent, MouseModes,
+    Pixels, Placement, Scroll, Span,
 };
 use super::ffi;
 use super::Shared;
@@ -69,6 +76,10 @@ const SEARCH_CURRENT_BG: [u8; 3] = [0xf2, 0xa5, 0x7e];
 /// How long blinking text stays on, and off: one cycle a second, SGR 5's
 /// slow blink. SGR 6 blinks the same, as libghostty-vt keeps one flag.
 const BLINK_PHASE: Duration = Duration::from_millis(500);
+/// The character of a Kitty placeholder cell; the image takes its place.
+const KITTY_PLACEHOLDER: u32 = 0x10_eeee;
+/// The shortest wait for an animation's next frame, in milliseconds.
+const MIN_ANIMATION_DELAY: u64 = 8;
 /// The mail scheme, whose target is an address, not an authority.
 const MAILTO: &str = "mailto:";
 /// What starts a link, in any case.
@@ -115,6 +126,10 @@ mod imp {
         pub(super) pointer: Cell<(f64, f64)>,
         /// The cell of the last reported motion, so each cell is sent once.
         pub(super) motion_cell: Cell<Option<(u16, u16)>>,
+        /// The images the last frame drew, by ID and pixel generation.
+        pub(super) textures: RefCell<HashMap<(u32, u64), gdk::Texture>>,
+        /// A redraw for an animation's next frame is on its way.
+        pub(super) animating: Cell<bool>,
         /// The modifiers of the last pointer motion; `None` while the
         /// pointer is outside the widget.
         pub(super) hover: Cell<Option<gdk::ModifierType>>,
@@ -192,7 +207,26 @@ impl GhosttyView {
         view.set_vexpand(true);
         view.set_overflow(gtk4::Overflow::Hidden);
         view.install_input();
+        view.install_clipboard();
         view
+    }
+
+    /// Apply what programs write to the clipboards. The watcher holds the
+    /// view weakly, since the view holds the shared state it lives in.
+    fn install_clipboard(&self) {
+        let view = self.downgrade();
+        let apply = move |destination, text: &str| {
+            let Some(view) = view.upgrade() else {
+                return;
+            };
+            match destination {
+                ClipboardDestination::System => view.clipboard().set_text(text),
+                ClipboardDestination::Selection => view.primary_clipboard().set_text(text),
+            }
+        };
+        if let Some(shared) = self.shared() {
+            shared.watchers.clipboard.borrow_mut().push(Rc::new(apply));
+        }
     }
 
     fn shared(&self) -> Option<Rc<Shared>> {
@@ -527,7 +561,8 @@ impl GhosttyView {
     }
 
     /// A local release at `cell`: a Ctrl+press on a link opens it, unless
-    /// the press became a selection or the link is no longer here.
+    /// the press became a selection, the link is no longer here, or
+    /// [`may_open`] refuses it.
     fn open_pressed_link(&self, shared: &Shared, (col, row): (u16, u16)) {
         let imp = self.imp();
         let Some(link) = imp.pressed_link.take() else {
@@ -539,6 +574,10 @@ impl GhosttyView {
             .is_some_and(|text| !text.is_empty());
         let here = link_at(&imp.frame.borrow(), row.into(), col.into());
         if selected || here.as_ref() != Some(&link) {
+            return;
+        }
+        if !may_open(&link.uri, &glib::host_name()) {
+            eprintln!("Wayterm: refused a link that is not for this machine");
             return;
         }
         let launcher = imp.launcher.borrow().clone();
@@ -673,14 +712,15 @@ impl GhosttyView {
         link_at(frame, row.into(), col.into())
     }
 
-    /// Make `link` the one underlined, with the cursor to match; `true` if
-    /// that changed anything.
+    /// Make `link` the one underlined, with the cursor and the tooltip to
+    /// match; `true` if that changed anything.
     fn show_link(&self, link: Option<Link>) -> bool {
         let current = &self.imp().link;
         if *current.borrow() == link {
             return false;
         }
         self.set_cursor_from_name(link.is_some().then_some(LINK_CURSOR));
+        self.set_tooltip_text(link.as_ref().map(|link| link.uri.as_str()));
         current.replace(link);
         true
     }
@@ -917,12 +957,18 @@ impl GhosttyView {
 
     fn paint(&self, snapshot: &gtk4::Snapshot) {
         let Some(shared) = self.shared() else { return };
+        let now_ms = glib::monotonic_time().unsigned_abs() / 1000;
+        let next_ms = shared.engine.tick_animations(now_ms);
         let mut frame = self.imp().frame.borrow_mut();
         if !shared.engine.snapshot(&mut frame) {
             return;
         }
         self.follow_blink(frame.blinks());
         let off = self.imp().text_blink_off.get();
+        if let Some(next_ms) = next_ms {
+            self.redraw_after(next_ms.saturating_sub(now_ms));
+        }
+        self.update_textures(&shared, &frame);
         // Output and scrolling move text under a pointer that stays put.
         self.show_link(self.link_under(&shared, &frame));
         let link = self.imp().link.borrow();
@@ -940,59 +986,25 @@ impl GhosttyView {
         let font = self.font();
         let (cols, rows) = (usize::from(info.cols), usize::from(info.rows));
         let marks = search_marks(&shared.engine.search_spans(), cols, rows);
-        for row in 0..rows {
+        let painted: Vec<Vec<Painted>> = (0..rows)
+            .map(|row| {
+                let mut cells =
+                    painted_row(&frame, row, &marks, cursor == Some(CursorShape::Block));
+                if let Some(link) = link.as_ref() {
+                    link.underline(row, &mut cells);
+                }
+                cells
+            })
+            .collect();
+
+        self.paint_images(snapshot, &frame, ffi::LAYER_BELOW_BG);
+        for (row, cells) in painted.iter().enumerate() {
+            paint_backgrounds(snapshot, cells, row as f32 * ch, (cw, ch));
+        }
+        self.paint_images(snapshot, &frame, ffi::LAYER_BELOW_TEXT);
+        for (row, cells) in painted.iter().enumerate() {
+            self.paint_text(snapshot, cells, row as f32 * ch, &metrics, &font);
             let y = row as f32 * ch;
-            let mut cells = painted_row(&frame, row, &marks, cursor == Some(CursorShape::Block));
-            if let Some(link) = link.as_ref() {
-                link.underline(row, &mut cells);
-            }
-
-            // Backgrounds: one rectangle per run of equal, non-default color.
-            let mut col = 0;
-            while col < cells.len() {
-                let start = col;
-                while col < cells.len() && cells[col].bg == cells[start].bg {
-                    col += 1;
-                }
-                if let Some(bg) = cells[start].bg {
-                    snapshot.append_color(
-                        &rgba(bg, 1.0),
-                        &graphene::Rect::new(start as f32 * cw, y, (col - start) as f32 * cw, ch),
-                    );
-                }
-            }
-
-            // Text: one run per style, each cluster at its own cell.
-            let mut col = 0;
-            while col < cells.len() {
-                let start = col;
-                while col < cells.len() && cells[col].same_style(&cells[start]) {
-                    col += 1;
-                }
-                let (text, columns) = run_text(&cells[start..col]);
-                let style = &cells[start];
-                if style.hidden(off) || text.trim().is_empty() {
-                    continue;
-                }
-                let color = rgba(style.fg, style.alpha());
-                let x = start as f32 * cw;
-                let baseline = graphene::Point::new(x, y + metrics.baseline);
-                self.draw_glyphs(
-                    snapshot,
-                    &text,
-                    &columns,
-                    &style.font(&font),
-                    &color,
-                    &baseline,
-                );
-                if style.flags & ffi::CELL_STRIKE != 0 {
-                    let (top, thickness) = metrics.strike;
-                    let width = (col - start) as f32 * cw;
-                    let line = graphene::Rect::new(x, y + top, width, thickness);
-                    snapshot.append_color(&color, &line);
-                }
-            }
-
             // Underlines: one per run of equal style and color, so text
             // changing color under a line does not break it. Blinking text
             // in its off phase hides its line with it.
@@ -1022,6 +1034,116 @@ impl GhosttyView {
                         snapshot.append_color(&color, &rect);
                     }
                 }
+            }
+        }
+        self.paint_images(snapshot, &frame, ffi::LAYER_ABOVE_TEXT);
+    }
+
+    /// Redraw in `delay_ms`, for an animation's next frame. It asks for one
+    /// frame, which asks for the next: a view off screen draws none, so
+    /// its animations wait until it shows again.
+    fn redraw_after(&self, delay_ms: u64) {
+        if self.imp().animating.replace(true) {
+            return;
+        }
+        let view = self.downgrade();
+        let delay = Duration::from_millis(delay_ms.max(MIN_ANIMATION_DELAY));
+        glib::timeout_add_local_once(delay, move || {
+            if let Some(view) = view.upgrade() {
+                view.imp().animating.set(false);
+                view.queue_draw();
+            }
+        });
+    }
+
+    /// Hold the textures this frame draws and no others: an image's pixels
+    /// are read only when its generation changes, and what is deleted or
+    /// off screen is let go.
+    fn update_textures(&self, shared: &Shared, frame: &Frame) {
+        let mut textures = self.imp().textures.borrow_mut();
+        let mut last = std::mem::take(&mut *textures);
+        for placement in &frame.placements {
+            let key = (placement.image_id, placement.generation);
+            if textures.contains_key(&key) {
+                continue;
+            }
+            let texture = last.remove(&key).or_else(|| {
+                let pixels = shared.engine.image_pixels(placement.image_id)?;
+                texture(pixels)
+            });
+            if let Some(texture) = texture {
+                textures.insert(key, texture);
+            }
+        }
+    }
+
+    /// Draw one layer's images, clipped to the grid. `frame` holds them in
+    /// drawing order.
+    fn paint_images(&self, snapshot: &gtk4::Snapshot, frame: &Frame, layer: u8) {
+        let textures = self.imp().textures.borrow();
+        let (cell_w, cell_h) = self.cell_size();
+        let grid = graphene::Rect::new(
+            0.0,
+            0.0,
+            (i32::from(frame.info.cols) * cell_w) as f32,
+            (i32::from(frame.info.rows) * cell_h) as f32,
+        );
+        for placement in frame.placements.iter().filter(|p| p.layer == layer) {
+            let Some(texture) = textures.get(&(placement.image_id, placement.generation)) else {
+                continue;
+            };
+            let size = (texture.width() as f32, texture.height() as f32);
+            let Some((target, whole)) = image_rects(placement, (cell_w, cell_h), size) else {
+                continue;
+            };
+            let Some(clip) = target.intersection(&grid) else {
+                continue;
+            };
+            snapshot.push_clip(&clip);
+            snapshot.append_texture(texture, &whole);
+            snapshot.pop();
+        }
+    }
+
+    /// One row's text at `y`: one run per style, each cluster at its own
+    /// cell.
+    fn paint_text(
+        &self,
+        snapshot: &gtk4::Snapshot,
+        cells: &[Painted],
+        y: f32,
+        metrics: &Metrics,
+        font: &pango::FontDescription,
+    ) {
+        let cw = metrics.width as f32;
+        let mut col = 0;
+        while col < cells.len() {
+            let start = col;
+            while col < cells.len() && cells[col].same_style(&cells[start]) {
+                col += 1;
+            }
+            let (text, columns) = run_text(&cells[start..col]);
+            let style = &cells[start];
+            let off = self.imp().text_blink_off.get();
+            if style.hidden(off) || text.trim().is_empty() {
+                continue;
+            }
+            let color = rgba(style.fg, style.alpha());
+            let x = start as f32 * cw;
+            let baseline = graphene::Point::new(x, y + metrics.baseline);
+            self.draw_glyphs(
+                snapshot,
+                &text,
+                &columns,
+                &style.font(font),
+                &color,
+                &baseline,
+            );
+            if style.flags & ffi::CELL_STRIKE != 0 {
+                let (top, thickness) = metrics.strike;
+                let width = (col - start) as f32 * cw;
+                let line = graphene::Rect::new(x, y + top, width, thickness);
+                snapshot.append_color(&color, &line);
             }
         }
     }
@@ -1185,6 +1307,70 @@ impl GhosttyView {
     }
 }
 
+/// One row's backgrounds at `y`: one rectangle per run of equal,
+/// non-default color.
+fn paint_backgrounds(snapshot: &gtk4::Snapshot, cells: &[Painted], y: f32, (cw, ch): (f32, f32)) {
+    let mut col = 0;
+    while col < cells.len() {
+        let start = col;
+        while col < cells.len() && cells[col].bg == cells[start].bg {
+            col += 1;
+        }
+        if let Some(bg) = cells[start].bg {
+            snapshot.append_color(
+                &rgba(bg, 1.0),
+                &graphene::Rect::new(start as f32 * cw, y, (col - start) as f32 * cw, ch),
+            );
+        }
+    }
+}
+
+/// An image's pixels as a texture. Kitty's alpha is straight, as these
+/// formats take it. `None` if they do not add up to the image's size.
+fn texture(pixels: Pixels) -> Option<gdk::Texture> {
+    let (format, bytes) = match pixels.format {
+        ffi::FORMAT_RGB => (gdk::MemoryFormat::R8g8b8, 3),
+        ffi::FORMAT_RGBA => (gdk::MemoryFormat::R8g8b8a8, 4),
+        ffi::FORMAT_GRAY_ALPHA => (gdk::MemoryFormat::G8a8, 2),
+        ffi::FORMAT_GRAY => (gdk::MemoryFormat::G8, 1),
+        _ => return None,
+    };
+    let stride = pixels.width as usize * bytes;
+    let width = i32::try_from(pixels.width).ok().filter(|&w| w > 0)?;
+    let height = i32::try_from(pixels.height).ok().filter(|&h| h > 0)?;
+    if pixels.data.len() != stride * pixels.height as usize {
+        return None;
+    }
+    let data = glib::Bytes::from_owned(pixels.data);
+    Some(gdk::MemoryTexture::new(width, height, format, &data, stride).upcast())
+}
+
+/// Where a placement goes, in widget pixels: its target rectangle, and
+/// the rectangle the whole `image` scales to so that the source rectangle
+/// lands on the target. Drawing the whole image clipped to the target
+/// crops it with no copy. `None` for a placement with nothing to show.
+fn image_rects(
+    placement: &Placement,
+    (cell_w, cell_h): (i32, i32),
+    (image_w, image_h): (f32, f32),
+) -> Option<(graphene::Rect, graphene::Rect)> {
+    if placement.source_width == 0 || placement.source_height == 0 {
+        return None;
+    }
+    let x = (i64::from(placement.col) * i64::from(cell_w) + i64::from(placement.offset_x)) as f32;
+    let y = (i64::from(placement.row) * i64::from(cell_h) + i64::from(placement.offset_y)) as f32;
+    let (width, height) = (placement.width as f32, placement.height as f32);
+    let scale_x = width / placement.source_width as f32;
+    let scale_y = height / placement.source_height as f32;
+    let whole = graphene::Rect::new(
+        x - placement.source_x as f32 * scale_x,
+        y - placement.source_y as f32 * scale_y,
+        image_w * scale_x,
+        image_h * scale_y,
+    );
+    Some((graphene::Rect::new(x, y, width, height), whole))
+}
+
 /// A run's text and, for each of its bytes, the column of the cell it
 /// comes from, counted from the run's first cell. A cell adds its whole
 /// cluster, an empty cell or the tail of a wide one a space, so every cell
@@ -1216,7 +1402,11 @@ fn painted_row<'a>(
         .filter_map(|col| frame.cell(row, col).map(|cell| (col, cell)))
         .map(|(col, cell)| {
             let cursor = block && is_cursor(info, row, col);
-            let painted = Painted::new(info, cell, frame.grapheme(row, col), cursor);
+            let cluster = match frame.grapheme(row, col) {
+                [KITTY_PLACEHOLDER, ..] => &[],
+                cluster => cluster,
+            };
+            let painted = Painted::new(info, cell, cluster, cursor);
             match marks.get(row * cols + col) {
                 Some(&Some(current)) if !cursor && cell.flags & ffi::CELL_SELECTED == 0 => {
                     painted.searched(current)
@@ -1566,8 +1756,9 @@ fn px(pixels: i32) -> u32 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Link {
     uri: String,
-    /// Its viewport cells, row-major: a wrapped link spans rows.
-    cells: Range<usize>,
+    /// Its viewport cells, row-major and ascending: the cells of one
+    /// hyperlink need not touch.
+    cells: Vec<usize>,
 }
 
 impl Link {
@@ -1575,7 +1766,7 @@ impl Link {
     fn underline(&self, row: usize, cells: &mut [Painted<'_>]) {
         let line = row * cells.len();
         for (col, cell) in cells.iter_mut().enumerate() {
-            if self.cells.contains(&(line + col)) {
+            if self.cells.binary_search(&(line + col)).is_ok() {
                 // Single, in the text color; main's renderer draws it per
                 // run of equal style.
                 cell.underline = ffi::UNDERLINE_SINGLE;
@@ -1585,12 +1776,29 @@ impl Link {
     }
 }
 
-/// The link covering a viewport cell, if any: its logical line, the rows
-/// soft-wrapped together around `row`, is scanned whole.
+/// The link covering a viewport cell, if any: a program's OSC 8
+/// hyperlink, else a URL [`scan_links`] finds in the logical line, the
+/// rows soft-wrapped together around `row`, scanned whole.
 fn link_at(frame: &Frame, row: usize, col: usize) -> Option<Link> {
     let (cols, rows) = (usize::from(frame.info.cols), usize::from(frame.info.rows));
     if row >= rows || col >= cols {
         return None;
+    }
+    // A program's OSC 8 hyperlink wins over a URL in the plain text.
+    if let Some(uri) = frame.link(row, col) {
+        let entry = frame.cell(row, col)?.link;
+        let cells = frame
+            .cells
+            .iter()
+            .take(cols * rows)
+            .enumerate()
+            .filter(|(_, cell)| cell.link == entry)
+            .map(|(index, _)| index)
+            .collect();
+        return Some(Link {
+            uri: uri.to_owned(),
+            cells,
+        });
     }
     let wraps = |row| {
         frame
@@ -1615,8 +1823,31 @@ fn link_at(frame: &Frame, row: usize, col: usize) -> Option<Link> {
     let start = first * cols;
     Some(Link {
         uri: line[range.clone()].iter().collect(),
-        cells: start + range.start..start + range.end,
+        cells: (start + range.start..start + range.end).collect(),
     })
+}
+
+/// Whether a link may reach the desktop's handler on this machine, `host`
+/// by name. Links come from whatever is on the far side of the tab, which
+/// the view cannot see, and a `file:` URI there means a file over there. So
+/// one opens only if its authority is exactly `host`: an empty authority,
+/// or `localhost`, is the sender's own machine. Text without a scheme is
+/// nothing a handler can take.
+fn may_open(uri: &str, host: &str) -> bool {
+    match glib::Uri::parse_scheme(uri) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("file") => {
+            !host.is_empty() && file_authority(uri) == Some(host)
+        }
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// The authority of a `file:` URI, empty in `file:///path`; `None` for the
+/// forms with none at all, like `file:/path`.
+fn file_authority(uri: &str) -> Option<&str> {
+    let (_, rest) = uri.split_once(':')?;
+    rest.strip_prefix("//")?.split(['/', '?', '#']).next()
 }
 
 /// What a cell adds to a logical line, one `char` per cell so an index maps
@@ -1753,6 +1984,7 @@ fn launch_uri(view: &GhosttyView, uri: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::engine::Engine;
     use super::*;
 
     const WHEEL: gdk::ScrollUnit = gdk::ScrollUnit::Wheel;
@@ -1769,6 +2001,87 @@ mod tests {
                 rows
             })
             .sum()
+    }
+
+    /// A 20-column screen after `output`.
+    fn screen(output: &str) -> Frame {
+        let engine = Engine::new(20, 3).expect("engine");
+        engine.write(output.as_bytes());
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        frame
+    }
+
+    #[test]
+    fn a_hyperlink_covers_its_cells_and_no_others() {
+        let frame = screen("a \x1b]8;;https://a.example/\x1b\\link\x1b]8;;\x1b\\ b");
+        let link = link_at(&frame, 0, 3).expect("a link");
+        assert_eq!(link.uri, "https://a.example/");
+        assert_eq!(link.cells, [2, 3, 4, 5]);
+        assert_eq!(link_at(&frame, 0, 1), None);
+        assert_eq!(link_at(&frame, 0, 6), None);
+    }
+
+    #[test]
+    fn a_hyperlink_broken_over_rows_is_one_link() {
+        let open = "\x1b]8;;https://a.example/\x1b\\";
+        let frame = screen(&format!("{open}ab\x1b]8;;\x1b\\\r\n{open}cd\x1b]8;;\x1b\\"));
+        let link = link_at(&frame, 1, 0).expect("a link");
+        assert_eq!(link.cells, [0, 1, 20, 21]);
+    }
+
+    #[test]
+    fn text_that_reads_as_a_url_is_not_an_osc_8_hyperlink() {
+        // The frame carries no OSC 8 link: [`scan_links`] may still find a
+        // URL in the plain text at [`link_at`]'s fallback.
+        let frame = screen("https://a.example/");
+        assert_eq!(frame.cell(0, 3).map(|cell| cell.link), Some(0));
+        assert_eq!(frame.link(0, 3), None);
+    }
+
+    #[test]
+    fn cells_past_the_frame_hold_no_link() {
+        let frame = screen("\x1b]8;;https://a.example/\x1b\\x\x1b]8;;\x1b\\");
+        assert_eq!(link_at(&frame, 3, 0), None);
+        assert_eq!(link_at(&frame, 0, 20), None);
+    }
+
+    #[test]
+    fn only_a_file_link_naming_this_host_may_open() {
+        let may = |uri| may_open(uri, "here");
+        assert!(may("file://here/etc/hosts"));
+        assert!(may("FILE://here/etc/hosts"));
+        assert!(may("file://here"));
+        for uri in [
+            "file://there/etc/hosts",
+            "FILE://there/etc/hosts",
+            "file://HERE/etc/hosts",
+            "file://here.example/etc/hosts",
+            "file://user@here/etc/hosts",
+            "file://here:80/etc/hosts",
+            "file://here\\@there/etc/hosts",
+            "file://localhost/etc/hosts",
+            "file:///etc/hosts",
+            "file:/etc/hosts",
+            "file:etc/hosts",
+        ] {
+            assert!(!may(uri), "{uri}");
+        }
+    }
+
+    #[test]
+    fn a_host_with_no_name_opens_no_file_link() {
+        assert!(!may_open("file:///etc/hosts", ""));
+    }
+
+    #[test]
+    fn other_schemes_may_open_and_text_without_one_may_not() {
+        let may = |uri| may_open(uri, "here");
+        assert!(may("https://example.com/"));
+        assert!(may("mailto:a@example.com"));
+        assert!(!may(" file://there/etc/hosts"));
+        assert!(!may("/etc/hosts"));
+        assert!(!may(""));
     }
 
     #[test]
@@ -2095,6 +2408,93 @@ mod tests {
     }
 
     #[test]
+    fn placeholder_cells_draw_no_text() {
+        let engine = super::super::engine::Engine::new(4, 1).expect("engine");
+        engine.write("a\u{10eeee}\u{305}\u{305}b".as_bytes());
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        let (text, _) = run_text(&painted_row(&frame, 0, &[], false)[..3]);
+        assert_eq!(text, "a b");
+    }
+
+    fn placement(col: i32, row: i32) -> Placement {
+        Placement {
+            col,
+            row,
+            width: 40,
+            height: 60,
+            source_width: 40,
+            source_height: 60,
+            ..Placement::default()
+        }
+    }
+
+    fn sides(rect: &graphene::Rect) -> [f32; 4] {
+        [rect.x(), rect.y(), rect.width(), rect.height()]
+    }
+
+    #[test]
+    fn an_image_sits_at_its_cell_plus_its_offset() {
+        let offset = Placement {
+            offset_x: 3,
+            offset_y: 5,
+            ..placement(2, 1)
+        };
+        let (target, whole) = image_rects(&offset, (10, 20), (40.0, 60.0)).unwrap();
+        assert_eq!(sides(&target), [23.0, 25.0, 40.0, 60.0]);
+        assert_eq!(sides(&whole), sides(&target));
+        // Above the viewport it starts off the widget, to be clipped.
+        let (target, _) = image_rects(&placement(0, -2), (10, 20), (40.0, 60.0)).unwrap();
+        assert_eq!(sides(&target), [0.0, -40.0, 40.0, 60.0]);
+    }
+
+    #[test]
+    fn the_source_rectangle_lands_on_the_target() {
+        // The right half of a 40 × 60 image, drawn twice its size.
+        let half = Placement {
+            width: 40,
+            height: 120,
+            source_x: 20,
+            source_width: 20,
+            ..placement(1, 0)
+        };
+        let (target, whole) = image_rects(&half, (10, 20), (40.0, 60.0)).unwrap();
+        assert_eq!(sides(&target), [10.0, 0.0, 40.0, 120.0]);
+        assert_eq!(sides(&whole), [-30.0, 0.0, 80.0, 120.0]);
+    }
+
+    #[test]
+    fn an_empty_source_rectangle_draws_nothing() {
+        let empty = Placement {
+            source_width: 0,
+            ..placement(0, 0)
+        };
+        assert!(image_rects(&empty, (10, 20), (40.0, 60.0)).is_none());
+    }
+
+    #[test]
+    fn every_stored_format_makes_a_texture() {
+        let pixels = |format, data: &[u8]| Pixels {
+            width: 2,
+            height: 1,
+            format,
+            data: data.to_vec(),
+        };
+        for (format, bytes) in [
+            (ffi::FORMAT_RGB, 3),
+            (ffi::FORMAT_RGBA, 4),
+            (ffi::FORMAT_GRAY_ALPHA, 2),
+            (ffi::FORMAT_GRAY, 1),
+        ] {
+            let data = vec![9; 2 * bytes];
+            let made = texture(pixels(format, &data)).expect("texture");
+            assert_eq!((made.width(), made.height()), (2, 1));
+            assert!(texture(pixels(format, &data[1..])).is_none(), "short");
+        }
+        assert!(texture(pixels(2, &[0; 8])).is_none(), "PNG is never stored");
+    }
+
+    #[test]
     fn glyphs_sit_at_their_cells_whatever_the_font_advances() {
         // 9.6-pixel glyphs on a 10-pixel grid.
         let advance = 96 * pango::SCALE / 10;
@@ -2307,7 +2707,7 @@ mod tests {
         assert_eq!(uri_at(&frame, 2, 6), None, "the word after it");
         assert_eq!(uri_at(&frame, 3, 0), None);
         let link = link_at(&frame, 1, 0).unwrap();
-        assert_eq!(link.cells, 3..3 + url.len());
+        assert_eq!(link.cells, (3..3 + url.len()).collect::<Vec<usize>>());
     }
 
     #[test]
@@ -2503,9 +2903,12 @@ mod ghostty_display {
         underline_styles(&backend, &view);
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
+        program_clipboard(&backend, &view, &mut rx);
         search_highlight(&backend, &view);
         blinking_text(&backend, &view);
         primary_selection(&backend, &view, &mut rx);
+        kitty_images(&backend, &view);
+        hyperlinks_hover_and_open(&backend, &view, &mut rx);
         links_hover_and_open(&backend, &view, &mut rx);
         window.close();
 
@@ -2864,6 +3267,46 @@ mod ghostty_display {
                 "output"
             ]
         );
+    }
+
+    /// OSC 52 sets the clipboard or PRIMARY, a malformed write leaves them
+    /// alone, and a query gets no answer.
+    fn program_clipboard(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let context = glib::MainContext::default();
+        let read = |clipboard: gdk::Clipboard| {
+            let text = context.block_on(clipboard.read_text_future());
+            text.unwrap().map(String::from)
+        };
+        view.clipboard().set_text("system before");
+        view.primary_clipboard().set_text("primary before");
+
+        backend.write(b"\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(read(view.clipboard()).as_deref(), Some("hello"));
+        assert_eq!(
+            read(view.primary_clipboard()).as_deref(),
+            Some("primary before")
+        );
+
+        backend.write(b"\x1b]52;p;d29ybGQ=\x07");
+        assert_eq!(read(view.clipboard()).as_deref(), Some("hello"));
+        assert_eq!(read(view.primary_clipboard()).as_deref(), Some("world"));
+        backend.write(b"\x1b]52;s;Ym90aA==\x07");
+        assert_eq!(read(view.primary_clipboard()).as_deref(), Some("both"));
+
+        backend.write(b"\x1b]52;c;SGVs!!!bG8=\x07");
+        backend.write(b"\x1b]52;c;YQBi\x07");
+        backend.write(b"\x1b]52;c;\x07");
+        assert_eq!(read(view.clipboard()).as_deref(), Some("hello"));
+
+        while rx.try_recv().is_ok() {}
+        backend.write(b"\x1b]52;c;?\x07");
+        backend.write(b"\x1b]52;p;?\x07");
+        while context.iteration(false) {}
+        assert!(rx.try_recv().is_err(), "a query must go unanswered");
     }
 
     /// Glyphs, the cursor and text lines sit on the cell grid, however far
@@ -3528,6 +3971,295 @@ mod ghostty_display {
         let (decomposed, plain) = (shaped(2), shaped(3));
         assert_ne!(at(&decomposed, 1), at(&plain, 1), "the accent was dropped");
         assert_eq!(at(&decomposed, 2).len(), 1, "y follows in the next cell");
+    }
+
+    /// Images land at their cells in their layers, scroll with the text,
+    /// go when deleted, and animate; called from the test above, which
+    /// owns GTK.
+    fn kitty_images(backend: &GhosttyBackend, view: &GhosttyView) {
+        const RED: [u8; 4] = [0, 0, 255, 255];
+        const GREEN: [u8; 4] = [0, 255, 0, 255];
+        assert!(backend.features().kitty_graphics);
+        let (cell_w, cell_h) = view.cell_size();
+        let (w, h) = (cell_w as usize, cell_h as usize);
+        // An image filling `cols` × `rows` cells, in one color.
+        let show = |id: u32, [b, g, r, a]: [u8; 4], (cols, rows): (usize, usize), rest: &str| {
+            let (width, height) = (cols * w, rows * h);
+            let data = [r, g, b, a].repeat(width * height);
+            let control = format!("a=T,f=32,i={id},s={width},v={height},q=2{rest}");
+            let data = glib::base64_encode(&data);
+            backend.write(format!("\x1b_G{control};{data}\x1b\\").as_bytes());
+        };
+        // The middle of a cell.
+        let mid = |at: &dyn Fn(usize, usize) -> [u8; 4], col: usize, row: usize| {
+            at(col * w + w / 2, row * h + h / 2)
+        };
+        // With the cursor hidden: it would sit on the cell after an image.
+        let fresh = || {
+            backend.reset();
+            backend.write(b"\x1b[?25l");
+        };
+        fresh();
+        let background = pixels(view)(view.width() as usize - 1, view.height() as usize - 1);
+
+        // At its cell, and not beside it.
+        backend.write(b"\x1b[2;3H");
+        show(1, RED, (2, 1), "");
+        let at = pixels(view);
+        assert_eq!(mid(&at, 2, 1), RED);
+        assert_eq!(mid(&at, 3, 1), RED);
+        assert_eq!(mid(&at, 1, 1), background);
+        assert_eq!(mid(&at, 4, 1), background);
+        assert_eq!(mid(&at, 2, 0), background);
+        assert_eq!(mid(&at, 2, 2), background);
+
+        // Scrolls with the text, is clipped at the top, then goes.
+        backend.write(b"\x1b[999;1H\r\n");
+        assert_eq!(mid(&pixels(view), 2, 0), RED, "moved up a row");
+        backend.write(b"\r\n");
+        assert_eq!(mid(&pixels(view), 2, 0), background, "scrolled off");
+        assert!(view.imp().textures.borrow().is_empty(), "texture kept");
+        view.shared().unwrap().engine.scroll(Scroll::By(-1));
+        assert_eq!(mid(&pixels(view), 2, 0), RED, "back in the scrollback");
+        view.shared().unwrap().engine.scroll(Scroll::Bottom);
+
+        // Partly above the viewport, what is left shows.
+        fresh();
+        backend.write(b"\x1b[999;1H");
+        show(10, RED, (1, 2), ",C=1");
+        let rows = usize::from(view.shared().unwrap().engine.size().1);
+        backend.write(b"\x1b[999;1H");
+        backend.write("\r\n".repeat(rows).as_bytes());
+        let at = pixels(view);
+        assert_eq!(view.imp().frame.borrow().placements[0].row, -1);
+        assert_eq!(mid(&at, 0, 0), RED);
+        assert_eq!(mid(&at, 0, 1), background);
+
+        // Past the grid's edge it is clipped, even with room to draw.
+        fresh();
+        let (cols, rows) = view.shared().unwrap().engine.size();
+        view.request_grid(rows, cols - 1);
+        let last = usize::from(cols) - 2;
+        backend.write(format!("\x1b[1;{}H", last + 1).as_bytes());
+        show(11, RED, (3, 1), ",C=1");
+        let at = pixels(view);
+        assert_eq!(mid(&at, last, 0), RED);
+        assert_eq!(mid(&at, last + 1, 0), background, "past the last column");
+        view.request_grid(rows, cols);
+
+        // Deleted, it goes, along with its texture.
+        fresh();
+        show(2, RED, (1, 1), "");
+        assert_eq!(mid(&pixels(view), 0, 0), RED);
+        backend.write(b"\x1b_Ga=d,d=I,i=2,q=2\x1b\\");
+        assert_eq!(mid(&pixels(view), 0, 0), background);
+        assert!(view.imp().textures.borrow().is_empty(), "texture kept");
+
+        // Below text: over a colored cell, under its text. A block fills
+        // the middle of its cell, so text shows through at that pixel.
+        fresh();
+        backend.write("\x1b[1;1H\x1b[44m \u{2588}\x1b[0m\x1b[1;1H".as_bytes());
+        show(3, RED, (2, 1), ",z=-1,C=1");
+        let at = pixels(view);
+        assert_eq!(mid(&at, 0, 0), RED, "over the cell's background");
+        assert_ne!(mid(&at, 1, 0), RED, "under the text");
+
+        // Below backgrounds: over the default one, under a colored cell.
+        fresh();
+        backend.write(b"\x1b[1;1H\x1b[44m \x1b[0m\x1b[1;1H");
+        show(4, RED, (2, 1), ",z=-1073741825,C=1");
+        let at = pixels(view);
+        assert_ne!(mid(&at, 0, 0), RED, "under the colored cell");
+        assert_eq!(mid(&at, 1, 0), RED, "over the default background");
+
+        // Above text, and higher z over lower.
+        fresh();
+        backend.write("\x1b[1;1H\u{2588}\x1b[1;1H".as_bytes());
+        show(5, GREEN, (1, 1), ",z=2,C=1");
+        show(6, RED, (1, 1), ",z=1,C=1");
+        assert_eq!(mid(&pixels(view), 0, 0), GREEN);
+
+        // The source rectangle crops: the right half of red | green.
+        fresh();
+        let row: Vec<u8> = [[255, 0, 0, 255].repeat(w), [0, 255, 0, 255].repeat(w)].concat();
+        let data = glib::base64_encode(&row.repeat(h));
+        let (width, half) = (2 * w, w);
+        let control = format!("a=T,f=32,i=7,s={width},v={h},x={half},w={half},q=2");
+        backend.write(format!("\x1b_G{control};{data}\x1b\\").as_bytes());
+        let at = pixels(view);
+        assert_eq!(mid(&at, 0, 0), GREEN);
+        assert_eq!(mid(&at, 1, 0), background);
+
+        // A placeholder cell shows the image, with no glyph over it.
+        fresh();
+        let (width, height) = (w, h);
+        let data = glib::base64_encode(&[255, 0, 0, 255].repeat(width * height));
+        let control = format!("a=T,U=1,f=32,i=8,s={width},v={height},c=1,r=1,q=2");
+        backend.write(format!("\x1b_G{control};{data}\x1b\\").as_bytes());
+        backend.write("\x1b[38;5;8m\u{10eeee}\u{305}\u{305}\x1b[39m".as_bytes());
+        let at = pixels(view);
+        for (x, y) in [(1, 1), (w / 2, h / 2), (w - 2, h - 2)] {
+            assert_eq!(at(x, y), RED, "({x}, {y})");
+        }
+
+        // An animation runs by itself: the view asks for its own frames.
+        fresh();
+        let frame = |control: &str, pixel: [u8; 3]| {
+            let [r, g, b] = pixel;
+            let data = glib::base64_encode(&[r, g, b, 255].repeat(w * h));
+            let size = format!("f=32,s={w},v={h},q=2");
+            backend.write(format!("\x1b_G{control},{size};{data}\x1b\\").as_bytes());
+        };
+        frame("a=T,i=9", [255, 0, 0]);
+        frame("a=f,i=9,z=40", [0, 255, 0]);
+        backend.write(b"\x1b_Ga=a,i=9,r=1,z=40,q=2\x1b\\");
+        backend.write(b"\x1b_Ga=a,i=9,s=3,q=2\x1b\\");
+        // Only the main loop runs here, so each frame is one GTK drew.
+        let context = glib::MainContext::default();
+        let mut frames = std::collections::HashSet::new();
+        for _ in 0..500 {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(2));
+            let drawn = view.imp().frame.borrow();
+            frames.extend(drawn.placements.iter().map(|p| p.generation));
+            if frames.len() >= 3 {
+                break;
+            }
+        }
+        assert!(frames.len() >= 3, "{frames:?}");
+        backend.reset();
+    }
+
+    /// Hovering a hyperlink shows its URI, underlines it and sets the
+    /// cursor, Ctrl+click opens it, a `file://` link for another host stays
+    /// shut, and a program tracking the mouse keeps all of it until Shift.
+    /// The desktop's handler is stubbed out: nothing here leaves the process.
+    fn hyperlinks_hover_and_open(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+        let log = Rc::clone(&opened);
+        let stub: Launcher = Rc::new(move |_, uri| log.borrow_mut().push(uri.to_owned()));
+        let desktop = view.imp().launcher.replace(Some(stub));
+        assert!(desktop.is_some(), "the desktop's handler is the default");
+
+        let none = gdk::ModifierType::empty();
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+        let metrics = view.metrics();
+        let (cell_w, cell_h) = (metrics.width, metrics.height);
+        let at = |col: i32| (f64::from(col * cell_w + cell_w / 2), f64::from(cell_h / 2));
+        let click = |state, time, col| {
+            view.press(state, time, at(col));
+            view.release(state, at(col));
+        };
+        let tooltip = || view.tooltip_text().map(|text| text.to_string());
+        let pointer = || view.cursor().and_then(|c| c.name()).as_deref() == Some(LINK_CURSOR);
+        let underlined = |col: i32| {
+            let (x, y) = (
+                (col * cell_w + cell_w / 2) as usize,
+                metrics.underline.0 as usize,
+            );
+            render(view)(x..x + 1, y..y + 1)
+        };
+        let took = || std::mem::take(&mut *opened.borrow_mut());
+        let linked = |uri: &str| format!("see \x1b]8;;{uri}\x1b\\the docs\x1b]8;;\x1b\\ now");
+        let uri = "https://example.com/x";
+
+        view.pointer_left();
+        backend.reset();
+        backend.write(linked(uri).as_bytes());
+        assert!(!underlined(5), "no hover, no underline");
+        assert_eq!(tooltip(), None);
+
+        // On and off the link.
+        view.hover(none, at(5));
+        assert_eq!(tooltip().as_deref(), Some(uri));
+        assert!(pointer());
+        for col in [4, 8, 11] {
+            assert!(underlined(col), "column {col}");
+        }
+        assert!(!underlined(1) && !underlined(13));
+        view.hover(none, at(1));
+        assert_eq!(tooltip(), None);
+        assert!(!pointer());
+        assert!(!underlined(5));
+
+        // Output moves the text under a pointer that stays put.
+        view.hover(none, at(5));
+        backend.reset();
+        backend.write(b"nothing to see");
+        assert!(!underlined(5));
+        assert_eq!(tooltip(), None);
+        backend.reset();
+        backend.write(linked(uri).as_bytes());
+        assert!(underlined(5));
+        assert_eq!(tooltip().as_deref(), Some(uri));
+
+        // Leaving the widget clears everything.
+        view.pointer_left();
+        assert_eq!(tooltip(), None);
+        assert!(!pointer());
+        assert!(!underlined(5));
+
+        // Only a Ctrl+click on the link opens it.
+        click(none, 50_000, 5);
+        click(ctrl, 51_000, 1);
+        assert_eq!(took(), [] as [&str; 0]);
+        click(ctrl, 52_000, 5);
+        assert_eq!(took(), [uri]);
+
+        // A drag selects instead, and a release off the link opens nothing.
+        view.press(ctrl, 53_000, at(5));
+        view.drag_to(ctrl, at(9));
+        view.release(ctrl, at(9));
+        assert!(backend.selected_text().is_some_and(|text| !text.is_empty()));
+        assert_eq!(took(), [] as [&str; 0]);
+        view.press(ctrl, 54_000, at(5));
+        view.release(ctrl, at(1));
+        assert_eq!(took(), [] as [&str; 0]);
+
+        // A file link opens for this host alone, and still shows either way.
+        let host = glib::host_name();
+        let here = format!("file://{host}/etc/hosts");
+        let there = format!("file://not-{host}/etc/hosts");
+        backend.reset();
+        backend.write(linked(&here).as_bytes());
+        assert!(!underlined(5), "painted, and no hover");
+        click(ctrl, 55_000, 5);
+        assert_eq!(took(), [here.as_str()]);
+        backend.reset();
+        backend.write(linked(&there).as_bytes());
+        view.hover(none, at(5));
+        assert!(underlined(5));
+        assert_eq!(tooltip().as_deref(), Some(there.as_str()));
+        click(ctrl, 56_000, 5);
+        assert_eq!(took(), [] as [&str; 0]);
+        view.pointer_left();
+
+        // A program tracking the mouse gets the click, until Shift.
+        backend.reset();
+        backend.write(linked(uri).as_bytes());
+        backend.write(b"\x1b[?1000h\x1b[?1006h");
+        assert!(!underlined(5), "painted, and no hover");
+        view.hover(none, at(5));
+        assert_eq!(tooltip(), None);
+        while rx.try_recv().is_ok() {}
+        click(ctrl, 57_000, 5);
+        assert_eq!(took(), [] as [&str; 0]);
+        let report = std::iter::from_fn(|| rx.try_recv().ok()).any(|event| {
+            matches!(event, TerminalEvent::DataOut(bytes) if is_pointer_or_focus_report(&bytes))
+        });
+        assert!(report, "the press went to the program");
+        view.hover(shift, at(5));
+        assert_eq!(tooltip().as_deref(), Some(uri));
+        click(ctrl | shift, 58_000, 5);
+        assert_eq!(took(), [uri]);
+        backend.write(b"\x1b[?1000l\x1b[?1006l");
+        view.pointer_left();
+        while rx.try_recv().is_ok() {}
     }
 
     /// Paint the view now; the result tells whether any pixel in a box
