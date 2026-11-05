@@ -28,6 +28,7 @@ use super::backend::{
 use super::color_scheme;
 use super::vte::EventSender;
 use engine::{ClipboardDestination, Effect, Engine, Scroll};
+pub use view::install_options;
 use view::GhosttyView;
 
 /// The grid a backend starts with, before its widget is allocated.

@@ -8,7 +8,9 @@
 //! ([`track`]).
 //!
 //! Font, opacity and scrollback go the same way ([`apply_to`],
-//! [`install_terminal_defaults`]), without following the desktop theme.
+//! [`install_terminal_defaults`]), without following the desktop theme. So
+//! do the Ghostty view's options, through its own install (doc 02 §View
+//! options).
 //!
 //! The desktop theme is xdg-desktop-portal's `color-scheme`
 //! ([`color_scheme::portal_color_scheme`]), read at start and followed
@@ -84,13 +86,15 @@ pub fn install_default_scheme(raw: Option<String>) {
     refresh();
 }
 
-/// Record the stored font, opacity and scrollback rows and, if they
-/// changed, re-apply them to every open terminal.
+/// Record the stored font, opacity, scrollback and Ghostty rows and, if
+/// they changed, re-apply them to every open terminal.
 pub fn install_terminal_defaults(defaults: TerminalDefaults) {
     let previous = APPEARANCE.with(|state| {
         std::mem::replace(&mut state.borrow_mut().terminal_defaults, defaults.clone())
     });
     if previous != defaults {
+        #[cfg(feature = "backend-ghostty")]
+        crate::terminal::ghostty::install_options(&defaults.ghostty);
         for_each_terminal(apply_settings);
     }
 }
@@ -463,6 +467,7 @@ mod tests {
             font_size: 10.0,
             opacity: 0.8,
             scrollback_lines: 500,
+            ..Default::default()
         });
         let settings = |session: &SessionConfig| {
             let backend = FakeBackend::new();
