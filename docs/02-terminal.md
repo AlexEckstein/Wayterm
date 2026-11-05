@@ -365,7 +365,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   cursor stops blinking, is hidden or leaves the viewport. Losing focus
   and unmapping stop it too, so hidden tabs wake nothing, and gaining
   focus starts the blink over with the cursor on.
-- **Input.** Keys go through libghostty-vt's key encoder, so cursor-key
+- **Input.** Keys go to the input method first (§Input methods), then
+  through libghostty-vt's key encoder, so cursor-key
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
   Shift+Home/End jump to the top and bottom, as in VTE, instead of
   reaching the remote side. Ctrl+Shift+Up/Down jump between shell prompts
@@ -409,6 +410,39 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   the same way, on its own carry and by cell width, one report per
   column. With mode 1004 set, keyboard focus
   entering and leaving the widget sends `CSI I` and `CSI O`.
+- **Input methods.** IBus, Fcitx, dead keys and Compose reach the view
+  through a `GtkIMMulticontext` (`view/im.rs`), which sees every press
+  and release after the hotkey engine's capture phase (doc 11) and before
+  the local keys above. GTK's context commits plain typing as well as
+  composed text, so the view filters keys itself rather than through
+  `EventControllerKey::set_im_context`, and what a press does depends on
+  what the input method did with it (`key_route`):
+  - **Declined, nothing committed:** an ordinary key, even with text half
+    composed, so Ctrl+C still interrupts.
+  - **Kept, nothing committed:** nothing is sent. This is a dead key, a
+    syllable in progress, or an input method that answers later.
+  - **Kept, committed, nothing composing:** plain typing. The key goes
+    through the encoder carrying the committed text, so Kitty keyboard
+    modes report it as a key. Without this every letter would leave as
+    bare text.
+  - **Kept, committed, composing before or after:** the text leaves as
+    UTF-8 `DataOut`; the key only finished it.
+  - **Declined, committed:** the text, then the key, as Enter after a
+    Hangul syllable.
+
+  A commit outside a key press is finished text and leaves the same way.
+  Composing starts at the cursor, so it scrolls the viewport back to it
+  as typing does. Unfinished text is drawn over the grid from the cursor's
+  cell, on an opaque background in the default colors with a bar for its
+  own cursor. Pango lays it out with the input method's attributes, which
+  is how the clause being converted stands out, so it does not sit on
+  cells. It moves left and up to stay in the view, and wraps past the
+  view's width. After a paint in which the cursor moved, and on gaining
+  focus, the cursor's cell goes to the input method for its candidate
+  window, from an idle callback: the input method may answer with a
+  commit, which must not land inside a snapshot. Losing focus resets the
+  input method, so a tab in the background composes nothing; whether the
+  unfinished text is dropped or committed is the input method's choice.
 - **Search.** libghostty-vt's search covers the active screen and its
   scrollback, and the shim builds VTE's behavior on it: case-sensitive,
   with wrap-around. A new query starts from the viewport, forward from
@@ -483,7 +517,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   down to the next prompt; at the bottom, the last output above the
   cursor up. Without marks the selection is left alone. None of these
   keys reaches the program (`scroll_key` and `select_output_key` in
-  `view.rs`, `Scroll::Prompts` and `Engine::select_output` in
+  `view/input.rs`, `Scroll::Prompts` and `Engine::select_output` in
   `engine.rs`).
 - **Program clipboard.** An OSC 52 write sets a GTK clipboard, so a remote
   Neovim yank or tmux copy reaches the desktop: `p` and `s` go to PRIMARY,
@@ -702,8 +736,8 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   match is registered with the widget, so links are not lit or opened.
   There are no OSC 133 prompt marks either, so prompt scrolling and
   Ctrl+Shift+O select nothing (§Prompt marks and command output).
-- **Ghostty:** no SIXEL (`features()` says so); no input method or
-  compose support; no local use of a right click or the
+- **Ghostty:** no SIXEL (`features()` says so); no local use of a right
+  click or the
   horizontal wheel, which only reach a program tracking the mouse; a
   second button pressed during a drag resets GTK's gesture for the
   first, so that button's release is reported then, and the second's
@@ -712,6 +746,9 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   libghostty-vt has no cursor text color (the scheme's matches the
   default background in both palettes, so only a cell a program colored
   differs from VTE).
+- **Ghostty input methods:** no surrounding text is offered, so an input
+  method that reads or edits the text around the cursor works without it.
+  Unfinished text covers what is under it rather than pushing it aside.
 - **Ghostty images:** programs cannot learn the cell's size in pixels,
   so tools that size images from it may refuse or misjudge them: `CSI
   14 t`, `16 t` and `18 t` go unanswered, and a PTY or SSH window size

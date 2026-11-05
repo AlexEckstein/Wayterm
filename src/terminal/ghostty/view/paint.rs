@@ -13,7 +13,8 @@
 //! timer that runs only while a mapped view shows some. Kitty images come
 //! from the same snapshot, each in its layer: over the default background,
 //! over the cell backgrounds, or over the text.
-//! The link under the pointer is underlined.
+//! The link under the pointer is underlined. Text an input method is
+//! composing goes over everything, at the cursor.
 
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -112,6 +113,8 @@ impl GhosttyView {
             }
         }
         self.paint_images(snapshot, &frame, ffi::LAYER_ABOVE_TEXT);
+        self.paint_preedit(snapshot, &info, &metrics);
+        self.follow_im_cursor(&info, &metrics);
     }
 
     /// One row's text at `y`: one run per style, each cluster at its own
