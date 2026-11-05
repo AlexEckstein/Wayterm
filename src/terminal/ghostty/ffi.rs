@@ -1,8 +1,8 @@
 //! Raw bindings to `shim.c`, the narrow C layer over libghostty-vt; use
 //! [`Engine`](super::engine::Engine) instead of calling these directly.
-//! The structs mirror `WtCell`/`WtFrame`/`WtSpan` there; the unit tests
-//! check the sizes, and where the cell's grapheme fields sit, against the
-//! C compiler's.
+//! The structs mirror `WtCell`/`WtFrame`/`WtSpan`/`WtPlacement`/`WtPixels`
+//! there; the unit tests check the sizes, and where the fields after any
+//! padding sit, against the C compiler's.
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -44,6 +44,18 @@ pub const BUTTON_NONE: u32 = 0;
 pub const BUTTON_LEFT: u32 = 1;
 pub const BUTTON_WHEEL_UP: u32 = 4;
 pub const BUTTON_WHEEL_DOWN: u32 = 5;
+
+pub const LAYER_BELOW_BG: u8 = 0;
+pub const LAYER_BELOW_TEXT: u8 = 1;
+pub const LAYER_ABOVE_TEXT: u8 = 2;
+
+/// Bytes of images one screen holds; also bounds a PNG's decoded size.
+pub const KITTY_STORAGE_LIMIT: u64 = 320_000_000;
+
+pub const FORMAT_RGB: u8 = 0;
+pub const FORMAT_RGBA: u8 = 1;
+pub const FORMAT_GRAY_ALPHA: u8 = 3;
+pub const FORMAT_GRAY: u8 = 4;
 
 /// One grid cell, colors resolved to RGB.
 #[repr(C)]
@@ -90,6 +102,45 @@ pub struct WtSpan {
     pub current: u8,
 }
 
+/// One image placement to draw.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WtPlacement {
+    /// Of the image's pixels: a new one means new pixels.
+    pub generation: u64,
+    pub image_id: u32,
+    /// The order within a layer, lowest first.
+    pub z: i32,
+    /// The top-left cell, from the viewport's; negative when the placement
+    /// starts off screen.
+    pub col: i32,
+    pub row: i32,
+    /// Pixels into that cell.
+    pub offset_x: u32,
+    pub offset_y: u32,
+    /// The size to draw at, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// The part of the image to draw, in image pixels.
+    pub source_x: u32,
+    pub source_y: u32,
+    pub source_width: u32,
+    pub source_height: u32,
+    /// `LAYER_*`.
+    pub layer: u8,
+}
+
+/// A stored image's pixels, borrowed until the terminal next changes.
+#[repr(C)]
+pub struct WtPixels {
+    pub data: *const u8,
+    pub len: usize,
+    pub width: u32,
+    pub height: u32,
+    /// `FORMAT_*`.
+    pub format: u8,
+}
+
 /// One key press for the encoder.
 #[repr(C)]
 pub struct WtKey {
@@ -128,6 +179,9 @@ pub struct WtMouse {
 
 pub type EffectFn =
     unsafe extern "C" fn(userdata: *mut c_void, kind: c_int, data: *const u8, len: usize);
+
+/// Decodes a PNG into the buffer `wt_ghostty_png_pixels` gives for `sink`.
+pub type PngFn = unsafe extern "C" fn(data: *const u8, len: usize, sink: *mut c_void) -> bool;
 
 extern "C" {
     pub fn wt_ghostty_new(cols: u16, rows: u16) -> *mut WtGhostty;
@@ -239,6 +293,16 @@ extern "C" {
         graphemes_cap: usize,
         graphemes_len: *mut usize,
     ) -> c_int;
+    pub fn wt_ghostty_set_png_decoder(decoder: Option<PngFn>);
+    pub fn wt_ghostty_png_pixels(sink: *mut c_void, width: u32, height: u32) -> *mut u8;
+    pub fn wt_ghostty_animation_tick(g: *mut WtGhostty, now_ms: u64, next_ms: *mut u64) -> c_int;
+    pub fn wt_ghostty_placements(
+        g: *mut WtGhostty,
+        out: *mut WtPlacement,
+        cap: usize,
+        len: *mut usize,
+    ) -> c_int;
+    pub fn wt_ghostty_image_pixels(g: *mut WtGhostty, image_id: u32, out: *mut WtPixels) -> c_int;
 }
 
 // ABI checks for the mirrors above (engine tests).
@@ -247,6 +311,11 @@ extern "C" {
     pub fn wt_ghostty_cell_size() -> usize;
     pub fn wt_ghostty_frame_size() -> usize;
     pub fn wt_ghostty_span_size() -> usize;
+    pub fn wt_ghostty_placement_size() -> usize;
+    pub fn wt_ghostty_pixels_size() -> usize;
     pub fn wt_ghostty_cell_grapheme_offset() -> usize;
     pub fn wt_ghostty_cell_grapheme_len_offset() -> usize;
+    pub fn wt_ghostty_placement_layer_offset() -> usize;
+    pub fn wt_ghostty_pixels_format_offset() -> usize;
+    pub fn wt_ghostty_storage_limit(g: *mut WtGhostty) -> u64;
 }
