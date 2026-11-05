@@ -457,16 +457,6 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   with none (`file:/path`). A refused link still shows its tooltip and
   underline, so the target can be read. Text with no URI scheme is refused;
   every other scheme goes to the handler.
-
-  `may_open` in `view.rs` decides what reaches the handler. A link comes
-  from whatever is on the far side of the tab, and the view does not know
-  the transport, so one rule covers every tab: a `file:` URI, in any case,
-  opens only if its authority is exactly this machine's name
-  (`glib::host_name`). Any other authority is refused, and so are an empty
-  one (`file:///path`), `localhost`, a user or a port in it, and the forms
-  with none (`file:/path`). A refused link still shows its tooltip and
-  underline, so the target can be read. Text with no URI scheme is refused;
-  every other scheme goes to the handler.
 - **Backend.** Events go through the same never-blocking sender as VTE's
   (§Backpressure). `send_input` and `paste` queue `DataOut` like a key
   press, so macros work unchanged; `paste` is bracketed when the program
