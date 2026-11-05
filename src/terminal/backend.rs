@@ -24,9 +24,19 @@ pub struct TerminalFeatures {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TerminalEvent {
     DataOut(Vec<u8>),
-    SizeChange { rows: u32, cols: u32 },
+    SizeChange {
+        rows: u32,
+        cols: u32,
+    },
     TitleChanged(String),
     Bell,
+    /// A program asked for a desktop notification (OSC 9, OSC 777). `title`
+    /// is empty when the protocol has none. Remote text, shown only through
+    /// [`tray::terminal_alert`](crate::ui::tray::terminal_alert).
+    Notification {
+        title: String,
+        body: String,
+    },
     Closed,
 }
 

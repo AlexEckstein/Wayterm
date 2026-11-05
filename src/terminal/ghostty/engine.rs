@@ -19,6 +19,12 @@ pub enum Effect {
     Title(String),
     /// The directory the shell reported, raw: a `file://` URI for OSC 7.
     Pwd(String),
+    /// A desktop notification (OSC 9, OSC 777); OSC 9 has no title, so
+    /// `title` is empty.
+    Notification {
+        title: String,
+        body: String,
+    },
 }
 
 /// Where [`Engine::scroll`] moves the viewport.
@@ -126,22 +132,52 @@ pub struct Engine {
     effects: Box<RefCell<Vec<Effect>>>,
 }
 
+/// A byte slice the shim lends for the length of a callback.
+///
+/// # Safety
+/// `data`/`len` is null or empty, or valid for reads for `'a`.
+unsafe fn borrowed<'a>(data: *const u8, len: usize) -> &'a [u8] {
+    if data.is_null() || len == 0 {
+        &[]
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { std::slice::from_raw_parts(data, len) }
+    }
+}
+
 /// Effect callback: only records, so it never re-enters the terminal.
 unsafe extern "C" fn on_effect(userdata: *mut c_void, kind: c_int, data: *const u8, len: usize) {
     // SAFETY: userdata is the engine's boxed effect list, alive for as long
     // as the terminal that calls this; data/len is a borrowed byte slice.
     let effects = unsafe { &*(userdata as *const RefCell<Vec<Effect>>) };
-    let bytes = if data.is_null() || len == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(data, len) }
-    };
+    let bytes = unsafe { borrowed(data, len) };
     let effect = match kind {
         ffi::EFFECT_PTY => Effect::Pty(bytes.to_vec()),
         ffi::EFFECT_BELL => Effect::Bell,
         ffi::EFFECT_TITLE => Effect::Title(String::from_utf8_lossy(bytes).into_owned()),
         ffi::EFFECT_PWD => Effect::Pwd(String::from_utf8_lossy(bytes).into_owned()),
         _ => return,
+    };
+    if let Ok(mut effects) = effects.try_borrow_mut() {
+        effects.push(effect);
+    }
+}
+
+/// Notification callback: records like [`on_effect`]. The terminal's
+/// parser drops control bytes, so the strings hold no NUL.
+unsafe extern "C" fn on_notification(
+    userdata: *mut c_void,
+    title: *const u8,
+    title_len: usize,
+    body: *const u8,
+    body_len: usize,
+) {
+    // SAFETY: as in `on_effect`; both strings are borrowed for the call.
+    let effects = unsafe { &*(userdata as *const RefCell<Vec<Effect>>) };
+    let text = |bytes| String::from_utf8_lossy(bytes).into_owned();
+    let effect = Effect::Notification {
+        title: text(unsafe { borrowed(title, title_len) }),
+        body: text(unsafe { borrowed(body, body_len) }),
     };
     if let Ok(mut effects) = effects.try_borrow_mut() {
         effects.push(effect);
@@ -174,6 +210,7 @@ impl Engine {
                 Some(on_effect),
                 &*effects as *const RefCell<Vec<Effect>> as *mut c_void,
             );
+            ffi::wt_ghostty_set_notification(raw.as_ptr(), Some(on_notification));
         }
         Some(Self { raw, effects })
     }
@@ -796,6 +833,82 @@ mod tests {
             engine.write(b"\x1b]7;file://box/srv/my%20site\x07"),
             vec![Effect::Pwd("file://box/srv/my%20site".into())]
         );
+    }
+
+    fn notification(title: &str, body: &str) -> Effect {
+        Effect::Notification {
+            title: title.into(),
+            body: body.into(),
+        }
+    }
+
+    #[test]
+    fn osc_9_raises_a_notification_without_a_title() {
+        let engine = engine();
+        assert_eq!(
+            engine.write(b"\x1b]9;build finished\x1b\\"),
+            vec![notification("", "build finished")]
+        );
+        assert_eq!(
+            engine.write(b"\x1b]9;bel terminated\x07"),
+            vec![notification("", "bel terminated")]
+        );
+    }
+
+    #[test]
+    fn osc_777_raises_a_notification_with_its_title_and_body() {
+        let engine = engine();
+        assert_eq!(
+            engine.write(b"\x1b]777;notify;CI;tests; all green\x1b\\"),
+            vec![notification("CI", "tests; all green")]
+        );
+        assert_eq!(
+            engine.write("\x1b]777;notify;caf\u{e9};\u{2713}\x07".as_bytes()),
+            vec![notification("caf\u{e9}", "\u{2713}")]
+        );
+    }
+
+    /// Effects stay in the order the bytes raised them, a notification
+    /// included, whichever callback delivered it.
+    #[test]
+    fn a_notification_keeps_its_place_among_effects() {
+        let effects = engine().write(b"\x07\x1b]9;done\x07\x1b]2;title\x07");
+        assert_eq!(
+            effects,
+            vec![
+                Effect::Bell,
+                notification("", "done"),
+                Effect::Title("title".into())
+            ]
+        );
+    }
+
+    /// Progress reports (OSC 9;4) and other extensions are not messages,
+    /// and neither is an OSC 777 that is not `notify`.
+    #[test]
+    fn other_osc_9_and_777_forms_raise_no_notification() {
+        let engine = engine();
+        for sequence in [
+            &b"\x1b]9;4;1;50\x07"[..],
+            b"\x1b]9;4;0\x07",
+            b"\x1b]777;preexec;ls\x07",
+            b"\x1b]777;notify;no body\x07",
+        ] {
+            assert_eq!(engine.write(sequence), vec![], "{sequence:?}");
+        }
+    }
+
+    /// Remote bytes are not guaranteed text: nothing here may reach the
+    /// UI as anything but valid UTF-8, and a NUL must not survive.
+    #[test]
+    fn a_notification_with_hostile_bytes_stays_text() {
+        let engine = engine();
+        let effects = engine.write(b"\x1b]777;notify;a\x00b;\xff\xfe\x1b\\");
+        let [Effect::Notification { title, body }] = effects.as_slice() else {
+            panic!("one notification: {effects:?}");
+        };
+        assert!(!title.contains('\0') && !body.contains('\0'));
+        assert!(body.is_empty() || body.contains('\u{fffd}'), "{body:?}");
     }
 
     #[test]

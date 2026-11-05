@@ -73,6 +73,10 @@ typedef struct {
 
 typedef void (*WtEffectFn)(void *userdata, int kind, const uint8_t *data,
                            size_t len);
+/* An effect with two strings, so not a WtEffectFn; shares its userdata. */
+typedef void (*WtNotificationFn)(void *userdata, const uint8_t *title,
+                                 size_t title_len, const uint8_t *body,
+                                 size_t body_len);
 
 /* One grid cell, colors already resolved to RGB. */
 typedef struct {
@@ -119,6 +123,7 @@ typedef struct {
   GhosttyMouseEvent mouse_event;
   GhosttySelectionGesture gesture;
   WtEffectFn effect;
+  WtNotificationFn notification;
   void *userdata;
   /* Search: created on first use; idle while `needle` is NULL. */
   GhosttySearch search;
@@ -162,6 +167,16 @@ static void on_title(GhosttyTerminal t, void *ud) {
 
 static void on_pwd(GhosttyTerminal t, void *ud) {
   emit_string(t, ud, GHOSTTY_TERMINAL_DATA_PWD, WT_EFFECT_PWD);
+}
+
+static void on_notification(GhosttyTerminal t, void *ud,
+                            const GhosttyTerminalDesktopNotification *n) {
+  (void)t;
+  WtGhostty *g = ud;
+  /* A sized struct: only read what its size reports. */
+  if (!g->notification || n->size < sizeof *n) return;
+  g->notification(g->userdata, (const uint8_t *)n->title.ptr, n->title.len,
+                  (const uint8_t *)n->body.ptr, n->body.len);
 }
 
 void wt_ghostty_search_clear(WtGhostty *g);
@@ -208,6 +223,8 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
                        (const void *)on_title);
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_PWD_CHANGED,
                        (const void *)on_pwd);
+  ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION,
+                       (const void *)on_notification);
   return g;
 }
 
@@ -215,6 +232,11 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
 void wt_ghostty_set_effect(WtGhostty *g, WtEffectFn effect, void *userdata) {
   g->effect = effect;
   g->userdata = userdata;
+}
+
+/* Fires like an effect, with the userdata given to wt_ghostty_set_effect. */
+void wt_ghostty_set_notification(WtGhostty *g, WtNotificationFn notification) {
+  g->notification = notification;
 }
 
 void wt_ghostty_write(WtGhostty *g, const uint8_t *data, size_t len) {

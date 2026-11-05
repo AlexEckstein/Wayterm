@@ -128,6 +128,7 @@ pub struct WtMouse {
 
 pub type EffectFn =
     unsafe extern "C" fn(userdata: *mut c_void, kind: c_int, data: *const u8, len: usize);
+pub type NotificationFn = unsafe extern "C" fn(*mut c_void, *const u8, usize, *const u8, usize);
 
 extern "C" {
     pub fn wt_ghostty_new(cols: u16, rows: u16) -> *mut WtGhostty;
@@ -137,6 +138,7 @@ extern "C" {
         effect: Option<EffectFn>,
         userdata: *mut c_void,
     );
+    pub fn wt_ghostty_set_notification(g: *mut WtGhostty, notification: Option<NotificationFn>);
     pub fn wt_ghostty_write(g: *mut WtGhostty, data: *const u8, len: usize);
     pub fn wt_ghostty_resize(
         g: *mut WtGhostty,
