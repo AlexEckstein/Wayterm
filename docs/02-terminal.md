@@ -244,6 +244,31 @@ A tab label carries a title state machine: placeholder (the session name)
 user). Once renamed, terminal titles no longer change it; a blank terminal
 title falls back to the session name (doc 03 §Tab labels).
 
+## Reported directory
+
+A shell may report its directory at each prompt with OSC 7
+(`file://host/path`, percent-encoded). Every terminal tab, SSH, local or
+serial and on either backend, keeps the last report on its page:
+`finish_connect` (`src/ui/tabs/terminal.rs`) connects to VTE's
+`current-directory-uri-changed` signal or the Ghostty view's
+`connect_directory` hook, so `TerminalBackend` and `TerminalEvent` are
+unchanged. `SessionTab::shell_directory_for_page` returns it.
+
+- **Decoded.** Both backends pass the raw URI on; the tab keeps the
+  percent-decoded path (`/srv/my site`), read by the same
+  `DirectoryFollower` as the SFTP sidebar. Its other rules apply too: the
+  first report pins the host, so a nested `ssh` does not replace the
+  directory, and anything that is not a `file://` URI is dropped (doc 07
+  §Following the shell).
+- **One terminal's.** The value starts empty with each new terminal, on a
+  reconnect too, and a late report from the old terminal goes nowhere. A
+  shell that exited keeps its last directory until the tab's next
+  terminal.
+
+Nothing reads the kept value yet: what consumes it (a new tab in the same
+directory, say) is a separate decision. The SFTP sidebar does not use it;
+it follows the same signals itself, and also probes, on SSH tabs only.
+
 ## FakeBackend
 
 `src/terminal/fake.rs`: an in-memory backend with no widget that records
@@ -282,7 +307,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   OSC 0/2
   titles, OSC 7 directories — come back from the `write` that raised them
   and leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
-  the view's directory hook instead.
+  the view's directory hook instead (§Reported directory).
 - **`GhosttyView`.** The GTK4 widget. Each frame snapshots the engine and
   paints it with `GtkSnapshot`: one background rectangle per run of equal
   color, and per run of equal style (bold, italic, strikethrough, faint;
@@ -392,7 +417,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   `connect_input`, `connect_output` and `connect_directory` hooks stand
   in for VTE's `commit`, `contents-changed` and
   `current-directory-uri-changed` signals, which the SFTP sidebar
-  follows the shell by (doc 07 §Following the shell).
+  follows the shell by (doc 07 §Following the shell); the directory
+  hook also feeds the tab's kept directory (§Reported directory).
 - **Color schemes.** `set_color_scheme` looks the name up as VTE does
   (§Color schemes) and makes the palette's foreground, background, cursor
   and 16 ANSI colors libghostty-vt's default colors. The 256-color cube
@@ -504,6 +530,9 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   showing the desktop.
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
+- **The kept directory has no consumer** (§Reported directory), and only
+  OSC 7 fills it: a shell that reports nothing, as many do over SSH (doc
+  07 §Following the shell), leaves it empty, and probes do not update it.
 - **VTE:** no Kitty graphics. Search steps between rows, reaching only
   the first match on each.
 - **Ghostty:** no URL detection or image drawing (`features()` says so,
