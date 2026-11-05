@@ -352,7 +352,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   them; they take the cursor color a scheme or program set, else the
   color of the cell's text. Without focus the cursor is a hollow block in
   the same way, on all four edges, whatever its shape, and it does not
-  blink (`cursor_shape` in `view.rs`, in the order Ghostty's renderer
+  blink (`cursor_shape` in `view/cursor.rs`, in the order Ghostty's renderer
   decides it).
 
   A blink (DECSCUSR's blinking variants, or mode 12) is 600 ms on and
@@ -366,7 +366,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
   Shift+Home/End jump to the top and bottom, as in VTE, instead of
   reaching the remote side. Each mouse event goes one of three ways
-  (`route` in `view.rs`, read from the terminal's modes per event):
+  (`route` in `view/input.rs`, read from the terminal's modes per event):
   - **Reported** while the program tracks the mouse (mode 9, 1000, 1002
     or 1003): presses, drags and releases of the primary, middle and
     right buttons, motion, and the wheel (vertical as buttons 4 and 5,
@@ -416,7 +416,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   scrolled to the middle of the viewport.
 
   Every visible match is lit in Ghostty's colors, the current one in its
-  own (`search_marks` in `view.rs`), with the search caught up on each
+  own (`search_marks` in `view/paint.rs`), with the search caught up on each
   frame. It only colors cells: the terminal's selection is untouched and
   draws on top, as does the cursor. An empty query, a press, a typed key
   or a reset ends the search; the UI never sends an empty query, so the
@@ -457,7 +457,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   brings links back: hover with Shift, Ctrl+Shift+click. A failure to open
   is logged without the URI, which can carry a token.
 
-  `may_open` in `view.rs` decides what reaches the handler. A link comes
+  `may_open` in `view/links.rs` decides what reaches the handler. A link comes
   from whatever is on the far side of the tab, and the view does not know
   the transport, so one rule covers every tab: a `file:` URI, in any case,
   opens only if its authority is exactly this machine's name
