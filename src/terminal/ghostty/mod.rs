@@ -48,10 +48,11 @@ struct Watchers {
     output: WatchList<dyn Fn()>,
     directory: WatchList<dyn Fn(&str)>,
     /// A program's clipboard write; [`GhosttyView`] applies it.
-    clipboard: WatchList<dyn Fn(ClipboardDestination, &str)>,
+    clipboard: WatchList<ClipboardWatch>,
 }
 
 type InputWatch = dyn Fn(&[u8]);
+type ClipboardWatch = dyn Fn(ClipboardDestination, &str);
 type WatchList<F> = RefCell<Vec<Rc<F>>>;
 
 /// A copy of the list, so a watcher may connect another while it runs.
