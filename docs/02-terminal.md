@@ -47,7 +47,8 @@ pub trait TerminalBackend {
 }
 
 pub enum TerminalEvent { DataOut(Vec<u8>), SizeChange { rows: u32, cols: u32 },
-                         TitleChanged(String), Bell, Closed }
+                         TitleChanged(String),
+                         Notification { title: String, body: String }, Bell, Closed }
 ```
 
 - There is no `Send` bound: widget backends hold GTK objects and live on
@@ -311,11 +312,13 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   the Kitty images on screen (§Kitty graphics). Effects raised while
   parsing — replies to queries (device attributes, status reports), BEL,
   OSC 0/2
-  titles, OSC 7 directories, clipboard writes — come back from the `write`
-  that raised them and leave as `DataOut`, `Bell` and `TitleChanged`; a
-  directory goes to the view's directory hook instead (§Reported
-  directory), and a clipboard write to the view (§GhosttyBackend,
-  Program clipboard).
+  titles, OSC 7 directories, clipboard writes, desktop notifications
+  (OSC 9, OSC 777) — come back from the `write` that raised them and
+  leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
+  the view's directory hook instead (§Reported directory), a clipboard
+  write to the view (§GhosttyBackend, Program clipboard), and a
+  notification reaches the tray as `Notification` (doc 03 §Tray,
+  Desktop notifications).
 - **`GhosttyView`.** The GTK4 widget. Each frame snapshots the engine and
   paints it with `GtkSnapshot`: one background rectangle per run of equal
   color, and per run of equal style (bold, italic, strikethrough, faint;

@@ -369,7 +369,7 @@ fn tab_in_view(notebook: &gtk4::Notebook, page: &gtk4::Widget) -> (bool, bool) {
 }
 
 /// Hand the terminal's notifications to `post` while the tab is out of view
-/// (doc 02 §Desktop notifications). Ends with the attempt's pump.
+/// (§Tray, Desktop notifications). Ends with the attempt's pump.
 pub(super) fn spawn_notification_drain(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
