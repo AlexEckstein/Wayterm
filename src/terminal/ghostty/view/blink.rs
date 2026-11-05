@@ -1,7 +1,5 @@
 //! The timers behind the cursor's blink and blinking text.
 
-use std::time::Duration;
-
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
@@ -9,13 +7,6 @@ use gtk4::subclass::prelude::*;
 use super::cursor::needs_blink_timer;
 use super::GhosttyView;
 use crate::terminal::ghostty::engine::FrameInfo;
-
-/// How long a blinking cursor stays on, and off; Ghostty's default.
-pub(super) const BLINK_INTERVAL: Duration = Duration::from_millis(600);
-
-/// How long blinking text stays on, and off: one cycle a second, SGR 5's
-/// slow blink. SGR 6 blinks the same, as libghostty-vt keeps one flag.
-pub(super) const BLINK_PHASE: Duration = Duration::from_millis(500);
 
 impl GhosttyView {
     /// Start the blink timer when the frame needs it and stop it when not;
@@ -26,7 +17,8 @@ impl GhosttyView {
             self.stop_blink();
         } else if imp.blink.borrow().is_none() {
             let view = self.downgrade();
-            let tick = glib::timeout_add_local(BLINK_INTERVAL, move || {
+            let period = imp.options.borrow().cursor_blink;
+            let tick = glib::timeout_add_local(period, move || {
                 let Some(view) = view.upgrade() else {
                     return glib::ControlFlow::Break;
                 };
@@ -70,7 +62,8 @@ impl GhosttyView {
         let mut timer = self.imp().text_blink_timer.borrow_mut();
         if timer.is_none() {
             let view = self.downgrade();
-            *timer = Some(glib::timeout_add_local(BLINK_PHASE, move || {
+            let period = self.imp().options.borrow().text_blink;
+            *timer = Some(glib::timeout_add_local(period, move || {
                 let Some(view) = view.upgrade() else {
                     return glib::ControlFlow::Break;
                 };

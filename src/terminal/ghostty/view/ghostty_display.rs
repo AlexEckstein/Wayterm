@@ -4,17 +4,18 @@ use std::time::Duration;
 use gtk4::graphene;
 use tokio::sync::mpsc;
 
-use super::blink::{BLINK_INTERVAL, BLINK_PHASE};
 use super::links::LINK_CURSOR;
-use super::paint::{painted_row, run_text, SEARCH_BG, SEARCH_CURRENT_BG};
+use super::paint::{painted_row, run_text};
 use super::*;
 use crate::macros::recorder::is_pointer_or_focus_report;
+use crate::terminal::defaults::{GhosttyOptions, SearchColors};
 use crate::terminal::ghostty::engine::Scroll;
 use crate::terminal::ghostty::ffi;
 use crate::terminal::{
     create_terminal, install_backend_preference, BackendKind, GhosttyBackend, TerminalBackend,
-    TRANSLUCENT_CLASS,
+    TerminalDefaults, TRANSLUCENT_CLASS,
 };
+use crate::ui::appearance::install_terminal_defaults;
 use crate::ui::translucency::gtk_tests::alpha_at;
 
 /// The view paints a frame, reports its grid once allocated, and turns
@@ -120,6 +121,7 @@ fn view_draws_sizes_and_types() {
     program_clipboard(&backend, &view, &mut rx);
     search_highlight(&backend, &view);
     blinking_text(&backend, &view);
+    installed_options(&backend, &view);
     primary_selection(&backend, &view, &mut rx);
     kitty_images(&backend, &view);
     hyperlinks_hover_and_open(&backend, &view, &mut rx);
@@ -612,7 +614,9 @@ fn cursor_shapes(backend: &GhosttyBackend, view: &GhosttyView) {
     // The real timer flips the phase and redraws.
     let context = glib::MainContext::default();
     let start = std::time::Instant::now();
-    while !view.imp().blink_off.get() && start.elapsed() < 3 * BLINK_INTERVAL {
+    while !view.imp().blink_off.get()
+        && start.elapsed() < 3 * GhosttyOptions::default().cursor_blink
+    {
         context.iteration(false);
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
@@ -996,18 +1000,19 @@ fn search_highlight(backend: &GhosttyBackend, view: &GhosttyView) {
     // The cell's top left: its background, never a glyph.
     let color = |col| pixels(view)(cell(col), 1);
     let opaque = |[r, g, b]: [u8; 3]| [b, g, r, 255];
+    let search = SearchColors::default();
 
     backend.reset();
     backend.write(b"one two one");
     assert_eq!(color(0), background(), "no search, no highlight");
     backend.search("one", false);
-    assert_eq!(color(0), opaque(SEARCH_CURRENT_BG));
+    assert_eq!(color(0), opaque(search.current_bg));
     assert_eq!(color(4), background());
-    assert_eq!(color(8), opaque(SEARCH_BG));
+    assert_eq!(color(8), opaque(search.bg));
     // Forward again: the current match moves, the first stays lit.
     backend.search("one", false);
-    assert_eq!(color(0), opaque(SEARCH_BG));
-    assert_eq!(color(8), opaque(SEARCH_CURRENT_BG));
+    assert_eq!(color(0), opaque(search.bg));
+    assert_eq!(color(8), opaque(search.current_bg));
 
     let engine = || view.shared().unwrap().engine.selection_text();
     // On the engine: a press through the view would end the search.
@@ -1020,17 +1025,17 @@ fn search_highlight(backend: &GhosttyBackend, view: &GhosttyView) {
     assert!(shared
         .engine
         .selection_drag((2, 0), end, cw as u32, view.height() as u32));
-    assert_ne!(color(0), opaque(SEARCH_BG), "the selection is on top");
+    assert_ne!(color(0), opaque(search.bg), "the selection is on top");
     assert_eq!(engine().as_deref(), Some("one"));
     view.shared().unwrap().engine.clear_selection();
-    assert_eq!(color(0), opaque(SEARCH_BG));
+    assert_eq!(color(0), opaque(search.bg));
 
     backend.search("", false);
     assert_eq!(color(0), background());
     assert_eq!(color(8), background());
 
     backend.search("one", false);
-    assert_eq!(color(0), opaque(SEARCH_CURRENT_BG));
+    assert_eq!(color(0), opaque(search.current_bg));
     view.press(gdk::ModifierType::empty(), 5000, (1.0, 1.0));
     view.release(gdk::ModifierType::empty(), (1.0, 1.0));
     assert_eq!(color(0), background());
@@ -1070,6 +1075,7 @@ fn blinking_text(backend: &GhosttyBackend, view: &GhosttyView) {
     let solid = |pixels: &[[u8; 4]]| pixels.iter().all(|pixel| *pixel == pixels[0]);
     let timer = || view.imp().text_blink_timer.borrow().is_some();
     let off = || view.imp().text_blink_off.get();
+    let phase = GhosttyOptions::default().text_blink;
     let context = glib::MainContext::default();
     // Run the main loop until `done`, or for `limit`.
     let wait = |limit: Duration, done: &dyn Fn() -> bool| {
@@ -1100,7 +1106,7 @@ fn blinking_text(backend: &GhosttyBackend, view: &GhosttyView) {
     assert_ne!(cell(0)[0], hidden[0], "the selection lights the cell");
     view.shared().unwrap().engine.clear_selection();
     backend.search("MM", false);
-    let [r, g, b] = SEARCH_CURRENT_BG;
+    let [r, g, b] = SearchColors::default().current_bg;
     assert_eq!(cell(0)[0], [b, g, r, 255], "search lights the cell");
     backend.search("", false);
     assert_eq!(cell(0), hidden);
@@ -1109,19 +1115,19 @@ fn blinking_text(backend: &GhosttyBackend, view: &GhosttyView) {
     assert_eq!(cell(0), shown, "the glyph comes back");
 
     // The timer itself flips the phase.
-    wait(BLINK_PHASE * 4, &|| off());
+    wait(phase * 4, &|| off());
     assert!(off(), "the timer never ticked");
 
     // Unmapped, nothing ticks; mapped again, the next frame restarts it.
     view.set_visible(false);
-    wait(BLINK_PHASE / 5, &|| false);
+    wait(phase / 5, &|| false);
     assert!(!timer() && !off(), "a hidden view keeps no timer");
     view.set_visible(true);
-    wait(BLINK_PHASE * 4, &timer);
+    wait(phase * 4, &timer);
     assert!(timer(), "the view came back and did not blink");
 
     // Text gone in the off phase: the timer stops with the text on.
-    wait(BLINK_PHASE * 4, &|| off());
+    wait(phase * 4, &|| off());
     backend.reset();
     backend.write(b"plain");
     let still = cell(0);
@@ -1129,8 +1135,84 @@ fn blinking_text(backend: &GhosttyBackend, view: &GhosttyView) {
     view.text_blink_tick();
     assert_eq!(cell(0), still, "a late tick changes nothing");
     assert!(!timer() && !off());
-    wait(BLINK_PHASE * 2, &|| off());
+    wait(phase * 2, &|| off());
     assert!(!timer() && !off(), "a blink-free frame toggled");
+}
+
+/// Options installed as Settings does reach an open view at once and a
+/// view built later: colors repaint, the wheel follows, and running blink
+/// timers restart at the new period.
+fn installed_options(backend: &GhosttyBackend, view: &GhosttyView) {
+    let install = |ghostty: GhosttyOptions| {
+        install_terminal_defaults(TerminalDefaults {
+            ghostty,
+            ..Default::default()
+        });
+    };
+    let changed = GhosttyOptions {
+        wheel_rows: 1.0,
+        cursor_blink: Duration::from_millis(20),
+        text_blink: Duration::from_millis(20),
+        search: SearchColors {
+            current_bg: [1, 2, 3],
+            ..Default::default()
+        },
+    };
+    let lit = || pixels(view)(1, 1);
+    let opaque = |[r, g, b]: [u8; 3]| [b, g, r, 255];
+    let cursor_timer = || view.imp().blink.borrow().is_some();
+    let text_timer = || view.imp().text_blink_timer.borrow().is_some();
+
+    backend.reset();
+    backend.write(b"\x1b[5mfind\x1b[0m\x1b[1 q");
+    backend.search("find", false);
+    assert_eq!(lit(), opaque(SearchColors::default().current_bg));
+    view.focus_changed(true);
+    lit();
+    assert!(cursor_timer() && text_timer());
+
+    install(changed.clone());
+    assert!(!cursor_timer() && !text_timer(), "the old periods are gone");
+    assert_eq!(lit(), opaque([1, 2, 3]));
+    assert!(
+        cursor_timer() && text_timer(),
+        "the next paint restarts them"
+    );
+
+    // Well short of the old period.
+    let context = glib::MainContext::default();
+    let start = std::time::Instant::now();
+    while !view.imp().text_blink_off.get() && start.elapsed() < Duration::from_millis(400) {
+        context.iteration(false);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(view.imp().text_blink_off.get(), "still on the old period");
+
+    view.set_options(changed.clone());
+    assert!(
+        cursor_timer() && text_timer(),
+        "unchanged periods keep running"
+    );
+
+    backend.reset();
+    for line in 0..100 {
+        backend.write(format!("line {line}\r\n").as_bytes());
+    }
+    backend.scroll_to_top();
+    view.wheel(1.0, gdk::ScrollUnit::Wheel, gdk::ModifierType::empty());
+    let mut frame = Frame::default();
+    assert!(view.shared().unwrap().engine.snapshot(&mut frame));
+    assert_eq!(frame.row_text(0).trim_end(), "line 1");
+
+    let (tx, _rx) = mpsc::channel(1);
+    let later = GhosttyBackend::new(tx).expect("engine");
+    let later = later.widget().downcast::<GhosttyView>().unwrap();
+    assert_eq!(*later.imp().options.borrow(), changed);
+
+    install(GhosttyOptions::default());
+    assert_eq!(*view.imp().options.borrow(), GhosttyOptions::default());
+    assert_eq!(*later.imp().options.borrow(), GhosttyOptions::default());
+    backend.reset();
 }
 
 /// A cell's whole cluster reaches Pango: a ZWJ family shapes to other
@@ -1149,7 +1231,8 @@ fn clusters_shape_whole(backend: &GhosttyBackend, view: &GhosttyView) {
     assert!(view.shared().unwrap().engine.snapshot(&mut frame));
     // Each glyph of a row's first four cells: (glyph, column, x).
     let shaped = |row: usize| {
-        let (text, columns) = run_text(&painted_row(&frame, row, &[], true)[..4]);
+        let (text, columns) =
+            run_text(&painted_row(&frame, row, &[], true, &SearchColors::default())[..4]);
         let mut glyphs = Vec::new();
         view.shape(&text, &columns, &view.font(), |_, string, columns| {
             for (glyph, &col) in string.glyph_info().iter().zip(columns) {

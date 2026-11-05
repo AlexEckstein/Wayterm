@@ -2,14 +2,15 @@
 //!
 //! This file holds the widget, its state and the grid's geometry; [`paint`]
 //! and [`text`] draw a frame, [`images`] its Kitty images and [`cursor`] its
-//! cursor, [`blink`] runs the timers, [`input`] takes events, and [`links`]
-//! finds and opens links.
+//! cursor, [`blink`] runs the timers, [`input`] takes events, [`links`]
+//! finds and opens links, and [`options`] carries the settings.
 
 mod blink;
 mod cursor;
 mod images;
 mod input;
 mod links;
+mod options;
 mod paint;
 mod text;
 
@@ -23,9 +24,11 @@ use gtk4::{gdk, glib, pango};
 
 use super::engine::{ClipboardDestination, Frame};
 use super::Shared;
+use crate::terminal::defaults::GhosttyOptions;
 use crate::terminal::TerminalEvent;
 use input::Route;
 use links::{launch_uri, Launcher, Link};
+pub use options::install_options;
 
 /// The font a view starts with, until `set_font`.
 const DEFAULT_FONT: &str = "Monospace 12";
@@ -38,6 +41,7 @@ mod imp {
         pub(super) shared: RefCell<Option<Rc<Shared>>>,
         pub(super) frame: RefCell<Frame>,
         pub(super) font: RefCell<Option<pango::FontDescription>>,
+        pub(super) options: RefCell<GhosttyOptions>,
         /// The default background's alpha; colored cells stay opaque.
         pub(super) opacity: Cell<f32>,
         /// The cell's metrics; recomputed after a font change.
@@ -141,6 +145,7 @@ impl GhosttyView {
         view.set_hexpand(true);
         view.set_vexpand(true);
         view.set_overflow(gtk4::Overflow::Hidden);
+        view.follow_options();
         view.install_input();
         view.install_clipboard();
         view

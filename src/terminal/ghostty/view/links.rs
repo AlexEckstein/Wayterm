@@ -320,6 +320,7 @@ pub(super) fn launch_uri(view: &GhosttyView, uri: &str) {
 mod tests {
     use super::super::paint::painted_row;
     use super::*;
+    use crate::terminal::defaults::SearchColors;
     use crate::terminal::ghostty::engine::{Engine, Scroll};
 
     /// A 20-column screen after `output`.
@@ -652,7 +653,7 @@ mod tests {
         let frame = written(8, 3, "ab http://c.example d");
         let link = link_at(&frame, 0, 3).unwrap();
         let underlined = |row| -> Vec<bool> {
-            let mut cells = painted_row(&frame, row, &[], false);
+            let mut cells = painted_row(&frame, row, &[], false, &SearchColors::default());
             link.underline(row, &mut cells);
             cells
                 .iter()

@@ -548,6 +548,32 @@ deleted, with nothing to track on Wayterm's side.
   any new pixels. A one-shot timeout asks for a redraw when the next frame
   is due; a tab that is not shown draws nothing, so its animations wait.
 
+### View options
+
+`GhosttyOptions` (`src/terminal/defaults.rs`) holds what only this view
+draws or decides for itself: rows per wheel notch, the periods of the
+cursor's blink and of blinking text, and the search colors. Their defaults
+are the values the sections above give. They are global, with no session
+override, and sit in `TerminalDefaults`, so they are read with the other
+rows.
+
+They do not cross `TerminalBackend`: VTE has no use for them, and the trait
+carries what every backend takes per session. When the rows change,
+`install_terminal_defaults` hands them to `install_options`
+(`view/options.rs`), which keeps them for new views and gives them to open
+ones. Colors repaint at once and the wheel follows at its next event. A
+changed blink period stops that timer, and the next paint restarts it, on.
+
+No row writes them yet, so every tab has the defaults. To add a setting:
+
+1. Add the field and its default to `GhosttyOptions`, and have the view
+   read it from `imp().options`. A change that takes more than a repaint
+   goes in `set_options`.
+2. Read its row in `TerminalDefaults::from_rows`, keeping the default for a
+   value the view cannot use: a blink period of zero would spin the main
+   loop.
+3. Add its control to the Customize page (doc 13 §Customize).
+
 ### libghostty-vt pin
 
 libghostty-vt has no tagged release and its C API still moves, so the pin
@@ -677,8 +703,8 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   window while it does. On a scaled display an image is drawn at
   logical pixels and upscaled. Selecting across placeholder cells
   copies their U+10EEEE characters.
-- **Ghostty cursor:** the blink period is fixed and GTK's cursor blink
-  settings are not read, where VTE follows them. Typing does not restart
+- **Ghostty cursor:** no setting changes the blink period (§View options),
+  and GTK's cursor blink settings are not read, where VTE follows them. Typing does not restart
   a blink, so the cursor can be in its off phase as it moves. On a wide
   character it covers one cell.
 - **Ghostty selection:** word boundaries are libghostty-vt's defaults,

@@ -21,14 +21,9 @@ use gtk4::{gdk, glib, graphene, pango};
 
 use super::cursor::{cursor_color, cursor_rects, cursor_shape, is_cursor, CursorShape};
 use super::{rgba, GhosttyView, Metrics};
+use crate::terminal::defaults::SearchColors;
 use crate::terminal::ghostty::engine::{push_cluster, Cell as GridCell, Frame, FrameInfo, Span};
 use crate::terminal::ghostty::ffi;
-
-/// Search highlight colors, Ghostty's defaults: dark text on yellow, on
-/// orange for the current match.
-pub(super) const SEARCH_FG: [u8; 3] = [0, 0, 0];
-pub(super) const SEARCH_BG: [u8; 3] = [0xff, 0xe0, 0x82];
-pub(super) const SEARCH_CURRENT_BG: [u8; 3] = [0xf2, 0xa5, 0x7e];
 
 /// The character of a Kitty placeholder cell; the image takes its place.
 const KITTY_PLACEHOLDER: u32 = 0x10_eeee;
@@ -65,10 +60,11 @@ impl GhosttyView {
         let font = self.font();
         let (cols, rows) = (usize::from(info.cols), usize::from(info.rows));
         let marks = search_marks(&shared.engine.search_spans(), cols, rows);
+        let search = self.imp().options.borrow().search;
         let painted: Vec<Vec<Painted>> = (0..rows)
             .map(|row| {
-                let mut cells =
-                    painted_row(&frame, row, &marks, cursor == Some(CursorShape::Block));
+                let block = cursor == Some(CursorShape::Block);
+                let mut cells = painted_row(&frame, row, &marks, block, &search);
                 if let Some(link) = link.as_ref() {
                     link.underline(row, &mut cells);
                 }
@@ -204,6 +200,7 @@ pub(super) fn painted_row<'a>(
     row: usize,
     marks: &[Option<bool>],
     block: bool,
+    search: &SearchColors,
 ) -> Vec<Painted<'a>> {
     let info = &frame.info;
     let cols = usize::from(info.cols);
@@ -218,7 +215,7 @@ pub(super) fn painted_row<'a>(
             let painted = Painted::new(info, cell, cluster, cursor);
             match marks.get(row * cols + col) {
                 Some(&Some(current)) if !cursor && cell.flags & ffi::CELL_SELECTED == 0 => {
-                    painted.searched(current)
+                    painted.searched(current, search)
                 }
                 _ => painted,
             }
@@ -274,14 +271,14 @@ impl<'a> Painted<'a> {
     }
 
     /// Search highlight colors; `current` for the current match.
-    fn searched(self, current: bool) -> Self {
+    fn searched(self, current: bool, colors: &SearchColors) -> Self {
         let bg = if current {
-            SEARCH_CURRENT_BG
+            colors.current_bg
         } else {
-            SEARCH_BG
+            colors.bg
         };
         Self {
-            fg: SEARCH_FG,
+            fg: colors.fg,
             bg: Some(bg),
             ..self
         }
@@ -390,7 +387,8 @@ mod tests {
         engine.write(format!("\x1b[?2027hx{family}e\u{301}y").as_bytes());
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let (text, columns) = run_text(&painted_row(&frame, 0, &[], true)[..5]);
+        let (text, columns) =
+            run_text(&painted_row(&frame, 0, &[], true, &SearchColors::default())[..5]);
         // The family's tail is a space, so é and y keep their columns.
         let cells = [("x", 0), (family, 1), (" ", 2), ("e\u{301}", 3), ("y", 4)];
         assert_eq!(text, cells.map(|(cluster, _)| cluster).concat());
@@ -411,7 +409,7 @@ mod tests {
         );
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let cells = painted_row(&frame, 0, &[], false);
+        let cells = painted_row(&frame, 0, &[], false, &SearchColors::default());
         assert_eq!(
             cells[0].underline(),
             Some((ffi::UNDERLINE_CURLY, rgba([1, 2, 3], 1.0)))
@@ -429,10 +427,10 @@ mod tests {
         assert_eq!(cells[4].underline(), None, "a color but no style");
 
         let marks = [Some(true), Some(true)];
-        let cells = painted_row(&frame, 0, &marks, false);
+        let cells = painted_row(&frame, 0, &marks, false, &SearchColors::default());
         assert_eq!(
             cells[0].underline(),
-            Some((ffi::UNDERLINE_CURLY, rgba(SEARCH_FG, 1.0)))
+            Some((ffi::UNDERLINE_CURLY, rgba(SearchColors::default().fg, 1.0)))
         );
         assert_eq!(
             cells[1].underline(),
@@ -446,7 +444,8 @@ mod tests {
         engine.write("a\u{10eeee}\u{305}\u{305}b".as_bytes());
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let (text, _) = run_text(&painted_row(&frame, 0, &[], false)[..3]);
+        let (text, _) =
+            run_text(&painted_row(&frame, 0, &[], false, &SearchColors::default())[..3]);
         assert_eq!(text, "a b");
     }
 }

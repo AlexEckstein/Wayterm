@@ -84,8 +84,9 @@ pub(super) fn cursor_rects(
 
 #[cfg(test)]
 mod tests {
-    use super::super::paint::{painted_row, SEARCH_CURRENT_BG, SEARCH_FG};
+    use super::super::paint::painted_row;
     use super::*;
+    use crate::terminal::defaults::SearchColors;
     use crate::terminal::ghostty::engine::{Engine, Frame};
 
     /// A shown cursor's frame state, as the shim fills it.
@@ -172,12 +173,13 @@ mod tests {
         let cell = *frame.cell(0, 1).unwrap();
         let marks = [None, Some(true), None, None];
 
-        let block = &painted_row(&frame, 0, &marks, true)[1];
+        let block = &painted_row(&frame, 0, &marks, true, &SearchColors::default())[1];
         assert_eq!((block.fg, block.bg), (cell.bg, Some(cell.fg)));
-        let plain = &painted_row(&frame, 0, &[], false)[1];
+        let plain = &painted_row(&frame, 0, &[], false, &SearchColors::default())[1];
         assert_eq!((plain.fg, plain.bg), (cell.fg, None));
-        let marked = &painted_row(&frame, 0, &marks, false)[1];
-        assert_eq!((marked.fg, marked.bg), (SEARCH_FG, Some(SEARCH_CURRENT_BG)));
+        let marked = &painted_row(&frame, 0, &marks, false, &SearchColors::default())[1];
+        let search = SearchColors::default();
+        assert_eq!((marked.fg, marked.bg), (search.fg, Some(search.current_bg)));
     }
 
     /// An outline takes the cursor color, else the text color its cell is
@@ -188,7 +190,7 @@ mod tests {
         engine.write(b"\x1b[7;31;42ma\x1b[0m\x1b[D");
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let cells = painted_row(&frame, 0, &[], false);
+        let cells = painted_row(&frame, 0, &[], false, &SearchColors::default());
         let cell = frame.cell(0, 0).unwrap();
         assert_eq!(cells[0].bg, Some(cell.fg));
         assert_eq!(cursor_color(&frame.info, &cells[0]), cell.bg);

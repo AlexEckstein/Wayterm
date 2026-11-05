@@ -25,9 +25,6 @@ use super::{px, GhosttyView};
 use crate::terminal::ghostty::engine::{MouseEvent, MouseModes, Scroll};
 use crate::terminal::ghostty::{ffi, Shared};
 
-/// Rows per wheel notch.
-const WHEEL_ROWS: f64 = 3.0;
-
 /// The arrow keysyms alternate scroll sends.
 const ARROW_UP: u32 = 0xff52;
 const ARROW_DOWN: u32 = 0xff54;
@@ -363,7 +360,8 @@ impl GhosttyView {
         let Some(shared) = self.shared() else { return };
         let (_, cell_h) = self.cell_size();
         let carry = &self.imp().wheel_carry;
-        let (rows, rest) = wheel_rows(carry.get(), dy, unit, cell_h);
+        let notch = self.imp().options.borrow().wheel_rows;
+        let (rows, rest) = wheel_rows(carry.get(), dy, unit, cell_h, notch);
         carry.set(rest);
         if rows == 0 {
             return;
@@ -404,7 +402,8 @@ impl GhosttyView {
         }
         let (cell_w, _) = self.cell_size();
         let carry = &self.imp().wheel_carry_x;
-        let (cols, rest) = wheel_rows(carry.get(), dx, unit, cell_w);
+        let notch = self.imp().options.borrow().wheel_rows;
+        let (cols, rest) = wheel_rows(carry.get(), dx, unit, cell_w, notch);
         carry.set(rest);
         let button = if cols < 0 {
             ffi::BUTTON_WHEEL_LEFT
@@ -551,14 +550,20 @@ fn mods(state: gdk::ModifierType) -> u32 {
     .fold(0, |mods, (_, bit)| mods | bit)
 }
 
-/// Rows to scroll for one wheel event, and the fraction left for the next;
-/// sideways, columns of `cell` pixels. High-resolution wheels and touchpads
+/// Rows to scroll for one wheel event, `notch` rows to a notch, and the
+/// fraction left for the next; sideways, columns of `cell` pixels. High-resolution wheels and touchpads
 /// send many steps smaller than a row, so each one only adds to `carry`;
 /// reversing direction drops it.
-fn wheel_rows(carry: f64, delta: f64, unit: gdk::ScrollUnit, cell: i32) -> (isize, f64) {
+fn wheel_rows(
+    carry: f64,
+    delta: f64,
+    unit: gdk::ScrollUnit,
+    cell: i32,
+    notch: f64,
+) -> (isize, f64) {
     let rows = match unit {
         gdk::ScrollUnit::Surface => delta / f64::from(cell.max(1)),
-        _ => delta * WHEEL_ROWS,
+        _ => delta * notch,
     };
     let carry = if carry * rows < 0.0 { 0.0 } else { carry };
     let total = carry + rows;
@@ -600,7 +605,7 @@ mod tests {
         steps
             .iter()
             .map(|&dy| {
-                let (rows, rest) = wheel_rows(carry, dy, unit, cell_h);
+                let (rows, rest) = wheel_rows(carry, dy, unit, cell_h, 3.0);
                 carry = rest;
                 rows
             })
@@ -617,6 +622,12 @@ mod tests {
     }
 
     #[test]
+    fn a_notch_is_as_many_rows_as_asked_and_pixels_stay_cells() {
+        assert_eq!(wheel_rows(0.0, 1.0, WHEEL, 16, 5.0), (5, 0.0));
+        assert_eq!(wheel_rows(0.0, 32.0, SURFACE, 16, 5.0), (2, 0.0));
+    }
+
+    #[test]
     fn touchpad_pixels_scroll_by_cell_height() {
         assert_eq!(scrolled(&[-48.0], SURFACE, 16), -3);
         assert_eq!(scrolled(&[4.0; 8], SURFACE, 16), 2);
@@ -626,7 +637,7 @@ mod tests {
     #[test]
     fn reversing_drops_the_leftover_fraction() {
         assert_eq!(scrolled(&[-0.3, 0.3], WHEEL, 16), 0);
-        let (_, rest) = wheel_rows(-0.9, 0.125, WHEEL, 16);
+        let (_, rest) = wheel_rows(-0.9, 0.125, WHEEL, 16, 3.0);
         assert!(rest > 0.0, "{rest}");
     }
 
