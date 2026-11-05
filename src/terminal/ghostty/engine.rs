@@ -611,6 +611,20 @@ mod tests {
         // SAFETY: plain getter.
         let link = unsafe { ffi::wt_ghostty_cell_link_offset() };
         assert_eq!(std::mem::offset_of!(Cell, link), link);
+        // SAFETY: plain getters.
+        let (underline, underline_rgb, underline_has_rgb) = unsafe {
+            (
+                ffi::wt_ghostty_cell_underline_offset(),
+                ffi::wt_ghostty_cell_underline_rgb_offset(),
+                ffi::wt_ghostty_cell_underline_has_rgb_offset(),
+            )
+        };
+        assert_eq!(std::mem::offset_of!(Cell, underline), underline);
+        assert_eq!(std::mem::offset_of!(Cell, underline_rgb), underline_rgb);
+        assert_eq!(
+            std::mem::offset_of!(Cell, underline_has_rgb),
+            underline_has_rgb
+        );
     }
 
     /// `text` as an OSC 8 hyperlink to `uri`.
@@ -728,6 +742,39 @@ mod tests {
         assert_eq!((frame.info.cursor_x, frame.info.cursor_y), (5, 1));
     }
 
+    /// DECSCUSR picks the shape and the blink, mode 12 the blink alone;
+    /// DECSCUSR 0 and a reset go back to a steady block.
+    #[test]
+    fn cursor_style_and_blink_follow_the_terminal() {
+        let engine = engine();
+        let cursor = || {
+            let info = frame(&engine).info;
+            (info.cursor_style, info.cursor_blinking != 0)
+        };
+        assert_eq!(cursor(), (ffi::CURSOR_BLOCK, false));
+        for (decscusr, style, blinking) in [
+            (1, ffi::CURSOR_BLOCK, true),
+            (2, ffi::CURSOR_BLOCK, false),
+            (3, ffi::CURSOR_UNDERLINE, true),
+            (4, ffi::CURSOR_UNDERLINE, false),
+            (5, ffi::CURSOR_BAR, true),
+            (6, ffi::CURSOR_BAR, false),
+        ] {
+            engine.write(format!("\x1b[{decscusr} q").as_bytes());
+            assert_eq!(cursor(), (style, blinking), "DECSCUSR {decscusr}");
+        }
+        engine.write(b"\x1b[?12h");
+        assert_eq!(cursor(), (ffi::CURSOR_BAR, true));
+        engine.write(b"\x1b[?12l");
+        assert_eq!(cursor(), (ffi::CURSOR_BAR, false));
+
+        engine.write(b"\x1b[5 q\x1b[0 q");
+        assert_eq!(cursor(), (ffi::CURSOR_BLOCK, false));
+        engine.write(b"\x1b[3 q");
+        engine.reset();
+        assert_eq!(cursor(), (ffi::CURSOR_BLOCK, false));
+    }
+
     /// A cell's cluster as a string; empty for an empty cell.
     fn cluster(frame: &Frame, row: usize, col: usize) -> String {
         frame
@@ -833,6 +880,64 @@ mod tests {
         let y = frame.cell(0, 1).unwrap();
         assert_eq!(y.flags, 0);
         assert_eq!(y.has_bg, 0);
+    }
+
+    /// Each SGR underline form reaches the cell as its own style, and the
+    /// forms that turn it off export none.
+    #[test]
+    fn sgr_underline_styles_are_exported() {
+        let engine = engine();
+        engine.write(
+            b"\x1b[4ma\x1b[4:1mb\x1b[4:2mc\x1b[21md\x1b[4:3me\x1b[4:4mf\x1b[4:5mg\
+              \x1b[4:0mh\x1b[4:3mi\x1b[24mj\x1b[4:3mk\x1b[0ml",
+        );
+        let frame = frame(&engine);
+        let styles: Vec<u8> = (0..12)
+            .map(|col| frame.cell(0, col).unwrap().underline)
+            .collect();
+        assert_eq!(
+            styles,
+            [
+                ffi::UNDERLINE_SINGLE,
+                ffi::UNDERLINE_SINGLE,
+                ffi::UNDERLINE_DOUBLE,
+                ffi::UNDERLINE_DOUBLE,
+                ffi::UNDERLINE_CURLY,
+                ffi::UNDERLINE_DOTTED,
+                ffi::UNDERLINE_DASHED,
+                ffi::UNDERLINE_NONE,
+                ffi::UNDERLINE_CURLY,
+                ffi::UNDERLINE_NONE,
+                ffi::UNDERLINE_CURLY,
+                ffi::UNDERLINE_NONE,
+            ]
+        );
+    }
+
+    /// SGR 58 sets the underline color in each of its forms, a palette
+    /// index through the palette in effect, and SGR 59 and 0 drop it.
+    #[test]
+    fn sgr_underline_color_is_resolved_and_reset() {
+        let engine = engine();
+        engine.write(b"\x1b]4;1;rgb:12/34/56\x07");
+        engine.write(
+            b"\x1b[4ma\x1b[58;2;255;128;0mb\x1b[58:2::1:2:3mc\x1b[58;5;1md\x1b[58:5:1me\
+              \x1b[59mf\x1b[58;2;9;9;9mg\x1b[0mh",
+        );
+        let frame = frame(&engine);
+        let color = |col| {
+            let cell = frame.cell(0, col).unwrap();
+            (cell.underline_has_rgb != 0).then_some(cell.underline_rgb)
+        };
+        assert_eq!(color(0), None);
+        assert_eq!(color(1), Some([255, 128, 0]));
+        assert_eq!(color(2), Some([1, 2, 3]));
+        assert_eq!(color(3), Some([0x12, 0x34, 0x56]));
+        assert_eq!(color(4), Some([0x12, 0x34, 0x56]));
+        assert_eq!(color(5), None, "SGR 59");
+        assert_eq!(frame.cell(0, 5).unwrap().underline, ffi::UNDERLINE_SINGLE);
+        assert_eq!(color(6), Some([9, 9, 9]));
+        assert_eq!(color(7), None, "SGR 0");
     }
 
     fn rgb([r, g, b]: [u8; 3]) -> Rgb {
@@ -1190,7 +1295,13 @@ mod tests {
             height: 100,
             cell_w: 10,
             cell_h: 20,
-            any_pressed: u32::from(action != ffi::MOUSE_RELEASE && button == ffi::BUTTON_LEFT),
+            any_pressed: u32::from(
+                action != ffi::MOUSE_RELEASE
+                    && matches!(
+                        button,
+                        ffi::BUTTON_LEFT | ffi::BUTTON_MIDDLE | ffi::BUTTON_RIGHT
+                    ),
+            ),
         }
     }
 
@@ -1268,6 +1379,64 @@ mod tests {
     }
 
     #[test]
+    fn middle_and_right_buttons_report_press_drag_and_release() {
+        let engine = engine();
+        engine.write(b"\x1b[?1002h\x1b[?1006h");
+        // Button codes 1 and 2; motion adds 32.
+        for (button, press, drag, release) in [
+            (
+                ffi::BUTTON_MIDDLE,
+                &b"\x1b[<1;4;3M"[..],
+                &b"\x1b[<33;5;3M"[..],
+                &b"\x1b[<1;5;3m"[..],
+            ),
+            (
+                ffi::BUTTON_RIGHT,
+                b"\x1b[<2;4;3M",
+                b"\x1b[<34;5;3M",
+                b"\x1b[<2;5;3m",
+            ),
+        ] {
+            let event = mouse(ffi::MOUSE_PRESS, button, 0, (3, 2));
+            assert_eq!(engine.encode_mouse(&event), press);
+            let event = mouse(ffi::MOUSE_MOTION, button, 0, (4, 2));
+            assert_eq!(engine.encode_mouse(&event), drag);
+            let event = mouse(ffi::MOUSE_RELEASE, button, 0, (4, 2));
+            assert_eq!(engine.encode_mouse(&event), release);
+        }
+    }
+
+    #[test]
+    fn a_held_button_reports_motion_past_the_widget() {
+        let engine = engine();
+        engine.write(b"\x1b[?1002h\x1b[?1006h");
+        for (button, drag) in [
+            (ffi::BUTTON_MIDDLE, &b"\x1b[<33;1;1M"[..]),
+            (ffi::BUTTON_RIGHT, b"\x1b[<34;1;1M"),
+        ] {
+            let mut event = mouse(ffi::MOUSE_MOTION, button, 0, (0, 0));
+            (event.x, event.y) = (-5.0, -5.0);
+            assert_eq!(engine.encode_mouse(&event), drag);
+            event.any_pressed = 0;
+            assert_eq!(engine.encode_mouse(&event), b"", "no button held");
+        }
+    }
+
+    #[test]
+    fn the_horizontal_wheel_is_buttons_six_and_seven() {
+        let engine = engine();
+        engine.write(b"\x1b[?1000h\x1b[?1006h");
+        let left = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_LEFT, 0, (0, 0));
+        let right = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_RIGHT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&left), b"\x1b[<66;1;1M");
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[<67;1;1M");
+        // 32 + 66 and 32 + 67 in the byte format.
+        engine.write(b"\x1b[?1006l");
+        assert_eq!(engine.encode_mouse(&left), b"\x1b[Mb!!");
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[Mc!!");
+    }
+
+    #[test]
     fn without_sgr_the_mouse_uses_the_x10_byte_format() {
         let engine = engine();
         engine.write(b"\x1b[?1000h");
@@ -1276,6 +1445,12 @@ mod tests {
         assert_eq!(engine.encode_mouse(&press), b"\x1b[M $#");
         // Legacy releases do not say which button: code 3.
         let release = mouse(ffi::MOUSE_RELEASE, ffi::BUTTON_LEFT, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&release), b"\x1b[M#$#");
+        let middle = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_MIDDLE, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&middle), b"\x1b[M!$#");
+        let right = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_RIGHT, 0, (3, 2));
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[M\"$#");
+        let release = mouse(ffi::MOUSE_RELEASE, ffi::BUTTON_RIGHT, 0, (3, 2));
         assert_eq!(engine.encode_mouse(&release), b"\x1b[M#$#");
     }
 
@@ -1291,6 +1466,12 @@ mod tests {
         assert_eq!(engine.encode_mouse(&release), b"");
         let wheel = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_UP, 0, (0, 0));
         assert_eq!(engine.encode_mouse(&wheel), b"");
+        let wheel = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_WHEEL_LEFT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&wheel), b"");
+        let middle = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_MIDDLE, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&middle), b"\x1b[M!!!");
+        let right = mouse(ffi::MOUSE_PRESS, ffi::BUTTON_RIGHT, 0, (0, 0));
+        assert_eq!(engine.encode_mouse(&right), b"\x1b[M\"!!");
     }
 
     #[test]
