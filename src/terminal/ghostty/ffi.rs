@@ -1,8 +1,8 @@
 //! Raw bindings to `shim.c`, the narrow C layer over libghostty-vt; use
 //! [`Engine`](super::engine::Engine) instead of calling these directly.
 //! The structs mirror `WtCell`/`WtFrame`/`WtSpan` there; the unit tests
-//! check the sizes, and where the cell's grapheme fields sit, against the
-//! C compiler's.
+//! check the sizes, and where the cell's grapheme and underline fields
+//! sit, against the C compiler's.
 
 use std::ffi::{c_char, c_int, c_void};
 
@@ -33,6 +33,20 @@ pub const CELL_FAINT: u16 = 1 << 7;
 /// SGR 5 or 6: libghostty-vt keeps one flag for both.
 pub const CELL_BLINK: u16 = 1 << 8;
 
+/// `GhosttyRenderStateCursorVisualStyle`, as `WtFrame` carries it.
+pub const CURSOR_BAR: u8 = 0;
+pub const CURSOR_BLOCK: u8 = 1;
+pub const CURSOR_UNDERLINE: u8 = 2;
+pub const CURSOR_BLOCK_HOLLOW: u8 = 3;
+
+/// `WtCell::underline`: libghostty-vt's `GHOSTTY_SGR_UNDERLINE_*` values.
+pub const UNDERLINE_NONE: u8 = 0;
+pub const UNDERLINE_SINGLE: u8 = 1;
+pub const UNDERLINE_DOUBLE: u8 = 2;
+pub const UNDERLINE_CURLY: u8 = 3;
+pub const UNDERLINE_DOTTED: u8 = 4;
+pub const UNDERLINE_DASHED: u8 = 5;
+
 pub const MOD_SHIFT: u32 = 1 << 0;
 pub const MOD_CTRL: u32 = 1 << 1;
 pub const MOD_ALT: u32 = 1 << 2;
@@ -44,8 +58,12 @@ pub const MOUSE_MOTION: u32 = 2;
 
 pub const BUTTON_NONE: u32 = 0;
 pub const BUTTON_LEFT: u32 = 1;
+pub const BUTTON_RIGHT: u32 = 2;
+pub const BUTTON_MIDDLE: u32 = 3;
 pub const BUTTON_WHEEL_UP: u32 = 4;
 pub const BUTTON_WHEEL_DOWN: u32 = 5;
+pub const BUTTON_WHEEL_LEFT: u32 = 6;
+pub const BUTTON_WHEEL_RIGHT: u32 = 7;
 
 /// One grid cell, colors resolved to RGB.
 #[repr(C)]
@@ -55,9 +73,14 @@ pub struct WtCell {
     pub codepoint: u32,
     pub fg: [u8; 3],
     pub bg: [u8; 3],
+    pub underline_rgb: [u8; 3],
     pub flags: u16,
     /// 0 = the default background.
     pub has_bg: u8,
+    /// 0 = the line takes the text color.
+    pub underline_has_rgb: u8,
+    /// `UNDERLINE_*`.
+    pub underline: u8,
     /// Codepoints in the cluster, base included: 0 = empty, 1 = just
     /// `codepoint`.
     pub grapheme_len: u16,
@@ -79,6 +102,11 @@ pub struct WtFrame {
     pub bg: [u8; 3],
     pub cursor_rgb: [u8; 3],
     pub cursor_has_rgb: u8,
+    /// `CURSOR_*`.
+    pub cursor_style: u8,
+    /// Non-zero when the terminal asks for a blinking cursor (mode 12 or
+    /// a DECSCUSR blink variant).
+    pub cursor_blinking: u8,
 }
 
 /// One viewport row's run of search highlight: cells `start..end`.
@@ -251,4 +279,7 @@ extern "C" {
     pub fn wt_ghostty_span_size() -> usize;
     pub fn wt_ghostty_cell_grapheme_offset() -> usize;
     pub fn wt_ghostty_cell_grapheme_len_offset() -> usize;
+    pub fn wt_ghostty_cell_underline_offset() -> usize;
+    pub fn wt_ghostty_cell_underline_rgb_offset() -> usize;
+    pub fn wt_ghostty_cell_underline_has_rgb_offset() -> usize;
 }

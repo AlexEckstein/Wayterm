@@ -67,9 +67,10 @@ orchestration decision.
 
 ## Backend selection
 
-`create_terminal()` builds the backend and its event channel together and
-returns a `TerminalHandle { backend, events }`; the receiver goes to the
-transport pump (doc 03 §Wiring).
+`create_terminal_for(kind)` builds the backend and its event channel
+together and returns a `TerminalHandle { backend, events }`; the receiver
+goes to the transport pump (doc 03 §Wiring). `create_terminal()` builds the
+installed preference.
 
 - VTE is the default and the fallback.
 - With the `backend-ghostty` Cargo feature, Settings' General page shows
@@ -79,11 +80,14 @@ transport pump (doc 03 §Wiring).
 - The row is installed at startup and on change
   (`install_backend_preference`); tabs opened afterwards use it, open tabs
   keep their backend.
-- Ghostty falls back to VTE when the feature is off or libghostty-vt cannot
-  allocate a terminal.
+- A session's `terminal_backend` column (`ghostty` or `vte`, doc 09) wins
+  over the row for that session's tabs; an empty or unknown value follows
+  the row. The session dialog does not edit it (doc 09 §Limitations).
+- Ghostty falls back to VTE, with a note on stderr, when the feature is off
+  or libghostty-vt cannot allocate a terminal.
 
 A further backend would be another Cargo feature and another match arm in
-`create_terminal`: type-safe, no `dlopen`. Loading backends as runtime
+`create_terminal_for`: type-safe, no `dlopen`. Loading backends as runtime
 plugins (`.so` behind a C ABI) is not supported; it would need fixed
 plugin directories, no credentials crossing the boundary, and calls on the
 GTK main thread.
@@ -240,6 +244,31 @@ A tab label carries a title state machine: placeholder (the session name)
 user). Once renamed, terminal titles no longer change it; a blank terminal
 title falls back to the session name (doc 03 §Tab labels).
 
+## Reported directory
+
+A shell may report its directory at each prompt with OSC 7
+(`file://host/path`, percent-encoded). Every terminal tab, SSH, local or
+serial and on either backend, keeps the last report on its page:
+`finish_connect` (`src/ui/tabs/terminal.rs`) connects to VTE's
+`current-directory-uri-changed` signal or the Ghostty view's
+`connect_directory` hook, so `TerminalBackend` and `TerminalEvent` are
+unchanged. `SessionTab::shell_directory_for_page` returns it.
+
+- **Decoded.** Both backends pass the raw URI on; the tab keeps the
+  percent-decoded path (`/srv/my site`), read by the same
+  `DirectoryFollower` as the SFTP sidebar. Its other rules apply too: the
+  first report pins the host, so a nested `ssh` does not replace the
+  directory, and anything that is not a `file://` URI is dropped (doc 07
+  §Following the shell).
+- **One terminal's.** The value starts empty with each new terminal, on a
+  reconnect too, and a late report from the old terminal goes nowhere. A
+  shell that exited keeps its last directory until the tab's next
+  terminal.
+
+Nothing reads the kept value yet: what consumes it (a new tab in the same
+directory, say) is a separate decision. The SFTP sidebar does not use it;
+it follows the same signals itself, and also probes, on SSH tabs only.
+
 ## FakeBackend
 
 `src/terminal/fake.rs`: an in-memory backend with no widget that records
@@ -258,61 +287,95 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   stay on the C side; `ffi.rs` declares only the shim's plain functions
   and three flat structs (a cell, a frame, a span of search highlight),
   checked against the C compiler by a unit test: their sizes, and where
-  the cell's grapheme fields sit. `build.rs` compiles the shim with the
-  `cc` crate and links `libghostty-vt.a` statically; nothing beyond libc
-  is needed.
+  the cell's grapheme and underline fields sit. `build.rs` compiles the
+  shim with the `cc` crate and links `libghostty-vt.a` statically; nothing
+  beyond libc is needed.
 - **`Engine`.** The safe owner of one terminal, with no display: VT
   parsing, resize with reflow, scrollback limit, viewport scrolling,
   selection, search, plain-text export, key, paste, mouse and focus
   encoding, the mouse modes a program set, and a viewport snapshot with
-  colors resolved to RGB. A snapshot cell holds its whole grapheme
-  cluster: the base codepoint, or for a longer cluster a slice of a
+  colors resolved to RGB and the cursor's style and blink. A snapshot
+  cell holds its whole grapheme cluster: the base codepoint, or for a
+  longer cluster a slice of a
   codepoint buffer that grows as needed and is reused frame to frame;
-  the tail cell of a wide character holds nothing. Effects raised while
+  the tail cell of a wide character holds nothing. A cell also holds its
+  underline style (`GHOSTTY_SGR_UNDERLINE_*`: none, single, double, curly,
+  dotted or dashed) and its SGR 58 underline color, if it has one, a
+  palette index resolved through the active palette; SGR 59 drops the
+  color, and SGR 24 and 4:0 the style. Effects raised while
   parsing — replies to queries (device attributes, status reports), BEL,
   OSC 0/2
   titles, OSC 7 directories — come back from the `write` that raised them
   and leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
-  the view's directory hook instead.
+  the view's directory hook instead (§Reported directory).
 - **`GhosttyView`.** The GTK4 widget. Each frame snapshots the engine and
   paints it with `GtkSnapshot`: one background rectangle per run of equal
-  color, and per run of equal style (bold, italic, underline,
-  strikethrough, faint; inverse, the selection and the block cursor swap
-  colors) glyphs that Pango picks and shapes but does not place. The cell
-  is the font's "M" rounded up to whole pixels; each glyph goes at its own
-  cell, not where the font's advances would take it, since those are
-  rarely whole pixels and would drift off the grid along a line. A
-  ligature sits at its first cell. A cell's whole grapheme cluster — a
-  base with its combining marks, a ZWJ sequence, a flag, an emoji with
-  its variation selector — is shaped together and sits at that cell; a
-  wide cluster's tail cell adds a blank, so the cells after it keep their
-  columns. Underline and strikethrough are rectangles across the run, on
-  whole pixels. Blinking text (SGR 5 or 6, until SGR 25) goes out and back
+  color, and per run of equal style (bold, italic, strikethrough, faint;
+  inverse, the selection and the block cursor swap colors) glyphs that
+  Pango picks and shapes but does not place. The cell is the font's "M"
+  rounded up to whole pixels; each glyph goes at its own cell, not where
+  the font's advances would take it, since those are rarely whole pixels
+  and would drift off the grid along a line. A ligature sits at its first
+  cell. A cell's whole grapheme cluster — a base with its combining marks,
+  a ZWJ sequence, a flag, an emoji with its variation selector — is shaped
+  together and sits at that cell; a wide cluster's tail cell adds a blank,
+  so the cells after it keep their columns. Strikethrough is a rectangle
+  across the run, on whole pixels. Underlines have runs of their own, of
+  equal style and color, so a line carries on under text that changes
+  color, and they are drawn in the cell's underline color, otherwise the
+  text color, fading with faint text and absent under hidden text. Single
+  and double are Pango's: the line of a blank shaped to the run's width,
+  moved and stretched onto whole pixels. Pango has no dotted or dashed
+  underline, so those are rectangles in a pattern counted from the grid's
+  left edge, and GTK draws Pango's error underline as round dots, so curly
+  is a stroked wave, a crest and a trough per cell, reaching to the cell's
+  bottom. Blinking text (SGR 5 or 6, until SGR 25) goes out and back
   once a second, half a second each way, its lines with it; the cell keeps
-  its place and background, and selection and search reach it as ever. The
-  timer runs only while the view is mapped and text that would change
-  shows on screen. A changed allocation resizes the grid and sends
-  `SizeChange` once per new grid.
+  its place and background, and selection and search reach it as ever.
+  The timer runs only while the view is mapped and text that would change
+  shows on screen. A changed allocation resizes the grid and sends `SizeChange`
+  once per new grid.
+- **Cursor.** It takes the shape the terminal asks for: block, underline
+  or bar, per DECSCUSR. The block swaps its cell's colors. The others are
+  rectangles as thick as the font's underline, on the cell's bottom or
+  left edge, over the cell as painted, so a search match stays lit under
+  them; they take the cursor color a scheme or program set, else the
+  color of the cell's text. Without focus the cursor is a hollow block in
+  the same way, on all four edges, whatever its shape, and it does not
+  blink (`cursor_shape` in `view.rs`, in the order Ghostty's renderer
+  decides it).
+
+  A blink (DECSCUSR's blinking variants, or mode 12) is 600 ms on and
+  600 ms off, Ghostty's period. A timer flips the phase and queues a
+  draw, so a phase is a whole frame like any other change. The paint
+  starts the timer when a frame's cursor blinks, and stops it once the
+  cursor stops blinking, is hidden or leaves the viewport. Losing focus
+  and unmapping stop it too, so hidden tabs wake nothing, and gaining
+  focus starts the blink over with the cursor on.
 - **Input.** Keys go through libghostty-vt's key encoder, so cursor-key
   and Kitty keyboard modes apply. Shift+PageUp/PageDown scroll a page and
   Shift+Home/End jump to the top and bottom, as in VTE, instead of
   reaching the remote side. Each mouse event goes one of three ways
   (`route` in `view.rs`, read from the terminal's modes per event):
   - **Reported** while the program tracks the mouse (mode 9, 1000, 1002
-    or 1003): primary-button presses, drags and releases, motion, and the
-    wheel (as buttons 4 and 5) go through libghostty-vt's mouse encoder,
+    or 1003): presses, drags and releases of the primary, middle and
+    right buttons, motion, and the wheel (vertical as buttons 4 and 5,
+    horizontal as 6 and 7) go through libghostty-vt's mouse encoder,
     which the terminal's modes also give its format — X10 bytes unless
     the program picked SGR (1006), UTF-8, urxvt or SGR-pixels — and which
     drops what the tracking mode does not report. A reported press
-    selects nothing and ends any click sequence. Each report is a
-    `DataOut` chunk of its own, so macro recording skips it (doc 12
-    §Recording).
-  - **Arrow keys** for the wheel on the alternate screen (1047 or 1049)
-    under alternate scroll (mode 1007, on until the program resets it),
-    when no tracking mode is set: Up or Down per row, in the cursor-key
-    mode's form.
+    selects nothing and ends any click sequence. A press decides for its
+    whole drag, so a reported press always gets its release and a local
+    one never does. Each report is a `DataOut` chunk of its own, so macro
+    recording skips it (doc 12 §Recording).
+  - **Arrow keys** for the vertical wheel on the alternate screen (1047
+    or 1049) under alternate scroll (mode 1007, on until the program
+    resets it), when no tracking mode is set: Up or Down per row, in the
+    cursor-key mode's form.
   - **Local** otherwise: a primary-button drag selects, a middle click
-    pastes PRIMARY, and the wheel scrolls the viewport.
+    pastes PRIMARY, and the vertical wheel scrolls the viewport. A right
+    click does nothing, and the horizontal wheel is left to the widgets
+    above the view.
 
   Selection is libghostty-vt's gesture: it counts clicks by the desktop's
   double-click time and a cell's width of movement, and picks what the
@@ -327,7 +390,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   local even while the program tracks the mouse. The wheel counts three rows per notch,
   adding up the fractional steps of high-resolution wheels and touchpads
   (pixel deltas count by cell height); a reported or arrow-key wheel
-  sends one report or key per row. With mode 1004 set, keyboard focus
+  sends one report or key per row. The horizontal wheel counts columns
+  the same way, on its own carry and by cell width, one report per
+  column. With mode 1004 set, keyboard focus
   entering and leaving the widget sends `CSI I` and `CSI O`.
 - **Search.** libghostty-vt's search covers the active screen and its
   scrollback, and the shim builds VTE's behavior on it: case-sensitive,
@@ -356,7 +421,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   `connect_input`, `connect_output` and `connect_directory` hooks stand
   in for VTE's `commit`, `contents-changed` and
   `current-directory-uri-changed` signals, which the SFTP sidebar
-  follows the shell by (doc 07 §Following the shell).
+  follows the shell by (doc 07 §Following the shell); the directory
+  hook also feeds the tab's kept directory (§Reported directory).
 - **Color schemes.** `set_color_scheme` looks the name up as VTE does
   (§Color schemes) and makes the palette's foreground, background, cursor
   and 16 ANSI colors libghostty-vt's default colors. The 256-color cube
@@ -466,20 +532,27 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **Opacity needs a compositor.** Every Wayland session has one; on X11
   without a compositing manager the cleared areas draw dark instead of
   showing the desktop.
-- **The per-session `terminal_backend` override is not read:**
-  `create_terminal()` follows the global row only.
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
+- **The kept directory has no consumer** (§Reported directory), and only
+  OSC 7 fills it: a shell that reports nothing, as many do over SSH (doc
+  07 §Following the shell), leaves it empty, and probes do not update it.
 - **VTE:** no Kitty graphics. Search steps between rows, reaching only
   the first match on each.
 - **Ghostty:** no URL detection or image drawing (`features()` says so,
-  and the UI hides them); no input method or compose support; mouse
-  reporting covers the primary button and the wheel only, so middle and
-  right clicks and horizontal scrolling never reach the program; the
-  text under the cursor takes its cell's background color, since
+  and the UI hides them); no input method or compose support; no local
+  use of a right click or the horizontal wheel, which only reach a
+  program tracking the mouse; a second button pressed during a drag
+  resets GTK's gesture for the first, so that button's release is
+  reported then, and the second's when any other button changes, each
+  press still getting one release; the text under the cursor takes its cell's background color, since
   libghostty-vt has no cursor text color (the scheme's matches the
   default background in both palettes, so only a cell a program colored
   differs from VTE).
+- **Ghostty cursor:** the blink period is fixed and GTK's cursor blink
+  settings are not read, where VTE follows them. Typing does not restart
+  a blink, so the cursor can be in its off phase as it moves. On a wide
+  character it covers one cell.
 - **Ghostty selection:** word boundaries are libghostty-vt's defaults,
   where `:` ends a word, so a double click takes part of a URL. A drag
   past the top or bottom edge does not scroll the viewport.
@@ -493,6 +566,12 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   kept lands within a page of the limit, often just under it (a page is
   387 rows at 120 columns, and a limit below one page keeps part of a
   page). Only 0 is exact.
+- **Ghostty underline styles and underline color:** a cell's underline
+  color stays as the program set it under the selection, the cursor and
+  a search match, so a line can match the color behind it. A font with
+  little room under its baseline puts the second line of a double
+  underline or the bottom of a wave in the next row, whose background
+  covers it.
 - **Ghostty text:** box-drawing and block characters come from the font,
   so a line of them shows faint seams wherever the cell is wider than
   the glyph, as it is at the default font. The cell is measured from
