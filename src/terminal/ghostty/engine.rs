@@ -154,6 +154,17 @@ impl Frame {
         }
         text
     }
+
+    /// Whether blinking text shows on screen: cells past the grid are left
+    /// over from a larger one, and blank or invisible cells show no change.
+    pub fn blinks(&self) -> bool {
+        let grid = usize::from(self.info.cols) * usize::from(self.info.rows);
+        self.cells.iter().take(grid).any(|cell| {
+            cell.flags & ffi::CELL_BLINK != 0
+                && cell.flags & ffi::CELL_INVISIBLE == 0
+                && char::from_u32(cell.codepoint).is_some_and(|c| c != '\0' && !c.is_whitespace())
+        })
+    }
 }
 
 /// Append a cell's cluster to `text`, or a space for an empty cell (the
@@ -1391,6 +1402,47 @@ mod tests {
         let y = frame.cell(0, 1).unwrap();
         assert_eq!(y.flags, 0);
         assert_eq!(y.has_bg, 0);
+    }
+
+    #[test]
+    fn sgr_5_and_6_set_blink_and_sgr_25_clears_it() {
+        let engine = engine();
+        engine.write(b"\x1b[5ma\x1b[25mb\x1b[6mc\x1b[25md\x1b[5;6me\x1b[0mf");
+        let frame = frame(&engine);
+        let blink = |col| frame.cell(0, col).unwrap().flags & ffi::CELL_BLINK != 0;
+        assert_eq!(
+            [0, 1, 2, 3, 4, 5].map(blink),
+            [true, false, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn a_frame_blinks_only_while_blinking_text_shows() {
+        let engine = engine();
+        engine.write(b"plain");
+        assert!(!frame(&engine).blinks());
+        engine.write(b"\x1b[5m  \x1b[8mhidden\x1b[0m");
+        assert!(!frame(&engine).blinks(), "nothing there changes");
+        engine.write(b"\x1b[6mx\x1b[0m");
+        assert!(frame(&engine).blinks());
+
+        // Scrolled out of the viewport, and back.
+        engine.write(&b"\r\n".repeat(10));
+        assert!(!frame(&engine).blinks());
+        engine.scroll(Scroll::Top);
+        assert!(frame(&engine).blinks());
+    }
+
+    #[test]
+    fn cells_left_past_a_shrunk_grid_do_not_blink() {
+        let engine = engine();
+        engine.write(b"\x1b[5;1H\x1b[5mx\x1b[0m");
+        let mut frame = frame(&engine);
+        assert!(frame.blinks());
+        engine.reset();
+        assert!(engine.resize(20, 2, 10, 20));
+        assert!(engine.snapshot(&mut frame));
+        assert!(!frame.blinks());
     }
 
     /// Each SGR underline form reaches the cell as its own style, and the
