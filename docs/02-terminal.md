@@ -57,8 +57,9 @@ pub enum TerminalEvent { DataOut(Vec<u8>), SizeChange { rows: u32, cols: u32 },
   on a bounded channel.
 - `send_input` is input that was not typed (macro playback, doc 12). It
   leaves as `DataOut` through the same queue as keystrokes.
-- `TerminalFeatures` (search, color schemes, SIXEL, Kitty graphics,
-  reflow, …) is queried once per tab; the UI hides what is false.
+- `TerminalFeatures` (search, color schemes, URL detection, SIXEL, Kitty
+  graphics, reflow, …) states what a backend supports. No UI reads it yet;
+  each backend's section says what the user gets.
 - Backends are held as `Arc<dyn TerminalBackend>`: the tab, the output
   drain and the terminal actions share them.
 
@@ -286,9 +287,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
 - **FFI.** `shim.c` wraps the C API, whose sized structs and tagged unions
   stay on the C side; `ffi.rs` declares only the shim's plain functions
   and three flat structs (a cell, a frame, a span of search highlight),
-  checked against the C compiler by a unit test: their sizes, and where
   checked against the C compiler by unit tests: their sizes, and where
-  the cell's grapheme, link and underline fields sit. `build.rs` compiles
+  the cell's grapheme, link, wrap and underline fields sit. `build.rs`
+  compiles
   the shim with the `cc` crate and links `libghostty-vt.a` statically;
   nothing beyond libc is needed.
 - **`Engine`.** The safe owner of one terminal, with no display: VT
@@ -305,7 +306,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   underline style (`GHOSTTY_SGR_UNDERLINE_*`: none, single, double, curly,
   dotted or dashed) and its SGR 58 underline color, if it has one, a
   palette index resolved through the active palette; SGR 59 drops the
-  color, and SGR 24 and 4:0 the style. Effects raised while
+  color, and SGR 24 and 4:0 the style. A row's last cell
+  says whether the row soft-wraps into the next. Effects raised while
   parsing — replies to queries (device attributes, status reports), BEL,
   OSC 0/2
   titles, OSC 7 directories — come back from the `write` that raised them
@@ -416,7 +418,23 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   linked cells in reading order share an entry for as long as the URI
   stays the same, with or without unlinked cells between them, so a link
   a program broke over two rows stays one link. A URI that is not UTF-8
-  is no link.
+  is no link. When the program marks nothing, `scan_links` finds URLs in
+  the text of the last frame, with no help from it: it reads a logical
+  line, the rows joined by their soft-wrap flag, so a wrapped link is
+  one link and a line that only fills its last column does not run into
+  the next. False positives must not open anything, so text is a link
+  only if:
+  - it starts with `https://`, `http://` or `mailto:`, in any case, with
+    no scheme character (letter, digit, `+`, `-`, `.`) right before it;
+  - it runs over ASCII URL characters: anything else ends it, including
+    an empty cell, a cell holding a longer cluster, text hidden with SGR 8,
+    and a closing bracket that closes nothing in the link, so
+    `(https://a.b/c)` stops before the `)` and `https://a.b/c_(d)` keeps it;
+  - trailing `.` `,` `;` `:` `!` `?` `'` `*` `(` `[` are left out;
+  - what remains has a target: a host name or bracketed IPv6 address, with
+    an optional user and numeric port, or for `mailto:` an address.
+  An OSC 8 link's URI is the program's word: it is not put through
+  these rules, only through `may_open`.
 
   While mouse events are local (`route`), the link under the pointer shows
   its URI in a tooltip, is underlined on all its cells, and turns the
@@ -429,6 +447,16 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   While a program tracks the mouse the press is the program's, so Shift
   brings links back: hover with Shift, Ctrl+Shift+click. A failure to open
   is logged without the URI, which can carry a token.
+
+  `may_open` in `view.rs` decides what reaches the handler. A link comes
+  from whatever is on the far side of the tab, and the view does not know
+  the transport, so one rule covers every tab: a `file:` URI, in any case,
+  opens only if its authority is exactly this machine's name
+  (`glib::host_name`). Any other authority is refused, and so are an empty
+  one (`file:///path`), `localhost`, a user or a port in it, and the forms
+  with none (`file:/path`). A refused link still shows its tooltip and
+  underline, so the target can be read. Text with no URI scheme is refused;
+  every other scheme goes to the handler.
 
   `may_open` in `view.rs` decides what reaches the handler. A link comes
   from whatever is on the far side of the tab, and the view does not know
@@ -566,11 +594,11 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   OSC 7 fills it: a shell that reports nothing, as many do over SSH (doc
   07 §Following the shell), leaves it empty, and probes do not update it.
 - **VTE:** no Kitty graphics. Search steps between rows, reaching only
-  the first match on each.
-- **Ghostty:** no detection of URLs in plain text, which is what
-  `features()` reports (OSC 8 links do not count), and no image drawing
-  (`features()` says so, and the UI hides them); no input method or
-  compose support; no local use of a right click or the horizontal
+- **VTE:** no Kitty graphics. Search steps between rows, reaching only
+  the first match on each. `features()` reports URL detection, but no
+  match is registered with the widget, so links are not lit or opened.
+- **Ghostty:** no image drawing (`features()` says so); no input method
+  or compose support; no local use of a right click or the horizontal
   wheel, which only reach a program tracking the mouse; a second button
   pressed during a drag resets GTK's gesture for the first, so that
   button's release is reported then, and the second's when any other
@@ -599,6 +627,14 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   cell by cell through the grid reference API, which upstream does not
   mean for render loops: a 200×50 screen of links adds about 0.7 ms a
   frame.
+- **Ghostty URL detection:** no OSC 8 hyperlinks, and no tooltip
+  showing the target. A URL with non-ASCII characters ends at the first
+  one, and a host with an underscore is no link. A link cut off by the
+  viewport is not detected: scrolled so its tail is below the bottom edge
+  it would open the wrong address, and with its scheme above the top edge
+  nothing marks it as a link. A row broken by the program instead of
+  soft-wrapped ends a link, so one split by a pager or `tmux` pane is only
+  its first row.
 - **Ghostty search:** a query is plain text, not a regular expression as
   on VTE, and matching is case-exact (libghostty-vt folds ASCII case, so
   a match is read back and compared as typed). A match is not the
