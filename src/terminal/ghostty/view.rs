@@ -8,7 +8,8 @@
 //! A cell's whole grapheme cluster is shaped together and sits at that
 //! cell. Underline and strikethrough are drawn as rectangles. Search
 //! matches are lit in Ghostty's colors, the current one apart, under the
-//! selection and the cursor.
+//! selection and the cursor. Blinking text goes out and back on a timer
+//! that runs only while a mapped view shows some.
 //!
 //! Input: keys go through libghostty-vt's key encoder (so cursor-key and
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
@@ -24,6 +25,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gtk4::glib::translate::IntoGlib;
 use gtk4::prelude::*;
@@ -49,6 +51,9 @@ const ARROW_DOWN: u32 = 0xff54;
 const SEARCH_FG: [u8; 3] = [0, 0, 0];
 const SEARCH_BG: [u8; 3] = [0xff, 0xe0, 0x82];
 const SEARCH_CURRENT_BG: [u8; 3] = [0xf2, 0xa5, 0x7e];
+/// How long blinking text stays on, and off: one cycle a second, SGR 5's
+/// slow blink. SGR 6 blinks the same, as libghostty-vt keeps one flag.
+const BLINK_PHASE: Duration = Duration::from_millis(500);
 
 mod imp {
     use super::*;
@@ -76,6 +81,11 @@ mod imp {
         pub(super) pointer: Cell<(f64, f64)>,
         /// The cell of the last reported motion, so each cell is sent once.
         pub(super) motion_cell: Cell<Option<(u16, u16)>>,
+        /// Blinking text is in its off phase.
+        pub(super) blink_off: Cell<bool>,
+        /// Flips `blink_off`; runs only while a mapped view shows blinking
+        /// text.
+        pub(super) blink_timer: RefCell<Option<glib::SourceId>>,
     }
 
     #[glib::object_subclass]
@@ -104,6 +114,12 @@ mod imp {
 
         fn snapshot(&self, snapshot: &gtk4::Snapshot) {
             self.obj().paint(snapshot);
+        }
+
+        // Mapping queues a draw, and that frame starts the timer again.
+        fn unmap(&self) {
+            self.obj().stop_blink();
+            self.parent_unmap();
         }
     }
 }
@@ -575,12 +591,49 @@ impl GhosttyView {
         true
     }
 
+    /// Blinking text changes phase.
+    fn blink_tick(&self) {
+        let off = &self.imp().blink_off;
+        off.set(!off.get());
+        self.queue_draw();
+    }
+
+    /// Run the timer while a mapped view shows blinking text, `blinks`
+    /// saying if this frame does; otherwise stop it.
+    fn follow_blink(&self, blinks: bool) {
+        if !blinks || !self.is_mapped() {
+            self.stop_blink();
+            return;
+        }
+        let mut timer = self.imp().blink_timer.borrow_mut();
+        if timer.is_none() {
+            let view = self.downgrade();
+            *timer = Some(glib::timeout_add_local(BLINK_PHASE, move || {
+                let Some(view) = view.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                view.blink_tick();
+                glib::ControlFlow::Continue
+            }));
+        }
+    }
+
+    /// Stop the timer; text that blinks next starts on.
+    fn stop_blink(&self) {
+        if let Some(timer) = self.imp().blink_timer.take() {
+            timer.remove();
+        }
+        self.imp().blink_off.set(false);
+    }
+
     fn paint(&self, snapshot: &gtk4::Snapshot) {
         let Some(shared) = self.shared() else { return };
         let mut frame = self.imp().frame.borrow_mut();
         if !shared.engine.snapshot(&mut frame) {
             return;
         }
+        self.follow_blink(frame.blinks());
+        let blink_off = self.imp().blink_off.get();
         let info = frame.info;
         let metrics = self.metrics();
         let (cw, ch) = (metrics.width as f32, metrics.height as f32);
@@ -620,7 +673,7 @@ impl GhosttyView {
                 }
                 let (text, columns) = run_text(&cells[start..col]);
                 let style = &cells[start];
-                if style.flags & ffi::CELL_INVISIBLE != 0 || text.trim().is_empty() {
+                if style.hidden(blink_off) || text.trim().is_empty() {
                     continue;
                 }
                 let alpha = if style.flags & ffi::CELL_FAINT != 0 {
@@ -798,7 +851,8 @@ const TEXT_FLAGS: u16 = ffi::CELL_BOLD
     | ffi::CELL_UNDERLINE
     | ffi::CELL_STRIKE
     | ffi::CELL_FAINT
-    | ffi::CELL_INVISIBLE;
+    | ffi::CELL_INVISIBLE
+    | ffi::CELL_BLINK;
 
 impl<'a> Painted<'a> {
     fn new(info: &FrameInfo, cell: &GridCell, cluster: &'a [u32], cursor: bool) -> Self {
@@ -834,6 +888,12 @@ impl<'a> Painted<'a> {
             bg: Some(bg),
             ..self
         }
+    }
+
+    /// Whether the text is out of sight: invisible, or blinking in its off
+    /// phase. Only the text goes; the cell keeps its place and background.
+    fn hidden(&self, blink_off: bool) -> bool {
+        self.flags & ffi::CELL_INVISIBLE != 0 || (blink_off && self.flags & ffi::CELL_BLINK != 0)
     }
 
     fn same_style(&self, other: &Self) -> bool {
@@ -1288,6 +1348,7 @@ mod ghostty_display {
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
         search_highlight(&backend, &view);
+        blinking_text(&backend, &view);
         primary_selection(&backend, &view, &mut rx);
         window.close();
 
@@ -1618,6 +1679,87 @@ mod ghostty_display {
         assert!(popover.is_visible());
         popover.popdown();
         popover.unparent();
+    }
+
+    /// Blinking text goes out and comes back with its cells in place: their
+    /// backgrounds stay, selection and search still reach them, and the
+    /// cells after them do not move. The timer runs only while text blinks
+    /// on a mapped view; a frame without blinking text never toggles.
+    fn blinking_text(backend: &GhosttyBackend, view: &GhosttyView) {
+        let (cw, ch) = view.cell_size();
+        let (cw, ch) = (cw as usize, ch as usize);
+        // Every pixel of a first-row cell, painted now.
+        let cell = |col: usize| -> Vec<[u8; 4]> {
+            let at = pixels(view);
+            (0..ch)
+                .flat_map(|y| (0..cw).map(move |x| (x, y)))
+                .map(|(x, y)| at(col * cw + x, y))
+                .collect()
+        };
+        let solid = |pixels: &[[u8; 4]]| pixels.iter().all(|pixel| *pixel == pixels[0]);
+        let timer = || view.imp().blink_timer.borrow().is_some();
+        let off = || view.imp().blink_off.get();
+        let context = glib::MainContext::default();
+        // Run the main loop until `done`, or for `limit`.
+        let wait = |limit: Duration, done: &dyn Fn() -> bool| {
+            let start = std::time::Instant::now();
+            while !done() && start.elapsed() < limit {
+                context.iteration(false);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+
+        // Cells 0 and 1 blink on red, cell 3 does not.
+        backend.reset();
+        backend.write(b"\x1b[5;41mMM\x1b[0m M");
+        let shown = cell(0);
+        let plain = cell(3);
+        assert!(!solid(&shown), "blinking text starts on");
+        assert!(timer(), "blinking text starts the timer");
+
+        view.blink_tick();
+        let hidden = cell(0);
+        assert!(solid(&hidden), "no glyph in the off phase");
+        assert_eq!(hidden[0], shown[0], "the background stays");
+        assert!(solid(&cell(1)));
+        assert_eq!(cell(3), plain, "the next cells stay put");
+
+        backend.select_all();
+        assert!(backend.selected_text().unwrap().contains("MM"));
+        assert_ne!(cell(0)[0], hidden[0], "the selection lights the cell");
+        view.shared().unwrap().engine.clear_selection();
+        backend.search("MM", false);
+        let [r, g, b] = SEARCH_CURRENT_BG;
+        assert_eq!(cell(0)[0], [b, g, r, 255], "search lights the cell");
+        backend.search("", false);
+        assert_eq!(cell(0), hidden);
+
+        view.blink_tick();
+        assert_eq!(cell(0), shown, "the glyph comes back");
+
+        // The timer itself flips the phase.
+        wait(BLINK_PHASE * 4, &|| off());
+        assert!(off(), "the timer never ticked");
+
+        // Unmapped, nothing ticks; mapped again, the next frame restarts it.
+        view.set_visible(false);
+        wait(BLINK_PHASE / 5, &|| false);
+        assert!(!timer() && !off(), "a hidden view keeps no timer");
+        view.set_visible(true);
+        wait(BLINK_PHASE * 4, &timer);
+        assert!(timer(), "the view came back and did not blink");
+
+        // Text gone in the off phase: the timer stops with the text on.
+        wait(BLINK_PHASE * 4, &|| off());
+        backend.reset();
+        backend.write(b"plain");
+        let still = cell(0);
+        assert!(!timer() && !off(), "nothing blinks");
+        view.blink_tick();
+        assert_eq!(cell(0), still, "a late tick changes nothing");
+        assert!(!timer() && !off());
+        wait(BLINK_PHASE * 2, &|| off());
+        assert!(!timer() && !off(), "a blink-free frame toggled");
     }
 
     /// A cell's whole cluster reaches Pango: a ZWJ family shapes to other
