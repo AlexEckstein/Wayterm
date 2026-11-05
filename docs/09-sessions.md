@@ -274,9 +274,9 @@ and a reset to the default.
   exist but nothing writes them (`SessionStore::touch_connected` is never
   called).
 - `sort_order` is never edited: siblings sort by name.
-- `terminal_backend` is stored but not applied (doc 02 §Limitations). The
-  dialog edits neither it nor `font_family`, `font_size`, `opacity`,
-  `color_scheme`, `ssh_options`, `host_key_policy`, `vnc_options` or
-  `vnc_color_depth`; imports and JSON restores can set them.
+- The dialog edits neither `terminal_backend` (doc 02 §Backend selection)
+  nor `font_family`, `font_size`, `opacity`, `color_scheme`, `ssh_options`,
+  `host_key_policy`, `vnc_options` or `vnc_color_depth`; imports and JSON
+  restores can set them.
 - `hotkeys` has no `UNIQUE (action, context)`, which is why the seed runs
   only once.
