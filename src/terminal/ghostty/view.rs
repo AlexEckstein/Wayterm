@@ -27,9 +27,12 @@
 //! changes are reported when the program asks. A press or a typed key ends
 //! the search, as it clears the selection.
 //!
-//! Links: [`scan_links`] finds URLs in the text on screen, soft-wrapped rows
+//! Links: [`link_at`] reads OSC 8 hyperlinks from the frame, and
+//! [`scan_links`] finds URLs in the text on screen, soft-wrapped rows
 //! joined. While mouse events are local, hovering one underlines it and
-//! Ctrl+click opens it through the desktop's URI handler.
+//! shows its URI in a tooltip, and Ctrl+click opens it through the
+//! desktop's URI handler unless [`may_open`] refuses it. A program
+//! tracking the mouse keeps both until Shift.
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
@@ -537,7 +540,8 @@ impl GhosttyView {
     }
 
     /// A local release at `cell`: a Ctrl+press on a link opens it, unless
-    /// the press became a selection or the link is no longer here.
+    /// the press became a selection, the link is no longer here, or
+    /// [`may_open`] refuses it.
     fn open_pressed_link(&self, shared: &Shared, (col, row): (u16, u16)) {
         let imp = self.imp();
         let Some(link) = imp.pressed_link.take() else {
@@ -549,6 +553,10 @@ impl GhosttyView {
             .is_some_and(|text| !text.is_empty());
         let here = link_at(&imp.frame.borrow(), row.into(), col.into());
         if selected || here.as_ref() != Some(&link) {
+            return;
+        }
+        if !may_open(&link.uri, &glib::host_name()) {
+            eprintln!("Wayterm: refused a link that is not for this machine");
             return;
         }
         let launcher = imp.launcher.borrow().clone();
@@ -683,14 +691,15 @@ impl GhosttyView {
         link_at(frame, row.into(), col.into())
     }
 
-    /// Make `link` the one underlined, with the cursor to match; `true` if
-    /// that changed anything.
+    /// Make `link` the one underlined, with the cursor and the tooltip to
+    /// match; `true` if that changed anything.
     fn show_link(&self, link: Option<Link>) -> bool {
         let current = &self.imp().link;
         if *current.borrow() == link {
             return false;
         }
         self.set_cursor_from_name(link.is_some().then_some(LINK_CURSOR));
+        self.set_tooltip_text(link.as_ref().map(|link| link.uri.as_str()));
         current.replace(link);
         true
     }
@@ -1524,8 +1533,9 @@ fn px(pixels: i32) -> u32 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Link {
     uri: String,
-    /// Its viewport cells, row-major: a wrapped link spans rows.
-    cells: Range<usize>,
+    /// Its viewport cells, row-major and ascending: the cells of one
+    /// hyperlink need not touch.
+    cells: Vec<usize>,
 }
 
 impl Link {
@@ -1533,7 +1543,7 @@ impl Link {
     fn underline(&self, row: usize, cells: &mut [Painted<'_>]) {
         let line = row * cells.len();
         for (col, cell) in cells.iter_mut().enumerate() {
-            if self.cells.contains(&(line + col)) {
+            if self.cells.binary_search(&(line + col)).is_ok() {
                 // Single, in the text color; main's renderer draws it per
                 // run of equal style.
                 cell.underline = ffi::UNDERLINE_SINGLE;
@@ -1543,12 +1553,29 @@ impl Link {
     }
 }
 
-/// The link covering a viewport cell, if any: its logical line, the rows
-/// soft-wrapped together around `row`, is scanned whole.
+/// The link covering a viewport cell, if any: a program's OSC 8
+/// hyperlink, else a URL [`scan_links`] finds in the logical line, the
+/// rows soft-wrapped together around `row`, scanned whole.
 fn link_at(frame: &Frame, row: usize, col: usize) -> Option<Link> {
     let (cols, rows) = (usize::from(frame.info.cols), usize::from(frame.info.rows));
     if row >= rows || col >= cols {
         return None;
+    }
+    // A program's OSC 8 hyperlink wins over a URL in the plain text.
+    if let Some(uri) = frame.link(row, col) {
+        let entry = frame.cell(row, col)?.link;
+        let cells = frame
+            .cells
+            .iter()
+            .take(cols * rows)
+            .enumerate()
+            .filter(|(_, cell)| cell.link == entry)
+            .map(|(index, _)| index)
+            .collect();
+        return Some(Link {
+            uri: uri.to_owned(),
+            cells,
+        });
     }
     let wraps = |row| {
         frame
@@ -1573,8 +1600,31 @@ fn link_at(frame: &Frame, row: usize, col: usize) -> Option<Link> {
     let start = first * cols;
     Some(Link {
         uri: line[range.clone()].iter().collect(),
-        cells: start + range.start..start + range.end,
+        cells: (start + range.start..start + range.end).collect(),
     })
+}
+
+/// Whether a link may reach the desktop's handler on this machine, `host`
+/// by name. Links come from whatever is on the far side of the tab, which
+/// the view cannot see, and a `file:` URI there means a file over there. So
+/// one opens only if its authority is exactly `host`: an empty authority,
+/// or `localhost`, is the sender's own machine. Text without a scheme is
+/// nothing a handler can take.
+fn may_open(uri: &str, host: &str) -> bool {
+    match glib::Uri::parse_scheme(uri) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("file") => {
+            !host.is_empty() && file_authority(uri) == Some(host)
+        }
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// The authority of a `file:` URI, empty in `file:///path`; `None` for the
+/// forms with none at all, like `file:/path`.
+fn file_authority(uri: &str) -> Option<&str> {
+    let (_, rest) = uri.split_once(':')?;
+    rest.strip_prefix("//")?.split(['/', '?', '#']).next()
 }
 
 /// What a cell adds to a logical line, one `char` per cell so an index maps
@@ -1711,6 +1761,7 @@ fn launch_uri(view: &GhosttyView, uri: &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::engine::Engine;
     use super::*;
 
     const WHEEL: gdk::ScrollUnit = gdk::ScrollUnit::Wheel;
@@ -1727,6 +1778,87 @@ mod tests {
                 rows
             })
             .sum()
+    }
+
+    /// A 20-column screen after `output`.
+    fn screen(output: &str) -> Frame {
+        let engine = Engine::new(20, 3).expect("engine");
+        engine.write(output.as_bytes());
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        frame
+    }
+
+    #[test]
+    fn a_hyperlink_covers_its_cells_and_no_others() {
+        let frame = screen("a \x1b]8;;https://a.example/\x1b\\link\x1b]8;;\x1b\\ b");
+        let link = link_at(&frame, 0, 3).expect("a link");
+        assert_eq!(link.uri, "https://a.example/");
+        assert_eq!(link.cells, [2, 3, 4, 5]);
+        assert_eq!(link_at(&frame, 0, 1), None);
+        assert_eq!(link_at(&frame, 0, 6), None);
+    }
+
+    #[test]
+    fn a_hyperlink_broken_over_rows_is_one_link() {
+        let open = "\x1b]8;;https://a.example/\x1b\\";
+        let frame = screen(&format!("{open}ab\x1b]8;;\x1b\\\r\n{open}cd\x1b]8;;\x1b\\"));
+        let link = link_at(&frame, 1, 0).expect("a link");
+        assert_eq!(link.cells, [0, 1, 20, 21]);
+    }
+
+    #[test]
+    fn text_that_reads_as_a_url_is_not_an_osc_8_hyperlink() {
+        // The frame carries no OSC 8 link: [`scan_links`] may still find a
+        // URL in the plain text at [`link_at`]'s fallback.
+        let frame = screen("https://a.example/");
+        assert_eq!(frame.cell(0, 3).map(|cell| cell.link), Some(0));
+        assert_eq!(frame.link(0, 3), None);
+    }
+
+    #[test]
+    fn cells_past_the_frame_hold_no_link() {
+        let frame = screen("\x1b]8;;https://a.example/\x1b\\x\x1b]8;;\x1b\\");
+        assert_eq!(link_at(&frame, 3, 0), None);
+        assert_eq!(link_at(&frame, 0, 20), None);
+    }
+
+    #[test]
+    fn only_a_file_link_naming_this_host_may_open() {
+        let may = |uri| may_open(uri, "here");
+        assert!(may("file://here/etc/hosts"));
+        assert!(may("FILE://here/etc/hosts"));
+        assert!(may("file://here"));
+        for uri in [
+            "file://there/etc/hosts",
+            "FILE://there/etc/hosts",
+            "file://HERE/etc/hosts",
+            "file://here.example/etc/hosts",
+            "file://user@here/etc/hosts",
+            "file://here:80/etc/hosts",
+            "file://here\\@there/etc/hosts",
+            "file://localhost/etc/hosts",
+            "file:///etc/hosts",
+            "file:/etc/hosts",
+            "file:etc/hosts",
+        ] {
+            assert!(!may(uri), "{uri}");
+        }
+    }
+
+    #[test]
+    fn a_host_with_no_name_opens_no_file_link() {
+        assert!(!may_open("file:///etc/hosts", ""));
+    }
+
+    #[test]
+    fn other_schemes_may_open_and_text_without_one_may_not() {
+        let may = |uri| may_open(uri, "here");
+        assert!(may("https://example.com/"));
+        assert!(may("mailto:a@example.com"));
+        assert!(!may(" file://there/etc/hosts"));
+        assert!(!may("/etc/hosts"));
+        assert!(!may(""));
     }
 
     #[test]
@@ -2265,7 +2397,7 @@ mod tests {
         assert_eq!(uri_at(&frame, 2, 6), None, "the word after it");
         assert_eq!(uri_at(&frame, 3, 0), None);
         let link = link_at(&frame, 1, 0).unwrap();
-        assert_eq!(link.cells, 3..3 + url.len());
+        assert_eq!(link.cells, (3..3 + url.len()).collect::<Vec<usize>>());
     }
 
     #[test]
@@ -2464,6 +2596,7 @@ mod ghostty_display {
         program_clipboard(&backend, &view, &mut rx);
         search_highlight(&backend, &view);
         primary_selection(&backend, &view, &mut rx);
+        hyperlinks_hover_and_open(&backend, &view, &mut rx);
         links_hover_and_open(&backend, &view, &mut rx);
         window.close();
 
@@ -3445,6 +3578,138 @@ mod ghostty_display {
         let (decomposed, plain) = (shaped(2), shaped(3));
         assert_ne!(at(&decomposed, 1), at(&plain, 1), "the accent was dropped");
         assert_eq!(at(&decomposed, 2).len(), 1, "y follows in the next cell");
+    }
+
+    /// Hovering a hyperlink shows its URI, underlines it and sets the
+    /// cursor, Ctrl+click opens it, a `file://` link for another host stays
+    /// shut, and a program tracking the mouse keeps all of it until Shift.
+    /// The desktop's handler is stubbed out: nothing here leaves the process.
+    fn hyperlinks_hover_and_open(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let opened: Rc<RefCell<Vec<String>>> = Rc::default();
+        let log = Rc::clone(&opened);
+        let stub: Launcher = Rc::new(move |_, uri| log.borrow_mut().push(uri.to_owned()));
+        let desktop = view.imp().launcher.replace(Some(stub));
+        assert!(desktop.is_some(), "the desktop's handler is the default");
+
+        let none = gdk::ModifierType::empty();
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+        let metrics = view.metrics();
+        let (cell_w, cell_h) = (metrics.width, metrics.height);
+        let at = |col: i32| (f64::from(col * cell_w + cell_w / 2), f64::from(cell_h / 2));
+        let click = |state, time, col| {
+            view.press(state, time, at(col));
+            view.release(state, at(col));
+        };
+        let tooltip = || view.tooltip_text().map(|text| text.to_string());
+        let pointer = || view.cursor().and_then(|c| c.name()).as_deref() == Some(LINK_CURSOR);
+        let underlined = |col: i32| {
+            let (x, y) = (
+                (col * cell_w + cell_w / 2) as usize,
+                metrics.underline.0 as usize,
+            );
+            render(view)(x..x + 1, y..y + 1)
+        };
+        let took = || std::mem::take(&mut *opened.borrow_mut());
+        let linked = |uri: &str| format!("see \x1b]8;;{uri}\x1b\\the docs\x1b]8;;\x1b\\ now");
+        let uri = "https://example.com/x";
+
+        view.pointer_left();
+        backend.reset();
+        backend.write(linked(uri).as_bytes());
+        assert!(!underlined(5), "no hover, no underline");
+        assert_eq!(tooltip(), None);
+
+        // On and off the link.
+        view.hover(none, at(5));
+        assert_eq!(tooltip().as_deref(), Some(uri));
+        assert!(pointer());
+        for col in [4, 8, 11] {
+            assert!(underlined(col), "column {col}");
+        }
+        assert!(!underlined(1) && !underlined(13));
+        view.hover(none, at(1));
+        assert_eq!(tooltip(), None);
+        assert!(!pointer());
+        assert!(!underlined(5));
+
+        // Output moves the text under a pointer that stays put.
+        view.hover(none, at(5));
+        backend.reset();
+        backend.write(b"nothing to see");
+        assert!(!underlined(5));
+        assert_eq!(tooltip(), None);
+        backend.reset();
+        backend.write(linked(uri).as_bytes());
+        assert!(underlined(5));
+        assert_eq!(tooltip().as_deref(), Some(uri));
+
+        // Leaving the widget clears everything.
+        view.pointer_left();
+        assert_eq!(tooltip(), None);
+        assert!(!pointer());
+        assert!(!underlined(5));
+
+        // Only a Ctrl+click on the link opens it.
+        click(none, 50_000, 5);
+        click(ctrl, 51_000, 1);
+        assert_eq!(took(), [] as [&str; 0]);
+        click(ctrl, 52_000, 5);
+        assert_eq!(took(), [uri]);
+
+        // A drag selects instead, and a release off the link opens nothing.
+        view.press(ctrl, 53_000, at(5));
+        view.drag_to(ctrl, at(9));
+        view.release(ctrl, at(9));
+        assert!(backend.selected_text().is_some_and(|text| !text.is_empty()));
+        assert_eq!(took(), [] as [&str; 0]);
+        view.press(ctrl, 54_000, at(5));
+        view.release(ctrl, at(1));
+        assert_eq!(took(), [] as [&str; 0]);
+
+        // A file link opens for this host alone, and still shows either way.
+        let host = glib::host_name();
+        let here = format!("file://{host}/etc/hosts");
+        let there = format!("file://not-{host}/etc/hosts");
+        backend.reset();
+        backend.write(linked(&here).as_bytes());
+        assert!(!underlined(5), "painted, and no hover");
+        click(ctrl, 55_000, 5);
+        assert_eq!(took(), [here.as_str()]);
+        backend.reset();
+        backend.write(linked(&there).as_bytes());
+        view.hover(none, at(5));
+        assert!(underlined(5));
+        assert_eq!(tooltip().as_deref(), Some(there.as_str()));
+        click(ctrl, 56_000, 5);
+        assert_eq!(took(), [] as [&str; 0]);
+        view.pointer_left();
+
+        // A program tracking the mouse gets the click, until Shift.
+        backend.reset();
+        backend.write(linked(uri).as_bytes());
+        backend.write(b"\x1b[?1000h\x1b[?1006h");
+        assert!(!underlined(5), "painted, and no hover");
+        view.hover(none, at(5));
+        assert_eq!(tooltip(), None);
+        while rx.try_recv().is_ok() {}
+        click(ctrl, 57_000, 5);
+        assert_eq!(took(), [] as [&str; 0]);
+        let report = std::iter::from_fn(|| rx.try_recv().ok()).any(|event| {
+            matches!(event, TerminalEvent::DataOut(bytes) if is_pointer_or_focus_report(&bytes))
+        });
+        assert!(report, "the press went to the program");
+        view.hover(shift, at(5));
+        assert_eq!(tooltip().as_deref(), Some(uri));
+        click(ctrl | shift, 58_000, 5);
+        assert_eq!(took(), [uri]);
+        backend.write(b"\x1b[?1000l\x1b[?1006l");
+        view.pointer_left();
+        while rx.try_recv().is_ok() {}
     }
 
     /// Paint the view now; the result tells whether any pixel in a box

@@ -81,6 +81,10 @@ pub struct Frame {
     /// The clusters of cells holding more than one codepoint, where their
     /// `grapheme` fields point; grown as needed, never shrunk.
     pub graphemes: Vec<u32>,
+    /// The URIs of the OSC 8 hyperlinks in the viewport, end to end.
+    uris: Vec<u8>,
+    /// Where each entry of `uris` ends; a cell's `link`, from 1, picks one.
+    link_ends: Vec<usize>,
 }
 
 impl Frame {
@@ -107,6 +111,18 @@ impl Frame {
                     .unwrap_or(&[])
             }
         }
+    }
+
+    /// The URI of a cell's OSC 8 hyperlink. `None` without one, and for a
+    /// URI that is not UTF-8, which no handler could open as written.
+    pub fn link(&self, row: usize, col: usize) -> Option<&str> {
+        let entry = usize::from(self.cell(row, col)?.link).checked_sub(1)?;
+        let start = match entry.checked_sub(1) {
+            Some(previous) => *self.link_ends.get(previous)?,
+            None => 0,
+        };
+        let uri = self.uris.get(start..*self.link_ends.get(entry)?)?;
+        std::str::from_utf8(uri).ok()
     }
 
     /// One viewport row as text, empty cells as spaces.
@@ -554,7 +570,10 @@ impl Engine {
                 )
             };
             match result {
-                ffi::SUCCESS => return true,
+                ffi::SUCCESS => {
+                    self.copy_links(frame);
+                    return true;
+                }
                 ffi::OUT_OF_SPACE => {
                     let needed = usize::from(frame.info.cols) * usize::from(frame.info.rows);
                     if frame.cells.len() < needed {
@@ -571,6 +590,29 @@ impl Engine {
             }
         }
         false
+    }
+
+    /// Copy the links of the snapshot just taken into `frame`.
+    fn copy_links(&self, frame: &mut Frame) {
+        frame.uris.clear();
+        frame.link_ends.clear();
+        let (mut uris, mut ends, mut count) = (std::ptr::null(), std::ptr::null(), 0);
+        // SAFETY: valid terminal; the out pointers are valid.
+        unsafe { ffi::wt_ghostty_links(self.ptr(), &mut uris, &mut ends, &mut count) };
+        if count == 0 {
+            return;
+        }
+        // SAFETY: with entries, the shim's buffers hold `count` ends, the
+        // last of them the length of `uris`, until the next snapshot.
+        unsafe {
+            frame
+                .link_ends
+                .extend_from_slice(std::slice::from_raw_parts(ends, count));
+            let len = frame.link_ends[count - 1];
+            frame
+                .uris
+                .extend_from_slice(std::slice::from_raw_parts(uris, len));
+        }
     }
 }
 
@@ -618,6 +660,9 @@ mod tests {
         };
         assert_eq!(std::mem::offset_of!(Cell, grapheme), grapheme);
         assert_eq!(std::mem::offset_of!(Cell, grapheme_len), grapheme_len);
+        // SAFETY: plain getter.
+        let link = unsafe { ffi::wt_ghostty_cell_link_offset() };
+        assert_eq!(std::mem::offset_of!(Cell, link), link);
         // SAFETY: plain getters.
         let (underline, underline_rgb, underline_has_rgb) = unsafe {
             (
@@ -632,6 +677,110 @@ mod tests {
             std::mem::offset_of!(Cell, underline_has_rgb),
             underline_has_rgb
         );
+    }
+
+    /// `text` as an OSC 8 hyperlink to `uri`.
+    fn hyperlink(uri: &str, text: &str) -> String {
+        format!("\x1b]8;;{uri}\x1b\\{text}\x1b]8;;\x1b\\")
+    }
+
+    #[test]
+    fn hyperlink_cells_resolve_to_their_uri() {
+        let e = engine();
+        let link = hyperlink("https://example.com/a", "ab");
+        e.write(format!("x{link}y").as_bytes());
+        let f = frame(&e);
+        assert_eq!(f.link(0, 0), None);
+        assert_eq!(f.link(0, 1), Some("https://example.com/a"));
+        assert_eq!(f.link(0, 2), Some("https://example.com/a"));
+        assert_eq!(f.link(0, 3), None);
+        assert_eq!(f.row_text(0).trim_end(), "xaby");
+    }
+
+    #[test]
+    fn plain_text_that_looks_like_a_url_is_no_hyperlink() {
+        let e = engine();
+        e.write(b"https://example.com/a");
+        let f = frame(&e);
+        assert_eq!(f.cell(0, 3).map(|cell| cell.link), Some(0));
+        assert_eq!(f.link(0, 3), None);
+    }
+
+    #[test]
+    fn a_link_shares_one_entry_and_each_uri_keeps_its_own() {
+        let e = engine();
+        let a = hyperlink("https://a.example/", "aaa");
+        let b = hyperlink("https://b.example/", "bbb");
+        e.write(format!("{a} {b}").as_bytes());
+        let f = frame(&e);
+        let entry = |col| f.cell(0, col).map(|cell| cell.link);
+        assert_eq!(entry(0), entry(2));
+        assert_ne!(entry(0), entry(4));
+        assert_eq!(f.link(0, 2), Some("https://a.example/"));
+        assert_eq!(f.link(0, 4), Some("https://b.example/"));
+    }
+
+    #[test]
+    fn a_wrapped_link_is_one_entry_on_both_rows() {
+        let e = Engine::new(4, 3).expect("engine");
+        e.write(hyperlink("https://example.com/", "abcdef").as_bytes());
+        let f = frame(&e);
+        assert_eq!(f.cell(0, 0).map(|c| c.link), f.cell(1, 1).map(|c| c.link));
+        assert_eq!(f.link(1, 1), Some("https://example.com/"));
+    }
+
+    #[test]
+    fn a_wide_character_keeps_its_link_on_both_cells() {
+        let e = engine();
+        e.write(hyperlink("https://example.com/", "日本").as_bytes());
+        let f = frame(&e);
+        for col in 0..4 {
+            assert_eq!(f.link(0, col), Some("https://example.com/"), "column {col}");
+        }
+    }
+
+    #[test]
+    fn links_follow_the_viewport_through_scrollback() {
+        let e = engine();
+        e.write(format!("{}\r\n", hyperlink("https://example.com/", "top")).as_bytes());
+        for line in 0..40 {
+            e.write(format!("line {line}\r\n").as_bytes());
+        }
+        assert_eq!(frame(&e).link(0, 0), None);
+        e.scroll(Scroll::Top);
+        assert_eq!(frame(&e).link(0, 0), Some("https://example.com/"));
+    }
+
+    #[test]
+    fn a_frame_reused_after_a_reset_holds_no_links() {
+        let e = engine();
+        e.write(hyperlink("https://example.com/", "ab").as_bytes());
+        let mut f = frame(&e);
+        assert!(f.link(0, 0).is_some());
+        e.reset();
+        e.write(b"ab");
+        assert!(e.snapshot(&mut f));
+        assert_eq!(f.link(0, 0), None);
+    }
+
+    #[test]
+    fn a_screenful_of_long_distinct_links_all_resolve() {
+        let e = Engine::new(20, 24).expect("engine");
+        let uri = |n: usize| format!("https://example.com/{}/{n}", "x".repeat(200));
+        for n in 0..23 {
+            e.write(format!("{}\r\n", hyperlink(&uri(n), "link")).as_bytes());
+        }
+        let f = frame(&e);
+        for n in 0..23 {
+            assert_eq!(f.link(n, 0), Some(uri(n).as_str()), "row {n}");
+        }
+    }
+
+    #[test]
+    fn a_uri_that_is_not_utf8_is_no_link() {
+        let e = engine();
+        e.write(b"\x1b]8;;https://ex\xffample/\x1b\\ab\x1b]8;;\x1b\\");
+        assert_eq!(frame(&e).link(0, 0), None);
     }
 
     #[test]
