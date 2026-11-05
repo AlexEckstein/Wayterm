@@ -13,7 +13,8 @@ const ED25519_KEY_B: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQl
 fn make_key(blob: &str) -> PublicKey {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("key.pub");
-    std::fs::write(&path, format!("ssh-ed25519 {} test\n", blob)).unwrap();
+    // No comment: a key off the wire has none, and equality compares it.
+    std::fs::write(&path, format!("ssh-ed25519 {blob}\n")).unwrap();
     load_public_key(&path).expect("valid test key")
 }
 
