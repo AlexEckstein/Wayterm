@@ -258,7 +258,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   stay on the C side; `ffi.rs` declares only the shim's plain functions
   and three flat structs (a cell, a frame, a span of search highlight),
   checked against the C compiler by a unit test: their sizes, and where
-  the cell's grapheme fields sit. `build.rs` compiles the shim with the
+  the cell's grapheme and link fields sit. `build.rs` compiles the shim with the
   `cc` crate and links `libghostty-vt.a` statically; nothing beyond libc
   is needed.
 - **`Engine`.** The safe owner of one terminal, with no display: VT
@@ -268,12 +268,12 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   colors resolved to RGB. A snapshot cell holds its whole grapheme
   cluster: the base codepoint, or for a longer cluster a slice of a
   codepoint buffer that grows as needed and is reused frame to frame;
-  the tail cell of a wide character holds nothing. Effects raised while
-  parsing — replies to queries (device attributes, status reports), BEL,
-  OSC 0/2
-  titles, OSC 7 directories — come back from the `write` that raised them
-  and leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
-  the view's directory hook instead.
+  the tail cell of a wide character holds nothing. A cell with an OSC 8
+  hyperlink points at its entry in the snapshot's list of links. Effects
+  raised while parsing — replies to queries (device attributes, status
+  reports), BEL, OSC 0/2 titles, OSC 7 directories — come back from the
+  `write` that raised them and leave as `DataOut`, `Bell` and
+  `TitleChanged`; a directory goes to the view's directory hook instead.
 - **`GhosttyView`.** The GTK4 widget. Each frame snapshots the engine and
   paints it with `GtkSnapshot`: one background rectangle per run of equal
   color, and per run of equal style (bold, italic, underline,
@@ -342,6 +342,35 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   draws on top, as does the cursor. An empty query, a press, a typed key
   or a reset ends the search; the UI never sends an empty query, so the
   press and the key are how a highlight goes away.
+- **Links.** A program marks text as a link with OSC 8. The snapshot
+  lists the URIs of the links on screen, and each linked cell points at
+  its own entry. The C API has no link id, so the URI identifies a link:
+  linked cells in reading order share an entry for as long as the URI
+  stays the same, with or without unlinked cells between them, so a link
+  a program broke over two rows stays one link. A URI that is not UTF-8
+  is no link.
+
+  While mouse events are local (`route`), the link under the pointer shows
+  its URI in a tooltip, is underlined on all its cells, and turns the
+  cursor to `pointer`. Moving off it or leaving the widget clears all
+  three, and so does output or scrolling that takes the link away: each
+  frame checks again. Links are read from the last frame drawn, so what
+  opens is what is on screen. Ctrl+click opens the link through
+  `gtk::UriLauncher`, on release, without waiting for the handler; a press
+  that turned into a selection, or a release off the link, opens nothing.
+  While a program tracks the mouse the press is the program's, so Shift
+  brings links back: hover with Shift, Ctrl+Shift+click. A failure to open
+  is logged without the URI, which can carry a token.
+
+  `may_open` in `view.rs` decides what reaches the handler. A link comes
+  from whatever is on the far side of the tab, and the view does not know
+  the transport, so one rule covers every tab: a `file:` URI, in any case,
+  opens only if its authority is exactly this machine's name
+  (`glib::host_name`). Any other authority is refused, and so are an empty
+  one (`file:///path`), `localhost`, a user or a port in it, and the forms
+  with none (`file:/path`). A refused link still shows its tooltip and
+  underline, so the target can be read. Text with no URI scheme is refused;
+  every other scheme goes to the handler.
 - **Backend.** Events go through the same never-blocking sender as VTE's
   (§Backpressure). `send_input` and `paste` queue `DataOut` like a key
   press, so macros work unchanged; `paste` is bracketed when the program
@@ -468,8 +497,9 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   override already in the store (imported, restored) is honored.
 - **VTE:** no Kitty graphics. Search steps between rows, reaching only
   the first match on each.
-- **Ghostty:** no URL detection or image drawing (`features()` says so,
-  and the UI hides them); no input method or compose support; mouse
+- **Ghostty:** no detection of URLs in plain text, which is what
+  `features()` reports (OSC 8 links do not count), and no image drawing
+  (`features()` says so, and the UI hides them); no input method or compose support; mouse
   reporting covers the primary button and the wheel only, so middle and
   right clicks and horizontal scrolling never reach the program; the
   text under the cursor takes its cell's background color, since
@@ -479,6 +509,19 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **Ghostty selection:** word boundaries are libghostty-vt's defaults,
   where `:` ends a word, so a double click takes part of a URL. A drag
   past the top or bottom edge does not scroll the viewport.
+- **Ghostty hyperlinks:** the `file:` check compares names and nothing
+  more. A remote machine with this machine's name, or a program that
+  learned it, gets its link opened here, where the path means a local
+  file; so does `file://localhost/` on a machine named `localhost`. The
+  comparison is exact, so a fully qualified or differently cased name is
+  refused. The view cannot tell a local tab from a remote one, so a local
+  program's `file:///path` link is refused too. Schemes other than `file:`
+  are not filtered. A link is marked only on hover. Without a link id,
+  OSC 8's `id=` is not honored: parts of a link with another link between
+  them light apart, and neighbors with one URI light as one. URIs are read
+  cell by cell through the grid reference API, which upstream does not
+  mean for render loops: a 200×50 screen of links adds about 0.7 ms a
+  frame.
 - **Ghostty search:** a query is plain text, not a regular expression as
   on VTE, and matching is case-exact (libghostty-vt folds ASCII case, so
   a match is read back and compared as typed). A match is not the
