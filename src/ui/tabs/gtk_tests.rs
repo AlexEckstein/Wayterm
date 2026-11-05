@@ -359,7 +359,58 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
         gone.upgrade().is_none(),
         "a tab closed on its error is freed"
     );
+    tabs_honor_the_session_backend(&notebook, &store);
     window.destroy();
+}
+
+/// A session's `preferred_backend` picks its tab's terminal; an empty or
+/// unknown value follows the installed row. Ghostty is VTE in a build
+/// without it, so only a `backend-ghostty` run tells the two apart.
+fn tabs_honor_the_session_backend(notebook: &gtk4::Notebook, store: &Rc<SessionStore>) {
+    use crate::terminal::{install_backend_preference, BackendKind};
+    use BackendKind::{Ghostty, Vte};
+
+    let ghostty = Ghostty.effective().as_setting();
+    for (global, preferred, expected) in [
+        (Vte, Some("ghostty"), ghostty),
+        (Ghostty, Some("vte"), "vte"),
+        (Vte, None, "vte"),
+        (Ghostty, None, ghostty),
+        (Ghostty, Some(""), ghostty),
+        (Vte, Some("alacritty"), "vte"),
+        (Ghostty, Some("alacritty"), ghostty),
+    ] {
+        install_backend_preference(global);
+        let session = SessionConfig {
+            id: 7_003,
+            name: "backend".into(),
+            session_type: SessionType::LocalShell,
+            local_shell: Some("/bin/sh".into()),
+            preferred_backend: preferred.map(str::to_string),
+            ..Default::default()
+        };
+        let page = SessionTab::open(notebook, &session, store);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while SessionTab::page_status(&page).map(|status| status.state)
+            != Some(TransportState::Connected)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the local shell never connected"
+            );
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let terminal = SessionTab::active_terminal(notebook).expect("a connected terminal");
+        assert_eq!(
+            terminal.name(),
+            expected,
+            "session {preferred:?} over global {global:?}"
+        );
+        drop(terminal);
+        close_tab(notebook, &page);
+    }
+    install_backend_preference(Vte);
 }
 
 /// The background VTE paints, as 8-bit RGB.

@@ -6,7 +6,8 @@
 //! does not place: each goes at its own cell, since the font's advances
 //! are rarely the whole-pixel cell width and would drift off the grid.
 //! A cell's whole grapheme cluster is shaped together and sits at that
-//! cell. Underline and strikethrough are drawn as rectangles. Search
+//! cell. Strikethrough is a rectangle; underlines run on across changes of
+//! text color, in the SGR style and underline color of their cells. Search
 //! matches are lit in Ghostty's colors, the current one apart, under the
 //! selection and the cursor. The cursor takes the shape the terminal asks
 //! for and blinks on a timer that runs only while a blink can show; without
@@ -16,15 +17,17 @@
 //! Kitty keyboard modes apply) and leave as `DataOut`; Shift+PageUp/
 //! PageDown/Home/End scroll the viewport as in VTE. Mouse events go where
 //! [`route`] says: to the program through the mouse encoder while it
-//! tracks the mouse, as arrow keys for the wheel under alternate scroll,
-//! else local, where a primary-button drag selects (by word after a double
-//! click, by line after a triple), a finished selection goes to PRIMARY, a
-//! middle click pastes PRIMARY, and the wheel scrolls the viewport three
-//! rows per notch (smooth steps accumulate). Shift keeps them local. Focus
+//! tracks the mouse (every button, and the wheel on both axes), as arrow
+//! keys for the wheel under alternate scroll, else local, where a
+//! primary-button drag selects (by word after a double click, by line after
+//! a triple), a finished selection goes to PRIMARY, a middle click pastes
+//! PRIMARY, and the wheel scrolls the viewport three rows per notch (smooth
+//! steps accumulate). Shift keeps them local. Focus
 //! changes are reported when the program asks. A press or a typed key ends
 //! the search, as it clears the selection.
 
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -49,6 +52,9 @@ const BLINK_INTERVAL: Duration = Duration::from_millis(600);
 /// The arrow keysyms alternate scroll sends.
 const ARROW_UP: u32 = 0xff52;
 const ARROW_DOWN: u32 = 0xff54;
+/// Lit and dark lengths of the patterned underlines, in line thicknesses.
+const DOTTED: (i32, i32) = (1, 2);
+const DASHED: (i32, i32) = (4, 2);
 /// Search highlight colors, Ghostty's defaults: dark text on yellow, on
 /// orange for the current match.
 const SEARCH_FG: [u8; 3] = [0, 0, 0];
@@ -75,8 +81,13 @@ mod imp {
         pub(super) reported: Cell<Option<(u16, u16)>>,
         /// Wheel rows not yet scrolled; see [`super::wheel_rows`].
         pub(super) wheel_carry: Cell<f64>,
+        /// The same for the sideways wheel, in columns.
+        pub(super) wheel_carry_x: Cell<f64>,
         /// Where the primary-button drag in progress goes.
         pub(super) drag: Cell<Option<super::Route>>,
+        /// Where the middle and right buttons' drags in progress go.
+        pub(super) middle_drag: Cell<Option<super::Route>>,
+        pub(super) right_drag: Cell<Option<super::Route>>,
         /// The last pointer position, for wheel reports.
         pub(super) pointer: Cell<(f64, f64)>,
         /// The cell of the last reported motion, so each cell is sent once.
@@ -230,6 +241,10 @@ impl GhosttyView {
                 font_metrics.underline_position(),
                 font_metrics.underline_thickness(),
             ),
+            font_underline: (
+                pixels(font_metrics.underline_position()),
+                pixels(font_metrics.underline_thickness()),
+            ),
             strike: line(
                 font_metrics.strikethrough_position(),
                 font_metrics.strikethrough_thickness(),
@@ -309,8 +324,9 @@ impl GhosttyView {
         });
         let view = self.downgrade();
         drag.connect_drag_end(move |drag, dx, dy| {
-            if let (Some(view), Some((x, y))) = (view.upgrade(), drag.start_point()) {
-                view.release(drag.current_event_state(), (x + dx, y + dy));
+            if let Some(view) = view.upgrade() {
+                let at = view.drag_end_point(drag, dx, dy);
+                view.release(drag.current_event_state(), at);
             }
         });
         self.add_controller(drag);
@@ -325,6 +341,34 @@ impl GhosttyView {
             }
         });
         self.add_controller(middle);
+
+        for (gdk_button, button) in [
+            (gdk::BUTTON_MIDDLE, ffi::BUTTON_MIDDLE),
+            (gdk::BUTTON_SECONDARY, ffi::BUTTON_RIGHT),
+        ] {
+            let drag = gtk4::GestureDrag::new();
+            drag.set_button(gdk_button);
+            let view = self.downgrade();
+            drag.connect_drag_begin(move |drag, x, y| {
+                if let Some(view) = view.upgrade() {
+                    view.button_press(button, drag.current_event_state(), (x, y));
+                }
+            });
+            let view = self.downgrade();
+            drag.connect_drag_update(move |drag, dx, dy| {
+                if let (Some(view), Some((x, y))) = (view.upgrade(), drag.start_point()) {
+                    view.button_drag(button, drag.current_event_state(), (x + dx, y + dy));
+                }
+            });
+            let view = self.downgrade();
+            drag.connect_drag_end(move |drag, dx, dy| {
+                if let Some(view) = view.upgrade() {
+                    let at = view.drag_end_point(drag, dx, dy);
+                    view.button_release(button, drag.current_event_state(), at);
+                }
+            });
+            self.add_controller(drag);
+        }
 
         let motion = gtk4::EventControllerMotion::new();
         let view = self.downgrade();
@@ -350,14 +394,20 @@ impl GhosttyView {
         });
         self.add_controller(focus);
 
-        let wheel = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+        let wheel = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::BOTH_AXES);
         let view = self.downgrade();
-        wheel.connect_scroll(move |wheel, _, dy| {
+        wheel.connect_scroll(move |wheel, dx, dy| {
             let Some(view) = view.upgrade() else {
                 return glib::Propagation::Proceed;
             };
-            view.wheel(dy, wheel.unit(), wheel.current_event_state());
-            glib::Propagation::Stop
+            let (unit, state) = (wheel.unit(), wheel.current_event_state());
+            let reported = view.wheel_sideways(dx, unit, state);
+            view.wheel(dy, unit, state);
+            if reported || dy != 0.0 {
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
         });
         self.add_controller(wheel);
     }
@@ -420,6 +470,64 @@ impl GhosttyView {
         }
     }
 
+    /// Where a drag ended. A second button down resets the gesture, which
+    /// ends the drag with its start point already gone: the pointer's then.
+    fn drag_end_point(&self, drag: &gtk4::GestureDrag, dx: f64, dy: f64) -> (f64, f64) {
+        drag.start_point()
+            .map_or(self.imp().pointer.get(), |(x, y)| (x + dx, y + dy))
+    }
+
+    /// Where the middle or right button's drag in progress goes.
+    fn button_route(&self, button: u32) -> &Cell<Option<Route>> {
+        let imp = self.imp();
+        if button == ffi::BUTTON_MIDDLE {
+            &imp.middle_drag
+        } else {
+            &imp.right_drag
+        }
+    }
+
+    /// Whether any button is down.
+    fn button_held(&self) -> bool {
+        let imp = self.imp();
+        [&imp.drag, &imp.middle_drag, &imp.right_drag]
+            .iter()
+            .any(|drag| drag.get().is_some())
+    }
+
+    /// Middle or right button down at `at`: report it, as for the primary.
+    /// The whole drag goes the same way; a local one does nothing here.
+    fn button_press(&self, button: u32, state: gdk::ModifierType, at: (f64, f64)) {
+        let Some(shared) = self.shared() else { return };
+        let route = route(shared.engine.mouse_modes(), state, false);
+        self.button_route(button).set(Some(route));
+        self.imp().pointer.set(at);
+        if route == Route::Report {
+            self.grab_focus();
+            shared.engine.clear_selection();
+            shared.engine.clear_search();
+            shared.engine.selection_cancel();
+            self.report(&shared, ffi::MOUSE_PRESS, button, state, at);
+        }
+    }
+
+    /// The middle or right button dragged to `at`.
+    fn button_drag(&self, button: u32, state: gdk::ModifierType, at: (f64, f64)) {
+        let Some(shared) = self.shared() else { return };
+        self.imp().pointer.set(at);
+        if self.button_route(button).get() == Some(Route::Report) {
+            self.report_motion(&shared, button, state, at);
+        }
+    }
+
+    /// The middle or right button released at `at`.
+    fn button_release(&self, button: u32, state: gdk::ModifierType, at: (f64, f64)) {
+        let Some(shared) = self.shared() else { return };
+        if self.button_route(button).take() == Some(Route::Report) {
+            self.report(&shared, ffi::MOUSE_RELEASE, button, state, at);
+        }
+    }
+
     /// Put the selection on PRIMARY; without one, PRIMARY keeps its text.
     pub(super) fn copy_primary(&self) {
         let text = self.shared().and_then(|s| s.engine.selection_text());
@@ -456,8 +564,7 @@ impl GhosttyView {
         let imp = self.imp();
         imp.pointer.set(at);
         let Some(shared) = self.shared() else { return };
-        if imp.drag.get().is_none()
-            && route(shared.engine.mouse_modes(), state, false) == Route::Report
+        if !self.button_held() && route(shared.engine.mouse_modes(), state, false) == Route::Report
         {
             self.report_motion(&shared, ffi::BUTTON_NONE, state, at);
         }
@@ -530,14 +637,7 @@ impl GhosttyView {
                 } else {
                     ffi::BUTTON_WHEEL_DOWN
                 };
-                let at = self.imp().pointer.get();
-                let event = self.mouse_event(ffi::MOUSE_PRESS, button, state, at);
-                let report = shared.engine.encode_mouse(&event);
-                // One report per chunk, as VTE sends them: the macro
-                // recorder skips reports chunk by chunk (doc 12).
-                for _ in 0..count {
-                    shared.input(report.clone());
-                }
+                self.report_wheel(&shared, button, count, state);
             }
             Route::Arrows => {
                 let keysym = if rows < 0 { ARROW_UP } else { ARROW_DOWN };
@@ -545,6 +645,41 @@ impl GhosttyView {
             }
         }
         self.queue_draw();
+    }
+
+    /// One sideways wheel event: columns of it go to a tracking program as
+    /// wheel buttons. Nothing local scrolls sideways, so `false` leaves the
+    /// event to whatever sits above the view.
+    fn wheel_sideways(&self, dx: f64, unit: gdk::ScrollUnit, state: gdk::ModifierType) -> bool {
+        let Some(shared) = self.shared() else {
+            return false;
+        };
+        if route(shared.engine.mouse_modes(), state, true) != Route::Report {
+            return false;
+        }
+        let (cell_w, _) = self.cell_size();
+        let carry = &self.imp().wheel_carry_x;
+        let (cols, rest) = wheel_rows(carry.get(), dx, unit, cell_w);
+        carry.set(rest);
+        let button = if cols < 0 {
+            ffi::BUTTON_WHEEL_LEFT
+        } else {
+            ffi::BUTTON_WHEEL_RIGHT
+        };
+        self.report_wheel(&shared, button, cols.unsigned_abs(), state);
+        true
+    }
+
+    /// Send `count` presses of a wheel button to the program.
+    fn report_wheel(&self, shared: &Shared, button: u32, count: usize, state: gdk::ModifierType) {
+        let at = self.imp().pointer.get();
+        let event = self.mouse_event(ffi::MOUSE_PRESS, button, state, at);
+        let report = shared.engine.encode_mouse(&event);
+        // One report per chunk, as VTE sends them: the macro recorder
+        // skips reports chunk by chunk (doc 12).
+        for _ in 0..count {
+            shared.input(report.clone());
+        }
     }
 
     /// A mouse event at widget pixels `at`, with the grid's geometry.
@@ -566,7 +701,7 @@ impl GhosttyView {
             height: px(self.height()),
             cell_w: px(cell_w),
             cell_h: px(cell_h),
-            any_pressed: u32::from(action != ffi::MOUSE_RELEASE && button == ffi::BUTTON_LEFT),
+            any_pressed: u32::from(self.button_held()),
         }
     }
 
@@ -681,12 +816,7 @@ impl GhosttyView {
                 if style.flags & ffi::CELL_INVISIBLE != 0 || text.trim().is_empty() {
                     continue;
                 }
-                let alpha = if style.flags & ffi::CELL_FAINT != 0 {
-                    0.6
-                } else {
-                    1.0
-                };
-                let color = rgba(style.fg, alpha);
+                let color = rgba(style.fg, style.alpha());
                 let x = start as f32 * cw;
                 let baseline = graphene::Point::new(x, y + metrics.baseline);
                 self.draw_glyphs(
@@ -697,15 +827,25 @@ impl GhosttyView {
                     &color,
                     &baseline,
                 );
-                let width = (col - start) as f32 * cw;
-                for (flag, (top, thickness)) in [
-                    (ffi::CELL_UNDERLINE, metrics.underline),
-                    (ffi::CELL_STRIKE, metrics.strike),
-                ] {
-                    if style.flags & flag != 0 {
-                        let line = graphene::Rect::new(x, y + top, width, thickness);
-                        snapshot.append_color(&color, &line);
-                    }
+                if style.flags & ffi::CELL_STRIKE != 0 {
+                    let (top, thickness) = metrics.strike;
+                    let width = (col - start) as f32 * cw;
+                    let line = graphene::Rect::new(x, y + top, width, thickness);
+                    snapshot.append_color(&color, &line);
+                }
+            }
+
+            // Underlines: one per run of equal style and color, so text
+            // changing color under a line does not break it.
+            let mut col = 0;
+            while col < cells.len() {
+                let start = col;
+                let underline = cells[start].underline();
+                while col < cells.len() && cells[col].underline() == underline {
+                    col += 1;
+                }
+                if let Some((style, color)) = underline {
+                    self.draw_underline(snapshot, style, &color, start..col, y);
                 }
             }
 
@@ -720,6 +860,106 @@ impl GhosttyView {
                     }
                 }
             }
+        }
+    }
+
+    /// Draw an underline of `ffi::UNDERLINE_*` style under the cells
+    /// `columns` of the row at `y`.
+    fn draw_underline(
+        &self,
+        snapshot: &gtk4::Snapshot,
+        style: u8,
+        color: &gdk::RGBA,
+        columns: Range<usize>,
+        y: f32,
+    ) {
+        let cell = self.metrics().width;
+        let span = columns.start as i32 * cell..columns.end as i32 * cell;
+        match style {
+            ffi::UNDERLINE_DOUBLE => {
+                self.draw_pango_line(snapshot, pango::Underline::Double, color, span, y);
+            }
+            ffi::UNDERLINE_CURLY => self.draw_wave(snapshot, color, span, y),
+            ffi::UNDERLINE_DOTTED => self.draw_pattern(snapshot, DOTTED, color, span, y),
+            ffi::UNDERLINE_DASHED => self.draw_pattern(snapshot, DASHED, color, span, y),
+            _ => self.draw_pango_line(snapshot, pango::Underline::Single, color, span, y),
+        }
+    }
+
+    /// Draw a Pango underline across the pixels `span` of the row at `y`:
+    /// the line of a blank shaped to the span's width. The font's line is
+    /// rarely whole pixels, so it is moved and stretched onto the view's.
+    fn draw_pango_line(
+        &self,
+        snapshot: &gtk4::Snapshot,
+        underline: pango::Underline,
+        color: &gdk::RGBA,
+        span: Range<i32>,
+        y: f32,
+    ) {
+        let blank = pango::Rectangle::new(
+            0,
+            -pango::SCALE,
+            (span.end - span.start) * pango::SCALE,
+            pango::SCALE,
+        );
+        let attrs = pango::AttrList::new();
+        attrs.insert(pango::AttrFontDesc::new(&self.font()));
+        attrs.insert(pango::AttrShape::new(&blank, &blank));
+        attrs.insert(pango::AttrInt::new_underline(underline));
+        let layout = self.create_pango_layout(Some(" "));
+        layout.set_attributes(Some(&attrs));
+
+        let metrics = self.metrics();
+        let (top, thickness) = metrics.underline;
+        let (position, font_thickness) = metrics.font_underline;
+        snapshot.save();
+        snapshot.translate(&graphene::Point::new(span.start as f32, y + top));
+        snapshot.scale(1.0, thickness / font_thickness.max(f32::EPSILON));
+        snapshot.translate(&graphene::Point::new(
+            0.0,
+            position - pixels(layout.baseline()),
+        ));
+        snapshot.append_layout(&layout, color);
+        snapshot.restore();
+    }
+
+    /// Draw a wave across the pixels `span` of the row at `y`, a crest and
+    /// a trough per cell so that neighboring runs meet, down to the cell's
+    /// bottom. Not Pango's error underline: GTK draws that as round dots.
+    fn draw_wave(&self, snapshot: &gtk4::Snapshot, color: &gdk::RGBA, span: Range<i32>, y: f32) {
+        let metrics = self.metrics();
+        let (top, thickness) = metrics.underline;
+        let height = (metrics.height as f32 - top).max(3.0 * thickness);
+        let middle = y + top + height / 2.0;
+        // A curve goes half way to its control point.
+        let reach = height - thickness;
+        let cell = metrics.width as f32;
+        let path = gsk::PathBuilder::new();
+        path.move_to(span.start as f32, middle);
+        for x in span.step_by(metrics.width as usize) {
+            let x = x as f32;
+            path.quad_to(x + cell / 4.0, middle - reach, x + cell / 2.0, middle);
+            path.quad_to(x + cell * 0.75, middle + reach, x + cell, middle);
+        }
+        snapshot.append_stroke(&path.to_path(), &gsk::Stroke::new(thickness), color);
+    }
+
+    /// Draw a dotted or dashed line across the pixels `span` of the row at
+    /// `y`, Pango having neither: `on` lit and `off` dark, in thicknesses.
+    fn draw_pattern(
+        &self,
+        snapshot: &gtk4::Snapshot,
+        (on, off): (i32, i32),
+        color: &gdk::RGBA,
+        span: Range<i32>,
+        y: f32,
+    ) {
+        let (top, thickness) = self.metrics().underline;
+        let scale = thickness as i32;
+        for (x, width) in line_pieces(span.start, span.end, on * scale, off * scale) {
+            let line = graphene::Rect::new(x as f32, y + top, width as f32, thickness);
+            snapshot.append_color(color, &line);
         }
     }
 
@@ -846,15 +1086,30 @@ fn pin_glyphs(columns: &[usize], advances: &[i32], cell: i32) -> Vec<i32> {
         .collect()
 }
 
+/// The lit `(x, width)` pieces of a patterned line over the pixels
+/// `start..end`: `on` lit and `off` dark, counted from the grid's left
+/// edge so a line split into runs stays in step.
+fn line_pieces(start: i32, end: i32, on: i32, off: i32) -> Vec<(i32, i32)> {
+    let period = on + off;
+    (start / period * period..end)
+        .step_by(period as usize)
+        .map(|x| (x.max(start), (x + on).min(end)))
+        .filter(|(from, to)| from < to)
+        .map(|(from, to)| (from, to - from))
+        .collect()
+}
+
 /// A cell's size in whole pixels, and where its text sits: the baseline,
 /// and the underline and strikethrough as `(top, thickness)`, in pixels
-/// down from the cell's top.
+/// down from the cell's top. `font_underline` is the font's own line, as
+/// Pango draws it: `(position, thickness)` in pixels, up from the baseline.
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
     width: i32,
     height: i32,
     baseline: f32,
     underline: (f32, f32),
+    font_underline: (f32, f32),
     strike: (f32, f32),
 }
 
@@ -867,15 +1122,15 @@ struct Painted<'a> {
     /// `None` = the frame background already painted underneath.
     bg: Option<[u8; 3]>,
     flags: u8,
+    /// `ffi::UNDERLINE_*`.
+    underline: u8,
+    /// `None` = the line takes the text color.
+    underline_rgb: Option<[u8; 3]>,
 }
 
 /// Flags that change how text is drawn (not just its colors).
-const TEXT_FLAGS: u8 = ffi::CELL_BOLD
-    | ffi::CELL_ITALIC
-    | ffi::CELL_UNDERLINE
-    | ffi::CELL_STRIKE
-    | ffi::CELL_FAINT
-    | ffi::CELL_INVISIBLE;
+const TEXT_FLAGS: u8 =
+    ffi::CELL_BOLD | ffi::CELL_ITALIC | ffi::CELL_STRIKE | ffi::CELL_FAINT | ffi::CELL_INVISIBLE;
 
 impl<'a> Painted<'a> {
     fn new(info: &FrameInfo, cell: &GridCell, cluster: &'a [u32], cursor: bool) -> Self {
@@ -896,6 +1151,8 @@ impl<'a> Painted<'a> {
             fg,
             bg,
             flags: cell.flags & TEXT_FLAGS,
+            underline: cell.underline,
+            underline_rgb: (cell.underline_has_rgb != 0).then_some(cell.underline_rgb),
         }
     }
 
@@ -915,6 +1172,25 @@ impl<'a> Painted<'a> {
 
     fn same_style(&self, other: &Self) -> bool {
         self.fg == other.fg && self.flags == other.flags
+    }
+
+    /// Faint text and its lines are see-through.
+    fn alpha(&self) -> f32 {
+        if self.flags & ffi::CELL_FAINT != 0 {
+            0.6
+        } else {
+            1.0
+        }
+    }
+
+    /// The line to draw under this cell: its `ffi::UNDERLINE_*` style and
+    /// its color.
+    fn underline(&self) -> Option<(u8, gdk::RGBA)> {
+        let hidden = self.flags & ffi::CELL_INVISIBLE != 0;
+        (self.underline != ffi::UNDERLINE_NONE && !hidden).then(|| {
+            let color = self.underline_rgb.unwrap_or(self.fg);
+            (self.underline, rgba(color, self.alpha()))
+        })
     }
 
     fn font(&self, base: &pango::FontDescription) -> pango::FontDescription {
@@ -978,13 +1254,14 @@ fn mods(state: gdk::ModifierType) -> u32 {
     .fold(0, |mods, (_, bit)| mods | bit)
 }
 
-/// Rows to scroll for one wheel event, and the fraction left for the next.
-/// High-resolution wheels and touchpads send many steps smaller than a row,
-/// so each one only adds to `carry`; reversing direction drops it.
-fn wheel_rows(carry: f64, dy: f64, unit: gdk::ScrollUnit, cell_h: i32) -> (isize, f64) {
+/// Rows to scroll for one wheel event, and the fraction left for the next;
+/// sideways, columns of `cell` pixels. High-resolution wheels and touchpads
+/// send many steps smaller than a row, so each one only adds to `carry`;
+/// reversing direction drops it.
+fn wheel_rows(carry: f64, delta: f64, unit: gdk::ScrollUnit, cell: i32) -> (isize, f64) {
     let rows = match unit {
-        gdk::ScrollUnit::Surface => dy / f64::from(cell_h.max(1)),
-        _ => dy * WHEEL_ROWS,
+        gdk::ScrollUnit::Surface => delta / f64::from(cell.max(1)),
+        _ => delta * WHEEL_ROWS,
     };
     let carry = if carry * rows < 0.0 { 0.0 } else { carry };
     let total = carry + rows;
@@ -1402,6 +1679,59 @@ mod tests {
         assert_eq!(columns, expected);
     }
 
+    /// The line a painted cell draws: its own color, else the text's,
+    /// which search changes; nothing under hidden text.
+    #[test]
+    fn a_cell_underline_takes_its_color_and_style_from_the_cell() {
+        let engine = super::super::engine::Engine::new(10, 2).expect("engine");
+        engine.write(
+            b"\x1b[4:3;38;2;1;2;3ma\x1b[58;2;9;8;7mb\x1b[59;2mc\x1b[0;8;4md\x1b[0;58;2;9;8;7me",
+        );
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        let cells = painted_row(&frame, 0, &[], false);
+        assert_eq!(
+            cells[0].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba([1, 2, 3], 1.0)))
+        );
+        assert_eq!(
+            cells[1].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba([9, 8, 7], 1.0)))
+        );
+        assert_eq!(
+            cells[2].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba([1, 2, 3], 0.6))),
+            "a faint line"
+        );
+        assert_eq!(cells[3].underline(), None, "hidden text");
+        assert_eq!(cells[4].underline(), None, "a color but no style");
+
+        let marks = [Some(true), Some(true)];
+        let cells = painted_row(&frame, 0, &marks, false);
+        assert_eq!(
+            cells[0].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba(SEARCH_FG, 1.0)))
+        );
+        assert_eq!(
+            cells[1].underline(),
+            Some((ffi::UNDERLINE_CURLY, rgba([9, 8, 7], 1.0)))
+        );
+    }
+
+    #[test]
+    fn line_pieces_follow_the_grid_not_the_run() {
+        assert_eq!(line_pieces(0, 7, 1, 2), [(0, 1), (3, 1), (6, 1)]);
+        // A run starting mid-pattern picks it up where it stands.
+        assert_eq!(line_pieces(4, 13, 4, 2), [(6, 4), (12, 1)]);
+        assert_eq!(line_pieces(2, 5, 4, 2), [(2, 2)]);
+        assert_eq!(line_pieces(4, 6, 4, 2), []);
+        // Split anywhere, a line comes out the same.
+        let whole = line_pieces(0, 30, 4, 2);
+        let mut halves = line_pieces(0, 12, 4, 2);
+        halves.extend(line_pieces(12, 30, 4, 2));
+        assert_eq!(whole, halves);
+    }
+
     #[test]
     fn glyphs_sit_at_their_cells_whatever_the_font_advances() {
         // 9.6-pixel glyphs on a 10-pixel grid.
@@ -1443,7 +1773,6 @@ mod ghostty_display {
         TRANSLUCENT_CLASS,
     };
     use crate::ui::translucency::gtk_tests::alpha_at;
-    use std::ops::Range;
     use tokio::sync::mpsc;
 
     /// The view paints a frame, reports its grid once allocated, and turns
@@ -1540,8 +1869,11 @@ mod ghostty_display {
             TerminalEvent::DataOut(b"ls\r".to_vec())
         );
         mouse_routing(&backend, &view, &mut rx);
+        other_buttons(&backend, &view, &mut rx);
+        sideways_wheel(&backend, &view, &mut rx);
         glyphs_on_the_grid(&backend, &view);
         cursor_shapes(&backend, &view);
+        underline_styles(&backend, &view);
         clusters_shape_whole(&backend, &view);
         shell_watchers(&backend, &view);
         search_highlight(&backend, &view);
@@ -1653,6 +1985,228 @@ mod ghostty_display {
         let reports = chunks();
         assert_eq!(reports.concat(), b"\x1b[O\x1b[I");
         assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
+    }
+
+    /// The middle and right buttons reach a tracking program as the
+    /// primary does, and do nothing new otherwise.
+    fn other_buttons(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let mut chunks = || -> Vec<Vec<u8>> {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|e| match e {
+                    TerminalEvent::DataOut(bytes) => Some(bytes),
+                    _ => None,
+                })
+                .collect()
+        };
+        let none = gdk::ModifierType::empty();
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let (cell_w, cell_h) = view.cell_size();
+        let at = |col: i32, row: i32| {
+            (
+                f64::from(col * cell_w + cell_w / 2),
+                f64::from(row * cell_h + cell_h / 2),
+            )
+        };
+        let selected = || view.shared().unwrap().engine.selection_text();
+        let buttons = [(ffi::BUTTON_MIDDLE, 1), (ffi::BUTTON_RIGHT, 2)];
+        backend.reset();
+        backend.write(b"alpha beta gamma");
+        chunks();
+
+        // A gesture per button, and a wheel on both axes.
+        let controllers = view.observe_controllers();
+        let controllers = || (0..controllers.n_items()).filter_map(|i| controllers.item(i));
+        let drags: Vec<u32> = controllers()
+            .filter_map(|c| c.downcast::<gtk4::GestureDrag>().ok())
+            .map(|drag| drag.button())
+            .collect();
+        for button in [
+            gdk::BUTTON_PRIMARY,
+            gdk::BUTTON_MIDDLE,
+            gdk::BUTTON_SECONDARY,
+        ] {
+            assert!(drags.contains(&button), "{button} in {drags:?}");
+        }
+        assert!(controllers()
+            .filter_map(|c| c.downcast::<gtk4::EventControllerScroll>().ok())
+            .any(|wheel| wheel
+                .flags()
+                .contains(gtk4::EventControllerScrollFlags::BOTH_AXES)));
+
+        // No tracking: nothing is sent, and the selection stays.
+        view.press(none, 40_000, at(0, 0));
+        view.drag_to(none, at(2, 0));
+        view.release(none, at(2, 0));
+        let selection = selected();
+        assert!(selection.is_some());
+        chunks();
+        for (button, _) in buttons {
+            view.button_press(button, none, at(1, 1));
+            view.button_drag(button, none, at(3, 1));
+            view.button_release(button, none, at(3, 1));
+        }
+        assert_eq!(chunks().concat(), b"");
+        assert_eq!(selected(), selection);
+
+        backend.write(b"\x1b[?1002h\x1b[?1006h");
+        for (button, code) in buttons {
+            // Press, drag and release, each report a chunk of its own; a
+            // reported press clears the selection, as the primary's does.
+            view.button_press(button, none, at(1, 1));
+            view.button_drag(button, none, at(1, 1));
+            view.button_drag(button, none, at(3, 1));
+            view.button_release(button, none, at(3, 1));
+            let drag = code + 32;
+            let expected = format!("\x1b[<{code};2;2M\x1b[<{drag};4;2M\x1b[<{code};4;2m");
+            let reports = chunks();
+            assert_eq!(reports.concat(), expected.as_bytes());
+            assert_eq!(reports.len(), 3);
+            assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
+            assert_eq!(selected(), None);
+
+            // A drag out of the widget stays reported.
+            view.button_press(button, none, at(1, 1));
+            chunks();
+            view.button_drag(button, none, (-5.0, -5.0));
+            let expected = format!("\x1b[<{drag};1;1M");
+            assert_eq!(chunks().concat(), expected.as_bytes());
+            view.button_release(button, none, at(0, 0));
+            chunks();
+
+            // A held button is not hovering: the motion controller's view
+            // of a drag sends nothing, and leaves the drag its cell.
+            backend.write(b"\x1b[?1003h");
+            view.button_press(button, none, at(1, 1));
+            chunks();
+            view.hover(none, at(3, 1));
+            assert_eq!(chunks().concat(), b"", "hover during a drag");
+            view.button_drag(button, none, at(3, 1));
+            let expected = format!("\x1b[<{drag};4;2M");
+            assert_eq!(chunks().concat(), expected.as_bytes());
+            view.button_release(button, none, at(3, 1));
+            chunks();
+            view.hover(none, at(5, 1));
+            assert_eq!(chunks().concat(), b"\x1b[<35;6;2M", "hovering again");
+            backend.write(b"\x1b[?1003l\x1b[?1002h");
+
+            // The whole drag goes the way its press did. A reported press
+            // gets its release, Shift or not; Shift adds 4.
+            view.button_press(button, none, at(1, 1));
+            view.button_release(button, shift, at(1, 1));
+            let shifted = code + 4;
+            let expected = format!("\x1b[<{code};2;2M\x1b[<{shifted};2;2m");
+            assert_eq!(chunks().concat(), expected.as_bytes());
+
+            // Shift keeps it local to the end, Shift let go or not.
+            backend.write(b"\x1b[?1003h");
+            view.button_press(button, shift, at(1, 1));
+            view.hover(none, at(2, 1));
+            view.button_drag(button, none, at(3, 1));
+            view.button_release(button, none, at(3, 1));
+            assert_eq!(chunks().concat(), b"", "Shift keeps it local");
+            backend.write(b"\x1b[?1003l\x1b[?1002h");
+        }
+
+        // A second button resets the first's gesture, which ends with no
+        // start point: the press still gets its release, at the pointer,
+        // and nothing stays held. Emitted by hand, as an idle gesture has
+        // no start point either.
+        let drag_end = |button| {
+            let drag = controllers()
+                .filter_map(|c| c.downcast::<gtk4::GestureDrag>().ok())
+                .find(|drag| drag.button() == button)
+                .unwrap();
+            assert_eq!(drag.start_point(), None);
+            drag.emit_by_name::<()>("drag-end", &[&0.0f64, &0.0f64]);
+        };
+        view.hover(none, at(3, 1));
+        view.press(none, 35_000, at(3, 1));
+        drag_end(gdk::BUTTON_PRIMARY);
+        assert_eq!(chunks().concat(), b"\x1b[<0;4;2M\x1b[<0;4;2m");
+        view.button_press(ffi::BUTTON_RIGHT, none, at(3, 1));
+        drag_end(gdk::BUTTON_SECONDARY);
+        assert_eq!(chunks().concat(), b"\x1b[<2;4;2M\x1b[<2;4;2m");
+        view.button_press(ffi::BUTTON_MIDDLE, none, at(3, 1));
+        drag_end(gdk::BUTTON_MIDDLE);
+        assert_eq!(chunks().concat(), b"\x1b[<1;4;2M\x1b[<1;4;2m");
+        assert!(!view.button_held());
+
+        // A press with no tracking stays local after the program asks.
+        backend.write(b"\x1b[?1002l\x1b[?1006l");
+        view.button_press(ffi::BUTTON_RIGHT, none, at(1, 1));
+        backend.write(b"\x1b[?1002h\x1b[?1006h");
+        view.button_release(ffi::BUTTON_RIGHT, none, at(1, 1));
+        assert_eq!(chunks().concat(), b"", "no release without its press");
+        backend.write(b"\x1b[?1002l\x1b[?1006l");
+
+        // X10 mode takes the presses alone.
+        backend.write(b"\x1b[?9h");
+        view.button_press(ffi::BUTTON_MIDDLE, none, at(0, 0));
+        view.button_drag(ffi::BUTTON_MIDDLE, none, at(2, 0));
+        view.button_release(ffi::BUTTON_MIDDLE, none, at(2, 0));
+        assert_eq!(chunks().concat(), b"\x1b[M!!!");
+        backend.write(b"\x1b[?9l");
+    }
+
+    /// The sideways wheel goes to a tracking program as a report per
+    /// column, and is left alone otherwise: no scrolling, no arrow keys.
+    fn sideways_wheel(
+        backend: &GhosttyBackend,
+        view: &GhosttyView,
+        rx: &mut mpsc::Receiver<TerminalEvent>,
+    ) {
+        let mut chunks = || -> Vec<Vec<u8>> {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|e| match e {
+                    TerminalEvent::DataOut(bytes) => Some(bytes),
+                    _ => None,
+                })
+                .collect()
+        };
+        let none = gdk::ModifierType::empty();
+        let shift = gdk::ModifierType::SHIFT_MASK;
+        let notch = gdk::ScrollUnit::Wheel;
+        let (cell_w, _) = view.cell_size();
+        backend.reset();
+        chunks();
+        view.hover(none, (0.0, 0.0));
+
+        // Not the program's: unclaimed, for whatever sits above the view.
+        assert!(!view.wheel_sideways(-1.0, notch, none));
+        backend.write(b"\x1b[?1049h");
+        assert!(!view.wheel_sideways(1.0, notch, none), "no arrow keys");
+        backend.write(b"\x1b[?1049l");
+        assert_eq!(chunks().concat(), b"");
+
+        backend.write(b"\x1b[?1000h\x1b[?1006h");
+        assert!(view.wheel_sideways(-1.0, notch, none));
+        assert_eq!(chunks(), vec![b"\x1b[<66;1;1M".to_vec(); 3]);
+        assert!(view.wheel_sideways(1.0, notch, none));
+        let reports = chunks();
+        assert_eq!(reports, vec![b"\x1b[<67;1;1M".to_vec(); 3]);
+        assert!(reports.iter().all(|r| is_pointer_or_focus_report(r)));
+
+        // Steps add up on their own carry, pixels by cell width.
+        for _ in 0..8 {
+            assert!(view.wheel_sideways(0.125, notch, none));
+        }
+        assert_eq!(chunks().len(), 3);
+        view.wheel(0.125, notch, none);
+        assert!(view.wheel_sideways(-0.125, notch, none));
+        assert_eq!(chunks().concat(), b"", "the axes share no carry");
+        view.wheel(-0.125, notch, none);
+        let surface = gdk::ScrollUnit::Surface;
+        assert!(view.wheel_sideways(f64::from(cell_w), surface, none));
+        assert_eq!(chunks(), vec![b"\x1b[<67;1;1M".to_vec()]);
+
+        // Shift keeps it from the program.
+        assert!(!view.wheel_sideways(1.0, notch, shift));
+        assert_eq!(chunks().concat(), b"");
+        backend.write(b"\x1b[?1000l\x1b[?1006l");
     }
 
     /// The hooks the tab follows the shell by (doc 07 §Following the
@@ -1825,6 +2379,121 @@ mod ghostty_display {
         backend.reset();
         assert_eq!(shape(), BLOCK);
         assert!(!timer());
+    }
+
+    /// Each SGR underline style has its own shape, sharp and in its full
+    /// color: the cell's underline color when it has one, the text's
+    /// otherwise. The rows hold only blanks, so all that is lit is the line.
+    fn underline_styles(backend: &GhosttyBackend, view: &GhosttyView) {
+        const CELLS: usize = 8;
+        const RED: [u8; 4] = [0, 0, 255, 255];
+        const GREEN: [u8; 4] = [0, 255, 0, 255];
+        const BLUE: [u8; 4] = [255, 0, 0, 255];
+        let metrics = view.metrics();
+        let (cw, ch) = (metrics.width as usize, metrics.height as usize);
+        let (top, thickness) = (metrics.underline.0 as usize, metrics.underline.1 as usize);
+        let blank = " ".repeat(CELLS);
+        let red = "58;2;255;0;0";
+        let green = "38;2;0;255;0";
+        // The pixels of a row's line, from its top on, as rows of pixels.
+        let line_of = |sgr: &str| -> Vec<Vec<[u8; 4]>> {
+            backend.reset();
+            backend.write(format!("\x1b[{sgr}m{blank}\x1b[0m\r\n").as_bytes());
+            let (width, height) = (view.width() as usize, view.height() as usize);
+            let at = pixels(view);
+            let background = at(width - 1, height - 1);
+            (top..ch)
+                .map(|y| {
+                    (0..CELLS * cw)
+                        .map(|x| at(x, y))
+                        .map(|p| if p == background { [0; 4] } else { p })
+                        .collect()
+                })
+                .collect()
+        };
+        let solid = |row: &[[u8; 4]], color| row.iter().all(|&p| p == color);
+        let blank_row = |row: &[[u8; 4]]| row.iter().all(|&p| p == [0; 4]);
+        // The lengths of a row's lit stretches.
+        let stretches = |row: &[[u8; 4]]| -> Vec<usize> {
+            row.split(|&p| p == [0; 4])
+                .map(<[_]>::len)
+                .filter(|&len| len > 0)
+                .collect()
+        };
+
+        let single = line_of(&format!("4:1;{red}"));
+        assert!(solid(&single[0], RED), "{:?}", &single[0][..4]);
+        assert!(single[thickness..].iter().all(|row| blank_row(row)));
+
+        let double = line_of(&format!("4:2;{red}"));
+        assert!(solid(&double[0], RED));
+        assert!(blank_row(&double[thickness]), "the lines stay apart");
+        assert!(solid(&double[2 * thickness], RED));
+
+        // A wave: its crest moves between rows along the line, over three
+        // rows or more, and it is strong in the line's color, not a stipple.
+        let curly = line_of(&format!("4:3;{red}"));
+        let strength = |[_, g, r, _]: [u8; 4]| i32::from(r) - i32::from(g);
+        let crest = |x: usize| (0..curly.len()).max_by_key(|&y| strength(curly[y][x]));
+        let crests: std::collections::HashSet<_> = (0..CELLS * cw).filter_map(crest).collect();
+        assert!(crests.len() >= 2, "{crests:?}");
+        assert!(curly.iter().filter(|row| !blank_row(row)).count() >= 3);
+        let peak = curly.iter().flatten().map(|&p| strength(p)).max();
+        assert!(peak >= Some(160), "{peak:?}");
+        assert!(curly.iter().all(|row| !solid(row, RED)));
+        for &[b, g, r, _] in curly.iter().flatten().filter(|&&p| p != [0; 4]) {
+            assert!(r > g && r > b, "{:?}", [r, g, b]);
+        }
+
+        let dotted = line_of(&format!("4:4;{red}"));
+        assert!(stretches(&dotted[0]).iter().all(|&len| len == thickness));
+        assert!(stretches(&dotted[0]).len() > CELLS);
+        assert!(dotted[0].iter().all(|&p| p == RED || p == [0; 4]));
+        assert!(dotted[thickness..].iter().all(|row| blank_row(row)));
+
+        let dashed = line_of(&format!("4:5;{red}"));
+        let dashes = stretches(&dashed[0]);
+        assert!(dashes.len() > 1);
+        assert!(dashes[..dashes.len() - 1]
+            .iter()
+            .all(|&len| len > 2 * thickness));
+        assert!(dashed[0].iter().all(|&p| p == RED || p == [0; 4]));
+
+        // With no underline color each style is in the text color, and
+        // SGR 59 goes back to it.
+        assert!(solid(&line_of(&format!("4:1;{green}"))[0], GREEN));
+        assert!(solid(&line_of(&format!("4:2;{green}"))[0], GREEN));
+        let reset = format!("4:1;{green};{red};59");
+        assert!(solid(&line_of(&reset)[0], GREEN), "SGR 59");
+        for sgr in ["4:3", "4:4", "4:5"] {
+            let line = line_of(&format!("{sgr};{green}"));
+            for &[b, g, r, _] in line.iter().flatten().filter(|&&p| p != [0; 4]) {
+                assert!(g > r && g > b, "{sgr}: {:?}", [r, g, b]);
+            }
+        }
+
+        // Off is off, and a color alone draws nothing.
+        for sgr in ["4:3;4:0", "4:3;24", red] {
+            let line = line_of(sgr);
+            assert!(line.iter().all(|row| blank_row(row)), "{sgr}");
+        }
+
+        // Neighbors of one style split on color, and join across a change
+        // of text color: a wave runs on unbroken under a line of code.
+        backend.reset();
+        let half = " ".repeat(CELLS / 2);
+        backend.write(format!("\x1b[4:1;{red}m{half}\x1b[58;2;0;0;255m{half}\x1b[0m").as_bytes());
+        let at = pixels(view);
+        assert_eq!(at(cw, top), RED);
+        assert_eq!(at((CELLS - 1) * cw, top), BLUE);
+        let whole = line_of(&format!("4:3;{red};38;2;4;5;6m{half}\x1b[38;2;4;5;6"));
+        let split = line_of(&format!("4:3;{red};38;2;1;2;3m{half}\x1b[38;2;4;5;6"));
+        assert_eq!(whole, split);
+
+        // The line crosses text as it crosses blanks.
+        backend.reset();
+        backend.write(format!("\x1b[4:1;{red}mMMM\x1b[0m").as_bytes());
+        assert_eq!(pixels(view)(cw + cw / 2, top), RED);
     }
 
     /// Double and triple clicks select a word and a line, a finished
