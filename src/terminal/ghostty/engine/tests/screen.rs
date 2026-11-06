@@ -590,3 +590,29 @@ fn scrolling_moves_the_viewport() {
     engine.scroll(Scroll::Bottom);
     assert_ne!(frame(&engine).row_text(0).trim_end(), "line 0");
 }
+
+fn cursor(engine: &Engine) -> (u8, u8) {
+    let mut frame = Frame::default();
+    assert!(engine.snapshot(&mut frame));
+    (frame.info.cursor_style, frame.info.cursor_blinking)
+}
+
+/// A configured default holds at once, through a program's own shape going
+/// back with CSI 0 q, and through a full reset.
+#[test]
+fn the_default_cursor_takes_effect_and_outlives_a_reset() {
+    let engine = Engine::new(4, 2).expect("engine");
+    assert_eq!(cursor(&engine), (ffi::CURSOR_BLOCK, 0));
+
+    assert!(engine.set_cursor_default(ffi::CURSOR_BAR, true));
+    assert_eq!(cursor(&engine), (ffi::CURSOR_BAR, 1));
+
+    engine.write(b"\x1b[4 q");
+    assert_eq!(cursor(&engine), (ffi::CURSOR_UNDERLINE, 0));
+    engine.write(b"\x1b[0 q");
+    assert_eq!(cursor(&engine), (ffi::CURSOR_BAR, 1));
+
+    engine.write(b"\x1b[4 q");
+    engine.reset();
+    assert_eq!(cursor(&engine), (ffi::CURSOR_BAR, 1));
+}

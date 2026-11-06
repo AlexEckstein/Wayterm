@@ -6,6 +6,9 @@ use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::time::Duration;
 
+pub const GHOSTTY_CURSOR_STYLE_SETTING: &str = "ghostty.cursor_style";
+pub const GHOSTTY_CURSOR_BLINKS_SETTING: &str = "ghostty.cursor_blinks";
+pub const GHOSTTY_IMAGE_LIMIT_SETTING: &str = "ghostty.image_limit_mb";
 pub const GHOSTTY_WHEEL_ROWS_SETTING: &str = "ghostty.wheel_rows";
 pub const GHOSTTY_CURSOR_BLINK_SETTING: &str = "ghostty.cursor_blink_ms";
 pub const GHOSTTY_TEXT_BLINK_SETTING: &str = "ghostty.text_blink_ms";
@@ -16,11 +19,62 @@ pub const GHOSTTY_SEARCH_CURRENT_BG_SETTING: &str = "ghostty.search_current_bg";
 pub const WHEEL_ROWS: RangeInclusive<f64> = 0.5..=30.0;
 /// In milliseconds. A period of zero would spin the main loop.
 pub const BLINK_PERIOD: RangeInclusive<u64> = 50..=5000;
+/// In megabytes. Ghostty's default is the top: PNG sizes are checked against
+/// it before a decode, and a remote program picks the size.
+pub const IMAGE_LIMIT: RangeInclusive<u32> = 0..=320;
+
+/// A setting stored as one of a few names; the name is also its label.
+pub trait RowChoice: Copy + PartialEq + 'static {
+    const ALL: &'static [(Self, &'static str)];
+
+    fn from_row(raw: Option<String>) -> Option<Self> {
+        let raw = raw?;
+        let raw = raw.trim();
+        Self::ALL
+            .iter()
+            .find(|(_, name)| name.eq_ignore_ascii_case(raw))
+            .map(|(choice, _)| *choice)
+    }
+
+    fn position(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|(choice, _)| *choice == self)
+            .unwrap_or_default()
+    }
+
+    fn row(self) -> &'static str {
+        Self::ALL[self.position()].1
+    }
+}
+
+/// The cursor a Ghostty tab starts with, until a program sets its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GhosttyCursor {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+    Hollow,
+}
+
+impl RowChoice for GhosttyCursor {
+    const ALL: &'static [(Self, &'static str)] = &[
+        (Self::Block, "Block"),
+        (Self::Bar, "Bar"),
+        (Self::Underline, "Underline"),
+        (Self::Hollow, "Hollow"),
+    ];
+}
 
 /// What only the Ghostty view draws or decides for itself; global, with no
 /// session override (doc 02 §View options).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GhosttyOptions {
+    pub cursor_style: GhosttyCursor,
+    pub cursor_blinks: bool,
+    /// Megabytes of Kitty images each screen holds; 0 turns them off.
+    pub image_limit_mb: u32,
     /// Rows per wheel notch.
     pub wheel_rows: f64,
     /// How long a blinking cursor stays on, and off; Ghostty's default.
@@ -43,6 +97,9 @@ pub struct SearchColors {
 impl Default for GhosttyOptions {
     fn default() -> Self {
         Self {
+            cursor_style: GhosttyCursor::default(),
+            cursor_blinks: false,
+            image_limit_mb: *IMAGE_LIMIT.end(),
             wheel_rows: 3.0,
             cursor_blink: Duration::from_millis(600),
             text_blink: Duration::from_millis(500),
@@ -68,6 +125,12 @@ impl GhosttyOptions {
         let seed = Self::default();
         let search = seed.search;
         Self {
+            cursor_style: GhosttyCursor::from_row(row(GHOSTTY_CURSOR_STYLE_SETTING))
+                .unwrap_or(seed.cursor_style),
+            cursor_blinks: flag(row(GHOSTTY_CURSOR_BLINKS_SETTING)).unwrap_or(seed.cursor_blinks),
+            image_limit_mb: parsed(row(GHOSTTY_IMAGE_LIMIT_SETTING))
+                .filter(|limit| IMAGE_LIMIT.contains(limit))
+                .unwrap_or(seed.image_limit_mb),
             wheel_rows: parsed(row(GHOSTTY_WHEEL_ROWS_SETTING))
                 .filter(|rows| WHEEL_ROWS.contains(rows))
                 .unwrap_or(seed.wheel_rows),
@@ -85,6 +148,14 @@ impl GhosttyOptions {
 
 pub(super) fn parsed<T: FromStr>(raw: Option<String>) -> Option<T> {
     raw?.trim().parse().ok()
+}
+
+fn flag(raw: Option<String>) -> Option<bool> {
+    match raw?.trim() {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
 }
 
 fn period(raw: Option<String>) -> Option<Duration> {
@@ -135,6 +206,9 @@ mod tests {
     #[test]
     fn stored_ghostty_rows_are_read() {
         let options = ghostty(&[
+            (GHOSTTY_CURSOR_STYLE_SETTING, " bar "),
+            (GHOSTTY_CURSOR_BLINKS_SETTING, "1"),
+            (GHOSTTY_IMAGE_LIMIT_SETTING, "0"),
             (GHOSTTY_WHEEL_ROWS_SETTING, "1.5"),
             (GHOSTTY_CURSOR_BLINK_SETTING, "250"),
             (GHOSTTY_TEXT_BLINK_SETTING, " 1000 "),
@@ -145,6 +219,9 @@ mod tests {
         assert_eq!(
             options,
             GhosttyOptions {
+                cursor_style: GhosttyCursor::Bar,
+                cursor_blinks: true,
+                image_limit_mb: 0,
                 wheel_rows: 1.5,
                 cursor_blink: Duration::from_millis(250),
                 text_blink: Duration::from_millis(1000),
@@ -179,6 +256,17 @@ mod tests {
                     "{key}={value:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_choice_reads_back_from_its_row() {
+        for (choice, name) in GhosttyCursor::ALL {
+            assert_eq!(choice.row(), *name);
+            assert_eq!(
+                GhosttyCursor::from_row(Some(choice.row().into())),
+                Some(*choice)
+            );
         }
     }
 

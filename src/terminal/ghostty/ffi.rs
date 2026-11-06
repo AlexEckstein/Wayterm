@@ -242,6 +242,9 @@ extern "C" {
     pub fn wt_ghostty_size(g: *mut WtGhostty, cols: *mut u16, rows: *mut u16);
     pub fn wt_ghostty_reset(g: *mut WtGhostty);
     pub fn wt_ghostty_set_scrollback_lines(g: *mut WtGhostty, lines: usize) -> c_int;
+    /// `style` is a `CURSOR_*`.
+    pub fn wt_ghostty_set_cursor_default(g: *mut WtGhostty, style: u8, blink: bool) -> c_int;
+    pub fn wt_ghostty_set_image_limit(g: *mut WtGhostty, bytes: u64) -> c_int;
     /// `fg`, `bg` and `cursor` point at 3 bytes (RGB), `ansi` at 16 × 3.
     pub fn wt_ghostty_set_colors(
         g: *mut WtGhostty,

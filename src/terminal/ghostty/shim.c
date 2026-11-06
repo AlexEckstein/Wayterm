@@ -432,6 +432,23 @@ int wt_ghostty_set_scrollback_lines(WtGhostty *g, size_t lines) {
                               GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &lines);
 }
 
+/* What CSI 0 q goes back to; the cursor in force stays until then. */
+int wt_ghostty_set_cursor_default(WtGhostty *g, uint8_t style, bool blink) {
+  GhosttyTerminalCursorStyle default_style = style;
+  int r = ghostty_terminal_set(g->terminal,
+                               GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE,
+                               &default_style);
+  if (r != GHOSTTY_SUCCESS) return r;
+  return ghostty_terminal_set(g->terminal,
+                              GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_BLINK, &blink);
+}
+
+/* Zero turns Kitty graphics off and drops what is stored. */
+int wt_ghostty_set_image_limit(WtGhostty *g, uint64_t bytes) {
+  return ghostty_terminal_set(
+      g->terminal, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &bytes);
+}
+
 static GhosttyColorRgb rgb_in(const uint8_t c[3]) {
   return (GhosttyColorRgb){.r = c[0], .g = c[1], .b = c[2]};
 }

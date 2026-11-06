@@ -178,6 +178,24 @@ impl Engine {
         unsafe { ffi::wt_ghostty_set_scrollback_lines(self.ptr(), lines) };
     }
 
+    /// Make `style`, a `ffi::CURSOR_*`, the default cursor, and put the
+    /// cursor there now: a shape a program set gives way to it.
+    pub fn set_cursor_default(&self, style: u8, blink: bool) -> bool {
+        // SAFETY: valid terminal.
+        let result = unsafe { ffi::wt_ghostty_set_cursor_default(self.ptr(), style, blink) };
+        self.write(b"\x1b[0 q");
+        result == ffi::SUCCESS
+    }
+
+    /// Bytes of Kitty images each screen holds, up to
+    /// [`ffi::KITTY_STORAGE_LIMIT`], which PNG sizes are checked against.
+    /// Zero turns Kitty graphics off.
+    pub fn set_image_limit(&self, bytes: u64) -> bool {
+        let bytes = bytes.min(ffi::KITTY_STORAGE_LIMIT);
+        // SAFETY: valid terminal.
+        unsafe { ffi::wt_ghostty_set_image_limit(self.ptr(), bytes) == ffi::SUCCESS }
+    }
+
     /// Make `scheme` the default colors: foreground, background, cursor and
     /// the 16 ANSI colors; 256-color indices 16–255 keep xterm's cube and
     /// grayscale ramp. The next snapshot resolves through them, cells
