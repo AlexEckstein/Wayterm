@@ -31,25 +31,54 @@ that act on them at startup and after every change.
 
 ### Customize
 
-`src/ui/settings/customize.rs`:
+`src/ui/settings/customize.rs`, with `customize/rows.rs` building the
+controls. Terminal comes first, for both backends:
 
 | Control | Row | Applies |
 |---|---|---|
-| Default color scheme | `default_color_scheme` (`System`/`Light`/`Dark`) | to every open terminal at once (doc 02 §Color schemes) |
 | Font | `default_font_family` | to every open terminal without its own (doc 02 §Font, opacity and scrollback) |
 | Font size | `default_font_size` | as Font, once settled |
 | Background opacity | `default_opacity` | as Font, once settled (doc 02 §Opacity) |
 | Scrollback lines | `scrollback_limit` | to every open terminal, once settled |
 
-The font picker lists monospace families and sets the family only: a
-terminal's rows hold no face, so Bold could not be kept. The size, opacity
-and scrollback controls save 150 ms after their last change, because each
-save re-applies to every tab and a size change resizes every remote's grid.
-The mouse wheel over them scrolls the page and leaves the value alone, since
-a lowered scrollback drops lines from open tabs.
+Then a section per backend (`customize/vte.rs`, `customize/ghostty.rs`),
+whose rows reach only that backend's tabs (doc 02 §View options). Ghostty's
+is shown in a build with the backend, whatever `default_backend` says, since
+a session can name its own.
 
-The page has no Ghostty-only controls yet. One saves like the rows above,
-and doc 02 §View options takes its row the rest of the way to open tabs.
+| VTE control | Row |
+|---|---|
+| Color scheme | `vte.color_scheme` (`System`/`Light`/`Dark`) |
+| Cursor shape | `vte.cursor_shape` (`Block`/`I-beam`/`Underline`) |
+| Cursor blink | `vte.cursor_blink` (`System`/`On`/`Off`) |
+| Audible bell | `vte.audible_bell` |
+| Selection color, Selection text color | `vte.selection_bg`, `vte.selection_fg` |
+| Line height | `vte.line_height` (1.0–2.0) |
+| Bold text is bright | `vte.bold_is_bright` |
+| Hide mouse while typing | `vte.hide_mouse` |
+
+| Ghostty control | Row |
+|---|---|
+| Color scheme | `ghostty.color_scheme` (`System`/`Light`/`Dark`) |
+| Cursor style | `ghostty.cursor_style` (`Block`/`Bar`/`Underline`/`Hollow`) |
+| Blinking cursor | `ghostty.cursor_blinks` |
+| Cursor blink period, Text blink period | `ghostty.cursor_blink_ms`, `ghostty.text_blink_ms` (50–5000) |
+| Mouse wheel speed | `ghostty.wheel_rows` (0.5–30) |
+| Selection color, Selection text color | `ghostty.selection_bg`, `ghostty.selection_fg` |
+| Search match color, Current match color, Search text color | `ghostty.search_bg`, `ghostty.search_current_bg`, `ghostty.search_fg` |
+| Kitty image storage | `ghostty.image_limit_mb` (0–320) |
+
+Each reaches open terminals at once, numbers once settled. Switches write
+`1`/`0` and colors `#rrggbb`; a color's Reset blanks its row, which reads as
+not set. A scheme's row reads through to `default_color_scheme` while it is
+missing (doc 02 §Color schemes).
+
+The font picker lists monospace families and sets the family only: a
+terminal's rows hold no face, so Bold could not be kept. Numeric controls
+save 150 ms after their last change, because each save re-applies to every
+tab and a size change resizes every remote's grid. The mouse wheel over them
+scrolls the page and leaves the value alone, since a lowered scrollback
+drops lines from open tabs.
 
 ### Credentials
 
@@ -75,10 +104,11 @@ inserts 28 informational hotkey rows (doc 11 §Persistence).
 | Row | Seed | Meaning |
 |---|---|---|
 | `default_backend` | `vte` | terminal backend for new tabs of sessions without their own (doc 02 §Backend selection) |
-| `default_color_scheme` | `System` | `System`, `Light` or `Dark` (doc 02 §Color schemes) |
+| `default_color_scheme` | `System` | `System`, `Light` or `Dark`, for a backend without its own scheme; no control writes it (doc 02 §Color schemes) |
 | `default_font_family` / `default_font_size` | `Monospace` / `12.0` | terminal font, in points, for sessions without their own (doc 02 §Font, opacity and scrollback) |
 | `default_opacity` | `1.0` | terminal background opacity, 0–1, for sessions without their own (doc 02 §Opacity) |
 | `scrollback_limit` | `10000` | lines each terminal keeps, 0 for none |
+| `vte.*`, `ghostty.*` | — | one backend's options (§Customize); missing or unusable = that option's default |
 | `confirm_close` | `1` | ask before closing a live tab |
 | `reconnect_on_drop` | `1` | reconnect automatically vs ask each attempt |
 | `tmux_default` | `0` | not read |

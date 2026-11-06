@@ -14,6 +14,7 @@ Code: `src/terminal/` (backends, color schemes), `src/backpressure.rs`
 (the never-blocking sender), `src/ui/tabs/terminal_actions.rs` (copy, paste,
 search), `src/ui/appearance.rs` (applying color schemes, fonts, opacity
 and scrollback), `src/terminal/defaults.rs` (resolving the last three),
+`src/terminal/options.rs` (what each backend alone takes),
 `src/ui/translucency.rs` (the window under a translucent terminal).
 
 ## The trait
@@ -134,8 +135,9 @@ flow control (doc 01 §Threading model).
   stepped; an empty or invalid query clears it.
 - **Color schemes:** `set_color_scheme` looks the name up among the
   built-in palettes (§Color schemes) and applies foreground, background,
-  the 16 ANSI colors and the cursor colors; bold and the selection keep
-  VTE's palette-derived defaults. An unknown name changes nothing.
+  the 16 ANSI colors and the cursor colors; bold keeps VTE's
+  palette-derived default, as does the selection unless §View options sets
+  its colors. An unknown name changes nothing.
 - **Clear and reset** both call `reset(true, true)`: screen and
   scrollback.
 - **SIXEL** is reported from the runtime VTE version (≥ 0.62), never
@@ -171,10 +173,13 @@ dark), each with a foreground, a background, cursor colors and 16 ANSI
 colors; a test checks both meet WCAG AAA contrast.
 
 A tab's scheme resolves from its session's `color_scheme` override, else
+its backend's own row (`vte.color_scheme`, `ghostty.color_scheme`), else
 the global `default_color_scheme` row, else `System`. Values are `System`,
 `Light` or `Dark`, case-insensitive; empty or unknown values fall through
 to the next level, so a row naming a scheme this build lacks never breaks
-a tab. New stores are seeded with `System`.
+a tab. New stores are seeded with `System` in the global row and neither
+backend's, and Settings writes only the backend rows, so a scheme stored
+before they existed holds for both backends until one is picked.
 
 `System` is not a palette: it resolves to `Light` or `Dark` by the desktop
 theme (`classify_system_theme`):
@@ -197,7 +202,7 @@ theme name stays `Breeze` in dark mode, and the dark flag comes from
 
 `ui::appearance` applies the resolved name when a tab's terminal is
 created, before its widget is shown, and again for every open terminal
-when the global row changes (Settings' "Default color scheme") or the
+when one of the global rows changes (Settings' "Color scheme") or the
 desktop theme does. Both backends apply it (§VteBackend,
 §GhosttyBackend). The window chrome follows the same preference (doc 13
 §Window theme).
@@ -216,8 +221,9 @@ value falls through to the next level: a blank family, a font size outside
 widget is shown, so the first grid is measured in the right font. The rows
 are installed at startup and whenever the General or Customize settings
 page saves (`install_terminal_defaults`); a change re-applies them to every
-open terminal, and an unchanged install touches nothing. A desktop theme
-switch does not re-apply them.
+open terminal, and an unchanged install touches nothing, as does a change
+to one backend's options alone (§View options). A desktop theme switch does
+not re-apply them.
 
 ## Opacity
 
@@ -238,6 +244,52 @@ the theme's background. Switching to another tab, closing the tab or
 setting opacity back to 1 restores the window. A new part of the window
 outside the tabs needs `wayterm-chrome`, or it goes see-through with the
 window.
+
+## View options
+
+`src/terminal/options.rs` holds what one backend alone takes, display-free
+and compiled without the Ghostty feature. Both sets are global, with no
+session override, and sit in `TerminalDefaults`, so they are read with the
+other rows. A missing or unusable row keeps its default, so neither needs
+seeding, and those defaults are what each backend did before it had the
+option.
+
+`VteOptions`: cursor shape and blink mode, audible bell, selection colors,
+line height, bold as bright, and hiding the mouse while typing.
+
+`GhosttyOptions`: cursor style and whether it blinks, the periods of the
+cursor's blink and of blinking text, rows per wheel notch, selection and
+search colors, and the Kitty image limit. Their defaults are the values
+§GhosttyBackend gives.
+
+They do not cross `TerminalBackend`: the trait carries what every backend
+takes per session. When the rows change, `install_terminal_defaults` hands
+each changed set to its backend's `install_options` (`vte/options.rs`,
+`ghostty/view/options.rs`), which keeps it for new terminals and gives it to
+open ones. A change to one set leaves the shared rows, and the other
+backend's tabs, alone.
+
+On VTE each option is a widget property. Setting a palette clears VTE's
+selection colors, so `set_color_scheme` puts the installed ones back.
+
+On Ghostty, colors repaint at once and the wheel follows at its next event.
+A changed blink period stops that timer, and the next paint restarts it, on.
+The default cursor and the image limit go to the engine, at `follow_options`
+for a new view and from `set_options` when they change. libghostty-vt's
+default cursor applies only at `CSI 0 q`, so the engine sends one: a cursor
+setting changed by hand takes the cursor from a program that set its own,
+and for that reason only a change to it does. A program's own cursor
+otherwise holds, and a full reset goes back to the default.
+
+To add a setting:
+
+1. Add the field and its default to the backend's options, and have the
+   backend read it: a Ghostty view from `imp().options`, with a change that
+   takes more than a repaint in `set_options`; VTE in `apply`.
+2. Read its row in `from_rows`, keeping the default for a value the backend
+   cannot use: a blink period of zero would spin the main loop.
+3. Add its control to the backend's section of the Customize page (doc 13
+   §Customize).
 
 ## Window titles
 
@@ -349,7 +401,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
        resizes the grid and sends `SizeChange`
   once per new grid.
 - **Cursor.** It takes the shape the terminal asks for: block, underline
-  or bar, per DECSCUSR. The block swaps its cell's colors. The others are
+  or bar, per DECSCUSR, starting from the configured default (§View
+  options). The block swaps its cell's colors. The others are
   rectangles as thick as the font's underline, on the cell's bottom or
   left edge, over the cell as painted, so a search match stays lit under
   them; they take the cursor color a scheme or program set, else the
@@ -359,7 +412,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   decides it).
 
   A blink (DECSCUSR's blinking variants, or mode 12) is 600 ms on and
-  600 ms off, Ghostty's period. A timer flips the phase and queues a
+  600 ms off by default, Ghostty's period. A timer flips the phase and queues a
   draw, so a phase is a whole frame like any other change. The paint
   starts the timer when a frame's cursor blinks, and stops it once the
   cursor stops blinking, is hidden or leaves the viewport. Losing focus
@@ -403,7 +456,7 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   action, bracketed when the program enabled mode 2004.
 
   Holding Shift keeps a press, its drag, a middle click and the wheel
-  local even while the program tracks the mouse. The wheel counts three rows per notch,
+  local even while the program tracks the mouse. The wheel counts three rows per notch by default,
   adding up the fractional steps of high-resolution wheels and touchpads
   (pixel deltas count by cell height); a reported or arrow-key wheel
   sends one report or key per row. The horizontal wheel counts columns
@@ -591,7 +644,10 @@ deleted, with nothing to track on Wayterm's side.
   remote side's, so the header is checked first: only PNG reaches GDK, and
   only if its pixels could fit the storage limit.
 - **Limits.** Each screen stores up to 320 MB of images, Ghostty's default;
-  libghostty-vt's own is 10 MB. The oldest unused images go first. Only
+  libghostty-vt's own is 10 MB. A setting lowers that, 0 turning Kitty
+  graphics off and dropping what is stored, but cannot raise it: PNG sizes
+  are checked against 320 MB before a decode, and the remote side picks the
+  size. The oldest unused images go first. Only
   images sent in the stream are accepted: the file, temporary-file and
   shared-memory media stay off, since they would let a remote program name
   local paths.
@@ -599,32 +655,6 @@ deleted, with nothing to track on Wayterm's side.
   snapshot. A new frame changes the image's generation, so it uploads like
   any new pixels. A one-shot timeout asks for a redraw when the next frame
   is due; a tab that is not shown draws nothing, so its animations wait.
-
-### View options
-
-`GhosttyOptions` (`src/terminal/defaults.rs`) holds what only this view
-draws or decides for itself: rows per wheel notch, the periods of the
-cursor's blink and of blinking text, and the search colors. Their defaults
-are the values the sections above give. They are global, with no session
-override, and sit in `TerminalDefaults`, so they are read with the other
-rows.
-
-They do not cross `TerminalBackend`: VTE has no use for them, and the trait
-carries what every backend takes per session. When the rows change,
-`install_terminal_defaults` hands them to `install_options`
-(`view/options.rs`), which keeps them for new views and gives them to open
-ones. Colors repaint at once and the wheel follows at its next event. A
-changed blink period stops that timer, and the next paint restarts it, on.
-
-No row writes them yet, so every tab has the defaults. To add a setting:
-
-1. Add the field and its default to `GhosttyOptions`, and have the view
-   read it from `imp().options`. A change that takes more than a repaint
-   goes in `set_options`.
-2. Read its row in `TerminalDefaults::from_rows`, keeping the default for a
-   value the view cannot use: a blink period of zero would spin the main
-   loop.
-3. Add its control to the Customize page (doc 13 §Customize).
 
 ### libghostty-vt pin
 
@@ -726,6 +756,8 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **Opacity needs a compositor.** Every Wayland session has one; on X11
   without a compositing manager the cleared areas draw dark instead of
   showing the desktop.
+- **Backend options are global.** A session cannot override them (§View
+  options), and they are not in the JSON export, as no settings row is.
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
 - **The kept directory has no consumer** (§Reported directory), and only
@@ -758,8 +790,8 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   window while it does. On a scaled display an image is drawn at
   logical pixels and upscaled. Selecting across placeholder cells
   copies their U+10EEEE characters.
-- **Ghostty cursor:** no setting changes the blink period (§View options),
-  and GTK's cursor blink settings are not read, where VTE follows them. Typing does not restart
+- **Ghostty cursor:** GTK's cursor blink settings are not read, where VTE
+  follows them by default. Typing does not restart
   a blink, so the cursor can be in its off phase as it moves. On a wide
   character it covers one cell.
 - **Ghostty selection:** word boundaries are libghostty-vt's defaults,

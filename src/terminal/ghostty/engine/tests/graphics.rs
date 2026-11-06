@@ -41,6 +41,16 @@ fn the_storage_limit_is_the_one_png_sizes_are_checked_against() {
 }
 
 #[test]
+fn the_image_limit_never_passes_the_one_png_sizes_are_checked_against() {
+    let engine = engine();
+    let limit = || unsafe { ffi::wt_ghostty_storage_limit(engine.ptr()) };
+    assert!(engine.set_image_limit(1_000_000));
+    assert_eq!(limit(), 1_000_000);
+    assert!(engine.set_image_limit(u64::MAX));
+    assert_eq!(limit(), ffi::KITTY_STORAGE_LIMIT);
+}
+
+#[test]
 fn a_placed_image_comes_out_at_its_cell() {
     let engine = sized_engine();
     engine.write(b"\x1b[2;4H");

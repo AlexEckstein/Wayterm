@@ -1,3 +1,5 @@
+mod options;
+
 use std::cell::Cell;
 
 use gtk4::{gdk, pango, Widget};
@@ -11,6 +13,7 @@ use super::backend::{
 };
 use super::color_scheme::{self, Rgb};
 use crate::backpressure::IdleSender;
+pub use options::install_options;
 
 /// VTE requires this on search regexes; vte4 does not export it.
 const PCRE2_MULTILINE: u32 = 0x0000_0400;
@@ -63,6 +66,7 @@ impl VteBackend {
         });
 
         clear_css_background_when_translucent();
+        options::follow_options(&terminal);
         Self {
             terminal,
             input,
@@ -189,10 +193,10 @@ impl TerminalBackend for VteBackend {
         self.terminal.set_color_cursor(Some(&rgba(scheme.cursor)));
         self.terminal
             .set_color_cursor_foreground(Some(&rgba(scheme.cursor_foreground)));
-        // Bold and the selection follow the palette (VTE's defaults).
+        // Bold follows the palette (VTE's default), as the selection does
+        // unless its options set one.
         self.terminal.set_color_bold(None);
-        self.terminal.set_color_highlight(None);
-        self.terminal.set_color_highlight_foreground(None);
+        options::restore_selection(&self.terminal);
         self.background.set(Some(scheme.background));
         self.apply_background();
     }

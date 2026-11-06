@@ -2,14 +2,13 @@
 //! schemes, doc 13 §Window theme): the window chrome and every live terminal.
 //!
 //! Terminals get their scheme ([`color_scheme::resolve`]) as they are
-//! created ([`apply_to`]); a change of the global `default_color_scheme`
-//! row ([`install_default_scheme`], from the settings page) or of the
-//! desktop theme re-resolves every terminal in the tracked notebooks
-//! ([`track`]).
+//! created ([`apply_to`]); a change of a global scheme row
+//! ([`install_schemes`], from the settings page) or of the desktop theme
+//! re-resolves every terminal in the tracked notebooks ([`track`]).
 //!
 //! Font, opacity and scrollback go the same way ([`apply_to`],
 //! [`install_terminal_defaults`]), without following the desktop theme. So
-//! do the Ghostty view's options, through its own install (doc 02 §View
+//! do each backend's options, through its own install (doc 02 §View
 //! options).
 //!
 //! The desktop theme is xdg-desktop-portal's `color-scheme`
@@ -35,7 +34,9 @@ use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
 
 use crate::store::model::SessionConfig;
-use crate::terminal::color_scheme::{self, classify_system_theme, Brightness, UNKNOWN_THEME};
+use crate::terminal::color_scheme::{
+    self, backend_row, classify_system_theme, Brightness, UNKNOWN_THEME,
+};
 use crate::terminal::{TerminalBackend, TerminalDefaults};
 use crate::ui::tabs::SessionTab;
 
@@ -61,6 +62,9 @@ const USER_CSS_SETTLE: Duration = Duration::from_millis(200);
 struct Appearance {
     /// The installed `default_color_scheme` row.
     default_scheme: Option<String>,
+    /// The installed rows of each backend's own scheme.
+    vte_scheme: Option<String>,
+    ghostty_scheme: Option<String>,
     /// The installed font, opacity and scrollback rows.
     terminal_defaults: TerminalDefaults,
     /// The windows' tab notebooks.
@@ -79,22 +83,49 @@ thread_local! {
     static APPEARANCE: RefCell<Appearance> = RefCell::default();
 }
 
-/// Record the stored `default_color_scheme` and re-apply it to every open
-/// terminal.
-pub fn install_default_scheme(raw: Option<String>) {
-    APPEARANCE.with(|state| state.borrow_mut().default_scheme = raw);
+impl Appearance {
+    /// The global scheme row in force for the backend called `backend`.
+    fn scheme_row(&self, backend: &str) -> Option<String> {
+        let own = match backend {
+            "vte" => self.vte_scheme.as_deref(),
+            "ghostty" => self.ghostty_scheme.as_deref(),
+            _ => None,
+        };
+        backend_row(own, self.default_scheme.as_deref()).map(str::to_string)
+    }
+}
+
+/// Record the stored scheme rows and re-apply them to every open terminal.
+pub fn install_schemes(default: Option<String>, vte: Option<String>, ghostty: Option<String>) {
+    APPEARANCE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.default_scheme = default;
+        state.vte_scheme = vte;
+        state.ghostty_scheme = ghostty;
+    });
     refresh();
 }
 
-/// Record the stored font, opacity, scrollback and Ghostty rows and, if
-/// they changed, re-apply them to every open terminal.
+/// [`install_schemes`] with no backend's own row.
+#[cfg(test)]
+pub(crate) fn install_default_scheme(raw: Option<String>) {
+    install_schemes(raw, None, None);
+}
+
+/// Record the stored font, opacity, scrollback and backend rows, and hand
+/// what changed to the open terminals that take it.
 pub fn install_terminal_defaults(defaults: TerminalDefaults) {
     let previous = APPEARANCE.with(|state| {
         std::mem::replace(&mut state.borrow_mut().terminal_defaults, defaults.clone())
     });
-    if previous != defaults {
-        #[cfg(feature = "backend-ghostty")]
+    if previous.vte != defaults.vte {
+        crate::terminal::vte::install_options(&defaults.vte);
+    }
+    #[cfg(feature = "backend-ghostty")]
+    if previous.ghostty != defaults.ghostty {
         crate::terminal::ghostty::install_options(&defaults.ghostty);
+    }
+    if !previous.same_shared_rows(&defaults) {
         for_each_terminal(apply_settings);
     }
 }
@@ -160,7 +191,7 @@ pub fn apply_to(backend: &dyn TerminalBackend, session: &SessionConfig) {
 }
 
 fn apply_with(backend: &dyn TerminalBackend, session_override: Option<&str>, system: Brightness) {
-    let global = APPEARANCE.with(|state| state.borrow().default_scheme.clone());
+    let global = APPEARANCE.with(|state| state.borrow().scheme_row(backend.name()));
     let scheme = color_scheme::resolve(session_override, global.as_deref(), system);
     backend.set_color_scheme(scheme.name);
 }
@@ -564,6 +595,21 @@ mod tests {
         );
         assert_eq!(portal_preference(&wrap(0u32.to_variant())), None);
         assert_eq!(portal_preference(&"dark".to_variant()), None);
+    }
+
+    /// Each backend resolves through its own row, then the shared one; a
+    /// backend with no row of its own, as in tests, takes the shared one.
+    #[test]
+    fn each_backend_has_its_own_scheme_row() {
+        let state = Appearance {
+            default_scheme: Some("Dark".into()),
+            vte_scheme: Some("Light".into()),
+            ghostty_scheme: Some("Solarized".into()),
+            ..Default::default()
+        };
+        assert_eq!(state.scheme_row("vte").as_deref(), Some("Light"));
+        assert_eq!(state.scheme_row("ghostty").as_deref(), Some("Dark"));
+        assert_eq!(state.scheme_row("fake").as_deref(), Some("Dark"));
     }
 
     /// Only the appearance namespace's `color-scheme` key changes the

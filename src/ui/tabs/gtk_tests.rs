@@ -13,7 +13,9 @@ use super::terminal::{
 use super::*;
 use crate::hotkeys::engine::focus_within;
 use crate::terminal::color_scheme::{Brightness, Rgb, DARK, LIGHT};
+use crate::terminal::options::{SelectionColors, VteBlink, VteCursor, VteOptions};
 use crate::terminal::{create_terminal, TerminalDefaults};
+use crate::ui::translucency::gtk_tests::pixel_at;
 use vte4::prelude::*;
 
 /// A tab out of view posts through the drain, named by its session when
@@ -616,13 +618,87 @@ pub(in crate::ui) fn terminals_follow_the_font_opacity_and_scrollback_rows() {
     assert!(follows.has_css_class(crate::terminal::TRANSLUCENT_CLASS));
 
     follows.set_scrollback_lines(7);
-    crate::ui::appearance::install_terminal_defaults(rows);
+    crate::ui::appearance::install_terminal_defaults(rows.clone());
     assert_eq!(follows.scrollback_lines(), 7, "nothing changed");
 
+    let vte = VteOptions {
+        cursor_shape: VteCursor::IBeam,
+        cursor_blink: VteBlink::Off,
+        audible_bell: false,
+        line_height: 1.5,
+        bold_is_bright: true,
+        hide_mouse: true,
+        ..Default::default()
+    };
+    crate::ui::appearance::install_terminal_defaults(TerminalDefaults {
+        vte,
+        ..rows.clone()
+    });
+    let new_tab = create_terminal().backend.widget();
+    for terminal in [&follows, new_tab.downcast_ref().unwrap()] {
+        let terminal: &vte4::Terminal = terminal;
+        assert_eq!(terminal.cursor_shape(), vte4::CursorShape::Ibeam);
+        assert_eq!(terminal.cursor_blink_mode(), vte4::CursorBlinkMode::Off);
+        assert!(!terminal.is_audible_bell());
+        assert_eq!(terminal.cell_height_scale(), 1.5);
+        assert!(terminal.is_bold_is_bright());
+        assert!(terminal.is_mouse_autohide());
+    }
+    assert_eq!(follows.scrollback_lines(), 7, "a VTE option alone");
+
     crate::ui::appearance::install_terminal_defaults(TerminalDefaults::default());
+    assert_eq!(follows.cursor_shape(), vte4::CursorShape::Block);
+    assert!(follows.is_audible_bell());
     assert_eq!(font(&follows).as_deref(), Some("Monospace 12"));
     assert_eq!(follows.scrollback_lines(), 10_000);
     assert!(!follows.has_css_class(crate::terminal::TRANSLUCENT_CLASS));
+}
+
+/// A palette clears VTE's selection colors, so setting one puts the
+/// installed colors back. VTE has no getter for them: the pixels tell.
+pub(in crate::ui) fn a_scheme_change_keeps_the_selection_color() {
+    let selection = SelectionColors {
+        fg: None,
+        bg: Some([10, 200, 30]),
+    };
+    crate::ui::appearance::install_terminal_defaults(TerminalDefaults {
+        vte: VteOptions {
+            selection,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let backend = create_terminal().backend;
+    let widget = backend.widget();
+    let window = gtk4::Window::new();
+    window.set_child(Some(&widget));
+    window.present();
+    let context = glib::MainContext::default();
+    let settle = || {
+        for _ in 0..50 {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    backend.set_color_scheme("Dark");
+    backend.write(b"xxxxxxxx");
+    settle();
+    backend.select_all();
+    settle();
+    assert!(backend
+        .selected_text()
+        .is_some_and(|text| text.contains('x')));
+    let lit = [30, 200, 10, 255];
+    assert_eq!(pixel_at(&widget, 2, 2), lit);
+
+    backend.set_color_scheme("Light");
+    settle();
+    assert_eq!(pixel_at(&widget, 2, 2), lit, "a new palette keeps it");
+
+    crate::ui::appearance::install_terminal_defaults(TerminalDefaults::default());
+    settle();
+    assert_ne!(pixel_at(&widget, 2, 2), lit, "the default gives it back");
+    window.destroy();
 }
 
 /// Every open terminal follows the global scheme and, under System, the

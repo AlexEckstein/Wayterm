@@ -94,6 +94,11 @@ pub(crate) mod gtk_tests {
 
     /// The alpha `widget` renders at `(x, y)`, in its own coordinates.
     pub(crate) fn alpha_at(widget: &impl IsA<gtk4::Widget>, x: i32, y: i32) -> u8 {
+        pixel_at(widget, x, y)[3]
+    }
+
+    /// What `widget` renders at `(x, y)`, as premultiplied BGRA.
+    pub(crate) fn pixel_at(widget: &impl IsA<gtk4::Widget>, x: i32, y: i32) -> [u8; 4] {
         let (width, height) = (widget.width(), widget.height());
         let snapshot = gtk4::Snapshot::new();
         gtk4::WidgetPaintable::new(Some(widget)).snapshot(
@@ -119,7 +124,8 @@ pub(crate) mod gtk_tests {
         let mut pixels = vec![0; stride * height as usize];
         // GDK_MEMORY_DEFAULT: premultiplied BGRA.
         texture.download(&mut pixels, stride);
-        pixels[y as usize * stride + x as usize * 4 + 3]
+        let at = y as usize * stride + x as usize * 4;
+        [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
     }
 
     fn settle() {

@@ -8,9 +8,9 @@ use super::links::LINK_CURSOR;
 use super::paint::{painted_row, run_text};
 use super::*;
 use crate::macros::recorder::is_pointer_or_focus_report;
-use crate::terminal::defaults::{GhosttyOptions, SearchColors};
 use crate::terminal::ghostty::engine::Scroll;
 use crate::terminal::ghostty::ffi;
+use crate::terminal::options::{GhosttyCursor, GhosttyOptions, SearchColors};
 use crate::terminal::{
     create_terminal, install_backend_preference, BackendKind, GhosttyBackend, TerminalBackend,
     TerminalDefaults, TRANSLUCENT_CLASS,
@@ -1153,6 +1153,9 @@ fn installed_options(backend: &GhosttyBackend, view: &GhosttyView) {
         });
     };
     let changed = GhosttyOptions {
+        cursor_style: GhosttyCursor::Bar,
+        cursor_blinks: true,
+        image_limit_mb: 1,
         wheel_rows: 1.0,
         cursor_blink: Duration::from_millis(20),
         text_blink: Duration::from_millis(20),
@@ -1160,6 +1163,7 @@ fn installed_options(backend: &GhosttyBackend, view: &GhosttyView) {
             current_bg: [1, 2, 3],
             ..Default::default()
         },
+        ..Default::default()
     };
     let lit = || pixels(view)(1, 1);
     let opaque = |[r, g, b]: [u8; 3]| [b, g, r, 255];
@@ -1197,6 +1201,29 @@ fn installed_options(backend: &GhosttyBackend, view: &GhosttyView) {
         "unchanged periods keep running"
     );
 
+    let cursor = |view: &GhosttyView| {
+        let mut frame = Frame::default();
+        assert!(view.shared().unwrap().engine.snapshot(&mut frame));
+        (frame.info.cursor_style, frame.info.cursor_blinking)
+    };
+    assert_eq!(cursor(view), (ffi::CURSOR_BAR, 1));
+    backend.write(b"\x1b[4 q");
+    view.set_options(GhosttyOptions {
+        wheel_rows: 2.0,
+        ..changed.clone()
+    });
+    assert_eq!(
+        cursor(view),
+        (ffi::CURSOR_UNDERLINE, 0),
+        "another option leaves a program's cursor"
+    );
+    view.set_options(GhosttyOptions {
+        cursor_style: GhosttyCursor::Hollow,
+        ..changed.clone()
+    });
+    assert_eq!(cursor(view), (ffi::CURSOR_BLOCK_HOLLOW, 1));
+    view.set_options(changed.clone());
+
     backend.reset();
     for line in 0..100 {
         backend.write(format!("line {line}\r\n").as_bytes());
@@ -1211,6 +1238,15 @@ fn installed_options(backend: &GhosttyBackend, view: &GhosttyView) {
     let later = GhosttyBackend::new(tx).expect("engine");
     let later = later.widget().downcast::<GhosttyView>().unwrap();
     assert_eq!(*later.imp().options.borrow(), changed);
+    assert_eq!(
+        cursor(&later),
+        (ffi::CURSOR_BAR, 1),
+        "a new tab starts on it"
+    );
+    let engine = later.shared().unwrap();
+    // SAFETY: a live terminal.
+    let limit = unsafe { ffi::wt_ghostty_storage_limit(engine.engine.ptr()) };
+    assert_eq!(limit, 1_000_000);
 
     install(GhosttyOptions::default());
     assert_eq!(*view.imp().options.borrow(), GhosttyOptions::default());
@@ -1235,7 +1271,7 @@ fn clusters_shape_whole(backend: &GhosttyBackend, view: &GhosttyView) {
     // Each glyph of a row's first four cells: (glyph, column, x).
     let shaped = |row: usize| {
         let (text, columns) =
-            run_text(&painted_row(&frame, row, &[], true, &SearchColors::default())[..4]);
+            run_text(&painted_row(&frame, row, &[], true, &GhosttyOptions::default())[..4]);
         let mut glyphs = Vec::new();
         view.shape(&text, &columns, &view.font(), |_, string, columns| {
             for (glyph, &col) in string.glyph_info().iter().zip(columns) {

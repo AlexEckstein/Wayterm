@@ -12,6 +12,10 @@
 /// (doc 13 §Settings rows).
 pub const DEFAULT_COLOR_SCHEME_SETTING: &str = "default_color_scheme";
 
+/// Each backend's own global scheme; without one it takes the row above.
+pub const VTE_COLOR_SCHEME_SETTING: &str = "vte.color_scheme";
+pub const GHOSTTY_COLOR_SCHEME_SETTING: &str = "ghostty.color_scheme";
+
 /// An sRGB color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -232,6 +236,13 @@ impl SchemeChoice {
             Self::Dark => &DARK,
         }
     }
+}
+
+/// The global row in force for a backend: its `own`, unless that is empty
+/// or unknown, else `shared`.
+pub fn backend_row<'a>(own: Option<&'a str>, shared: Option<&'a str>) -> Option<&'a str> {
+    own.filter(|raw| SchemeChoice::from_setting(raw).is_some())
+        .or(shared)
 }
 
 /// The choice in force: the session override, else the global default,

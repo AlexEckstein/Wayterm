@@ -287,22 +287,22 @@ pub(super) mod gtk_tests {
             assert_eq!(tooltip.as_deref(), Some(general::GHOSTTY_UNAVAILABLE));
         }
 
-        // The color scheme drop-down: opens on the seeded System and saves
-        // each pick.
-        use crate::terminal::SchemeChoice;
+        // The VTE section's scheme drop-down, the page's first: opens on the
+        // seeded System and saves each pick to its own row.
+        use crate::terminal::{SchemeChoice, VTE_COLOR_SCHEME_SETTING as VTE};
         let customize_page = stack.child_by_name(CUSTOMIZE_PAGE).unwrap();
         let mut dropdowns: Vec<gtk4::DropDown> = Vec::new();
         descendants(&customize_page, &mut dropdowns);
-        assert_eq!(dropdowns.len(), 1);
         let dropdown = &dropdowns[0];
         let position = |choice| SchemeChoice::ALL.iter().position(|c| *c == choice).unwrap();
         assert_eq!(dropdown.selected() as usize, position(SchemeChoice::System));
         dropdown.set_selected(position(SchemeChoice::Light) as u32);
-        assert_eq!(customize::color_scheme(&store), SchemeChoice::Light);
+        assert_eq!(customize::color_scheme(&store, VTE), SchemeChoice::Light);
         dropdown.set_selected(position(SchemeChoice::System) as u32);
-        assert_eq!(customize::color_scheme(&store), SchemeChoice::System);
+        assert_eq!(customize::color_scheme(&store, VTE), SchemeChoice::System);
 
         terminal_appearance_controls();
+        backend_sections();
     }
 
     /// Spin the main loop until `done`; numeric controls save on a timer.
@@ -350,7 +350,12 @@ pub(super) mod gtk_tests {
 
         let mut spins: Vec<gtk4::SpinButton> = Vec::new();
         descendants(&page, &mut spins);
-        assert_eq!(spins.len(), 2);
+        let backend_spins = if crate::terminal::GHOSTTY_COMPILED {
+            5
+        } else {
+            1
+        };
+        assert_eq!(spins.len(), 2 + backend_spins);
         let (size, scrollback) = (&spins[0], &spins[1]);
         let mut scales: Vec<gtk4::Scale> = Vec::new();
         descendants(&page, &mut scales);
@@ -364,9 +369,10 @@ pub(super) mod gtk_tests {
                 .flatten()
                 .any(|controller| controller.is::<gtk4::EventControllerScroll>())
         };
-        assert!(!takes_wheel(size.upcast_ref()));
         assert!(!takes_wheel(opacity.upcast_ref()));
-        assert!(!takes_wheel(scrollback.upcast_ref()));
+        for spin in &spins {
+            assert!(!takes_wheel(spin.upcast_ref()));
+        }
 
         assert_eq!(size.value(), 12.0);
         assert_eq!(opacity.value(), 80.0);
@@ -407,6 +413,82 @@ pub(super) mod gtk_tests {
         wait_for(|| customize::terminal_defaults(&store).font_size == 9.0);
 
         // `apply` installed these for the whole thread.
+        general::apply(&SessionStore::in_memory().unwrap());
+    }
+
+    /// Each section's controls open on its rows, write only those rows, and
+    /// reach `apply`; Reset blanks a color row without saving the color it
+    /// shows, and the color reads as unset again.
+    fn backend_sections() {
+        use crate::terminal::options::{
+            VteCursor, VTE_AUDIBLE_BELL_SETTING, VTE_CURSOR_SHAPE_SETTING, VTE_LINE_HEIGHT_SETTING,
+            VTE_SELECTION_BG_SETTING,
+        };
+
+        let store = Rc::new(SessionStore::in_memory().unwrap());
+        store
+            .set_setting(VTE_CURSOR_SHAPE_SETTING, "I-beam")
+            .unwrap();
+        store
+            .set_setting(VTE_SELECTION_BG_SETTING, "#102030")
+            .unwrap();
+        let page = customize::page(store.clone());
+        let vte = || customize::terminal_defaults(&store).vte;
+
+        let mut dropdowns: Vec<gtk4::DropDown> = Vec::new();
+        descendants(&page, &mut dropdowns);
+        let shape = &dropdowns[1];
+        assert_eq!(shape.selected(), 1, "opens on the stored row");
+        shape.set_selected(2);
+        assert_eq!(vte().cursor_shape, VteCursor::Underline);
+
+        let mut toggles: Vec<gtk4::Switch> = Vec::new();
+        descendants(&page, &mut toggles);
+        assert!(toggles[0].is_active(), "the bell starts on");
+        toggles[0].set_active(false);
+        assert!(!vte().audible_bell);
+        let row = |key: &str| store.get_setting(key).unwrap();
+        assert_eq!(row(VTE_AUDIBLE_BELL_SETTING).as_deref(), Some("0"));
+
+        let mut colors: Vec<gtk4::ColorDialogButton> = Vec::new();
+        descendants(&page, &mut colors);
+        let mut buttons: Vec<gtk4::Button> = Vec::new();
+        descendants(&page, &mut buttons);
+        let resets: Vec<&gtk4::Button> = buttons
+            .iter()
+            .filter(|button| button.label().as_deref() == Some("Reset"))
+            .collect();
+        assert_eq!(resets.len(), colors.len());
+        assert!(resets[0].is_sensitive(), "a stored color can go");
+        assert!(!resets[1].is_sensitive(), "an unset one cannot");
+        assert_eq!(vte().selection.bg, Some([0x10, 0x20, 0x30]));
+
+        resets[0].emit_clicked();
+        assert_eq!(row(VTE_SELECTION_BG_SETTING).as_deref(), Some(""));
+        assert_eq!(vte().selection.bg, None);
+        assert!(!resets[0].is_sensitive());
+
+        colors[0].set_rgba(&gtk4::gdk::RGBA::new(1.0, 0.0, 0.0, 1.0));
+        assert_eq!(vte().selection.bg, Some([0xff, 0, 0]));
+        assert!(resets[0].is_sensitive());
+
+        let mut spins: Vec<gtk4::SpinButton> = Vec::new();
+        descendants(&page, &mut spins);
+        spins[2].set_value(1.3);
+        wait_for(|| vte().line_height == 1.3);
+        assert_eq!(row(VTE_LINE_HEIGHT_SETTING).as_deref(), Some("1.3"));
+
+        if crate::terminal::GHOSTTY_COMPILED {
+            let ghostty = || customize::terminal_defaults(&store).ghostty;
+            spins[3].set_value(250.0);
+            wait_for(|| ghostty().cursor_blink.as_millis() == 250);
+            let kitty = spins.last().unwrap();
+            assert_eq!(kitty.value(), 320.0);
+            kitty.set_value(0.0);
+            wait_for(|| ghostty().image_limit_mb == 0);
+            assert_eq!(vte().line_height, 1.3, "its own rows only");
+        }
+
         general::apply(&SessionStore::in_memory().unwrap());
     }
 }
