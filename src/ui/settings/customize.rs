@@ -1,14 +1,16 @@
 //! The Customize settings page (doc 13 §Customize): how terminals look and
 //! how much they keep, for sessions without their own.
 //!
-//! "Default color scheme" writes `default_color_scheme` (`System`, `Light`,
-//! `Dark`) and re-colors open terminals at once; `System` follows
-//! the desktop theme ([`appearance`](crate::ui::appearance)).
-//!
-//! Font, font size, opacity and scrollback write their rows and reach open
-//! terminals the same way. [`rows`] builds the controls.
+//! Font, font size, opacity and scrollback apply to every terminal, and
+//! the sections below them to one backend each: [`vte`] and, in a build
+//! with it, [`ghostty`]. Each has its own color scheme (`System`, `Light`,
+//! `Dark`), which re-colors its open terminals at once; `System` follows
+//! the desktop theme ([`appearance`](crate::ui::appearance)). [`rows`]
+//! builds the controls.
 
+mod ghostty;
 mod rows;
+mod vte;
 
 use std::rc::Rc;
 
@@ -16,35 +18,44 @@ use gtk4::prelude::*;
 use gtk4::{glib, pango};
 
 use crate::store::SessionStore;
+use crate::terminal::color_scheme::backend_row;
 use crate::terminal::defaults::{
     DEFAULT_FONT_FAMILY_SETTING, DEFAULT_FONT_SIZE_SETTING, DEFAULT_OPACITY_SETTING,
     SCROLLBACK_LIMIT_SETTING,
 };
-use crate::terminal::{SchemeChoice, TerminalDefaults, DEFAULT_COLOR_SCHEME_SETTING};
+use crate::terminal::{
+    SchemeChoice, TerminalDefaults, DEFAULT_COLOR_SCHEME_SETTING, GHOSTTY_COMPILED,
+};
 
 // ---------------------------------------------------------------------------
 // Display-free data layer
 // ---------------------------------------------------------------------------
 
 /// The row's text.
-pub const COLOR_SCHEME_TITLE: &str = "Default color scheme";
+pub const COLOR_SCHEME_TITLE: &str = "Color scheme";
 pub const COLOR_SCHEME_SUBTITLE: &str = "Terminal colors for sessions without their own. \
                                          System follows the desktop's light or dark theme.";
 
-/// The stored `default_color_scheme`; missing or unknown is `System`, as
-/// tabs resolve it.
-pub fn color_scheme(store: &SessionStore) -> SchemeChoice {
-    store
-        .setting(DEFAULT_COLOR_SCHEME_SETTING)
-        .as_deref()
+/// A backend's scheme, its row `key`, as its tabs resolve it: without a
+/// usable row of its own, `default_color_scheme`, else `System`.
+pub fn color_scheme(store: &SessionStore, key: &str) -> SchemeChoice {
+    let (own, shared) = (
+        store.setting(key),
+        store.setting(DEFAULT_COLOR_SCHEME_SETTING),
+    );
+    backend_row(own.as_deref(), shared.as_deref())
         .and_then(SchemeChoice::from_setting)
         .unwrap_or(SchemeChoice::System)
 }
 
-/// Store the global scheme; [`apply`](super::general::apply) makes it take
+/// Store a backend's scheme; [`apply`](super::general::apply) makes it take
 /// effect.
-pub fn save_color_scheme(store: &SessionStore, choice: SchemeChoice) -> rusqlite::Result<()> {
-    store.set_setting(DEFAULT_COLOR_SCHEME_SETTING, choice.as_setting())
+pub fn save_color_scheme(
+    store: &SessionStore,
+    key: &str,
+    choice: SchemeChoice,
+) -> rusqlite::Result<()> {
+    store.set_setting(key, choice.as_setting())
 }
 
 pub const FONT_TITLE: &str = "Font";
@@ -84,32 +95,42 @@ pub fn save_scrollback(store: &SessionStore, lines: u32) -> rusqlite::Result<()>
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// The page widget: one list of the terminal's rows.
+/// The page widget: every terminal's rows, then a section per backend.
 pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     let terminal = super::boxed_list();
-    terminal.append(&color_scheme_row(&store));
     terminal.append(&font_row(&store));
     terminal.append(&font_size_row(&store));
     terminal.append(&opacity_row(&store));
     terminal.append(&scrollback_row(&store));
-    super::scrolling_page(&[
-        super::heading("Terminal").upcast_ref(),
-        terminal.upcast_ref(),
-    ])
+    let mut children: Vec<gtk4::Widget> =
+        vec![super::heading("Terminal").upcast(), terminal.upcast()];
+    let mut add = |title, section: gtk4::ListBox| {
+        let heading = super::heading(title);
+        heading.set_margin_top(12);
+        children.push(heading.upcast());
+        children.push(section.upcast());
+    };
+    add("VTE", vte::section(&store));
+    if GHOSTTY_COMPILED {
+        add("Ghostty", ghostty::section(&store));
+    }
+    let children: Vec<&gtk4::Widget> = children.iter().collect();
+    super::scrolling_page(&children)
 }
 
-/// title over subtitle | System / Light / Dark.
-fn color_scheme_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
+/// title over subtitle | System / Light / Dark, for the backend whose row
+/// is `key`.
+fn scheme_row(store: &Rc<SessionStore>, key: &'static str) -> gtk4::ListBoxRow {
     let labels: Vec<&str> = SchemeChoice::ALL.iter().map(|c| c.as_setting()).collect();
-    let current = color_scheme(store);
+    let current = color_scheme(store, key);
     let selected = SchemeChoice::ALL.iter().position(|c| *c == current);
     rows::choice_row(
         store,
         (COLOR_SCHEME_TITLE, COLOR_SCHEME_SUBTITLE),
         &labels,
         selected.unwrap_or_default(),
-        DEFAULT_COLOR_SCHEME_SETTING,
-        |store, position| save_color_scheme(store, SchemeChoice::ALL[position]),
+        key,
+        move |store, position| save_color_scheme(store, key, SchemeChoice::ALL[position]),
     )
 }
 
@@ -200,9 +221,12 @@ fn scrollback_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::{
+        GHOSTTY_COLOR_SCHEME_SETTING as GHOSTTY, VTE_COLOR_SCHEME_SETTING as VTE,
+    };
 
-    /// A new store follows the system; a saved choice round-trips, and an
-    /// unknown row reads as System.
+    /// A new store follows the system; a saved choice round-trips, an
+    /// unknown row reads as System, and each backend keeps its own.
     #[test]
     fn color_scheme_choice_round_trips() {
         let store = SessionStore::in_memory().unwrap();
@@ -214,19 +238,37 @@ mod tests {
             Some("System"),
             "the seed"
         );
-        assert_eq!(color_scheme(&store), SchemeChoice::System);
+        assert_eq!(color_scheme(&store, VTE), SchemeChoice::System);
         for choice in [
             SchemeChoice::Light,
             SchemeChoice::Dark,
             SchemeChoice::System,
         ] {
-            save_color_scheme(&store, choice).unwrap();
-            assert_eq!(color_scheme(&store), choice);
+            save_color_scheme(&store, VTE, choice).unwrap();
+            assert_eq!(color_scheme(&store, VTE), choice);
         }
+        save_color_scheme(&store, VTE, SchemeChoice::Dark).unwrap();
+        save_color_scheme(&store, GHOSTTY, SchemeChoice::Light).unwrap();
+        assert_eq!(color_scheme(&store, VTE), SchemeChoice::Dark);
+        assert_eq!(color_scheme(&store, GHOSTTY), SchemeChoice::Light);
+    }
+
+    /// A store from before the split keeps its scheme on both, and a row
+    /// this build cannot read falls through to it.
+    #[test]
+    fn a_backend_without_its_own_scheme_takes_the_old_row() {
+        let store = SessionStore::in_memory().unwrap();
+        store
+            .set_setting(DEFAULT_COLOR_SCHEME_SETTING, "Dark")
+            .unwrap();
+        assert_eq!(color_scheme(&store, VTE), SchemeChoice::Dark);
+        assert_eq!(color_scheme(&store, GHOSTTY), SchemeChoice::Dark);
+        store.set_setting(VTE, "Solarized").unwrap();
+        assert_eq!(color_scheme(&store, VTE), SchemeChoice::Dark);
         store
             .set_setting(DEFAULT_COLOR_SCHEME_SETTING, "Solarized")
             .unwrap();
-        assert_eq!(color_scheme(&store), SchemeChoice::System);
+        assert_eq!(color_scheme(&store, VTE), SchemeChoice::System);
     }
 
     /// Each saved value reads back as tabs resolve it, the opacity from

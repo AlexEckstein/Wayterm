@@ -22,7 +22,8 @@ use gtk4::prelude::*;
 use super::customize;
 use crate::store::SessionStore;
 use crate::terminal::{
-    BackendKind, DEFAULT_BACKEND_SETTING, DEFAULT_COLOR_SCHEME_SETTING, GHOSTTY_COMPILED,
+    BackendKind, DEFAULT_BACKEND_SETTING, DEFAULT_COLOR_SCHEME_SETTING,
+    GHOSTTY_COLOR_SCHEME_SETTING, GHOSTTY_COMPILED, VTE_COLOR_SCHEME_SETTING,
 };
 use crate::ui::panels::sftp_sidebar;
 use crate::ui::tabs::{self, resilience};
@@ -129,7 +130,11 @@ pub fn apply(store: &SessionStore) {
     );
     sftp_sidebar::install_settings(store.flag(sftp_sidebar::SFTP_ON_CONNECT_SETTING));
     crate::terminal::install_backend_preference(backend(store));
-    appearance::install_default_scheme(store.setting(DEFAULT_COLOR_SCHEME_SETTING));
+    appearance::install_schemes(
+        store.setting(DEFAULT_COLOR_SCHEME_SETTING),
+        store.setting(VTE_COLOR_SCHEME_SETTING),
+        store.setting(GHOSTTY_COLOR_SCHEME_SETTING),
+    );
     appearance::install_terminal_defaults(customize::terminal_defaults(store));
 }
 

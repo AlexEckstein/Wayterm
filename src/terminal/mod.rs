@@ -15,7 +15,10 @@ pub use backend::{
     BackendKind, TerminalBackend, TerminalEvent, TerminalFeatures, TerminalHandle,
     DEFAULT_BACKEND_SETTING, GHOSTTY_COMPILED, TRANSLUCENT_CLASS,
 };
-pub use color_scheme::{ColorScheme, SchemeChoice, DEFAULT_COLOR_SCHEME_SETTING};
+pub use color_scheme::{
+    ColorScheme, SchemeChoice, DEFAULT_COLOR_SCHEME_SETTING, GHOSTTY_COLOR_SCHEME_SETTING,
+    VTE_COLOR_SCHEME_SETTING,
+};
 pub use defaults::TerminalDefaults;
 pub use fake::FakeBackend;
 #[cfg(feature = "backend-ghostty")]

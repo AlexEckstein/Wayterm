@@ -3,19 +3,27 @@
 //! re-applies to every tab, and a font size change resizes every remote's
 //! grid.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
-use gtk4::glib;
 use gtk4::prelude::*;
+use gtk4::{gdk, glib};
 
 use crate::store::SessionStore;
+use crate::terminal::options::{color_row as stored_color, RowChoice};
 use crate::ui::settings::general::apply;
 use crate::ui::settings::{described, row};
 
 /// A row's title and subtitle.
 pub(super) type Text<'a> = (&'a str, &'a str);
+
+/// A spin button's `(lowest, highest, step)`.
+pub(super) type Span = (f64, f64, f64);
+
+/// What a color button shows for a row that is not set, where the setting
+/// has no color of its own.
+const UNSET_COLOR: [u8; 3] = [0x80, 0x80, 0x80];
 
 /// How long a numeric control stays still before it saves.
 const SETTLE: Duration = Duration::from_millis(150);
@@ -118,4 +126,150 @@ pub(super) fn choice_row(
         }
     });
     row(&[text.upcast_ref(), dropdown.upcast_ref()])
+}
+
+/// title over subtitle | a drop-down of `T`'s names.
+pub(super) fn enum_row<T: RowChoice>(
+    store: &Rc<SessionStore>,
+    text: Text,
+    current: T,
+    key: &'static str,
+) -> gtk4::ListBoxRow {
+    let labels: Vec<&str> = T::ALL.iter().map(|(_, name)| *name).collect();
+    choice_row(
+        store,
+        text,
+        &labels,
+        current.position(),
+        key,
+        move |store, position| store.set_setting(key, T::ALL[position].1),
+    )
+}
+
+/// title over subtitle | switch, stored as `1` or `0`.
+pub(super) fn switch_row(
+    store: &Rc<SessionStore>,
+    (title, subtitle): Text,
+    on: bool,
+    key: &'static str,
+) -> gtk4::ListBoxRow {
+    let switch = gtk4::Switch::builder()
+        .active(on)
+        .valign(gtk4::Align::Center)
+        .build();
+    let text = described(title, Some(subtitle), &switch);
+    let store = Rc::clone(store);
+    switch.connect_active_notify(move |switch| {
+        let value = if switch.is_active() { "1" } else { "0" };
+        save_and_apply(&store, key, |store| store.set_setting(key, value));
+    });
+    row(&[text.upcast_ref(), switch.upcast_ref()])
+}
+
+fn spin(store_value: f64, (lowest, highest, step): Span, digits: u32) -> gtk4::SpinButton {
+    let spin = gtk4::SpinButton::with_range(lowest, highest, step);
+    spin.set_digits(digits);
+    spin.set_value(store_value);
+    spin
+}
+
+/// title over subtitle | a number to one decimal place.
+pub(super) fn decimal_row(
+    store: &Rc<SessionStore>,
+    text: Text,
+    span: Span,
+    current: f64,
+    key: &'static str,
+) -> gtk4::ListBoxRow {
+    let spin = spin(current, span, 1);
+    settled_row(
+        store,
+        text,
+        &spin,
+        &spin.adjustment(),
+        key,
+        move |store, value| store.set_setting(key, &format!("{value:.1}")),
+    )
+}
+
+/// title over subtitle | a whole number.
+pub(super) fn whole_row(
+    store: &Rc<SessionStore>,
+    text: Text,
+    span: Span,
+    current: f64,
+    key: &'static str,
+) -> gtk4::ListBoxRow {
+    let spin = spin(current, span, 0);
+    settled_row(
+        store,
+        text,
+        &spin,
+        &spin.adjustment(),
+        key,
+        move |store, value| store.set_setting(key, &format!("{value:.0}")),
+    )
+}
+
+fn rgba([r, g, b]: [u8; 3]) -> gdk::RGBA {
+    let channel = |c: u8| f32::from(c) / 255.0;
+    gdk::RGBA::new(channel(r), channel(g), channel(b), 1.0)
+}
+
+fn bytes(color: &gdk::RGBA) -> [u8; 3] {
+    let channel = |c: f32| (c * 255.0).round() as u8;
+    [
+        channel(color.red()),
+        channel(color.green()),
+        channel(color.blue()),
+    ]
+}
+
+/// title over subtitle | color button, Reset. Reset blanks the row, which
+/// reads as not set, and is off while it is. `default` is the color that
+/// brings back, for a setting with one of its own.
+pub(super) fn color_row(
+    store: &Rc<SessionStore>,
+    (title, subtitle): Text,
+    current: Option<[u8; 3]>,
+    default: Option<[u8; 3]>,
+    key: &'static str,
+) -> gtk4::ListBoxRow {
+    let fallback = default.unwrap_or(UNSET_COLOR);
+    let dialog = gtk4::ColorDialog::builder().with_alpha(false).build();
+    let button = gtk4::ColorDialogButton::new(Some(dialog));
+    button.set_valign(gtk4::Align::Center);
+    button.set_rgba(&rgba(current.unwrap_or(fallback)));
+    let stored = store.setting(key);
+    let reset = gtk4::Button::builder()
+        .label("Reset")
+        .valign(gtk4::Align::Center)
+        .sensitive(stored.is_some_and(|row| !row.trim().is_empty()))
+        .build();
+    let text = described(title, Some(subtitle), &button);
+
+    let resetting = Rc::new(Cell::new(false));
+    let (saving, weak_reset) = (Rc::clone(store), reset.downgrade());
+    let quiet = Rc::clone(&resetting);
+    button.connect_rgba_notify(move |button| {
+        if quiet.get() {
+            return;
+        }
+        let color = stored_color(bytes(&button.rgba()));
+        save_and_apply(&saving, key, |store| store.set_setting(key, &color));
+        if let Some(reset) = weak_reset.upgrade() {
+            reset.set_sensitive(true);
+        }
+    });
+    let (saving, weak_button) = (Rc::clone(store), button.downgrade());
+    reset.connect_clicked(move |reset| {
+        if let Some(button) = weak_button.upgrade() {
+            resetting.set(true);
+            button.set_rgba(&rgba(fallback));
+            resetting.set(false);
+        }
+        save_and_apply(&saving, key, |store| store.set_setting(key, ""));
+        reset.set_sensitive(false);
+    });
+    row(&[text.upcast_ref(), button.upcast_ref(), reset.upcast_ref()])
 }
