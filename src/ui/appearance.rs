@@ -92,6 +92,9 @@ pub fn install_terminal_defaults(defaults: TerminalDefaults) {
     let previous = APPEARANCE.with(|state| {
         std::mem::replace(&mut state.borrow_mut().terminal_defaults, defaults.clone())
     });
+    if previous.vte != defaults.vte {
+        crate::terminal::vte::install_options(&defaults.vte);
+    }
     #[cfg(feature = "backend-ghostty")]
     if previous.ghostty != defaults.ghostty {
         crate::terminal::ghostty::install_options(&defaults.ghostty);

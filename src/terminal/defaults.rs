@@ -5,7 +5,7 @@
 
 use gtk4::pango;
 
-use super::options::{parsed, GhosttyOptions};
+use super::options::{parsed, GhosttyOptions, VteOptions};
 
 pub const DEFAULT_FONT_FAMILY_SETTING: &str = "default_font_family";
 pub const DEFAULT_FONT_SIZE_SETTING: &str = "default_font_size";
@@ -24,6 +24,7 @@ pub struct TerminalDefaults {
     pub font_size: f64,
     pub opacity: f64,
     pub scrollback_lines: u32,
+    pub vte: VteOptions,
     pub ghostty: GhosttyOptions,
 }
 
@@ -34,6 +35,7 @@ impl Default for TerminalDefaults {
             font_size: 12.0,
             opacity: 1.0,
             scrollback_lines: 10_000,
+            vte: VteOptions::default(),
             ghostty: GhosttyOptions::default(),
         }
     }
@@ -55,6 +57,7 @@ impl TerminalDefaults {
                 .unwrap_or(seed.opacity),
             scrollback_lines: parsed(row(SCROLLBACK_LIMIT_SETTING))
                 .unwrap_or(seed.scrollback_lines),
+            vte: VteOptions::from_rows(&row),
             ghostty: GhosttyOptions::from_rows(&row),
         }
     }
@@ -64,6 +67,7 @@ impl TerminalDefaults {
     /// alone.
     pub fn same_shared_rows(&self, other: &Self) -> bool {
         let aligned = Self {
+            vte: other.vte.clone(),
             ghostty: other.ghostty.clone(),
             ..self.clone()
         };
@@ -153,6 +157,14 @@ mod tests {
             ..Default::default()
         };
         assert!(defaults.same_shared_rows(&wheel));
+        let bell = TerminalDefaults {
+            vte: VteOptions {
+                audible_bell: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(defaults.same_shared_rows(&bell));
         let font = TerminalDefaults {
             font_size: 20.0,
             ..wheel.clone()

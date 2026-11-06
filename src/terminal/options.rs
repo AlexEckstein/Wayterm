@@ -1,10 +1,19 @@
 //! What each backend alone takes from the settings rows (doc 02 §View
 //! options), and the parsers for those rows. Display-free, and compiled
-//! without the Ghostty feature, as Settings shows them regardless.
+//! without the Ghostty feature, as the rows are read regardless.
 
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::time::Duration;
+
+pub const VTE_CURSOR_SHAPE_SETTING: &str = "vte.cursor_shape";
+pub const VTE_CURSOR_BLINK_SETTING: &str = "vte.cursor_blink";
+pub const VTE_AUDIBLE_BELL_SETTING: &str = "vte.audible_bell";
+pub const VTE_SELECTION_FG_SETTING: &str = "vte.selection_fg";
+pub const VTE_SELECTION_BG_SETTING: &str = "vte.selection_bg";
+pub const VTE_LINE_HEIGHT_SETTING: &str = "vte.line_height";
+pub const VTE_BOLD_IS_BRIGHT_SETTING: &str = "vte.bold_is_bright";
+pub const VTE_HIDE_MOUSE_SETTING: &str = "vte.hide_mouse";
 
 pub const GHOSTTY_CURSOR_STYLE_SETTING: &str = "ghostty.cursor_style";
 pub const GHOSTTY_CURSOR_BLINKS_SETTING: &str = "ghostty.cursor_blinks";
@@ -18,6 +27,8 @@ pub const GHOSTTY_SEARCH_FG_SETTING: &str = "ghostty.search_fg";
 pub const GHOSTTY_SEARCH_BG_SETTING: &str = "ghostty.search_bg";
 pub const GHOSTTY_SEARCH_CURRENT_BG_SETTING: &str = "ghostty.search_current_bg";
 
+/// VTE's own bounds on the cell height scale.
+pub const LINE_HEIGHT: RangeInclusive<f64> = 1.0..=2.0;
 pub const WHEEL_ROWS: RangeInclusive<f64> = 0.5..=30.0;
 /// In milliseconds. A period of zero would spin the main loop.
 pub const BLINK_PERIOD: RangeInclusive<u64> = 50..=5000;
@@ -50,6 +61,40 @@ pub trait RowChoice: Copy + PartialEq + 'static {
     }
 }
 
+/// The cursor a VTE tab starts with, until a program sets its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VteCursor {
+    #[default]
+    Block,
+    IBeam,
+    Underline,
+}
+
+impl RowChoice for VteCursor {
+    const ALL: &'static [(Self, &'static str)] = &[
+        (Self::Block, "Block"),
+        (Self::IBeam, "I-beam"),
+        (Self::Underline, "Underline"),
+    ];
+}
+
+/// Whether the cursor blinks; `System` follows the GTK setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VteBlink {
+    #[default]
+    System,
+    On,
+    Off,
+}
+
+impl RowChoice for VteBlink {
+    const ALL: &'static [(Self, &'static str)] = &[
+        (Self::System, "System"),
+        (Self::On, "On"),
+        (Self::Off, "Off"),
+    ];
+}
+
 /// The cursor a Ghostty tab starts with, until a program sets its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GhosttyCursor {
@@ -67,6 +112,58 @@ impl RowChoice for GhosttyCursor {
         (Self::Underline, "Underline"),
         (Self::Hollow, "Hollow"),
     ];
+}
+
+/// What only VTE terminals take; global, with no session override (doc 02
+/// §View options). The defaults are VTE's own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VteOptions {
+    pub cursor_shape: VteCursor,
+    pub cursor_blink: VteBlink,
+    pub audible_bell: bool,
+    pub selection: SelectionColors,
+    /// Cell height as a multiple of the font's.
+    pub line_height: f64,
+    pub bold_is_bright: bool,
+    pub hide_mouse: bool,
+}
+
+impl Default for VteOptions {
+    fn default() -> Self {
+        Self {
+            cursor_shape: VteCursor::default(),
+            cursor_blink: VteBlink::default(),
+            audible_bell: true,
+            selection: SelectionColors::default(),
+            line_height: 1.0,
+            bold_is_bright: false,
+            hide_mouse: false,
+        }
+    }
+}
+
+impl VteOptions {
+    /// Read the rows through `row`; a missing or unusable row keeps its
+    /// default.
+    pub fn from_rows(row: &impl Fn(&str) -> Option<String>) -> Self {
+        let seed = Self::default();
+        Self {
+            cursor_shape: VteCursor::from_row(row(VTE_CURSOR_SHAPE_SETTING))
+                .unwrap_or(seed.cursor_shape),
+            cursor_blink: VteBlink::from_row(row(VTE_CURSOR_BLINK_SETTING))
+                .unwrap_or(seed.cursor_blink),
+            audible_bell: flag(row(VTE_AUDIBLE_BELL_SETTING)).unwrap_or(seed.audible_bell),
+            selection: SelectionColors {
+                fg: color(row(VTE_SELECTION_FG_SETTING)),
+                bg: color(row(VTE_SELECTION_BG_SETTING)),
+            },
+            line_height: parsed(row(VTE_LINE_HEIGHT_SETTING))
+                .filter(|height| LINE_HEIGHT.contains(height))
+                .unwrap_or(seed.line_height),
+            bold_is_bright: flag(row(VTE_BOLD_IS_BRIGHT_SETTING)).unwrap_or(seed.bold_is_bright),
+            hide_mouse: flag(row(VTE_HIDE_MOUSE_SETTING)).unwrap_or(seed.hide_mouse),
+        }
+    }
 }
 
 /// What only the Ghostty view draws or decides for itself; global, with no
@@ -199,13 +296,67 @@ pub fn color_row([r, g, b]: [u8; 3]) -> String {
 mod tests {
     use super::*;
 
-    fn ghostty(values: &[(&str, &str)]) -> GhosttyOptions {
-        GhosttyOptions::from_rows(&|key| {
+    fn stored<'a>(values: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        |key| {
             values
                 .iter()
                 .find(|(row, _)| *row == key)
                 .map(|(_, value)| value.to_string())
-        })
+        }
+    }
+
+    fn ghostty(values: &[(&str, &str)]) -> GhosttyOptions {
+        GhosttyOptions::from_rows(&stored(values))
+    }
+
+    fn vte(values: &[(&str, &str)]) -> VteOptions {
+        VteOptions::from_rows(&stored(values))
+    }
+
+    #[test]
+    fn stored_vte_rows_are_read() {
+        let options = vte(&[
+            (VTE_CURSOR_SHAPE_SETTING, "i-beam"),
+            (VTE_CURSOR_BLINK_SETTING, "Off"),
+            (VTE_AUDIBLE_BELL_SETTING, "0"),
+            (VTE_SELECTION_FG_SETTING, "#010203"),
+            (VTE_LINE_HEIGHT_SETTING, "1.5"),
+            (VTE_BOLD_IS_BRIGHT_SETTING, "1"),
+            (VTE_HIDE_MOUSE_SETTING, "1"),
+        ]);
+        assert_eq!(
+            options,
+            VteOptions {
+                cursor_shape: VteCursor::IBeam,
+                cursor_blink: VteBlink::Off,
+                audible_bell: false,
+                selection: SelectionColors {
+                    fg: Some([1, 2, 3]),
+                    bg: None,
+                },
+                line_height: 1.5,
+                bold_is_bright: true,
+                hide_mouse: true,
+            }
+        );
+    }
+
+    #[test]
+    fn unusable_vte_rows_keep_the_defaults() {
+        for (key, values) in [
+            (VTE_CURSOR_SHAPE_SETTING, &["", "Bar"][..]),
+            (VTE_CURSOR_BLINK_SETTING, &["Sometimes"]),
+            (VTE_AUDIBLE_BELL_SETTING, &["", "maybe"]),
+            (VTE_LINE_HEIGHT_SETTING, &["0.9", "2.1", "NaN"]),
+        ] {
+            for value in values {
+                assert_eq!(
+                    vte(&[(key, value)]),
+                    VteOptions::default(),
+                    "{key}={value:?}"
+                );
+            }
+        }
     }
 
     /// Ghostty's own values, which a tab keeps until a row says otherwise.
