@@ -1163,6 +1163,7 @@ fn installed_options(backend: &GhosttyBackend, view: &GhosttyView) {
             current_bg: [1, 2, 3],
             ..Default::default()
         },
+        ..Default::default()
     };
     let lit = || pixels(view)(1, 1);
     let opaque = |[r, g, b]: [u8; 3]| [b, g, r, 255];
@@ -1270,7 +1271,7 @@ fn clusters_shape_whole(backend: &GhosttyBackend, view: &GhosttyView) {
     // Each glyph of a row's first four cells: (glyph, column, x).
     let shaped = |row: usize| {
         let (text, columns) =
-            run_text(&painted_row(&frame, row, &[], true, &SearchColors::default())[..4]);
+            run_text(&painted_row(&frame, row, &[], true, &GhosttyOptions::default())[..4]);
         let mut glyphs = Vec::new();
         view.shape(&text, &columns, &view.font(), |_, string, columns| {
             for (glyph, &col) in string.glyph_info().iter().zip(columns) {

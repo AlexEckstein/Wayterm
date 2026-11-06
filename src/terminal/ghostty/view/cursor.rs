@@ -87,7 +87,7 @@ mod tests {
     use super::super::paint::painted_row;
     use super::*;
     use crate::terminal::ghostty::engine::{Engine, Frame};
-    use crate::terminal::options::SearchColors;
+    use crate::terminal::options::{GhosttyOptions, SearchColors};
 
     /// A shown cursor's frame state, as the shim fills it.
     fn cursor_info(style: u8, blinking: bool) -> FrameInfo {
@@ -173,11 +173,11 @@ mod tests {
         let cell = *frame.cell(0, 1).unwrap();
         let marks = [None, Some(true), None, None];
 
-        let block = &painted_row(&frame, 0, &marks, true, &SearchColors::default())[1];
+        let block = &painted_row(&frame, 0, &marks, true, &GhosttyOptions::default())[1];
         assert_eq!((block.fg, block.bg), (cell.bg, Some(cell.fg)));
-        let plain = &painted_row(&frame, 0, &[], false, &SearchColors::default())[1];
+        let plain = &painted_row(&frame, 0, &[], false, &GhosttyOptions::default())[1];
         assert_eq!((plain.fg, plain.bg), (cell.fg, None));
-        let marked = &painted_row(&frame, 0, &marks, false, &SearchColors::default())[1];
+        let marked = &painted_row(&frame, 0, &marks, false, &GhosttyOptions::default())[1];
         let search = SearchColors::default();
         assert_eq!((marked.fg, marked.bg), (search.fg, Some(search.current_bg)));
     }
@@ -190,7 +190,7 @@ mod tests {
         engine.write(b"\x1b[7;31;42ma\x1b[0m\x1b[D");
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let cells = painted_row(&frame, 0, &[], false, &SearchColors::default());
+        let cells = painted_row(&frame, 0, &[], false, &GhosttyOptions::default());
         let cell = frame.cell(0, 0).unwrap();
         assert_eq!(cells[0].bg, Some(cell.fg));
         assert_eq!(cursor_color(&frame.info, &cells[0]), cell.bg);

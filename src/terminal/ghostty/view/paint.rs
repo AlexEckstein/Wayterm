@@ -24,7 +24,7 @@ use super::cursor::{cursor_color, cursor_rects, cursor_shape, is_cursor, CursorS
 use super::{rgba, GhosttyView, Metrics};
 use crate::terminal::ghostty::engine::{push_cluster, Cell as GridCell, Frame, FrameInfo, Span};
 use crate::terminal::ghostty::ffi;
-use crate::terminal::options::SearchColors;
+use crate::terminal::options::{GhosttyOptions, SearchColors, SelectionColors};
 
 /// The character of a Kitty placeholder cell; the image takes its place.
 const KITTY_PLACEHOLDER: u32 = 0x10_eeee;
@@ -61,11 +61,11 @@ impl GhosttyView {
         let font = self.font();
         let (cols, rows) = (usize::from(info.cols), usize::from(info.rows));
         let marks = search_marks(&shared.engine.search_spans(), cols, rows);
-        let search = self.imp().options.borrow().search;
+        let options = self.imp().options.borrow().clone();
         let painted: Vec<Vec<Painted>> = (0..rows)
             .map(|row| {
                 let block = cursor == Some(CursorShape::Block);
-                let mut cells = painted_row(&frame, row, &marks, block, &search);
+                let mut cells = painted_row(&frame, row, &marks, block, &options);
                 if let Some(link) = link.as_ref() {
                     link.underline(row, &mut cells);
                 }
@@ -203,7 +203,7 @@ pub(super) fn painted_row<'a>(
     row: usize,
     marks: &[Option<bool>],
     block: bool,
-    search: &SearchColors,
+    options: &GhosttyOptions,
 ) -> Vec<Painted<'a>> {
     let info = &frame.info;
     let cols = usize::from(info.cols);
@@ -216,10 +216,11 @@ pub(super) fn painted_row<'a>(
                 cluster => cluster,
             };
             let painted = Painted::new(info, cell, cluster, cursor);
+            let selected = cell.flags & ffi::CELL_SELECTED != 0;
             match marks.get(row * cols + col) {
-                Some(&Some(current)) if !cursor && cell.flags & ffi::CELL_SELECTED == 0 => {
-                    painted.searched(current, search)
-                }
+                _ if cursor => painted,
+                _ if selected => painted.selected(&options.selection),
+                Some(&Some(current)) => painted.searched(current, &options.search),
                 _ => painted,
             }
         })
@@ -270,6 +271,15 @@ impl<'a> Painted<'a> {
             flags: cell.flags & TEXT_FLAGS,
             underline: cell.underline,
             underline_rgb: (cell.underline_has_rgb != 0).then_some(cell.underline_rgb),
+        }
+    }
+
+    /// The selection's colors, over the swap [`Self::new`] made.
+    fn selected(self, colors: &SelectionColors) -> Self {
+        Self {
+            fg: colors.fg.unwrap_or(self.fg),
+            bg: colors.bg.or(self.bg),
+            ..self
         }
     }
 
@@ -351,6 +361,36 @@ mod tests {
     use super::*;
     use crate::terminal::ghostty::engine::Engine;
 
+    /// Set colors replace the swap, one at a time; the cursor's cell keeps
+    /// its own, and a selection stays above a search match.
+    #[test]
+    fn selection_colors_replace_the_swap() {
+        let engine = Engine::new(3, 1).expect("engine");
+        engine.write(b"abc\x1b[D");
+        assert!(engine.select_all());
+        let mut frame = Frame::default();
+        assert!(engine.snapshot(&mut frame));
+        let cell = *frame.cell(0, 0).unwrap();
+        let colors = |fg, bg| GhosttyOptions {
+            selection: SelectionColors { fg, bg },
+            ..Default::default()
+        };
+        let marks = [Some(true); 3];
+
+        let swapped = &painted_row(&frame, 0, &marks, false, &colors(None, None))[0];
+        assert_eq!((swapped.fg, swapped.bg), (cell.bg, Some(cell.fg)));
+
+        let set = colors(Some([1, 2, 3]), Some([4, 5, 6]));
+        let painted = painted_row(&frame, 0, &marks, true, &set);
+        let under_cursor = usize::from(frame.info.cursor_x);
+        assert_ne!(under_cursor, 0);
+        assert_eq!((painted[0].fg, painted[0].bg), ([1, 2, 3], Some([4, 5, 6])));
+        assert_ne!(painted[under_cursor].fg, [1, 2, 3], "the cursor's cell");
+
+        let bg_only = &painted_row(&frame, 0, &[], false, &colors(None, Some([4, 5, 6])))[0];
+        assert_eq!((bg_only.fg, bg_only.bg), (cell.bg, Some([4, 5, 6])));
+    }
+
     #[test]
     fn search_spans_mark_their_cells() {
         let span = |row, start, end, current| Span {
@@ -391,7 +431,7 @@ mod tests {
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
         let (text, columns) =
-            run_text(&painted_row(&frame, 0, &[], true, &SearchColors::default())[..5]);
+            run_text(&painted_row(&frame, 0, &[], true, &GhosttyOptions::default())[..5]);
         // The family's tail is a space, so é and y keep their columns.
         let cells = [("x", 0), (family, 1), (" ", 2), ("e\u{301}", 3), ("y", 4)];
         assert_eq!(text, cells.map(|(cluster, _)| cluster).concat());
@@ -412,7 +452,7 @@ mod tests {
         );
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
-        let cells = painted_row(&frame, 0, &[], false, &SearchColors::default());
+        let cells = painted_row(&frame, 0, &[], false, &GhosttyOptions::default());
         assert_eq!(
             cells[0].underline(),
             Some((ffi::UNDERLINE_CURLY, rgba([1, 2, 3], 1.0)))
@@ -430,7 +470,7 @@ mod tests {
         assert_eq!(cells[4].underline(), None, "a color but no style");
 
         let marks = [Some(true), Some(true)];
-        let cells = painted_row(&frame, 0, &marks, false, &SearchColors::default());
+        let cells = painted_row(&frame, 0, &marks, false, &GhosttyOptions::default());
         assert_eq!(
             cells[0].underline(),
             Some((ffi::UNDERLINE_CURLY, rgba(SearchColors::default().fg, 1.0)))
@@ -448,7 +488,7 @@ mod tests {
         let mut frame = Frame::default();
         assert!(engine.snapshot(&mut frame));
         let (text, _) =
-            run_text(&painted_row(&frame, 0, &[], false, &SearchColors::default())[..3]);
+            run_text(&painted_row(&frame, 0, &[], false, &GhosttyOptions::default())[..3]);
         assert_eq!(text, "a b");
     }
 }

@@ -321,7 +321,7 @@ mod tests {
     use super::super::paint::painted_row;
     use super::*;
     use crate::terminal::ghostty::engine::{Engine, Scroll};
-    use crate::terminal::options::SearchColors;
+    use crate::terminal::options::GhosttyOptions;
 
     /// A 20-column screen after `output`.
     fn screen(output: &str) -> Frame {
@@ -653,7 +653,7 @@ mod tests {
         let frame = written(8, 3, "ab http://c.example d");
         let link = link_at(&frame, 0, 3).unwrap();
         let underlined = |row| -> Vec<bool> {
-            let mut cells = painted_row(&frame, row, &[], false, &SearchColors::default());
+            let mut cells = painted_row(&frame, row, &[], false, &GhosttyOptions::default());
             link.underline(row, &mut cells);
             cells
                 .iter()

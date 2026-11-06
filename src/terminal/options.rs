@@ -12,6 +12,8 @@ pub const GHOSTTY_IMAGE_LIMIT_SETTING: &str = "ghostty.image_limit_mb";
 pub const GHOSTTY_WHEEL_ROWS_SETTING: &str = "ghostty.wheel_rows";
 pub const GHOSTTY_CURSOR_BLINK_SETTING: &str = "ghostty.cursor_blink_ms";
 pub const GHOSTTY_TEXT_BLINK_SETTING: &str = "ghostty.text_blink_ms";
+pub const GHOSTTY_SELECTION_FG_SETTING: &str = "ghostty.selection_fg";
+pub const GHOSTTY_SELECTION_BG_SETTING: &str = "ghostty.selection_bg";
 pub const GHOSTTY_SEARCH_FG_SETTING: &str = "ghostty.search_fg";
 pub const GHOSTTY_SEARCH_BG_SETTING: &str = "ghostty.search_bg";
 pub const GHOSTTY_SEARCH_CURRENT_BG_SETTING: &str = "ghostty.search_current_bg";
@@ -82,7 +84,16 @@ pub struct GhosttyOptions {
     /// How long blinking text stays on, and off: one cycle a second, SGR 5's
     /// slow blink. SGR 6 blinks the same, as libghostty-vt keeps one flag.
     pub text_blink: Duration,
+    pub selection: SelectionColors,
     pub search: SearchColors,
+}
+
+/// Colors a selection takes in place of swapping the cell's own; either
+/// can be left to the swap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SelectionColors {
+    pub fg: Option<[u8; 3]>,
+    pub bg: Option<[u8; 3]>,
 }
 
 /// Search highlight colors, Ghostty's defaults: dark text on yellow, on
@@ -103,6 +114,7 @@ impl Default for GhosttyOptions {
             wheel_rows: 3.0,
             cursor_blink: Duration::from_millis(600),
             text_blink: Duration::from_millis(500),
+            selection: SelectionColors::default(),
             search: SearchColors::default(),
         }
     }
@@ -136,6 +148,10 @@ impl GhosttyOptions {
                 .unwrap_or(seed.wheel_rows),
             cursor_blink: period(row(GHOSTTY_CURSOR_BLINK_SETTING)).unwrap_or(seed.cursor_blink),
             text_blink: period(row(GHOSTTY_TEXT_BLINK_SETTING)).unwrap_or(seed.text_blink),
+            selection: SelectionColors {
+                fg: color(row(GHOSTTY_SELECTION_FG_SETTING)),
+                bg: color(row(GHOSTTY_SELECTION_BG_SETTING)),
+            },
             search: SearchColors {
                 fg: color(row(GHOSTTY_SEARCH_FG_SETTING)).unwrap_or(search.fg),
                 bg: color(row(GHOSTTY_SEARCH_BG_SETTING)).unwrap_or(search.bg),
@@ -212,6 +228,7 @@ mod tests {
             (GHOSTTY_WHEEL_ROWS_SETTING, "1.5"),
             (GHOSTTY_CURSOR_BLINK_SETTING, "250"),
             (GHOSTTY_TEXT_BLINK_SETTING, " 1000 "),
+            (GHOSTTY_SELECTION_BG_SETTING, "#102030"),
             (GHOSTTY_SEARCH_FG_SETTING, "#010203"),
             (GHOSTTY_SEARCH_BG_SETTING, "#A0B0C0"),
             (GHOSTTY_SEARCH_CURRENT_BG_SETTING, " #ffffff "),
@@ -225,6 +242,10 @@ mod tests {
                 wheel_rows: 1.5,
                 cursor_blink: Duration::from_millis(250),
                 text_blink: Duration::from_millis(1000),
+                selection: SelectionColors {
+                    fg: None,
+                    bg: Some([0x10, 0x20, 0x30]),
+                },
                 search: SearchColors {
                     fg: [1, 2, 3],
                     bg: [0xa0, 0xb0, 0xc0],
