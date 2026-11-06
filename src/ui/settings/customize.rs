@@ -6,18 +6,15 @@
 //! the desktop theme ([`appearance`](crate::ui::appearance)).
 //!
 //! Font, font size, opacity and scrollback write their rows and reach open
-//! terminals the same way. The numeric controls save once they settle
-//! ([`SETTLE`]): each save re-applies to every tab, and a font size change
-//! resizes every remote's grid.
+//! terminals the same way. [`rows`] builds the controls.
 
-use std::cell::RefCell;
+mod rows;
+
 use std::rc::Rc;
-use std::time::Duration;
 
 use gtk4::prelude::*;
 use gtk4::{glib, pango};
 
-use super::general::apply;
 use crate::store::SessionStore;
 use crate::terminal::defaults::{
     DEFAULT_FONT_FAMILY_SETTING, DEFAULT_FONT_SIZE_SETTING, DEFAULT_OPACITY_SETTING,
@@ -44,7 +41,8 @@ pub fn color_scheme(store: &SessionStore) -> SchemeChoice {
         .unwrap_or(SchemeChoice::System)
 }
 
-/// Store the global scheme; [`apply`] makes it take effect.
+/// Store the global scheme; [`apply`](super::general::apply) makes it take
+/// effect.
 pub fn save_color_scheme(store: &SessionStore, choice: SchemeChoice) -> rusqlite::Result<()> {
     store.set_setting(DEFAULT_COLOR_SCHEME_SETTING, choice.as_setting())
 }
@@ -86,12 +84,6 @@ pub fn save_scrollback(store: &SessionStore, lines: u32) -> rusqlite::Result<()>
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// How long a numeric control stays still before it saves.
-const SETTLE: Duration = Duration::from_millis(150);
-
-/// A numeric control's waiting save, re-armed by every change.
-type PendingSave = Rc<RefCell<Option<glib::SourceId>>>;
-
 /// The page widget: one list of the terminal's rows.
 pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     let terminal = super::boxed_list();
@@ -110,71 +102,15 @@ pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
 fn color_scheme_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
     let labels: Vec<&str> = SchemeChoice::ALL.iter().map(|c| c.as_setting()).collect();
     let current = color_scheme(store);
-    let dropdown = gtk4::DropDown::from_strings(&labels);
-    dropdown.set_valign(gtk4::Align::Center);
     let selected = SchemeChoice::ALL.iter().position(|c| *c == current);
-    dropdown.set_selected(selected.unwrap_or_default() as u32);
-    let text = super::described(COLOR_SCHEME_TITLE, Some(COLOR_SCHEME_SUBTITLE), &dropdown);
-    let store = Rc::clone(store);
-    dropdown.connect_selected_notify(move |dropdown| {
-        let Some(choice) = SchemeChoice::ALL.get(dropdown.selected() as usize) else {
-            return;
-        };
-        if let Err(err) = save_color_scheme(&store, *choice) {
-            eprintln!("Wayterm: failed to save setting '{DEFAULT_COLOR_SCHEME_SETTING}': {err}");
-            return;
-        }
-        apply(&store);
-    });
-    super::row(&[text.upcast_ref(), dropdown.upcast_ref()])
-}
-
-fn save_and_apply(
-    store: &SessionStore,
-    key: &str,
-    save: impl FnOnce(&SessionStore) -> rusqlite::Result<()>,
-) {
-    if let Err(err) = save(store) {
-        eprintln!("Wayterm: failed to save setting '{key}': {err}");
-        return;
-    }
-    apply(store);
-}
-
-/// Replace `pending` with `save`, due after [`SETTLE`]. It holds the value,
-/// not the control, so closing the window does not lose it.
-fn save_when_settled(
-    pending: &PendingSave,
-    store: &Rc<SessionStore>,
-    key: &'static str,
-    save: impl FnOnce(&SessionStore) -> rusqlite::Result<()> + 'static,
-) {
-    if let Some(id) = pending.take() {
-        id.remove();
-    }
-    let slot = Rc::clone(pending);
-    let store = Rc::clone(store);
-    let id = glib::timeout_add_local_once(SETTLE, move || {
-        // A fired source is gone; removing it again would be a GLib error.
-        slot.take();
-        save_and_apply(&store, key, save);
-    });
-    pending.replace(Some(id));
-}
-
-/// Leave the wheel to the scrolling page. A page scrolled under the pointer
-/// would otherwise change the value, and a lowered scrollback drops lines
-/// from open tabs for good.
-fn release_wheel(control: &impl IsA<gtk4::Widget>) {
-    let wheel: Vec<gtk4::EventControllerScroll> = control
-        .observe_controllers()
-        .iter::<glib::Object>()
-        .flatten()
-        .filter_map(|controller| controller.downcast().ok())
-        .collect();
-    for controller in &wheel {
-        control.remove_controller(controller);
-    }
+    rows::choice_row(
+        store,
+        (COLOR_SCHEME_TITLE, COLOR_SCHEME_SUBTITLE),
+        &labels,
+        selected.unwrap_or_default(),
+        DEFAULT_COLOR_SCHEME_SETTING,
+        |store, position| save_color_scheme(store, SchemeChoice::ALL[position]),
+    )
 }
 
 /// The dialog hands over families or faces, depending on its level.
@@ -205,7 +141,7 @@ fn font_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
         let Some(family) = button.font_desc().and_then(|font| font.family()) else {
             return;
         };
-        save_and_apply(&store, DEFAULT_FONT_FAMILY_SETTING, |store| {
+        rows::save_and_apply(&store, DEFAULT_FONT_FAMILY_SETTING, |store| {
             save_font_family(store, &family)
         });
     });
@@ -216,19 +152,15 @@ fn font_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
 fn font_size_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
     let spin = gtk4::SpinButton::with_range(1.0, 512.0, 1.0);
     spin.set_digits(1);
-    spin.set_valign(gtk4::Align::Center);
     spin.set_value(terminal_defaults(store).font_size);
-    release_wheel(&spin);
-    let text = super::described(FONT_SIZE_TITLE, Some(FONT_SIZE_SUBTITLE), &spin);
-    let store = Rc::clone(store);
-    let pending = PendingSave::default();
-    spin.connect_value_changed(move |spin| {
-        let points = spin.value();
-        save_when_settled(&pending, &store, DEFAULT_FONT_SIZE_SETTING, move |store| {
-            save_font_size(store, points)
-        });
-    });
-    super::row(&[text.upcast_ref(), spin.upcast_ref()])
+    rows::settled_row(
+        store,
+        (FONT_SIZE_TITLE, FONT_SIZE_SUBTITLE),
+        &spin,
+        &spin.adjustment(),
+        DEFAULT_FONT_SIZE_SETTING,
+        save_font_size,
+    )
 }
 
 /// title over subtitle | 0–100% slider.
@@ -239,38 +171,30 @@ fn opacity_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
     scale.set_value_pos(gtk4::PositionType::Right);
     scale.set_format_value_func(|_, percent| format!("{percent:.0}%"));
     scale.set_width_request(220);
-    scale.set_valign(gtk4::Align::Center);
     scale.set_value((terminal_defaults(store).opacity * 100.0).round());
-    release_wheel(&scale);
-    let text = super::described(OPACITY_TITLE, Some(OPACITY_SUBTITLE), &scale);
-    let store = Rc::clone(store);
-    let pending = PendingSave::default();
-    scale.connect_value_changed(move |scale| {
-        let percent = scale.value();
-        save_when_settled(&pending, &store, DEFAULT_OPACITY_SETTING, move |store| {
-            save_opacity_percent(store, percent)
-        });
-    });
-    super::row(&[text.upcast_ref(), scale.upcast_ref()])
+    rows::settled_row(
+        store,
+        (OPACITY_TITLE, OPACITY_SUBTITLE),
+        &scale,
+        &scale.adjustment(),
+        DEFAULT_OPACITY_SETTING,
+        save_opacity_percent,
+    )
 }
 
 /// title over subtitle | lines.
 fn scrollback_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
     let spin = gtk4::SpinButton::with_range(0.0, f64::from(u32::MAX), 1000.0);
-    spin.set_valign(gtk4::Align::Center);
     spin.set_value(f64::from(terminal_defaults(store).scrollback_lines));
-    release_wheel(&spin);
-    let text = super::described(SCROLLBACK_TITLE, Some(SCROLLBACK_SUBTITLE), &spin);
-    let store = Rc::clone(store);
-    let pending = PendingSave::default();
-    spin.connect_value_changed(move |spin| {
+    rows::settled_row(
+        store,
+        (SCROLLBACK_TITLE, SCROLLBACK_SUBTITLE),
+        &spin,
+        &spin.adjustment(),
+        SCROLLBACK_LIMIT_SETTING,
         // `value_as_int` is an i32, and the row goes up to u32::MAX.
-        let lines = spin.value() as u32;
-        save_when_settled(&pending, &store, SCROLLBACK_LIMIT_SETTING, move |store| {
-            save_scrollback(store, lines)
-        });
-    });
-    super::row(&[text.upcast_ref(), spin.upcast_ref()])
+        |store, lines| save_scrollback(store, lines as u32),
+    )
 }
 
 #[cfg(test)]
