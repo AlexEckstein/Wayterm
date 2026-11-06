@@ -7,6 +7,7 @@ pub mod defaults;
 pub mod fake;
 #[cfg(feature = "backend-ghostty")]
 pub mod ghostty;
+pub mod options;
 pub mod vte;
 
 pub use backend::{

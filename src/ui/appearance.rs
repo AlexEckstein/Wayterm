@@ -86,15 +86,17 @@ pub fn install_default_scheme(raw: Option<String>) {
     refresh();
 }
 
-/// Record the stored font, opacity, scrollback and Ghostty rows and, if
-/// they changed, re-apply them to every open terminal.
+/// Record the stored font, opacity, scrollback and backend rows, and hand
+/// what changed to the open terminals that take it.
 pub fn install_terminal_defaults(defaults: TerminalDefaults) {
     let previous = APPEARANCE.with(|state| {
         std::mem::replace(&mut state.borrow_mut().terminal_defaults, defaults.clone())
     });
-    if previous != defaults {
-        #[cfg(feature = "backend-ghostty")]
+    #[cfg(feature = "backend-ghostty")]
+    if previous.ghostty != defaults.ghostty {
         crate::terminal::ghostty::install_options(&defaults.ghostty);
+    }
+    if !previous.same_shared_rows(&defaults) {
         for_each_terminal(apply_settings);
     }
 }

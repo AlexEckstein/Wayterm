@@ -8,9 +8,9 @@ use super::links::LINK_CURSOR;
 use super::paint::{painted_row, run_text};
 use super::*;
 use crate::macros::recorder::is_pointer_or_focus_report;
-use crate::terminal::defaults::{GhosttyOptions, SearchColors};
 use crate::terminal::ghostty::engine::Scroll;
 use crate::terminal::ghostty::ffi;
+use crate::terminal::options::{GhosttyOptions, SearchColors};
 use crate::terminal::{
     create_terminal, install_backend_preference, BackendKind, GhosttyBackend, TerminalBackend,
     TerminalDefaults, TRANSLUCENT_CLASS,

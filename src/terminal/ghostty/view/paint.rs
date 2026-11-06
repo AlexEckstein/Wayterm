@@ -22,9 +22,9 @@ use gtk4::{gdk, glib, graphene, pango};
 
 use super::cursor::{cursor_color, cursor_rects, cursor_shape, is_cursor, CursorShape};
 use super::{rgba, GhosttyView, Metrics};
-use crate::terminal::defaults::SearchColors;
 use crate::terminal::ghostty::engine::{push_cluster, Cell as GridCell, Frame, FrameInfo, Span};
 use crate::terminal::ghostty::ffi;
+use crate::terminal::options::SearchColors;
 
 /// The character of a Kitty placeholder cell; the image takes its place.
 const KITTY_PLACEHOLDER: u32 = 0x10_eeee;

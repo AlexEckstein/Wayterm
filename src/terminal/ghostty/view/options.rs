@@ -8,7 +8,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
 use super::GhosttyView;
-use crate::terminal::defaults::GhosttyOptions;
+use crate::terminal::options::GhosttyOptions;
 
 #[derive(Default)]
 struct Installed {

@@ -86,8 +86,8 @@ pub(super) fn cursor_rects(
 mod tests {
     use super::super::paint::painted_row;
     use super::*;
-    use crate::terminal::defaults::SearchColors;
     use crate::terminal::ghostty::engine::{Engine, Frame};
+    use crate::terminal::options::SearchColors;
 
     /// A shown cursor's frame state, as the shim fills it.
     fn cursor_info(style: u8, blinking: bool) -> FrameInfo {

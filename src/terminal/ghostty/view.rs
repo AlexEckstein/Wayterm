@@ -26,7 +26,7 @@ use gtk4::{gdk, glib, pango};
 
 use super::engine::{ClipboardDestination, Frame};
 use super::Shared;
-use crate::terminal::defaults::GhosttyOptions;
+use crate::terminal::options::GhosttyOptions;
 use crate::terminal::TerminalEvent;
 use input::Route;
 use links::{launch_uri, Launcher, Link};

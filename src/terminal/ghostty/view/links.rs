@@ -320,8 +320,8 @@ pub(super) fn launch_uri(view: &GhosttyView, uri: &str) {
 mod tests {
     use super::super::paint::painted_row;
     use super::*;
-    use crate::terminal::defaults::SearchColors;
     use crate::terminal::ghostty::engine::{Engine, Scroll};
+    use crate::terminal::options::SearchColors;
 
     /// A 20-column screen after `output`.
     fn screen(output: &str) -> Frame {
