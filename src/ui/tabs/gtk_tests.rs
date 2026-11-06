@@ -13,7 +13,7 @@ use super::terminal::{
 use super::*;
 use crate::hotkeys::engine::focus_within;
 use crate::terminal::color_scheme::{Brightness, Rgb, DARK, LIGHT};
-use crate::terminal::options::{SelectionColors, VteBlink, VteCursor, VteOptions};
+use crate::terminal::options::{DefaultColors, SelectionColors, VteBlink, VteCursor, VteOptions};
 use crate::terminal::{create_terminal, TerminalDefaults};
 use crate::ui::translucency::gtk_tests::pixel_at;
 use vte4::prelude::*;
@@ -698,6 +698,89 @@ pub(in crate::ui) fn a_scheme_change_keeps_the_selection_color() {
     crate::ui::appearance::install_terminal_defaults(TerminalDefaults::default());
     settle();
     assert_ne!(pixel_at(&widget, 2, 2), lit, "the default gives it back");
+    window.destroy();
+}
+
+/// Custom colors reach an open tab and a new one, hold through a scheme
+/// change and over a session's scheme, keep the opacity, and go at a reset.
+pub(in crate::ui) fn custom_colors_replace_the_schemes() {
+    let notebook = gtk4::Notebook::new();
+    let session = SessionConfig {
+        id: 1,
+        name: "local-1".into(),
+        session_type: SessionType::LocalShell,
+        ..Default::default()
+    };
+    let page = page_content(&Rc::new(session));
+    let backend = create_terminal().backend;
+    let widget = backend.widget();
+    set_terminal_area(&page, &widget);
+    terminal_state(&page)
+        .terminal
+        .replace(Some(backend.clone()));
+    notebook.append_page(&page, None::<&gtk4::Widget>);
+    crate::ui::appearance::track(&notebook);
+    let window = gtk4::Window::new();
+    window.set_child(Some(&notebook));
+    window.present();
+    let context = glib::MainContext::default();
+    let settle = || {
+        for _ in 0..50 {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+
+    crate::ui::appearance::install_default_scheme(Some("Dark".into()));
+    backend.write("\u{2588}\u{2588}".as_bytes());
+    settle();
+    let text = pixel_at(&widget, 2, 2);
+    assert_eq!(background(&widget), rgb(DARK.background));
+
+    let colors = DefaultColors {
+        fg: Some([10, 200, 30]),
+        bg: Some([40, 50, 60]),
+    };
+    let custom = TerminalDefaults {
+        opacity: 0.5,
+        vte: VteOptions {
+            colors,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    crate::ui::appearance::install_terminal_defaults(custom.clone());
+    settle();
+    assert_eq!(background(&widget), (40, 50, 60), "an open tab");
+    assert_eq!(pixel_at(&widget, 2, 2), [30, 200, 10, 255]);
+    let alpha = widget
+        .downcast_ref::<vte4::Terminal>()
+        .unwrap()
+        .color_background_for_draw()
+        .alpha();
+    assert_eq!(alpha, 0.5, "the opacity stays");
+
+    backend.set_color_scheme("Light");
+    assert_eq!(background(&widget), (40, 50, 60), "over any scheme");
+    let new_tab = create_terminal().backend;
+    new_tab.set_color_scheme("Light");
+    assert_eq!(background(&new_tab.widget()), (40, 50, 60), "a new tab");
+
+    crate::ui::appearance::install_terminal_defaults(TerminalDefaults {
+        vte: VteOptions {
+            colors: DefaultColors { bg: None, ..colors },
+            ..Default::default()
+        },
+        ..custom
+    });
+    assert_eq!(background(&widget), rgb(DARK.background), "one reset alone");
+    settle();
+    assert_eq!(pixel_at(&widget, 2, 2), [30, 200, 10, 255]);
+
+    crate::ui::appearance::install_terminal_defaults(TerminalDefaults::default());
+    settle();
+    assert_eq!(pixel_at(&widget, 2, 2), text);
+    crate::ui::appearance::install_default_scheme(None);
     window.destroy();
 }
 

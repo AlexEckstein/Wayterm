@@ -6,6 +6,8 @@ use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::time::Duration;
 
+pub const VTE_FOREGROUND_SETTING: &str = "vte.foreground";
+pub const VTE_BACKGROUND_SETTING: &str = "vte.background";
 pub const VTE_CURSOR_SHAPE_SETTING: &str = "vte.cursor_shape";
 pub const VTE_CURSOR_BLINK_SETTING: &str = "vte.cursor_blink";
 pub const VTE_AUDIBLE_BELL_SETTING: &str = "vte.audible_bell";
@@ -15,6 +17,8 @@ pub const VTE_LINE_HEIGHT_SETTING: &str = "vte.line_height";
 pub const VTE_BOLD_IS_BRIGHT_SETTING: &str = "vte.bold_is_bright";
 pub const VTE_HIDE_MOUSE_SETTING: &str = "vte.hide_mouse";
 
+pub const GHOSTTY_FOREGROUND_SETTING: &str = "ghostty.foreground";
+pub const GHOSTTY_BACKGROUND_SETTING: &str = "ghostty.background";
 pub const GHOSTTY_CURSOR_STYLE_SETTING: &str = "ghostty.cursor_style";
 pub const GHOSTTY_CURSOR_BLINKS_SETTING: &str = "ghostty.cursor_blinks";
 pub const GHOSTTY_IMAGE_LIMIT_SETTING: &str = "ghostty.image_limit_mb";
@@ -118,6 +122,7 @@ impl RowChoice for GhosttyCursor {
 /// §View options). The defaults are VTE's own.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VteOptions {
+    pub colors: DefaultColors,
     pub cursor_shape: VteCursor,
     pub cursor_blink: VteBlink,
     pub audible_bell: bool,
@@ -131,6 +136,7 @@ pub struct VteOptions {
 impl Default for VteOptions {
     fn default() -> Self {
         Self {
+            colors: DefaultColors::default(),
             cursor_shape: VteCursor::default(),
             cursor_blink: VteBlink::default(),
             audible_bell: true,
@@ -148,6 +154,10 @@ impl VteOptions {
     pub fn from_rows(row: &impl Fn(&str) -> Option<String>) -> Self {
         let seed = Self::default();
         Self {
+            colors: DefaultColors {
+                fg: color(row(VTE_FOREGROUND_SETTING)),
+                bg: color(row(VTE_BACKGROUND_SETTING)),
+            },
             cursor_shape: VteCursor::from_row(row(VTE_CURSOR_SHAPE_SETTING))
                 .unwrap_or(seed.cursor_shape),
             cursor_blink: VteBlink::from_row(row(VTE_CURSOR_BLINK_SETTING))
@@ -170,6 +180,7 @@ impl VteOptions {
 /// session override (doc 02 §View options).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GhosttyOptions {
+    pub colors: DefaultColors,
     pub cursor_style: GhosttyCursor,
     pub cursor_blinks: bool,
     /// Megabytes of Kitty images each screen holds; 0 turns them off.
@@ -183,6 +194,14 @@ pub struct GhosttyOptions {
     pub text_blink: Duration,
     pub selection: SelectionColors,
     pub search: SearchColors,
+}
+
+/// Text and background colors that replace the color scheme's; either can
+/// be left to the scheme.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DefaultColors {
+    pub fg: Option<[u8; 3]>,
+    pub bg: Option<[u8; 3]>,
 }
 
 /// Colors a selection takes in place of swapping the cell's own; either
@@ -205,6 +224,7 @@ pub struct SearchColors {
 impl Default for GhosttyOptions {
     fn default() -> Self {
         Self {
+            colors: DefaultColors::default(),
             cursor_style: GhosttyCursor::default(),
             cursor_blinks: false,
             image_limit_mb: *IMAGE_LIMIT.end(),
@@ -234,6 +254,10 @@ impl GhosttyOptions {
         let seed = Self::default();
         let search = seed.search;
         Self {
+            colors: DefaultColors {
+                fg: color(row(GHOSTTY_FOREGROUND_SETTING)),
+                bg: color(row(GHOSTTY_BACKGROUND_SETTING)),
+            },
             cursor_style: GhosttyCursor::from_row(row(GHOSTTY_CURSOR_STYLE_SETTING))
                 .unwrap_or(seed.cursor_style),
             cursor_blinks: flag(row(GHOSTTY_CURSOR_BLINKS_SETTING)).unwrap_or(seed.cursor_blinks),
@@ -316,6 +340,7 @@ mod tests {
     #[test]
     fn stored_vte_rows_are_read() {
         let options = vte(&[
+            (VTE_FOREGROUND_SETTING, "#0a0b0c"),
             (VTE_CURSOR_SHAPE_SETTING, "i-beam"),
             (VTE_CURSOR_BLINK_SETTING, "Off"),
             (VTE_AUDIBLE_BELL_SETTING, "0"),
@@ -327,6 +352,10 @@ mod tests {
         assert_eq!(
             options,
             VteOptions {
+                colors: DefaultColors {
+                    fg: Some([10, 11, 12]),
+                    bg: None,
+                },
                 cursor_shape: VteCursor::IBeam,
                 cursor_blink: VteBlink::Off,
                 audible_bell: false,
@@ -373,6 +402,7 @@ mod tests {
     #[test]
     fn stored_ghostty_rows_are_read() {
         let options = ghostty(&[
+            (GHOSTTY_BACKGROUND_SETTING, "#0A0B0C"),
             (GHOSTTY_CURSOR_STYLE_SETTING, " bar "),
             (GHOSTTY_CURSOR_BLINKS_SETTING, "1"),
             (GHOSTTY_IMAGE_LIMIT_SETTING, "0"),
@@ -387,6 +417,10 @@ mod tests {
         assert_eq!(
             options,
             GhosttyOptions {
+                colors: DefaultColors {
+                    fg: None,
+                    bg: Some([10, 11, 12]),
+                },
                 cursor_style: GhosttyCursor::Bar,
                 cursor_blinks: true,
                 image_limit_mb: 0,

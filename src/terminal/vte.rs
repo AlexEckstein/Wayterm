@@ -23,7 +23,7 @@ pub struct VteBackend {
     terminal: VteTerminal,
     /// The queue `commit` feeds, for input `feed_child` cannot carry.
     input: EventSender,
-    /// The scheme's default background, painted at `opacity`; `None` keeps
+    /// The default background in force, painted at `opacity`; `None` keeps
     /// VTE's own until a scheme is set.
     background: Cell<Option<Rgb>>,
     opacity: Cell<f64>,
@@ -183,6 +183,7 @@ impl TerminalBackend for VteBackend {
         let Some(scheme) = color_scheme::by_name(name) else {
             return;
         };
+        let scheme = scheme.with_colors(options::default_colors());
         let palette = scheme.palette.map(rgba);
         let palette: Vec<&gdk::RGBA> = palette.iter().collect();
         self.terminal.set_colors(
