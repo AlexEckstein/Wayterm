@@ -5,11 +5,11 @@ use std::rc::Rc;
 use super::{rows, scheme_row, terminal_defaults};
 use crate::store::SessionStore;
 use crate::terminal::options::{
-    GhosttyOptions, BLINK_PERIOD, GHOSTTY_CURSOR_BLINKS_SETTING, GHOSTTY_CURSOR_BLINK_SETTING,
-    GHOSTTY_CURSOR_STYLE_SETTING, GHOSTTY_IMAGE_LIMIT_SETTING, GHOSTTY_SEARCH_BG_SETTING,
-    GHOSTTY_SEARCH_CURRENT_BG_SETTING, GHOSTTY_SEARCH_FG_SETTING, GHOSTTY_SELECTION_BG_SETTING,
-    GHOSTTY_SELECTION_FG_SETTING, GHOSTTY_TEXT_BLINK_SETTING, GHOSTTY_WHEEL_ROWS_SETTING,
-    IMAGE_LIMIT, WHEEL_ROWS,
+    GhosttyOptions, BLINK_PERIOD, GHOSTTY_BACKGROUND_SETTING, GHOSTTY_CURSOR_BLINKS_SETTING,
+    GHOSTTY_CURSOR_BLINK_SETTING, GHOSTTY_CURSOR_STYLE_SETTING, GHOSTTY_FOREGROUND_SETTING,
+    GHOSTTY_IMAGE_LIMIT_SETTING, GHOSTTY_SEARCH_BG_SETTING, GHOSTTY_SEARCH_CURRENT_BG_SETTING,
+    GHOSTTY_SEARCH_FG_SETTING, GHOSTTY_SELECTION_BG_SETTING, GHOSTTY_SELECTION_FG_SETTING,
+    GHOSTTY_TEXT_BLINK_SETTING, GHOSTTY_WHEEL_ROWS_SETTING, IMAGE_LIMIT, WHEEL_ROWS,
 };
 use crate::terminal::GHOSTTY_COLOR_SCHEME_SETTING;
 
@@ -23,6 +23,20 @@ pub(super) fn section(store: &Rc<SessionStore>) -> gtk4::ListBox {
     );
     let list = crate::ui::settings::boxed_list();
     list.append(&scheme_row(store, GHOSTTY_COLOR_SCHEME_SETTING));
+    list.append(&rows::color_row(
+        store,
+        ("Background color", "Reset follows the color scheme."),
+        current.colors.bg,
+        None,
+        GHOSTTY_BACKGROUND_SETTING,
+    ));
+    list.append(&rows::color_row(
+        store,
+        ("Text color", "Reset follows the color scheme."),
+        current.colors.fg,
+        None,
+        GHOSTTY_FOREGROUND_SETTING,
+    ));
     list.append(&rows::enum_row(
         store,
         ("Cursor style", "Until a program sets its own."),
