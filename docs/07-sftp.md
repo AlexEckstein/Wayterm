@@ -15,8 +15,9 @@ terminal: the side dock's SFTP panel hosts the current tab's sidebar and
 swaps it as the notebook switches tabs. Tabs without one (local, serial,
 RDP, VNC, Home) get a placeholder. Whenever the tab lets go of its
 connection (a redial, Disconnect, a lost connection or the shell's exit,
-doc 03 §Reconnect), the page's sidebar is replaced with an empty one,
-ending the old SFTP task, and the panel hosts the new one.
+doc 03 §Reconnect), the old sidebar detaches, ending its SFTP task and
+cancelling any running transfer (§Transfers), and an empty one replaces
+it in the panel.
 
 The sidebar, top to bottom:
 
@@ -44,7 +45,8 @@ spawns one SFTP task per sidebar; until then the sidebar is empty with its
 toolbar disabled. The task opens a session channel with the `sftp`
 subsystem and turns it into a `russh_sftp` session on the first command.
 Dropping the last sidebar handle ends the task, once any transfer still
-running has finished; the connection stays with the supervisor.
+running has finished (its futures hold the sidebar); detaching ends it at
+once (§Layout). Either way the connection stays with the supervisor.
 
 When it attaches depends on the `sftp_on_connect` setting (on by default,
 doc 13 §Settings rows):
@@ -102,7 +104,8 @@ out with `try_send` (a stale-but-moving bar is fine, a stalled transfer is
 not). The bar shows whichever transfer updated last and Cancel targets the
 newest. An upload's final flush and close must succeed or the transfer
 fails, since the remote file may be incomplete. Every successful operation
-refreshes the listing.
+refreshes the listing. Ending the tab's session cancels every running
+transfer, as Cancel does (§Layout).
 
 ## Following the shell
 
@@ -172,6 +175,7 @@ disabled.
   "SFTP is not available for jumped sessions yet", and nothing follows the
   shell.
 - No right-click menu, and no dragging files out of the listing.
+- A cancelled transfer leaves its partial file behind, local or remote.
 - Following the shell: plain-tab probes need a Linux remote. Tabs to the
   same user@host share one connection, and probing tells their shells
   apart only while at most one of them is a plain shell; with two, it

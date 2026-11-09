@@ -37,6 +37,15 @@ impl SftpClient {
         }
     }
 
+    /// A client whose commands go to `tx` instead of a task.
+    #[cfg(test)]
+    pub(crate) fn from_sender(tx: mpsc::Sender<SftpCommand>) -> Self {
+        Self {
+            tx,
+            next_transfer_id: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
     /// A fresh id for a `Download`/`Upload`, so `Cancel` can name it.
     pub fn next_transfer_id(&self) -> u64 {
         self.next_transfer_id.fetch_add(1, Ordering::Relaxed)

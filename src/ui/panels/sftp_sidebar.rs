@@ -80,7 +80,10 @@ struct Attached {
 
 impl Attached {
     fn new(connection: Arc<SshConnection>) -> Self {
-        let client = SftpClient::new(connection);
+        Self::with_client(SftpClient::new(connection))
+    }
+
+    fn with_client(client: SftpClient) -> Self {
         let commands = IdleSender::new(client.sender());
         Self { client, commands }
     }
@@ -139,6 +142,15 @@ impl SftpSidebar {
         } else {
             *self.inner.deferred.borrow_mut() = Some(connection);
         }
+    }
+
+    /// End the SFTP task now, cancelling its running transfers, and drop a
+    /// connection kept for the first show. A transfer's own futures hold
+    /// the sidebar until their reply comes, so dropping the last handle
+    /// alone would let a transfer run on unseen.
+    pub fn detach(&self) {
+        self.inner.deferred.borrow_mut().take();
+        self.inner.attached.borrow_mut().take();
     }
 
     /// Show the jumped-session state instead of attaching: no SFTP task
@@ -1014,6 +1026,34 @@ pub(in crate::ui) mod gtk_tests {
 
     /// Dropping the last handle frees the sidebar, and with it the SFTP
     /// task's command sender, so the task ends (doc 07 §Connection model).
+    /// A sidebar detached mid-transfer closes its command channel, which is
+    /// what makes the task cancel the transfer, though the transfer's
+    /// futures still hold the sidebar.
+    pub(in crate::ui) fn detaching_mid_transfer_ends_the_task() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let sidebar = SftpSidebar::new();
+        let client = SftpClient::from_sender(tx);
+        sidebar
+            .inner
+            .attached
+            .replace(Some(Attached::with_client(client)));
+        sidebar.inner.download("/srv/f".into(), "/tmp/f".into());
+        let Ok(SftpCommand::Download { reply, .. }) = rx.try_recv() else {
+            panic!("no download sent");
+        };
+
+        sidebar.detach();
+        drop(sidebar);
+        assert_eq!(
+            rx.try_recv().err(),
+            Some(mpsc::error::TryRecvError::Disconnected),
+            "the transfer keeps the task alive"
+        );
+        drop(reply);
+        let context = glib::MainContext::default();
+        while context.iteration(false) {}
+    }
+
     pub(in crate::ui) fn a_dropped_sidebar_is_freed() {
         for sidebar in [SftpSidebar::new(), SftpSidebar::hidden()] {
             let inner = Rc::downgrade(&sidebar.inner);
