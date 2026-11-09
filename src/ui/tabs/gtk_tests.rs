@@ -7,7 +7,7 @@ use gtk4::glib;
 
 use super::ssh::{arm_fake_forwards, follow_terminal_directory, mark_sidebar_attached};
 use super::terminal::{
-    focus_after_connect, focus_terminal, keep_shell_directory, show_session_ended,
+    focus_after_connect, focus_terminal, keep_shell_directory, page_events, show_session_ended,
     spawn_notification_drain, spawn_state_forward, terminal_state,
 };
 use super::*;
@@ -426,6 +426,22 @@ pub(in crate::ui) fn disconnect_ends_the_connection() {
         state(&page).status.borrow().state,
         TransportState::Disconnected
     );
+}
+
+/// A lost connection ends the forwards and the SFTP session even when
+/// reconnecting waits for the user (`reconnect_on_drop` off).
+pub(in crate::ui) fn a_lost_connection_ends_it_without_auto_reconnect() {
+    resilience::install_settings(true, false);
+    let (notebook, page, sidebar) = connected_ssh_page();
+    let session = state(&page).session.get().cloned().expect("a session tab");
+    let events = page_events(&notebook, &page, &session, "box".into(), 22);
+    events
+        .send(crate::transport::types::TransportEvent::ConnectionLost)
+        .unwrap();
+    let context = glib::MainContext::default();
+    while context.iteration(false) {}
+    resilience::reset_registry();
+    assert_connection_released(&page, &sidebar);
 }
 
 /// The connect flow end to end on a local shell: opening the tab wires

@@ -176,8 +176,8 @@ through the supervisor, so a tmux session reattaches.
 - The `reconnect` action starts a run on the current tab (a second press
   while one runs does nothing); `disconnect` cancels its token.
 
-Disconnect, a lost connection that starts a run, and the shell's exit
-(§Session end) all release the tab's hold on its connection:
+Disconnect, a lost connection (whether or not a run starts) and the
+shell's exit (§Session end) all release the tab's hold on its connection:
 the forward engine stops (doc 04 §Port forwarding), the terminal's
 transport closes and the SFTP sidebar ends its SFTP task (doc 07
 §Layout). Once no other tab shares the connection, the supervisor

@@ -82,6 +82,7 @@ mod gtk_tests {
         super::tabs::gtk_tests::a_replaced_terminal_no_longer_reports_to_the_tab();
         super::tabs::gtk_tests::the_connection_ends_with_the_shell();
         super::tabs::gtk_tests::disconnect_ends_the_connection();
+        super::tabs::gtk_tests::a_lost_connection_ends_it_without_auto_reconnect();
         super::tabs::gtk_tests::a_local_shell_tab_connects_and_closes();
         super::tabs::gtk_tests::terminals_follow_the_color_scheme_and_system_theme();
         super::tabs::gtk_tests::terminals_follow_the_font_opacity_and_scrollback_rows();

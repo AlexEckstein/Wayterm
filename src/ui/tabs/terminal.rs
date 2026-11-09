@@ -247,7 +247,7 @@ fn status_endpoint(session: &SessionConfig, description: &str) -> (String, u16) 
 /// The page's state channel, created with its drain on first use: every
 /// attempt's forwarder feeds it, and so does the reconnect driver
 /// (`Reconnecting { attempt }`), so it outlives any one attempt.
-fn page_events(
+pub(super) fn page_events(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
     session: &Rc<SessionConfig>,
@@ -345,10 +345,9 @@ fn spawn_state_drain(
                     let Some(events) = events.upgrade() else {
                         break;
                     };
-                    if resilience::on_connection_lost(tab_id, events).is_some() {
-                        // Free the dead session during the first backoff.
-                        release_connection(&notebook, &page);
-                    }
+                    resilience::on_connection_lost(tab_id, events);
+                    // Free the dead session now: a reconnect dials fresh.
+                    release_connection(&notebook, &page);
                 }
                 TransportEvent::SessionEnded => {
                     resilience::set_tab_state(tab_id, TransportState::Disconnected);
