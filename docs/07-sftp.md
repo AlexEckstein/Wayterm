@@ -108,10 +108,9 @@ out with `try_send` (a stale-but-moving bar is fine, a stalled transfer is
 not). The bar shows whichever transfer updated last and Cancel targets the
 newest. An upload's final flush and close must succeed or the transfer
 fails, since the remote file may be incomplete. Every successful operation
-refreshes the listing. Cancel takes effect even while a write to a
-stalled server is pending, the upload's final flush and close included.
-Ending the tab's session cancels every running transfer, as Cancel does
-(§Layout).
+refreshes the listing. Cancel takes effect at whatever step a transfer is
+on, even one waiting on a stalled server. Ending the tab's session
+cancels every running transfer, as Cancel does (§Layout).
 
 ## Following the shell
 

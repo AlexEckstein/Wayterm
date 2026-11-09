@@ -277,7 +277,10 @@ async fn a_cancel_interrupts_a_stalled_write() {
     let cancel = CancellationToken::new();
     let (progress, _keep) = mpsc::channel(4);
     let mut dst = StalledWriter;
-    let copy = copy_with_progress(&b"data"[..], &mut dst, 4, &progress, &cancel);
+    let copy = until_cancelled(
+        &cancel,
+        copy_with_progress(&b"data"[..], &mut dst, 4, &progress),
+    );
     let cancelling = async {
         tokio::task::yield_now().await;
         cancel.cancel();

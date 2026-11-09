@@ -195,9 +195,7 @@ async fn dispatch(
                 session_dead,
                 transfer_id,
                 reply,
-                |sftp, cancel| async move {
-                    download_file(&sftp, &remote_path, &local_path, &progress, &cancel).await
-                },
+                |sftp| async move { download_file(&sftp, &remote_path, &local_path, &progress).await },
             );
             false
         }
@@ -214,9 +212,7 @@ async fn dispatch(
                 session_dead,
                 transfer_id,
                 reply,
-                |sftp, cancel| async move {
-                    upload_file(&sftp, &local_path, &remote_path, &progress, &cancel).await
-                },
+                |sftp| async move { upload_file(&sftp, &local_path, &remote_path, &progress).await },
             );
             false
         }
@@ -224,8 +220,9 @@ async fn dispatch(
     }
 }
 
-/// Run a transfer on its own task, registered for `Cancel`. A failure that
-/// was not a cancel marks the session dead for the next command.
+/// Run a transfer on its own task, registered for `Cancel`, which drops it
+/// at whatever it awaits. A failure that was not a cancel marks the
+/// session dead for the next command.
 fn spawn_transfer<F, Fut>(
     session: Arc<SftpSession>,
     transfers: &Arc<Mutex<TransferRegistry>>,
@@ -234,14 +231,14 @@ fn spawn_transfer<F, Fut>(
     reply: oneshot::Sender<Result<u64, String>>,
     op: F,
 ) where
-    F: FnOnce(Arc<SftpSession>, CancellationToken) -> Fut + Send + 'static,
+    F: FnOnce(Arc<SftpSession>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<u64, String>> + Send + 'static,
 {
     let cancel = lock(transfers).register(transfer_id);
     let transfers = Arc::clone(transfers);
     let session_dead = Arc::clone(session_dead);
     tokio::spawn(async move {
-        let result = op(session, cancel.clone()).await;
+        let result = until_cancelled(&cancel, op(session)).await;
         lock(&transfers).finish(transfer_id);
         if result.is_err() && !cancel.is_cancelled() {
             session_dead.store(true, Ordering::SeqCst);
@@ -313,23 +310,24 @@ async fn delete(sftp: &SftpSession, path: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// Copy `src` to `dst` in 32 KiB chunks, reporting progress, until EOF or
-/// cancellation. Returns the byte count.
+/// Copy `src` to `dst` in 32 KiB chunks, reporting progress, until EOF.
+/// Returns the byte count.
 async fn copy_with_progress(
     mut src: impl tokio::io::AsyncRead + Unpin,
     dst: &mut (impl tokio::io::AsyncWrite + Unpin),
     total: u64,
     progress: &mpsc::Sender<Progress>,
-    cancel: &CancellationToken,
 ) -> Result<u64, String> {
     let mut buf = vec![0u8; TRANSFER_BUF_SIZE];
     let mut transferred = 0u64;
     loop {
-        let read = until_cancelled(cancel, src.read(&mut buf)).await?;
+        let read = src.read(&mut buf).await.map_err(|e| e.to_string())?;
         if read == 0 {
             return Ok(transferred);
         }
-        until_cancelled(cancel, dst.write_all(&buf[..read])).await?;
+        dst.write_all(&buf[..read])
+            .await
+            .map_err(|e| e.to_string())?;
         transferred += read as u64;
         let _ = progress.try_send(Progress { transferred, total });
     }
@@ -340,7 +338,6 @@ async fn download_file(
     remote_path: &str,
     local_path: &str,
     progress: &mpsc::Sender<Progress>,
-    cancel: &CancellationToken,
 ) -> Result<u64, String> {
     let mut remote = sftp.open(remote_path).await.map_err(|e| e.to_string())?;
     let total = remote
@@ -352,7 +349,7 @@ async fn download_file(
     let mut local = tokio::fs::File::create(local_path)
         .await
         .map_err(|e| e.to_string())?;
-    let transferred = copy_with_progress(&mut remote, &mut local, total, progress, cancel).await?;
+    let transferred = copy_with_progress(&mut remote, &mut local, total, progress).await?;
     // tokio writes in the background: only the flush reports a failed last
     // write (a full disk), which would leave the local file short.
     local.flush().await.map_err(|e| e.to_string())?;
@@ -366,29 +363,28 @@ async fn upload_file(
     local_path: &str,
     remote_path: &str,
     progress: &mpsc::Sender<Progress>,
-    cancel: &CancellationToken,
 ) -> Result<u64, String> {
     let local = tokio::fs::File::open(local_path)
         .await
         .map_err(|e| e.to_string())?;
     let total = local.metadata().await.map(|m| m.len()).unwrap_or_default();
     let mut remote = sftp.create(remote_path).await.map_err(|e| e.to_string())?;
-    let transferred = copy_with_progress(local, &mut remote, total, progress, cancel).await?;
-    until_cancelled(cancel, remote.flush()).await?;
-    until_cancelled(cancel, remote.close()).await?;
+    let transferred = copy_with_progress(local, &mut remote, total, progress).await?;
+    remote.flush().await.map_err(|e| e.to_string())?;
+    remote.close().await.map_err(|e| e.to_string())?;
     Ok(transferred)
 }
 
-/// `io`, unless `cancel` fires first: a stalled server must not hold a
-/// cancelled transfer.
-async fn until_cancelled<T, E: std::fmt::Display>(
+/// `op`, unless `cancel` fires first: a stalled server must not hold a
+/// cancelled transfer, whatever step it is on.
+async fn until_cancelled<T>(
     cancel: &CancellationToken,
-    io: impl Future<Output = Result<T, E>>,
+    op: impl Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
     tokio::select! {
         biased;
         () = cancel.cancelled() => Err("transfer cancelled".into()),
-        result = io => result.map_err(|e| e.to_string()),
+        result = op => result,
     }
 }
 
