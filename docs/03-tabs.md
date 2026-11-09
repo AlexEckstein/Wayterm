@@ -176,6 +176,14 @@ through the supervisor, so a tmux session reattaches.
 - The `reconnect` action starts a run on the current tab (a second press
   while one runs does nothing); `disconnect` cancels its token.
 
+Disconnect, a lost connection that starts a run, and the shell's exit
+(§Session end) all release the tab's hold on its connection:
+the forward engine stops (doc 04 §Port forwarding), the terminal's
+transport closes and the SFTP sidebar ends its SFTP task (doc 07
+§Layout). Once no other tab shares the connection, the supervisor
+disconnects it (doc 04 §Connection supervisor), and the next attempt
+dials fresh.
+
 `transport::reconnect` holds the policy and driver, display-free and
 tested against paused time; `ui::tabs::resilience` holds the dialogs, the
 window actions and the registry of live tabs.
@@ -184,10 +192,10 @@ window actions and the registry of live tabs.
 
 When the shell exits on its own (`exit`, logout, a detached tmux) the
 reader emits `SessionEnded`. Nothing reconnects and no alert is posted.
-The tab reads as disconnected (closing it does not ask), its SFTP sidebar
-ends its SFTP task (doc 07 §Layout), and the terminal keeps its scrollback
-and adds a notice: `r` reconnects (a fresh connect, as Retry), `q` closes
-the tab (`ui::tabs::ended`).
+The tab reads as disconnected (closing it does not ask), its forwards stop
+and its SFTP sidebar ends its SFTP task (§Reconnect), and the terminal
+keeps its scrollback and adds a notice: `r` reconnects (a fresh connect,
+as Retry), `q` closes the tab (`ui::tabs::ended`).
 
 ## Tab labels
 

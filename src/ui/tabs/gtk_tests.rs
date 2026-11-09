@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use gtk4::glib;
 
-use super::ssh::{follow_terminal_directory, mark_sidebar_attached};
+use super::ssh::{arm_fake_forwards, follow_terminal_directory, mark_sidebar_attached};
 use super::terminal::{
     focus_after_connect, focus_terminal, keep_shell_directory, show_session_ended,
-    spawn_notification_drain, terminal_state,
+    spawn_notification_drain, spawn_state_forward, terminal_state,
 };
 use super::*;
 use crate::hotkeys::engine::focus_within;
@@ -364,10 +364,10 @@ pub(in crate::ui) fn a_replaced_terminal_no_longer_reports_to_the_tab() {
     );
 }
 
-/// The shell exiting lets go of the page's SFTP sidebar: an empty one
-/// takes its place, keeping the follow setting, and the old one is freed
-/// with its SFTP task.
-pub(in crate::ui) fn the_sftp_session_ends_with_the_shell() {
+/// An SSH page as `on_connect` leaves it: a terminal, an attached
+/// sidebar that does not follow the shell, and armed forwards. Returns the
+/// sidebar weakly, so a check can tell it was let go.
+fn connected_ssh_page() -> (gtk4::Notebook, gtk4::Widget, glib::WeakRef<gtk4::Widget>) {
     let session = SessionConfig {
         id: 1,
         name: "ssh-1".into(),
@@ -380,16 +380,52 @@ pub(in crate::ui) fn the_sftp_session_ends_with_the_shell() {
     terminal_state(&page).terminal.replace(Some(backend));
     let notebook = gtk4::Notebook::new();
     notebook.append_page(&page, None::<&gtk4::Widget>);
-    let old = SessionTab::sidebar_for_page(&page).expect("an SSH page's sidebar");
-    old.set_following(false);
+    let sidebar = SessionTab::sidebar_for_page(&page).expect("an SSH page's sidebar");
+    sidebar.set_following(false);
     mark_sidebar_attached(&page);
-    let old_widget = old.widget().downgrade();
-    drop(old);
+    arm_fake_forwards(&page);
+    let sidebar = sidebar.widget().downgrade();
+    (notebook, page, sidebar)
+}
 
-    show_session_ended(&notebook, &page);
-    let new = SessionTab::sidebar_for_page(&page).expect("a sidebar after the end");
-    assert!(old_widget.upgrade().is_none(), "the old sidebar lives on");
+/// The page let go of everything holding its connection.
+fn assert_connection_released(page: &gtk4::Widget, old_sidebar: &glib::WeakRef<gtk4::Widget>) {
+    assert!(ssh::forward_source(page).is_none(), "the forwards run on");
+    assert!(old_sidebar.upgrade().is_none(), "the old sidebar lives on");
+    let new = SessionTab::sidebar_for_page(page).expect("a sidebar after the end");
     assert!(!new.is_following(), "the follow setting carries over");
+}
+
+/// The shell exiting ends the forwards and the SFTP session.
+pub(in crate::ui) fn the_connection_ends_with_the_shell() {
+    let (notebook, page, sidebar) = connected_ssh_page();
+    show_session_ended(&notebook, &page);
+    assert_connection_released(&page, &sidebar);
+}
+
+/// Disconnect ends the forwards and the SFTP session, and the tab reads
+/// as disconnected.
+pub(in crate::ui) fn disconnect_ends_the_connection() {
+    let (notebook, page, sidebar) = connected_ssh_page();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (_state_tx, state_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+    spawn_state_forward(
+        &notebook,
+        &page,
+        current_gen(&page),
+        cancel.clone(),
+        state_rx,
+        events,
+    );
+    cancel.cancel();
+    let context = glib::MainContext::default();
+    while context.iteration(false) {}
+    assert_connection_released(&page, &sidebar);
+    assert_eq!(
+        state(&page).status.borrow().state,
+        TransportState::Disconnected
+    );
 }
 
 /// The connect flow end to end on a local shell: opening the tab wires

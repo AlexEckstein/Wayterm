@@ -168,7 +168,7 @@ pub(super) async fn finish_connect(
     let tab_id = state(page).tab_id.get();
     let cancel = resilience::register_connected_tab(tab_id, redial_fn(notebook, page, tab_id));
     let events = page_events(notebook, page, session, host, port);
-    spawn_state_forward(page.clone(), gen, cancel, state_rx, events);
+    spawn_state_forward(notebook, page, gen, cancel, state_rx, events);
     let app = window_of(page).and_then(|window| window.application());
     spawn_notification_drain(notebook, page, session, notify_rx, move |alert| {
         if let Some(app) = &app {
@@ -268,14 +268,16 @@ fn page_events(
 
 /// Forward one attempt's state channel to the page's until its terminal
 /// closes or a newer attempt takes over. The tab's token firing
-/// (Disconnect) ends the attempt.
-fn spawn_state_forward(
-    page: gtk4::Widget,
+/// (Disconnect) ends the attempt and lets go of its connection.
+pub(super) fn spawn_state_forward(
+    notebook: &gtk4::Notebook,
+    page: &gtk4::Widget,
     gen: u64,
     cancel: CancellationToken,
     mut rx: UnboundedReceiver<TransportEvent>,
     events: UnboundedSender<TransportEvent>,
 ) {
+    let (notebook, page) = (notebook.clone(), page.clone());
     glib::MainContext::default().spawn_local(async move {
         loop {
             let event = tokio::select! {
@@ -283,7 +285,7 @@ fn spawn_state_forward(
                 () = cancel.cancelled() => {
                     if current_gen(&page) == gen {
                         bump_gen(&page);
-                        close_terminal(&page);
+                        release_connection(&notebook, &page);
                         publish_page_state(&page, TransportState::Disconnected);
                     }
                     return;
@@ -412,7 +414,7 @@ fn redial_fn(notebook: &gtk4::Notebook, page: &gtk4::Widget, tab_id: i64) -> Con
             }
         });
         let cancel = resilience::live_tab(tab_id).map(|tab| tab.cancel);
-        let page = page.clone();
+        let (notebook, page) = (notebook.clone(), page.clone());
         Box::pin(async move {
             let Some(cancel) = cancel else {
                 return Err(TransportError::Cancelled);
@@ -421,8 +423,8 @@ fn redial_fn(notebook: &gtk4::Notebook, page: &gtk4::Widget, tab_id: i64) -> Con
                 biased;
                 () = cancel.cancelled() => {
                     glib::MainContext::default().invoke(move || {
-                        if let Some(page) = page.upgrade() {
-                            abandon_attempt(&page);
+                        if let (Some(notebook), Some(page)) = (notebook.upgrade(), page.upgrade()) {
+                            abandon_attempt(&notebook, &page);
                         }
                     });
                     Err(TransportError::Cancelled)
@@ -452,10 +454,10 @@ fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
     state.focus_on_connect.set(false);
 }
 
-/// Let go of the page's hold on its connection — the transport and the
-/// sidebar's SFTP task (or the connection it keeps for its first show) — so
-/// the supervisor can evict a dead session and the next attempt dials fresh;
-/// a live shared one is simply handed out again.
+/// Let go of the page's hold on its connection — the forwards, the
+/// transport and the sidebar's SFTP task (or the connection it keeps for
+/// its first show) — so the supervisor can evict a dead session and the
+/// next attempt dials fresh; a live shared one is simply handed out again.
 fn release_connection(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     ssh::stop_forward_engine(page);
     close_terminal(page);
@@ -463,9 +465,9 @@ fn release_connection(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
 }
 
 /// Disconnect landed while a redial was in flight: drop the attempt.
-fn abandon_attempt(page: &gtk4::Widget) {
+fn abandon_attempt(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     bump_gen(page);
-    close_terminal(page);
+    release_connection(notebook, page);
     set_terminal_area(page, &centered_label("Disconnected"));
     publish_page_state(page, TransportState::Disconnected);
 }
@@ -496,12 +498,11 @@ pub(super) fn keep_shell_directory(page: &gtk4::Widget, terminal: &gtk4::Widget)
     }
 }
 
-/// The shell exited on its own: end the sidebar's SFTP task, keep the
-/// terminal and its scrollback, add the notice, and let `r` reconnect (as
-/// Retry does) or `q` close the tab.
+/// The shell exited on its own: stop the forwards and the sidebar's SFTP
+/// task, keep the terminal and its scrollback, add the notice, and let `r`
+/// reconnect (as Retry does) or `q` close the tab.
 pub(super) fn show_session_ended(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
-    close_terminal(page);
-    ssh::release_sidebar(notebook, page);
+    release_connection(notebook, page);
     let Some(backend) = existing_terminal_state(page).and_then(|t| t.terminal.borrow().clone())
     else {
         return;

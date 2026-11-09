@@ -352,6 +352,18 @@ pub(super) fn mark_sidebar_attached(page: &gtk4::Widget) {
     ssh_state(page).sidebar_attached.set(true);
 }
 
+/// Arm `page` with a forward engine whose opener never dials, as
+/// [`on_connect`] arms a real one.
+#[cfg(test)]
+pub(super) fn arm_fake_forwards(page: &gtk4::Widget) {
+    let opener: crate::transport::forward::ChannelOpener =
+        Arc::new(|_, _| Box::pin(async { Err(TransportError::Cancelled) }));
+    let (tx, _) = mpsc::channel(FWD_EVENT_BUF);
+    let engine = ForwardEngine::with_opener(opener, tx);
+    let bridge = Arc::new(EngineStatusBridge::new(engine));
+    ssh_state(page).forward.replace(Some(bridge));
+}
+
 /// Keep the page's SFTP sidebar on the shell's working directory (doc 07
 /// §Following the shell): the terminal's OSC 7 reports, and after each
 /// command — Enter, then [`PROBE_QUIET`] without output — a probe. The tab
