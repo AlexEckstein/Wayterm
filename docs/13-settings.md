@@ -49,6 +49,7 @@ a session can name its own.
 | VTE control | Row |
 |---|---|
 | Color scheme | `vte.color_scheme` (`System`/`Light`/`Dark`) |
+| Background color, Text color | `vte.background`, `vte.foreground` |
 | Cursor shape | `vte.cursor_shape` (`Block`/`I-beam`/`Underline`) |
 | Cursor blink | `vte.cursor_blink` (`System`/`On`/`Off`) |
 | Audible bell | `vte.audible_bell` |
@@ -60,6 +61,7 @@ a session can name its own.
 | Ghostty control | Row |
 |---|---|
 | Color scheme | `ghostty.color_scheme` (`System`/`Light`/`Dark`) |
+| Background color, Text color | `ghostty.background`, `ghostty.foreground` |
 | Cursor style | `ghostty.cursor_style` (`Block`/`Bar`/`Underline`/`Hollow`) |
 | Blinking cursor | `ghostty.cursor_blinks` |
 | Cursor blink period, Text blink period | `ghostty.cursor_blink_ms`, `ghostty.text_blink_ms` (50–5000) |

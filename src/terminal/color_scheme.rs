@@ -8,6 +8,8 @@
 //! not a palette: it resolves to [`LIGHT`] or [`DARK`] by the desktop theme
 //! ([`classify_system_theme`]).
 
+use super::options::DefaultColors;
+
 /// The global settings row naming the scheme for tabs without an override
 /// (doc 13 §Settings rows).
 pub const DEFAULT_COLOR_SCHEME_SETTING: &str = "default_color_scheme";
@@ -59,6 +61,23 @@ pub struct ColorScheme {
     pub cursor: Rgb,
     pub cursor_foreground: Rgb,
     pub palette: [Rgb; 16],
+}
+
+impl ColorScheme {
+    /// This palette with `colors` in place of its own. The cursor is the
+    /// text color over the background in every palette, and stays so.
+    pub fn with_colors(&self, colors: DefaultColors) -> Self {
+        let mut scheme = self.clone();
+        if let Some([r, g, b]) = colors.fg {
+            scheme.foreground = Rgb(r, g, b);
+            scheme.cursor = scheme.foreground;
+        }
+        if let Some([r, g, b]) = colors.bg {
+            scheme.background = Rgb(r, g, b);
+            scheme.cursor_foreground = scheme.background;
+        }
+        scheme
+    }
 }
 
 /// The Tango palette, as in GNOME Terminal's Tango schemes.
@@ -267,6 +286,34 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_colors_replace_the_palettes_own() {
+        for scheme in SCHEMES {
+            assert_eq!(scheme.with_colors(DefaultColors::default()), *scheme);
+            assert_eq!(scheme.cursor, scheme.foreground);
+            assert_eq!(scheme.cursor_foreground, scheme.background);
+
+            let text = scheme.with_colors(DefaultColors {
+                fg: Some([1, 2, 3]),
+                bg: None,
+            });
+            assert_eq!(text.foreground, Rgb(1, 2, 3));
+            assert_eq!(text.cursor, Rgb(1, 2, 3));
+            assert_eq!(text.background, scheme.background);
+            assert_eq!(text.cursor_foreground, scheme.cursor_foreground);
+
+            let back = scheme.with_colors(DefaultColors {
+                fg: None,
+                bg: Some([4, 5, 6]),
+            });
+            assert_eq!(back.background, Rgb(4, 5, 6));
+            assert_eq!(back.cursor_foreground, Rgb(4, 5, 6));
+            assert_eq!(back.foreground, scheme.foreground);
+            assert_eq!(back.cursor, scheme.cursor);
+            assert_eq!(back.palette, scheme.palette);
+        }
+    }
 
     #[test]
     fn palettes_are_complete_distinct_and_readable() {

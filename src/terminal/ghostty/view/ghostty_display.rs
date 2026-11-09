@@ -8,9 +8,10 @@ use super::links::LINK_CURSOR;
 use super::paint::{painted_row, run_text};
 use super::*;
 use crate::macros::recorder::is_pointer_or_focus_report;
+use crate::terminal::color_scheme::{Rgb, DARK, LIGHT};
 use crate::terminal::ghostty::engine::Scroll;
 use crate::terminal::ghostty::ffi;
-use crate::terminal::options::{GhosttyCursor, GhosttyOptions, SearchColors};
+use crate::terminal::options::{DefaultColors, GhosttyCursor, GhosttyOptions, SearchColors};
 use crate::terminal::{
     create_terminal, install_backend_preference, BackendKind, GhosttyBackend, TerminalBackend,
     TerminalDefaults, TRANSLUCENT_CLASS,
@@ -122,6 +123,7 @@ fn view_draws_sizes_and_types() {
     search_highlight(&backend, &view);
     blinking_text(&backend, &view);
     installed_options(&backend, &view);
+    custom_colors(&backend, &view);
     primary_selection(&backend, &view, &mut rx);
     kitty_images(&backend, &view);
     hyperlinks_hover_and_open(&backend, &view, &mut rx);
@@ -1252,6 +1254,47 @@ fn installed_options(backend: &GhosttyBackend, view: &GhosttyView) {
     assert_eq!(*view.imp().options.borrow(), GhosttyOptions::default());
     assert_eq!(*later.imp().options.borrow(), GhosttyOptions::default());
     backend.reset();
+}
+
+/// Custom colors take the place of a scheme's, the cursor's with them, and
+/// a scheme set without them is the palette's own.
+fn custom_colors(backend: &GhosttyBackend, view: &GhosttyView) {
+    let info = || {
+        let mut frame = Frame::default();
+        assert!(view.shared().unwrap().engine.snapshot(&mut frame));
+        (frame.info.fg, frame.info.bg, frame.info.cursor_rgb)
+    };
+    let install = |colors| {
+        install_terminal_defaults(TerminalDefaults {
+            ghostty: GhosttyOptions {
+                colors,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    };
+
+    install(DefaultColors {
+        fg: Some([10, 200, 30]),
+        bg: Some([40, 50, 60]),
+    });
+    backend.set_color_scheme("Dark");
+    assert_eq!(info(), ([10, 200, 30], [40, 50, 60], [10, 200, 30]));
+    backend.set_color_scheme("Light");
+    assert_eq!(info(), ([10, 200, 30], [40, 50, 60], [10, 200, 30]));
+
+    install(DefaultColors {
+        fg: None,
+        bg: Some([40, 50, 60]),
+    });
+    backend.set_color_scheme("Light");
+    let Rgb(r, g, b) = LIGHT.foreground;
+    assert_eq!(info(), ([r, g, b], [40, 50, 60], [r, g, b]));
+
+    install(DefaultColors::default());
+    backend.set_color_scheme("Dark");
+    let (Rgb(r, g, b), Rgb(br, bg, bb)) = (DARK.foreground, DARK.background);
+    assert_eq!(info(), ([r, g, b], [br, bg, bb], [r, g, b]));
 }
 
 /// A cell's whole cluster reaches Pango: a ZWJ family shapes to other

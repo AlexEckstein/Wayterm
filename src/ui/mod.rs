@@ -85,6 +85,7 @@ mod gtk_tests {
         super::tabs::gtk_tests::terminals_follow_the_color_scheme_and_system_theme();
         super::tabs::gtk_tests::terminals_follow_the_font_opacity_and_scrollback_rows();
         super::tabs::gtk_tests::a_scheme_change_keeps_the_selection_color();
+        super::tabs::gtk_tests::custom_colors_replace_the_schemes();
         super::appearance::gtk_tests::user_css_reloads_when_its_files_change();
         super::appearance::gtk_tests::the_chrome_follows_the_desktop_preference();
         super::translucency::gtk_tests::a_translucent_terminal_clears_the_window_under_it();

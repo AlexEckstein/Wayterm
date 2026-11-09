@@ -135,7 +135,8 @@ flow control (doc 01 §Threading model).
   stepped; an empty or invalid query clears it.
 - **Color schemes:** `set_color_scheme` looks the name up among the
   built-in palettes (§Color schemes) and applies foreground, background,
-  the 16 ANSI colors and the cursor colors; bold keeps VTE's
+  the 16 ANSI colors and the cursor colors, with the custom colors of
+  §View options in place of the palette's where set; bold keeps VTE's
   palette-derived default, as does the selection unless §View options sets
   its colors. An unknown name changes nothing.
 - **Clear and reset** both call `reset(true, true)`: screen and
@@ -207,6 +208,13 @@ desktop theme does. Both backends apply it (§VteBackend,
 §GhosttyBackend). The window chrome follows the same preference (doc 13
 §Window theme).
 
+A backend's text and background colors can be set apart from its scheme
+(§View options). Each takes the place of its color in whatever scheme a tab
+resolves to, a session's override included, and `System` no longer moves it
+with the desktop. Every palette's cursor is its text color over its
+background, so `ColorScheme::with_colors` moves the cursor colors too, which
+keeps the cursor visible. The 16 ANSI colors stay the palette's.
+
 ## Font, opacity and scrollback
 
 `src/terminal/defaults.rs` is display-free. A tab's font family, font size
@@ -254,13 +262,14 @@ other rows. A missing or unusable row keeps its default, so neither needs
 seeding, and those defaults are what each backend did before it had the
 option.
 
-`VteOptions`: cursor shape and blink mode, audible bell, selection colors,
-line height, bold as bright, and hiding the mouse while typing.
+`VteOptions`: text and background colors, cursor shape and blink mode,
+audible bell, selection colors, line height, bold as bright, and hiding the
+mouse while typing.
 
-`GhosttyOptions`: cursor style and whether it blinks, the periods of the
-cursor's blink and of blinking text, rows per wheel notch, selection and
-search colors, and the Kitty image limit. Their defaults are the values
-§GhosttyBackend gives.
+`GhosttyOptions`: text and background colors, cursor style and whether it
+blinks, the periods of the cursor's blink and of blinking text, rows per
+wheel notch, selection and search colors, and the Kitty image limit. Their
+defaults are the values §GhosttyBackend gives.
 
 They do not cross `TerminalBackend`: the trait carries what every backend
 takes per session. When the rows change, `install_terminal_defaults` hands
@@ -268,6 +277,11 @@ each changed set to its backend's `install_options` (`vte/options.rs`,
 `ghostty/view/options.rs`), which keeps it for new terminals and gives it to
 open ones. A change to one set leaves the shared rows, and the other
 backend's tabs, alone.
+
+The text and background colors arrive differently: each backend's
+`set_color_scheme` merges them into the palette, so when they change
+`install_terminal_defaults` re-applies the schemes after installing the
+options.
 
 On VTE each option is a widget property. Setting a palette clears VTE's
 selection colors, so `set_color_scheme` puts the installed ones back.
@@ -608,7 +622,8 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   hook also feeds the tab's kept directory (§Reported directory).
 - **Color schemes.** `set_color_scheme` looks the name up as VTE does
   (§Color schemes) and makes the palette's foreground, background, cursor
-  and 16 ANSI colors libghostty-vt's default colors. The 256-color cube
+  and 16 ANSI colors libghostty-vt's default colors, with the custom colors
+  of §View options in place of the palette's where set. The 256-color cube
   and grayscale ramp stay xterm's, as in VTE, and colors a program set
   (OSC 4, 10, 11, 12) stay in force. Every cell resolves its colors at
   the next snapshot, so an open tab repaints at once. An unknown name
@@ -758,6 +773,10 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   showing the desktop.
 - **Backend options are global.** A session cannot override them (§View
   options), and they are not in the JSON export, as no settings row is.
+- **Custom colors sit over every scheme.** A set text or background color
+  holds through Light, Dark, the desktop's changes and a session's own
+  scheme. The ANSI colors stay Tango, so some may be hard to read on a
+  background neither palette has.
 - **No per-session color scheme picker.** The session dialog has none; an
   override already in the store (imported, restored) is honored.
 - **The kept directory has no consumer** (§Reported directory), and only

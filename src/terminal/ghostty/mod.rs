@@ -180,7 +180,8 @@ impl TerminalBackend for GhosttyBackend {
         let Some(scheme) = color_scheme::by_name(name) else {
             return;
         };
-        self.engine().set_color_scheme(scheme);
+        let scheme = scheme.with_colors(self.view.default_colors());
+        self.engine().set_color_scheme(&scheme);
         self.view.queue_draw();
     }
 

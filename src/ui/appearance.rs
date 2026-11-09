@@ -128,6 +128,12 @@ pub fn install_terminal_defaults(defaults: TerminalDefaults) {
     if !previous.same_shared_rows(&defaults) {
         for_each_terminal(apply_settings);
     }
+    // After the options: a scheme takes its colors from them.
+    if previous.vte.colors != defaults.vte.colors
+        || previous.ghostty.colors != defaults.ghostty.colors
+    {
+        refresh();
+    }
 }
 
 /// The desktop theme's brightness ([`classify_system_theme`]): the

@@ -5,9 +5,10 @@ use std::rc::Rc;
 use super::{rows, scheme_row, terminal_defaults};
 use crate::store::SessionStore;
 use crate::terminal::options::{
-    VTE_AUDIBLE_BELL_SETTING, VTE_BOLD_IS_BRIGHT_SETTING, VTE_CURSOR_BLINK_SETTING,
-    VTE_CURSOR_SHAPE_SETTING, VTE_HIDE_MOUSE_SETTING, VTE_LINE_HEIGHT_SETTING,
-    VTE_SELECTION_BG_SETTING, VTE_SELECTION_FG_SETTING,
+    VTE_AUDIBLE_BELL_SETTING, VTE_BACKGROUND_SETTING, VTE_BOLD_IS_BRIGHT_SETTING,
+    VTE_CURSOR_BLINK_SETTING, VTE_CURSOR_SHAPE_SETTING, VTE_FOREGROUND_SETTING,
+    VTE_HIDE_MOUSE_SETTING, VTE_LINE_HEIGHT_SETTING, VTE_SELECTION_BG_SETTING,
+    VTE_SELECTION_FG_SETTING,
 };
 use crate::terminal::{options, VTE_COLOR_SCHEME_SETTING};
 
@@ -15,6 +16,20 @@ pub(super) fn section(store: &Rc<SessionStore>) -> gtk4::ListBox {
     let current = terminal_defaults(store).vte;
     let list = crate::ui::settings::boxed_list();
     list.append(&scheme_row(store, VTE_COLOR_SCHEME_SETTING));
+    list.append(&rows::color_row(
+        store,
+        ("Background color", "Reset follows the color scheme."),
+        current.colors.bg,
+        None,
+        VTE_BACKGROUND_SETTING,
+    ));
+    list.append(&rows::color_row(
+        store,
+        ("Text color", "Reset follows the color scheme."),
+        current.colors.fg,
+        None,
+        VTE_FOREGROUND_SETTING,
+    ));
     list.append(&rows::enum_row(
         store,
         ("Cursor shape", "Until a program sets its own."),

@@ -7,7 +7,7 @@ use gtk4::{gdk, glib};
 use vte4::prelude::*;
 use vte4::{CursorBlinkMode, CursorShape, Terminal as VteTerminal};
 
-use crate::terminal::options::{SelectionColors, VteBlink, VteCursor, VteOptions};
+use crate::terminal::options::{DefaultColors, SelectionColors, VteBlink, VteCursor, VteOptions};
 
 #[derive(Default)]
 struct Installed {
@@ -41,6 +41,11 @@ pub(super) fn follow_options(terminal: &VteTerminal) {
         installed.options.clone()
     });
     apply(terminal, &options);
+}
+
+/// The colors a palette gives way to.
+pub(super) fn default_colors() -> DefaultColors {
+    INSTALLED.with(|installed| installed.borrow().options.colors)
 }
 
 /// Put the installed selection colors back: setting a palette clears them.

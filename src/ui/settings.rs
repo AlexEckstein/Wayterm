@@ -421,8 +421,8 @@ pub(super) mod gtk_tests {
     /// shows, and the color reads as unset again.
     fn backend_sections() {
         use crate::terminal::options::{
-            VteCursor, VTE_AUDIBLE_BELL_SETTING, VTE_CURSOR_SHAPE_SETTING, VTE_LINE_HEIGHT_SETTING,
-            VTE_SELECTION_BG_SETTING,
+            VteCursor, VTE_AUDIBLE_BELL_SETTING, VTE_BACKGROUND_SETTING, VTE_CURSOR_SHAPE_SETTING,
+            VTE_LINE_HEIGHT_SETTING, VTE_SELECTION_BG_SETTING,
         };
 
         let store = Rc::new(SessionStore::in_memory().unwrap());
@@ -459,18 +459,26 @@ pub(super) mod gtk_tests {
             .filter(|button| button.label().as_deref() == Some("Reset"))
             .collect();
         assert_eq!(resets.len(), colors.len());
-        assert!(resets[0].is_sensitive(), "a stored color can go");
-        assert!(!resets[1].is_sensitive(), "an unset one cannot");
+        assert!(resets[2].is_sensitive(), "a stored color can go");
+        assert!(!resets[3].is_sensitive(), "an unset one cannot");
         assert_eq!(vte().selection.bg, Some([0x10, 0x20, 0x30]));
 
-        resets[0].emit_clicked();
+        resets[2].emit_clicked();
         assert_eq!(row(VTE_SELECTION_BG_SETTING).as_deref(), Some(""));
         assert_eq!(vte().selection.bg, None);
-        assert!(!resets[0].is_sensitive());
+        assert!(!resets[2].is_sensitive());
 
-        colors[0].set_rgba(&gtk4::gdk::RGBA::new(1.0, 0.0, 0.0, 1.0));
+        colors[2].set_rgba(&gtk4::gdk::RGBA::new(1.0, 0.0, 0.0, 1.0));
         assert_eq!(vte().selection.bg, Some([0xff, 0, 0]));
-        assert!(resets[0].is_sensitive());
+        assert!(resets[2].is_sensitive());
+
+        assert!(!resets[0].is_sensitive(), "the scheme's until one is set");
+        colors[0].set_rgba(&gtk4::gdk::RGBA::new(0.0, 1.0, 0.0, 1.0));
+        assert_eq!(vte().colors.bg, Some([0, 0xff, 0]));
+        assert_eq!(vte().colors.fg, None);
+        resets[0].emit_clicked();
+        assert_eq!(row(VTE_BACKGROUND_SETTING).as_deref(), Some(""));
+        assert_eq!(vte().colors.bg, None);
 
         let mut spins: Vec<gtk4::SpinButton> = Vec::new();
         descendants(&page, &mut spins);

@@ -9,7 +9,7 @@ use gtk4::subclass::prelude::*;
 
 use super::GhosttyView;
 use crate::terminal::ghostty::ffi;
-use crate::terminal::options::{GhosttyCursor, GhosttyOptions};
+use crate::terminal::options::{DefaultColors, GhosttyCursor, GhosttyOptions};
 
 #[derive(Default)]
 struct Installed {
@@ -68,6 +68,11 @@ impl GhosttyView {
             self.apply_image_limit(&options);
         }
         self.queue_draw();
+    }
+
+    /// The colors a palette gives way to.
+    pub(in crate::terminal::ghostty) fn default_colors(&self) -> DefaultColors {
+        self.imp().options.borrow().colors
     }
 
     fn apply_cursor(&self, options: &GhosttyOptions) {
