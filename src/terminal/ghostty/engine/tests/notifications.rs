@@ -39,14 +39,10 @@ fn osc_777_raises_a_notification_with_its_title_and_body() {
 /// included, whichever callback delivered it.
 #[test]
 fn a_notification_keeps_its_place_among_effects() {
-    let effects = engine().write(b"\x07\x1b]9;done\x07\x1b]2;title\x07");
+    let effects = engine().write(b"\x07\x1b]9;done\x07\x07");
     assert_eq!(
         effects,
-        vec![
-            Effect::Bell,
-            notification("", "done"),
-            Effect::Title("title".into())
-        ]
+        vec![Effect::Bell, notification("", "done"), Effect::Bell]
     );
 }
 

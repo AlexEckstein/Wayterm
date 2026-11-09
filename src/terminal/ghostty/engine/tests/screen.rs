@@ -340,11 +340,10 @@ fn the_scheme_outlives_a_reset_and_yields_to_program_colors() {
 }
 
 #[test]
-fn bell_title_and_device_attributes_raise_effects() {
+fn bell_and_device_attributes_raise_effects() {
     let engine = engine();
-    let effects = engine.write(b"\x07\x1b]2;remote title\x07\x1b[c");
+    let effects = engine.write(b"\x07\x1b[c");
     assert!(effects.contains(&Effect::Bell));
-    assert!(effects.contains(&Effect::Title("remote title".into())));
     assert!(
         effects
             .iter()

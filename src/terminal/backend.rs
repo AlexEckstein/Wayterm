@@ -28,7 +28,6 @@ pub enum TerminalEvent {
         rows: u32,
         cols: u32,
     },
-    TitleChanged(String),
     Bell,
     /// A program asked for a desktop notification (OSC 9, OSC 777). `title`
     /// is empty when the protocol has none. Remote text, shown only through

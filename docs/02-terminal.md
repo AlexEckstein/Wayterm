@@ -48,7 +48,6 @@ pub trait TerminalBackend {
 }
 
 pub enum TerminalEvent { DataOut(Vec<u8>), SizeChange { rows: u32, cols: u32 },
-                         TitleChanged(String),
                          Notification { title: String, body: String }, Bell, Closed }
 ```
 
@@ -370,10 +369,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   says whether the row soft-wraps into the next. A snapshot also lists
   the Kitty images on screen (§Kitty graphics). Effects raised while
   parsing — replies to queries (device attributes, status reports), BEL,
-  OSC 0/2
-  titles, OSC 7 directories, clipboard writes, desktop notifications
-  (OSC 9, OSC 777) — come back from the `write` that raised them and
-  leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
+  OSC 7 directories, clipboard writes, desktop notifications (OSC 9,
+  OSC 777) — come back from the `write` that raised them and leave as
+  `DataOut` and `Bell`; a directory goes to
   the view's directory hook instead (§Reported directory), a clipboard
   write to the view (§GhosttyBackend, Program clipboard), and a
   notification reaches the tray as `Notification` (doc 03 §Tray,
