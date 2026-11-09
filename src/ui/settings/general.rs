@@ -105,7 +105,6 @@ pub fn clear_reminders(store: &SessionStore) -> rusqlite::Result<()> {
 /// The check box's text.
 pub const GHOSTTY_TITLE: &str = "Experimental Ghostty terminal";
 pub const GHOSTTY_SUBTITLE: &str = "Draw new tabs with libghostty-vt instead of VTE. \
-                                    Experimental: no search or color schemes yet. \
                                     Open tabs keep their terminal.";
 /// The tooltip of the disabled check box in a build without the backend.
 pub const GHOSTTY_UNAVAILABLE: &str = "rebuild with the backend-ghostty feature to enable";
