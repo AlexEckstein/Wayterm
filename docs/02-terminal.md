@@ -305,13 +305,6 @@ To add a setting:
 3. Add its control to the backend's section of the Customize page (doc 13
    §Customize).
 
-## Window titles
-
-A tab label carries a title state machine: placeholder (the session name)
-→ set (the terminal's window title, `TitleChanged`) → renamed (by the
-user). Once renamed, terminal titles no longer change it; a blank terminal
-title falls back to the session name (doc 03 §Tab labels).
-
 ## Reported directory
 
 A shell may report its directory at each prompt with OSC 7
