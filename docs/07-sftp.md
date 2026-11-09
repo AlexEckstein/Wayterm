@@ -45,8 +45,10 @@ spawns one SFTP task per sidebar; until then the sidebar is empty with its
 toolbar disabled. The task opens a session channel with the `sftp`
 subsystem and turns it into a `russh_sftp` session on the first command.
 Dropping the last sidebar handle ends the task, once any transfer still
-running has finished (its futures hold the sidebar); detaching ends it at
-once (§Layout). Either way the connection stays with the supervisor.
+running has finished (its futures hold the sidebar). Detaching (§Layout)
+shuts it down at once: the command in progress is dropped, queued ones
+are discarded, and running transfers are cancelled. Either way the
+connection stays with the supervisor.
 
 When it attaches depends on the `sftp_on_connect` setting (on by default,
 doc 13 §Settings rows):
@@ -82,7 +84,9 @@ The enum is a module boundary (AGENTS.md).
   `IdleSender` (doc 02 §Backpressure) and awaits each oneshot reply in a
   main-context future.
 - Every command but `Cancel` is answered exactly once — with `Err` when
-  the session is dead. Any failure drops the cached SFTP session and the
+  the session is dead — unless the task shuts down first: then its reply
+  channel closes unanswered, which the sidebar shows as the session
+  ending. Any failure drops the cached SFTP session and the
   next command reopens it, so a server closing the subsystem shows up as
   an error ("SFTP session ended — reconnect?") and recovers.
 - `Cd` doubles as the listing command. There is no `getcwd`, so the path
@@ -104,8 +108,10 @@ out with `try_send` (a stale-but-moving bar is fine, a stalled transfer is
 not). The bar shows whichever transfer updated last and Cancel targets the
 newest. An upload's final flush and close must succeed or the transfer
 fails, since the remote file may be incomplete. Every successful operation
-refreshes the listing. Ending the tab's session cancels every running
-transfer, as Cancel does (§Layout).
+refreshes the listing. Cancel takes effect even while a write to a
+stalled server is pending, the upload's final flush and close included.
+Ending the tab's session cancels every running transfer, as Cancel does
+(§Layout).
 
 ## Following the shell
 

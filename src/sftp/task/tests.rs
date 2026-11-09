@@ -89,7 +89,7 @@ async fn failed_session_open_replies_error_and_reopens_on_every_command() {
     let (tx, rx) = mpsc::channel::<SftpCommand>(16);
     let task = tokio::spawn({
         let opens = Arc::clone(&opens);
-        run_sftp_task(rx, move || {
+        run_sftp_task(rx, CancellationToken::new(), move || {
             opens.fetch_add(1, Ordering::SeqCst);
             async { Err::<SftpSession, String>("subsystem unavailable".to_string()) }
         })
@@ -186,7 +186,7 @@ async fn failed_session_open_replies_error_and_reopens_on_every_command() {
 async fn task_exits_only_when_the_last_sender_drops() {
     let (tx, rx) = mpsc::channel::<SftpCommand>(4);
     let tx2 = tx.clone();
-    let mut task = tokio::spawn(run_sftp_task(rx, || async {
+    let mut task = tokio::spawn(run_sftp_task(rx, CancellationToken::new(), || async {
         Err::<SftpSession, String>("no server".to_string())
     }));
 
@@ -202,4 +202,87 @@ async fn task_exits_only_when_the_last_sender_drops() {
         .await
         .expect("task must exit once the last sender drops")
         .expect("task panicked");
+}
+
+#[tokio::test]
+async fn shutdown_interrupts_a_stuck_command_and_discards_the_queue() {
+    let opens = Arc::new(AtomicUsize::new(0));
+    let (tx, rx) = mpsc::channel::<SftpCommand>(4);
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn({
+        let opens = Arc::clone(&opens);
+        run_sftp_task(rx, shutdown.clone(), move || {
+            opens.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<Result<SftpSession, String>>()
+        })
+    });
+    let (reply, stuck) = oneshot::channel();
+    tx.send(SftpCommand::Cd {
+        path: ".".into(),
+        reply,
+    })
+    .await
+    .unwrap();
+    let (reply, queued) = oneshot::channel();
+    tx.send(SftpCommand::Delete {
+        path: "a".into(),
+        reply,
+    })
+    .await
+    .unwrap();
+    while opens.load(Ordering::SeqCst) == 0 {
+        tokio::task::yield_now().await;
+    }
+
+    shutdown.cancel();
+    timeout(Duration::from_secs(5), task)
+        .await
+        .expect("task must exit on shutdown while a sender lives")
+        .expect("task panicked");
+    assert!(stuck.await.is_err(), "the stuck command must be dropped");
+    assert!(queued.await.is_err(), "a queued command must not run");
+    assert_eq!(opens.load(Ordering::SeqCst), 1);
+    drop(tx);
+}
+
+/// A writer whose writes never complete, like a stalled server.
+struct StalledWriter;
+
+impl tokio::io::AsyncWrite for StalledWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Pending
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Pending
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Pending
+    }
+}
+
+#[tokio::test]
+async fn a_cancel_interrupts_a_stalled_write() {
+    let cancel = CancellationToken::new();
+    let (progress, _keep) = mpsc::channel(4);
+    let mut dst = StalledWriter;
+    let copy = copy_with_progress(&b"data"[..], &mut dst, 4, &progress, &cancel);
+    let cancelling = async {
+        tokio::task::yield_now().await;
+        cancel.cancel();
+    };
+    let (result, ()) = tokio::join!(timeout(Duration::from_secs(5), copy), cancelling);
+    let result = result.expect("the stalled write held the cancelled transfer");
+    assert_eq!(result, Err("transfer cancelled".to_string()));
 }

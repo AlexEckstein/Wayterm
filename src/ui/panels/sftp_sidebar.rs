@@ -144,13 +144,16 @@ impl SftpSidebar {
         }
     }
 
-    /// End the SFTP task now, cancelling its running transfers, and drop a
-    /// connection kept for the first show. A transfer's own futures hold
-    /// the sidebar until their reply comes, so dropping the last handle
-    /// alone would let a transfer run on unseen.
+    /// End the SFTP task now, cancelling its running transfers and
+    /// discarding queued commands, and drop a connection kept for the
+    /// first show. A transfer's own futures hold the sidebar until their
+    /// reply comes, so dropping the last handle alone would let a transfer
+    /// run on unseen.
     pub fn detach(&self) {
         self.inner.deferred.borrow_mut().take();
-        self.inner.attached.borrow_mut().take();
+        if let Some(attached) = self.inner.attached.borrow_mut().take() {
+            attached.client.shutdown();
+        }
     }
 
     /// Show the jumped-session state instead of attaching: no SFTP task
@@ -1026,13 +1029,14 @@ pub(in crate::ui) mod gtk_tests {
 
     /// Dropping the last handle frees the sidebar, and with it the SFTP
     /// task's command sender, so the task ends (doc 07 §Connection model).
-    /// A sidebar detached mid-transfer closes its command channel, which is
-    /// what makes the task cancel the transfer, though the transfer's
-    /// futures still hold the sidebar.
+    /// A sidebar detached mid-transfer shuts its task down and closes its
+    /// command channel, though the transfer's futures still hold the
+    /// sidebar.
     pub(in crate::ui) fn detaching_mid_transfer_ends_the_task() {
         let (tx, mut rx) = mpsc::channel(8);
+        let shutdown = tokio_util::sync::CancellationToken::new();
         let sidebar = SftpSidebar::new();
-        let client = SftpClient::from_sender(tx);
+        let client = SftpClient::from_parts(tx, shutdown.clone());
         sidebar
             .inner
             .attached
@@ -1044,6 +1048,7 @@ pub(in crate::ui) mod gtk_tests {
 
         sidebar.detach();
         drop(sidebar);
+        assert!(shutdown.is_cancelled(), "the task was not shut down");
         assert_eq!(
             rx.try_recv().err(),
             Some(mpsc::error::TryRecvError::Disconnected),
