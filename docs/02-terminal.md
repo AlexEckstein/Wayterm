@@ -48,7 +48,6 @@ pub trait TerminalBackend {
 }
 
 pub enum TerminalEvent { DataOut(Vec<u8>), SizeChange { rows: u32, cols: u32 },
-                         TitleChanged(String),
                          Notification { title: String, body: String }, Bell, Closed }
 ```
 
@@ -305,13 +304,6 @@ To add a setting:
 3. Add its control to the backend's section of the Customize page (doc 13
    §Customize).
 
-## Window titles
-
-A tab label carries a title state machine: placeholder (the session name)
-→ set (the terminal's window title, `TitleChanged`) → renamed (by the
-user). Once renamed, terminal titles no longer change it; a blank terminal
-title falls back to the session name (doc 03 §Tab labels).
-
 ## Reported directory
 
 A shell may report its directory at each prompt with OSC 7
@@ -377,10 +369,9 @@ upstream commit (§libghostty-vt pin). The default build has none of it.
   says whether the row soft-wraps into the next. A snapshot also lists
   the Kitty images on screen (§Kitty graphics). Effects raised while
   parsing — replies to queries (device attributes, status reports), BEL,
-  OSC 0/2
-  titles, OSC 7 directories, clipboard writes, desktop notifications
-  (OSC 9, OSC 777) — come back from the `write` that raised them and
-  leave as `DataOut`, `Bell` and `TitleChanged`; a directory goes to
+  OSC 7 directories, clipboard writes, desktop notifications (OSC 9,
+  OSC 777) — come back from the `write` that raised them and leave as
+  `DataOut` and `Bell`; a directory goes to
   the view's directory hook instead (§Reported directory), a clipboard
   write to the view (§GhosttyBackend, Program clipboard), and a
   notification reaches the tray as `Notification` (doc 03 §Tray,

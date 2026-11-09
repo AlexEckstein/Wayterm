@@ -125,8 +125,7 @@ create the backend (doc 02 §Backend selection) and apply its color scheme,
 splice the macro input tap between terminal and pump (doc 12
 §Recording), wire the `TerminalTab`, register the tab as live with
 `tabs::resilience`, start the page's state drain, hand an SSH connection to
-the forward engine and the SFTP sidebar, follow the terminal title, and
-take focus.
+the forward engine and the SFTP sidebar, and take focus.
 
 Focus: a connect the user started takes focus; a reconnect only takes it
 back if nothing else holds it, so it never pulls focus out of the SFTP
@@ -193,11 +192,9 @@ the tab (`ui::tabs::ended`).
 ## Tab labels
 
 A label is the session name plus a close button (`src/ui/tabs/label.rs`).
-Its title follows a state machine: placeholder (the session name) → set
-(the terminal's window title) → renamed (by the user). Once renamed,
-terminal titles no longer change it; a blank terminal title falls back to
-the session name. Double-clicking the name, or `rename_tab`, opens a
-"Rename Tab" prompt.
+It does not follow the terminal's window title (OSC 0/2): only the user
+changes it. Double-clicking the name, or `rename_tab`, opens a "Rename
+Tab" prompt; an empty name is ignored.
 
 ## Tab bar
 

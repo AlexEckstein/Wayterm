@@ -32,7 +32,6 @@ use crate::transport::types::{TransportError, TransportEvent, TransportState};
 use crate::ui::appearance;
 use crate::ui::panels::sftp_sidebar::DirectoryFollower;
 use crate::ui::tabs::ended::{self, EndedChoice};
-use crate::ui::tabs::label;
 use crate::ui::tabs::resilience;
 use crate::ui::tabs::terminal_tab::{Notification, TerminalTab};
 use crate::ui::translucency;
@@ -183,7 +182,6 @@ pub(super) async fn finish_connect(
         ssh::on_connect(notebook, page, session, conn, &widget);
     }
     keep_shell_directory(page, &widget);
-    follow_terminal_title(page, &widget, &session.name);
     focus_after_connect(notebook, page);
 }
 
@@ -472,27 +470,6 @@ fn abandon_attempt(page: &gtk4::Widget) {
     publish_page_state(page, TransportState::Disconnected);
 }
 
-/// Keep the tab label on the terminal's window title (falling back to the
-/// session name), unless the user has renamed the tab.
-fn follow_terminal_title(page: &gtk4::Widget, terminal: &gtk4::Widget, session_name: &str) {
-    let (Some(label), Some(vte)) = (
-        state(page).label.get().cloned(),
-        terminal.downcast_ref::<vte4::Terminal>(),
-    ) else {
-        return;
-    };
-    let name = session_name.to_string();
-    let apply = move |term: &vte4::Terminal| {
-        let title = term
-            .window_title()
-            .map(|t| t.to_string())
-            .unwrap_or_default();
-        label::apply_terminal_title(&label, &tab_title(&name, &title));
-    };
-    apply(vte);
-    vte.connect_window_title_changed(apply);
-}
-
 /// Keep what `terminal`'s shell reports on `page`, in place of what the
 /// previous terminal's did. Connected to the widget directly, as the SFTP
 /// sidebar is (doc 07 §Following the shell). The hooks hold it weakly: a
@@ -516,14 +493,6 @@ pub(super) fn keep_shell_directory(page: &gtk4::Widget, terminal: &gtk4::Widget)
                 shell.reported(uri);
             }
         });
-    }
-}
-
-/// The terminal's title, or the session name when it is blank.
-fn tab_title(session_name: &str, terminal_title: &str) -> String {
-    match terminal_title.trim() {
-        "" => session_name.to_string(),
-        title => title.to_string(),
     }
 }
 
@@ -567,13 +536,6 @@ pub(super) fn close_terminal(page: &gtk4::Widget) {
 mod tests {
     use super::*;
     use crate::store::model::SessionType;
-
-    #[test]
-    fn the_tab_title_prefers_the_terminal_and_never_goes_blank() {
-        assert_eq!(tab_title("db-prod", "root@db-prod:~"), "root@db-prod:~");
-        assert_eq!(tab_title("db-prod", ""), "db-prod");
-        assert_eq!(tab_title("db-prod", "   \n"), "db-prod");
-    }
 
     #[test]
     fn the_kept_directory_is_the_last_report_decoded() {

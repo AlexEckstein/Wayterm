@@ -11,7 +11,6 @@ pub enum Effect {
     /// A reply for the remote side (device attributes, status reports).
     Pty(Vec<u8>),
     Bell,
-    Title(String),
     /// The directory the shell reported, raw: a `file://` URI for OSC 7.
     Pwd(String),
     /// A desktop notification (OSC 9, OSC 777); OSC 9 has no title, so
@@ -81,7 +80,6 @@ pub(super) unsafe extern "C" fn on_effect(
     let effect = match kind {
         ffi::EFFECT_PTY => Effect::Pty(bytes.to_vec()),
         ffi::EFFECT_BELL => Effect::Bell,
-        ffi::EFFECT_TITLE => Effect::Title(String::from_utf8_lossy(bytes).into_owned()),
         ffi::EFFECT_PWD => Effect::Pwd(String::from_utf8_lossy(bytes).into_owned()),
         ffi::EFFECT_CLIPBOARD_SYSTEM | ffi::EFFECT_CLIPBOARD_PRIMARY => {
             let destination = if kind == ffi::EFFECT_CLIPBOARD_SYSTEM {

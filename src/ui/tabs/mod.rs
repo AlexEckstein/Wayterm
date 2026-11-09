@@ -127,8 +127,6 @@ struct PageState {
     /// Where the connect flow resolves the jump host and the credential
     /// settings ([`SessionTab::open`]).
     store: OnceCell<Rc<SessionStore>>,
-    /// The tab label, which follows the terminal's title.
-    label: OnceCell<gtk4::Widget>,
     /// Bumped by every attempt, so a superseded one drops its result.
     gen: Cell<u64>,
     /// A driver-driven redial awaiting the verdict of the attempt tagged.
@@ -197,7 +195,6 @@ impl SessionTab {
         let page_num = notebook.append_page(&page, Some(&tab_label));
         notebook.set_current_page(Some(page_num));
         let state = state(&page);
-        let _ = state.label.set(tab_label);
         let _ = state.store.set(store.clone());
         install_teardown_on_remove(notebook);
         start_connect(notebook, &page, &session);

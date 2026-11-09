@@ -20,7 +20,6 @@ pub const NO_VALUE: c_int = -4;
 
 pub const EFFECT_PTY: c_int = 1;
 pub const EFFECT_BELL: c_int = 2;
-pub const EFFECT_TITLE: c_int = 3;
 pub const EFFECT_PWD: c_int = 4;
 pub const EFFECT_CLIPBOARD_SYSTEM: c_int = 5;
 pub const EFFECT_CLIPBOARD_PRIMARY: c_int = 6;

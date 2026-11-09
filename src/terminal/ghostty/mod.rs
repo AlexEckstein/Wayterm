@@ -70,7 +70,6 @@ impl Shared {
             let event = match effect {
                 Effect::Pty(reply) => TerminalEvent::DataOut(reply),
                 Effect::Bell => TerminalEvent::Bell,
-                Effect::Title(title) => TerminalEvent::TitleChanged(title),
                 Effect::Notification { title, body } => TerminalEvent::Notification { title, body },
                 Effect::Pwd(dir) => {
                     for watch in each(&self.watchers.directory) {

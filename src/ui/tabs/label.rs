@@ -1,109 +1,11 @@
 //! The tab label: session name plus close button; double-click renames
 //! (doc 03 §Tab labels).
-//!
-//! Each label carries a [`TabTitle`]: placeholder (the session name) →
-//! set (a title from the terminal) → renamed (by the user). Once renamed,
-//! terminal titles no longer change it.
-
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use gtk4::prelude::*;
 
 use crate::ui::widgets::{data, prompt_text, set_data, window_of};
 
-const TAB_TITLE_KEY: &str = "wayterm-tab-title";
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TabTitleState {
-    Placeholder,
-    Set,
-    Renamed,
-}
-
-/// The display-free title state machine.
-#[derive(Debug)]
-pub struct TabTitle {
-    state: TabTitleState,
-    value: String,
-}
-
-impl TabTitle {
-    pub fn new(placeholder: &str) -> Self {
-        Self {
-            state: TabTitleState::Placeholder,
-            value: placeholder.to_string(),
-        }
-    }
-
-    /// A title from the terminal; ignored once renamed. Returns whether it
-    /// took effect.
-    pub fn set(&mut self, title: &str) -> bool {
-        if self.state == TabTitleState::Renamed || self.value == title {
-            return false;
-        }
-        self.value = title.to_string();
-        self.state = TabTitleState::Set;
-        true
-    }
-
-    /// A user rename; empty names are rejected so a tab keeps a label.
-    pub fn rename(&mut self, title: &str) -> bool {
-        if title.is_empty() || self.value == title {
-            return false;
-        }
-        self.value = title.to_string();
-        self.state = TabTitleState::Renamed;
-        true
-    }
-
-    pub fn state(&self) -> &TabTitleState {
-        &self.state
-    }
-
-    pub fn value(&self) -> &str {
-        &self.value
-    }
-}
-
-/// A [`TabTitle`] bound to the label that shows it.
-pub struct TabLabelState {
-    title: RefCell<TabTitle>,
-    label: gtk4::Label,
-}
-
-impl TabLabelState {
-    pub fn set(&self, title: &str) -> bool {
-        self.update(|t| t.set(title))
-    }
-
-    pub fn rename(&self, title: &str) -> bool {
-        self.update(|t| t.rename(title))
-    }
-
-    fn update(&self, change: impl FnOnce(&mut TabTitle) -> bool) -> bool {
-        let changed = change(&mut self.title.borrow_mut());
-        if changed {
-            self.label.set_text(self.title.borrow().value());
-        }
-        changed
-    }
-
-    pub fn value(&self) -> String {
-        self.title.borrow().value().to_string()
-    }
-}
-
-/// The title state of a label built by [`build_tab_label`].
-pub fn title_state_of(label_widget: &gtk4::Widget) -> Option<Rc<TabLabelState>> {
-    data(label_widget, TAB_TITLE_KEY)
-}
-
-/// Feed a terminal title to a tab label; `false` if it has no title state
-/// or was renamed by the user.
-pub fn apply_terminal_title(label_widget: &gtk4::Widget, title: &str) -> bool {
-    title_state_of(label_widget).is_some_and(|state| state.set(title))
-}
+const NAME_LABEL_KEY: &str = "wayterm-tab-name-label";
 
 /// Name (double-click to rename) plus close button; `on_close` runs on
 /// the close button. Returns the label widget and its name label.
@@ -123,11 +25,7 @@ pub fn build_tab_label(
     close_button.connect_clicked(move |_| on_close());
     box_.append(&close_button);
 
-    let state = Rc::new(TabLabelState {
-        title: RefCell::new(TabTitle::new(session_name)),
-        label: name_label.clone(),
-    });
-    set_data(&box_, TAB_TITLE_KEY, state);
+    set_data(&box_, NAME_LABEL_KEY, name_label.clone());
 
     let click = gtk4::GestureClick::new();
     click.set_button(gtk4::gdk::BUTTON_PRIMARY);
@@ -151,11 +49,14 @@ pub fn build_tab_label(
 /// built by [`build_tab_label`]): a double-click on the name, or the
 /// `rename_tab` action. No-op for any other label.
 pub fn prompt_rename(label_widget: &gtk4::Widget) {
-    let Some(state) = title_state_of(label_widget) else {
+    let Some(name) = data::<gtk4::Label>(label_widget, NAME_LABEL_KEY) else {
         return;
     };
     let parent = window_of(label_widget);
-    if let Some(new_name) = prompt_text(parent.as_ref(), "Rename Tab", &state.value()) {
-        state.rename(&new_name);
+    if let Some(new_name) = prompt_text(parent.as_ref(), "Rename Tab", &name.text()) {
+        // An empty name is ignored so the tab keeps a label.
+        if !new_name.is_empty() {
+            name.set_text(&new_name);
+        }
     }
 }

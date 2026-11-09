@@ -1,11 +1,10 @@
 //! Display-free terminal polish: the terminal actions route to the right
-//! backend calls, and the tab-title state machine behind rename. The xvfb
-//! path for the widget-bound scrollback is the ignored test at the bottom.
+//! backend calls. The xvfb path for the widget-bound scrollback is the
+//! ignored test at the bottom.
 
 use wayterm::hotkeys::{ActionContext, DEFAULT_ACTIONS};
 use wayterm::terminal::fake::{FakeBackend, Interaction};
 use wayterm::terminal::{TerminalBackend, VteBackend};
-use wayterm::ui::tabs::label::{TabTitle, TabTitleState};
 use wayterm::ui::tabs::terminal_actions::{
     initial_search_reverse, route_terminal_action, TerminalAction, TerminalActionInputs,
     TERMINAL_ACTIONS,
@@ -170,39 +169,6 @@ fn search_actions_differ_only_in_initial_direction() {
         route_terminal_action("search", &inputs),
         route_terminal_action("search_scrollback", &inputs),
     );
-}
-
-/// Tab rename state machine: placeholder (store name) → set (programmatic
-/// `TitleChanged`) → renamed (user double-click), with a user rename
-/// locking out later programmatic titles (doc 02 §Window titles).
-#[test]
-fn tab_title_state_machine_placeholder_set_renamed() {
-    let mut title = TabTitle::new("web-prod");
-    assert_eq!(title.state(), &TabTitleState::Placeholder);
-    assert_eq!(title.value(), "web-prod");
-
-    // Programmatic title lands.
-    assert!(title.set("root@bastion:2222"));
-    assert_eq!(title.state(), &TabTitleState::Set);
-    assert_eq!(title.value(), "root@bastion:2222");
-    // Same value again: no change reported, state stays Set.
-    assert!(!title.set("root@bastion:2222"));
-    assert_eq!(title.state(), &TabTitleState::Set);
-
-    // User double-click rename.
-    assert!(title.rename("Bastion"));
-    assert_eq!(title.state(), &TabTitleState::Renamed);
-    assert_eq!(title.value(), "Bastion");
-
-    // Terminal OSC title churn no longer clobbers the user's name.
-    assert!(!title.set("root@bastion:2222"));
-    assert_eq!(title.state(), &TabTitleState::Renamed);
-    assert_eq!(title.value(), "Bastion");
-
-    // Empty names are rejected; the tab keeps a label.
-    assert!(!title.rename(""));
-    assert_eq!(title.state(), &TabTitleState::Renamed);
-    assert_eq!(title.value(), "Bastion");
 }
 
 /// The FakeBackend interaction log records in call order — this is the
