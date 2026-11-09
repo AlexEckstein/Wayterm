@@ -288,15 +288,27 @@ fn arm_forward_engine(page: &gtk4::Widget, session: &Rc<SessionConfig>, conn: &A
     stop_forward_engine(page);
     let (tx, rx) = mpsc::channel::<ForwardEvent>(FWD_EVENT_BUF);
     let engine = ForwardEngine::new(conn.clone(), tx);
-    let bridge = Arc::new(EngineStatusBridge::new(engine.clone()));
-    ssh_state(page).forward.replace(Some(bridge.clone()));
+    let bridge = bridge_events(engine.clone(), rx);
+    ssh_state(page).forward.replace(Some(bridge));
     engine.start(forward_rules_for(session));
+}
+
+/// Wrap `engine` in a status bridge fed from `rx`. The feed holds the
+/// bridge weakly: the bridge owns the engine, whose sender keeps `rx` open,
+/// so a strong hold would keep the engine and its connection forever.
+fn bridge_events(
+    engine: ForwardEngine,
+    mut rx: mpsc::Receiver<ForwardEvent>,
+) -> Arc<EngineStatusBridge> {
+    let bridge = Arc::new(EngineStatusBridge::new(engine));
+    let weak = Arc::downgrade(&bridge);
     tokio::spawn(async move {
-        let mut rx = rx;
         while let Some(event) = rx.recv().await {
+            let Some(bridge) = weak.upgrade() else { break };
             bridge.handle_event(event);
         }
     });
+    bridge
 }
 
 /// Stop the page's forward engine, if any: listeners close and terminal
@@ -541,6 +553,24 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(forward_rules_for(&session), rules);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_bridge_lets_its_engine_go() {
+        let held = Arc::new(());
+        let probe = Arc::downgrade(&held);
+        let opener: crate::transport::forward::ChannelOpener = Arc::new(move |_, _| {
+            let _held = &held;
+            Box::pin(async { Err(TransportError::Cancelled) })
+        });
+        let (tx, rx) = mpsc::channel(FWD_EVENT_BUF);
+        let bridge = bridge_events(ForwardEngine::with_opener(opener, tx), rx);
+        tokio::task::yield_now().await;
+        assert!(probe.upgrade().is_some());
+
+        drop(bridge);
+        tokio::task::yield_now().await;
+        assert!(probe.upgrade().is_none(), "the engine outlived its bridge");
     }
 
     #[test]
