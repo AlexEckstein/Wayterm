@@ -87,9 +87,11 @@ file transfers). Inside the sandbox the keyring source uses the portal
 
 `.github/workflows/release.yml` runs on a `v*` tag push: it builds the
 `.deb` with `cargo-deb` on `ubuntu-latest` (Ubuntu 26.04, as CI uses),
-builds the AppImage from it with a pinned pkg2appimage, and attaches both
-to the GitHub Release for that tag. A manual run (`workflow_dispatch`)
-builds the artifacts without releasing.
+builds the AppImage from it with a pkg2appimage pinned by checksum, and
+attaches both to the GitHub Release for that tag. A manual run
+(`workflow_dispatch`) builds the artifacts without releasing. The
+workflow's token is read-only; only the job that publishes, which runs no
+build, gets one that can write.
 
 ## Limitations
 
