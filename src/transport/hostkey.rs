@@ -90,12 +90,13 @@ impl HostKeyVerifier {
     /// should be recorded and cannot be. Only `off` connects regardless.
     pub fn verify(&self, facts: &HostKeyFacts, key: &PublicKey) -> HostKeyDecision {
         let (host, port) = (facts.host.as_str(), facts.port);
-        let unverified = |why: &dyn fmt::Display| {
-            eprintln!("Wayterm: host key for {host}:{port} not verified: {why}");
-            match self.policy {
-                HostKeyPolicy::Off => HostKeyDecision::Accept,
-                HostKeyPolicy::AcceptNew | HostKeyPolicy::Strict => HostKeyDecision::Reject,
-            }
+        let rejected = |why: &dyn fmt::Display| {
+            eprintln!("Wayterm: host key for {host:?} port {port} rejected: {why}");
+            HostKeyDecision::Reject
+        };
+        let unverified = |why: &dyn fmt::Display| match self.policy {
+            HostKeyPolicy::Off => HostKeyDecision::Accept,
+            HostKeyPolicy::AcceptNew | HostKeyPolicy::Strict => rejected(why),
         };
         if !recordable(host) {
             return unverified(&"the host name cannot be recorded in known_hosts");
@@ -109,15 +110,18 @@ impl HostKeyVerifier {
         };
         let decision = match entries.standing(&BASE64.encode(&blob)) {
             Standing::Trusted => return HostKeyDecision::Accept,
-            Standing::Changed | Standing::Revoked => return HostKeyDecision::Reject,
+            Standing::Changed => return rejected(&"known_hosts holds another key for this host"),
+            Standing::Revoked => return rejected(&"known_hosts revokes this key"),
             Standing::Unknown => match self.policy {
                 HostKeyPolicy::Off => return HostKeyDecision::Accept,
                 HostKeyPolicy::AcceptNew => HostKeyDecision::AcceptAndSave,
                 HostKeyPolicy::Strict => (self.prompt)(facts),
             },
         };
-        if decision == HostKeyDecision::AcceptAndSave && self.record(facts, key).is_err() {
-            return HostKeyDecision::Reject;
+        if decision == HostKeyDecision::AcceptAndSave {
+            if let Err(err) = self.record(facts, key) {
+                return rejected(&format_args!("cannot record it in known_hosts: {err}"));
+            }
         }
         decision
     }

@@ -134,7 +134,9 @@ the type.
 - **Failing closed.** A known_hosts that cannot be read (anything but a
   missing file), no home directory to find it in, and a key that should be
   recorded and cannot be all reject: none of them makes a host unknown.
-  Each is logged with its reason, never with key material.
+
+Every rejection is logged with its reason — a changed key, a revoked one,
+or one of the failures above — and never with key material.
 
 Host certificates are rejected. A rejection surfaces as
 `TransportError::HostKeyRejected`, never as an auth failure.
