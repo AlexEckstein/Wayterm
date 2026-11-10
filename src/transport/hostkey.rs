@@ -71,6 +71,11 @@ impl HostKeyVerifier {
         }
     }
 
+    /// Whether keys are checked at all: under `off` they are not.
+    pub fn verifies(&self) -> bool {
+        self.policy != HostKeyPolicy::Off
+    }
+
     /// Decide whether to trust `key`, by what known_hosts holds for the
     /// host:
     ///

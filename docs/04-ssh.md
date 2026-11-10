@@ -24,7 +24,9 @@ direct-tcpip channels for jump hosts and local forwards. It is a module
 boundary (AGENTS.md).
 
 `ConnectionSupervisor` (one per window) shares one connection per
-(host, port, username):
+(host, port, username), kept apart by whether its host key was checked: a
+session under `strict` or `accept-new` is never handed a connection that
+a session under `off` dialed (§Host key verification).
 
 - consumers hold `Arc`s; a monitor task disconnects and evicts the
   connection once only the pool's own reference is left (checked every

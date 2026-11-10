@@ -157,6 +157,14 @@ fn off_policy_auto_accepts() {
 }
 
 #[test]
+fn only_the_off_policy_does_not_verify() {
+    let verifies = |policy| verifier(policy, HostKeyDecision::Reject, None::<PathBuf>).verifies();
+    assert!(verifies(HostKeyPolicy::Strict));
+    assert!(verifies(HostKeyPolicy::AcceptNew));
+    assert!(!verifies(HostKeyPolicy::Off));
+}
+
+#[test]
 fn hashed_entries_are_supported() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("known_hosts");
