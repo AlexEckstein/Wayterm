@@ -488,6 +488,19 @@ pub(in crate::ui) fn a_lost_connection_ends_it_without_auto_reconnect() {
     ssh.assert_released();
 }
 
+/// Closing the tab ends its forwards and its SFTP task at once: neither
+/// waits for the page to be freed, which a running transfer would delay.
+pub(in crate::ui) fn closing_a_tab_ends_its_forwards_and_sftp() {
+    let ssh = connected_ssh_page();
+    install_teardown_on_remove(&ssh.notebook);
+    ssh.notebook.remove_page(ssh.notebook.page_num(&ssh.page));
+    assert!(
+        ssh::forward_source(&ssh.page).is_none(),
+        "the forwards run on"
+    );
+    assert!(ssh.sftp.is_cancelled(), "the SFTP task runs on");
+}
+
 /// The connect flow end to end on a local shell: opening the tab wires
 /// a terminal and its input tap, the page reports Connected, and
 /// closing the tab lets the page go. The terminal opens in its session's

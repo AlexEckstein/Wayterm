@@ -156,7 +156,9 @@ sharing the token stops. If the transport is live (anything but
 first ("Processes may be running — close anyway?") unless they once
 ticked that prompt's "Do not show me again" (`confirm_close_notice`,
 doc 13 §Settings rows). Removing a page tears down its registry entry and
-forward engine, and focus moves to the tab left current.
+forward engine and ends its sidebar's SFTP task, cancelling a transfer
+still running (doc 07 §Transfers), and focus moves to the tab left
+current.
 
 ### Reconnect
 

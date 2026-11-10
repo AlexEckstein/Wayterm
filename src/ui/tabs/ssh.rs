@@ -346,6 +346,14 @@ pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     side_dock::sidebar_replaced(notebook);
 }
 
+/// The page is closing: end its sidebar's SFTP task now, as a transfer
+/// still running would otherwise keep it, and its connection, going.
+pub(super) fn detach_sidebar(page: &gtk4::Widget) {
+    if let Some(sidebar) = sidebar_of(page) {
+        sidebar.detach();
+    }
+}
+
 /// Mark `page`'s sidebar attached, as [`on_connect`] does, without a
 /// connection.
 #[cfg(test)]

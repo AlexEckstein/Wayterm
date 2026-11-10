@@ -17,7 +17,8 @@ RDP, VNC, Home) get a placeholder. Whenever the tab lets go of its
 connection (a redial, Disconnect, a lost connection or the shell's exit,
 doc 03 §Reconnect), the old sidebar detaches, ending its SFTP task and
 cancelling any running transfer (§Transfers), and an empty one replaces
-it in the panel.
+it in the panel. A closing tab's sidebar detaches the same way (doc 03
+§Closing a tab).
 
 The sidebar, top to bottom:
 
@@ -109,8 +110,8 @@ not). The bar shows whichever transfer updated last and Cancel targets the
 newest. An upload's final flush and close must succeed or the transfer
 fails, since the remote file may be incomplete. Every successful operation
 refreshes the listing. Cancel takes effect at whatever step a transfer is
-on, even one waiting on a stalled server. Ending the tab's session
-cancels every running transfer, as Cancel does (§Layout).
+on, even one waiting on a stalled server. Ending the tab's session, or
+closing the tab, cancels every running transfer, as Cancel does (§Layout).
 
 ## Following the shell
 
