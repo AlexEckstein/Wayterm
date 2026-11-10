@@ -56,7 +56,7 @@ pub(super) struct TerminalPageState {
     /// The page's state channel, once its drain runs ([`page_events`]).
     events: RefCell<Option<UnboundedSender<TransportEvent>>>,
     /// The live transport wiring.
-    terminal_tab: RefCell<Option<TerminalTab>>,
+    pub(super) terminal_tab: RefCell<Option<TerminalTab>>,
     /// The connected terminal and the tap on its input (doc 12).
     pub(super) terminal: RefCell<Option<Arc<dyn TerminalBackend>>>,
     pub(super) input_tap: RefCell<Option<InputTap>>,

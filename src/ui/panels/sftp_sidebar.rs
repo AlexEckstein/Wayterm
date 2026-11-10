@@ -213,6 +213,12 @@ impl SftpSidebar {
         self.inner.path_entry.text().into()
     }
 
+    /// Attach to `client` instead of spawning a task.
+    #[cfg(test)]
+    pub(crate) fn attach_client(&self, client: SftpClient) {
+        *self.inner.attached.borrow_mut() = Some(Attached::with_client(client));
+    }
+
     /// Press a toolbar button as a click would, and only while it is
     /// enabled, so a shortcut follows the toolbar's rules (doc 07).
     pub fn press(&self, button: SftpButton) {
@@ -1034,11 +1040,7 @@ pub(in crate::ui) mod gtk_tests {
         let (tx, mut rx) = mpsc::channel(8);
         let shutdown = tokio_util::sync::CancellationToken::new();
         let sidebar = SftpSidebar::new();
-        let client = SftpClient::from_parts(tx, shutdown.clone());
-        sidebar
-            .inner
-            .attached
-            .replace(Some(Attached::with_client(client)));
+        sidebar.attach_client(SftpClient::from_parts(tx, shutdown.clone()));
         sidebar.inner.download("/srv/f".into(), "/tmp/f".into());
         let Ok(SftpCommand::Download { reply, .. }) = rx.try_recv() else {
             panic!("no download sent");
