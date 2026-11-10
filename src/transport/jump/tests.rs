@@ -118,6 +118,7 @@ fn ssh_w_argv_carries_no_secrets() {
             "BatchMode=yes",
             "-p",
             "2222",
+            "--",
             "jumpuser@bastion.test"
         ]
     );
@@ -134,6 +135,7 @@ fn ssh_w_argv_carries_no_secrets() {
             "inner.test:22",
             "-o",
             "BatchMode=yes",
+            "--",
             "jumpuser@bastion.test"
         ]
     );
@@ -154,6 +156,23 @@ fn ssh_w_argv_carries_no_secrets() {
             "ssh -W must never prompt on a tty Wayterm does not own: {argv:?}"
         );
     }
+}
+
+/// A stored user name is data: one shaped like an option must reach `ssh`
+/// as part of the destination, after the `--` that ends its options.
+#[test]
+fn ssh_w_argv_never_lets_the_destination_read_as_an_option() {
+    let jump = ConnectParams {
+        host: "bastion.test".to_string(),
+        port: 22,
+        username: "-oProxyCommand=touch /tmp/owned".to_string(),
+    };
+    let argv = ssh_w_argv(&jump, "inner.test", 22);
+    let end_of_options = argv.iter().position(|arg| arg == "--").expect("a `--`");
+    assert_eq!(
+        argv[end_of_options + 1..],
+        ["-oProxyCommand=touch /tmp/owned@bastion.test"]
+    );
 }
 
 /// The `ssh -W` spawn path with the real `ssh` binary: spawning must

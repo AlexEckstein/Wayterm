@@ -176,10 +176,11 @@ where
     authenticated(handle, target, auth).await
 }
 
-/// `ssh -W host:port [user@]host` argv. No secrets ever appear here: the
+/// `ssh -W host:port -- user@host` argv. No secrets ever appear here: the
 /// child is only the transport, auth happens through the stream.
 /// `BatchMode=yes` keeps OpenSSH from ever prompting on a tty Wayterm does
-/// not own (doc 04).
+/// not own (doc 04). The destination follows `--`, so a user name starting
+/// with `-` — the row may come from an import — is never read as an option.
 pub(crate) fn ssh_w_argv(jump: &ConnectParams, target_host: &str, target_port: u16) -> Vec<String> {
     let mut argv = vec![
         "-W".to_string(),
@@ -191,6 +192,7 @@ pub(crate) fn ssh_w_argv(jump: &ConnectParams, target_host: &str, target_port: u
         argv.push("-p".to_string());
         argv.push(jump.port.to_string());
     }
+    argv.push("--".to_string());
     argv.push(format!("{}@{}", jump.username, jump.host));
     argv
 }
@@ -222,6 +224,8 @@ impl SshWStream {
     ) -> Result<Self, TransportError> {
         let mut child = Command::new("ssh")
             .args(ssh_w_argv(jump, target_host, target_port))
+            // The Bitwarden session key is for `bw` alone (doc 05).
+            .env_remove("BW_SESSION")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

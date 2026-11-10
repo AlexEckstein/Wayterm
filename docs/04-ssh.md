@@ -223,9 +223,10 @@ and run the target's SSH session over that stream.
 
 **`ssh -W` fallback.** With `ssh_options.ssh_w_fallback` set, a target
 whose direct-tcpip channel the jump hop refuses is reached through
-`ssh -W target:port [user@]jump -o BatchMode=yes` as the stream (OpenSSH
-never prompts on a tty Wayterm does not own). The child carries no secrets
-and is killed when the connection drops. The stream does not use the jump
+`ssh -W target:port -o BatchMode=yes -- user@jump` as the stream (OpenSSH
+never prompts on a tty Wayterm does not own; after `--` a stored user name
+is never read as an option). The child carries no secrets, `BW_SESSION`
+included (doc 05), and is killed when the connection drops. The stream does not use the jump
 hop's connection, so the target does not hold it. Trust note: on that hop
 OpenSSH — not Wayterm — verifies the host key and authenticates (its
 `known_hosts`, agent and config); the target hop is still verified and
