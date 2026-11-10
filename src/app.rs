@@ -1,5 +1,8 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::fs::{DirBuilder, Permissions};
+use std::io;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gtk4::glib;
@@ -39,13 +42,21 @@ pub fn data_dir() -> PathBuf {
         .join("wayterm")
 }
 
-/// `$XDG_DATA_HOME/wayterm/wayterm.sqlite3`, creating the directory if
-/// needed.
+/// `$XDG_DATA_HOME/wayterm/wayterm.sqlite3`, in a directory made, and
+/// kept, private to its owner.
 pub fn default_db_path() -> PathBuf {
     let dir = data_dir();
     // Best effort: opening the store reports an unusable path.
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = private_dir(&dir);
     dir.join("wayterm.sqlite3")
+}
+
+/// Create `dir` if it is missing and set it to mode 0700, one made by an
+/// earlier version included: the store in it names hosts and users, and
+/// its macros can hold typed passwords (doc 09 §Database).
+fn private_dir(dir: &Path) -> io::Result<()> {
+    DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    std::fs::set_permissions(dir, Permissions::from_mode(0o700))
 }
 
 fn build_ui(app: &gtk4::Application) {
@@ -93,4 +104,25 @@ fn build_ui(app: &gtk4::Application) {
         }
     };
     tray::install_close_handler(window, tray_available, store);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_data_directory_is_private_new_or_not() {
+        let mode = |dir: &Path| std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        let home = tempfile::tempdir().unwrap();
+
+        let fresh = home.path().join("share/wayterm");
+        private_dir(&fresh).unwrap();
+        assert_eq!(mode(&fresh), 0o700);
+
+        let older = home.path().join("older");
+        std::fs::create_dir(&older).unwrap();
+        std::fs::set_permissions(&older, Permissions::from_mode(0o755)).unwrap();
+        private_dir(&older).unwrap();
+        assert_eq!(mode(&older), 0o700);
+    }
 }

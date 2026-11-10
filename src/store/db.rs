@@ -2,6 +2,8 @@
 //! and macros (doc 12). No credential material ever passes through this
 //! layer.
 
+use std::fs::{OpenOptions, Permissions};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,8 +28,10 @@ pub struct SessionStore {
 
 impl SessionStore {
     /// Open (creating if needed) the database at `path`: pragmas, schema,
-    /// and the first-run seed. Idempotent on an existing database.
+    /// and the first-run seed. Idempotent on an existing database. The
+    /// file is readable by its owner only.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
+        keep_private(path);
         let mut conn = Connection::open(path)?;
         initialize(&mut conn)?;
         Ok(Self { conn })
@@ -352,6 +356,22 @@ impl SessionStore {
         )?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         rows.collect()
+    }
+}
+
+/// Set the database file to mode 0600, creating it empty if it is missing:
+/// SQLite would create it by the umask, and gives its journal files the
+/// database's mode. Best effort: a path that cannot be opened is
+/// `Connection::open`'s to report.
+fn keep_private(path: &Path) {
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path);
+    if let Ok(file) = file {
+        let _ = file.set_permissions(Permissions::from_mode(0o600));
     }
 }
 
