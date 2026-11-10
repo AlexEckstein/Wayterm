@@ -14,11 +14,11 @@ Each SSH tab owns its sidebar, but the tab's page holds only the
 terminal: the side dock's SFTP panel hosts the current tab's sidebar and
 swaps it as the notebook switches tabs. Tabs without one (local, serial,
 RDP, VNC, Home) get a placeholder. Whenever the tab lets go of its
-connection (a redial, Disconnect, a lost connection or the shell's exit,
-doc 03 §Reconnect), the old sidebar detaches, ending its SFTP task and
-cancelling any running transfer (§Transfers), and an empty one replaces
-it in the panel. A closing tab's sidebar detaches the same way (doc 03
-§Closing a tab).
+connection (a redial, Disconnect, a lost connection, the shell's exit or
+a transport that fails to connect, doc 03 §Reconnect), the old sidebar
+detaches, ending its SFTP task and cancelling any running transfer
+(§Transfers), and an empty one replaces it in the panel. A closing tab's
+sidebar detaches the same way (doc 03 §Closing a tab).
 
 The sidebar, top to bottom:
 

@@ -334,6 +334,8 @@ fn spawn_state_drain(
                 TransportEvent::Error(message) => {
                     let state = TransportState::Error(message.clone());
                     resilience::set_tab_state(tab_id, state.clone());
+                    // The page was wired before its transport failed.
+                    release_connection(&notebook, &page);
                     show_error_view(&notebook, &page, &session, &message);
                     publish_status(&page, state, &host, port);
                 }

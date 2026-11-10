@@ -214,9 +214,10 @@ The SSH tab's connect flow owns one `ForwardEngine` per live connection
 - Status flows as `ForwardEvent`s — `Listening`, `Active { conns }`,
   `LastFailed { error }`, `Stopped` — one per transition.
 - Listeners close when their tab closes or lets go of its connection
-  (Disconnect, a lost connection, the shell's exit: doc 03 §Reconnect).
-  Every (re)connect stops the old engine and starts a fresh one on the new
-  connection, so forwards come back after a reconnect.
+  (Disconnect, a lost connection, the shell's exit, a transport that fails
+  to connect: doc 03 §Reconnect). Every (re)connect stops the old engine
+  and starts a fresh one on the new connection, so forwards come back
+  after a reconnect.
 
 ### Tunnels dialog
 

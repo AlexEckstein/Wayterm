@@ -488,6 +488,18 @@ pub(in crate::ui) fn a_lost_connection_ends_it_without_auto_reconnect() {
     ssh.assert_released();
 }
 
+/// So does a transport that fails to connect after the page was wired:
+/// the error view must not sit over live forwards and a live sidebar.
+pub(in crate::ui) fn a_failed_transport_ends_the_connection() {
+    let ssh = connected_ssh_page();
+    ssh.receive(TransportEvent::Error("channel refused".into()));
+    ssh.assert_released();
+    assert_eq!(
+        state(&ssh.page).status.borrow().state,
+        TransportState::Error("channel refused".into())
+    );
+}
+
 /// Closing the tab ends its forwards and its SFTP task at once: neither
 /// waits for the page to be freed, which a running transfer would delay.
 pub(in crate::ui) fn closing_a_tab_ends_its_forwards_and_sftp() {
