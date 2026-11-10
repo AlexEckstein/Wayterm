@@ -32,7 +32,7 @@ use crate::transport::credentials::CredentialError;
 use crate::ui::dialogs::tunnels::editor::RuleEditor;
 use crate::ui::dialogs::tunnels::model::{drafts_from_rules, ForwardRuleDraft, V2_NOTE};
 use crate::ui::icons::{session_type_icon, IconPicker};
-use crate::ui::widgets::{button_row, dim_label, error_label, set_margins, Modal};
+use crate::ui::widgets::{button_row, dim_label, error_label, release_wheel, set_margins, Modal};
 
 mod model;
 pub use model::*;
@@ -131,8 +131,10 @@ impl FormGrid {
         entry
     }
 
+    /// The dialog scrolls, so the spin leaves the wheel to it.
     fn spin(&mut self, label: &str, min: f64, max: f64) -> gtk4::SpinButton {
         let spin = gtk4::SpinButton::with_range(min, max, 1.0);
+        release_wheel(&spin);
         self.add(label, &spin);
         spin
     }
@@ -752,16 +754,21 @@ impl SessionDialog {
         });
         tmux_follow.fill(&widgets.tmux_name, &default_tmux_session_name(""));
 
-        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-        vbox.append(&form.grid);
+        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        content.append(&form.grid);
         for group in &groups.per_type {
-            vbox.append(group);
+            content.append(group);
         }
-        vbox.append(&groups.terminal);
-        // Takes the spare height, keeping the buttons at the bottom.
-        let spacer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        spacer.set_vexpand(true);
-        vbox.append(&spacer);
+        content.append(&groups.terminal);
+        // The fields scroll; `run` adds the keyring error and the buttons
+        // below, where they stay in view.
+        let scroller = gtk4::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vexpand(true)
+            .child(&content)
+            .build();
+        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        vbox.append(&scroller);
         modal.window.set_child(Some(&vbox));
 
         Self {
@@ -842,6 +849,31 @@ pub(in crate::ui) mod gtk_tests {
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-prod");
         dialog.widgets.name.set_text("renamed");
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-renamed");
+    }
+
+    /// The fields scroll, the buttons stay outside the scroller, and the
+    /// spins leave the wheel to it.
+    pub(in crate::ui) fn fields_scroll_and_spins_leave_the_wheel() {
+        let parent = gtk4::Window::new();
+        let dialog = SessionDialog::new_session(&parent, &[], &[]);
+        let w = &dialog.widgets;
+        let scrolled = |widget: &gtk4::Widget| {
+            widget
+                .ancestor(gtk4::ScrolledWindow::static_type())
+                .is_some()
+        };
+        assert!(scrolled(w.name.upcast_ref()));
+        assert!(scrolled(dialog.groups.terminal.upcast_ref()));
+        for spin in [&w.port, &w.serial_baud] {
+            let wheels = spin
+                .observe_controllers()
+                .iter::<gtk4::glib::Object>()
+                .flatten()
+                .filter(|c| c.is::<gtk4::EventControllerScroll>())
+                .count();
+            assert_eq!(wheels, 0);
+        }
+        dialog.modal.window.close();
     }
 
     /// The Terminal group shows for terminal types only, prefills the
