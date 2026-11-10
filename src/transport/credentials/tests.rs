@@ -136,12 +136,16 @@ impl KeyringBackend for FakeKeyring {
         self.check()
     }
 
-    fn find(&self, attributes: &Attributes) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    fn find(
+        &self,
+        attributes: &Attributes,
+        session_id: &str,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
         self.check()?;
         let items = self.items.lock().unwrap();
         Ok(items
             .iter()
-            .find(|(_, item, _)| matches(item, attributes))
+            .find(|(_, item, _)| matches(item, attributes) && serves(item, session_id))
             .map(|(_, _, secret)| Zeroizing::new(secret.clone())))
     }
 
@@ -153,11 +157,11 @@ impl KeyringBackend for FakeKeyring {
         Ok(())
     }
 
-    fn delete(&self, attributes: &Attributes) -> Result<usize, String> {
+    fn delete(&self, attributes: &Attributes, session_id: &str) -> Result<usize, String> {
         self.check()?;
         let mut items = self.items.lock().unwrap();
         let before = items.len();
-        items.retain(|(_, item, _)| !matches(item, attributes));
+        items.retain(|(_, item, _)| !(matches(item, attributes) && serves(item, session_id)));
         Ok(before - items.len())
     }
 }
@@ -261,6 +265,36 @@ fn lookup_falls_back_to_the_exact_session_name() {
     assert!(source.lookup("42", "key_passphrase").is_none());
     // The name belongs to session 42; another id does not inherit it.
     assert!(source.lookup("43", "password").is_none());
+}
+
+/// Sessions may share a name: an imported "prod-db" pointing somewhere
+/// else must not be handed, or delete, the password saved for this one.
+#[test]
+fn the_name_fallback_never_touches_another_sessions_entry() {
+    let fake = Arc::new(FakeKeyring::default());
+    keyring(&fake)
+        .store("42", "prod-db", "password", &secret(b"mine"))
+        .unwrap();
+    let namesake = KeyringSource::with_backend(
+        "77",
+        "prod-db",
+        Arc::clone(&fake) as Arc<dyn KeyringBackend>,
+    );
+
+    assert!(namesake.lookup("77", "password").is_none());
+    namesake.delete_entry("77", "password").unwrap();
+    assert_eq!(fake.len(), 1, "the namesake deleted session 42's entry");
+    assert_eq!(&*keyring(&fake).lookup("42", "password").unwrap(), b"mine");
+
+    // An item no session id owns still answers by name.
+    let name_only = [
+        SCHEMA_ATTR,
+        APP_ATTR,
+        ("session_name", "prod-db"),
+        ("secret_type", "password"),
+    ];
+    fake.seed(&name_only, b"by-name");
+    assert_eq!(&*namesake.lookup("77", "password").unwrap(), b"by-name");
 }
 
 #[test]

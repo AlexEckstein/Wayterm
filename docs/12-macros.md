@@ -138,7 +138,8 @@ locked by `macros::model` tests. Macros are global, not per session.
 Steps are stored as typed, in plain text, like other user data. Wayterm
 cannot tell a password typed at a prompt from a command, and shows no
 recording warning (a deliberate choice); macro contents are never
-logged.
+logged, and the database is readable by its owner only (doc 09
+§Database).
 
 ## Limitations
 

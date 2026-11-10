@@ -18,9 +18,10 @@ order:
 4. Asbru-CM (YAML)
 5. Wayterm JSON
 
-An import asks for confirmation, then reports what it did in the page's
-status line — imported, skipped, templates, and the first three warnings
-(the rest become "…") — and refreshes the session tree. **Export** writes
+An import asks for confirmation, naming what it found and the first
+three warnings (the rest become "…"), then reports what it did in the
+page's status line — imported, skipped, templates, and the warnings again
+— and refreshes the session tree. **Export** writes
 the JSON document to a chosen file.
 
 When the store is empty on first start, Wayterm opens this page once; the
@@ -108,7 +109,9 @@ passphrase is never copied.
 
 The JSON import is also how fields the session dialog does not edit
 (`ssh_options`, `host_key_policy`, `font_family`, …, doc 09 §Limitations)
-get set.
+get set. A document is someone else's word about how to connect, so a
+session arriving with `host_key_policy` `off` (doc 04 §Policy) is a
+warning, listed before any other so the confirmation shows it.
 
 ## Limitations
 

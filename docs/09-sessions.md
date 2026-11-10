@@ -19,6 +19,11 @@ open-tab list (doc 03 §Restoring tabs). The UI shares one `SessionStore`
 on the main thread; the RDP certificate check opens a second handle on
 the blocking pool, which WAL makes safe.
 
+The directory is created with mode 0700 and the database with 0600, and
+both are set back to that at every start, so a store an earlier version
+left readable by other local users is closed too: sessions name hosts and
+users, and macros can hold typed passwords (doc 12).
+
 `SessionStore::open` turns on `journal_mode=WAL` and `foreign_keys`, then
 runs every schema step and, on a fresh database, the seed (doc 13
 §Settings rows). There is no migration framework: each step is idempotent

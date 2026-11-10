@@ -73,14 +73,19 @@ fn warnings_text(warnings: &[String]) -> String {
     text
 }
 
-/// What a parse found, for the confirmation before writing.
+/// What a parse found, for the confirmation before writing: the first
+/// warnings are spelled out, since one may be a reason not to import.
 fn parsed_summary(sessions: usize, report: &ImportReport) -> String {
-    format!(
+    let mut text = format!(
         "{sessions} session(s) to import ({} template(s)), {} skipped, {} warning(s).",
         report.templates,
         report.skipped,
         report.warnings.len()
-    )
+    );
+    if !report.warnings.is_empty() {
+        text.push_str(&format!(" Warnings: {}", warnings_text(&report.warnings)));
+    }
+    text
 }
 
 /// The status line after an import.
@@ -333,6 +338,21 @@ mod tests {
         let names: Vec<&str> = sessions.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["db", "*.lab", "web"]);
         assert_eq!((folders.len(), report.templates), (0, 1));
+    }
+
+    #[test]
+    fn the_confirmation_spells_out_the_first_warnings() {
+        let mut report = ImportReport::default();
+        assert_eq!(
+            parsed_summary(2, &report),
+            "2 session(s) to import (0 template(s)), 0 skipped, 0 warning(s)."
+        );
+        report.warnings = vec!["lab: host key verification is off".to_string()];
+        assert_eq!(
+            parsed_summary(2, &report),
+            "2 session(s) to import (0 template(s)), 0 skipped, 1 warning(s). \
+             Warnings: lab: host key verification is off"
+        );
     }
 
     #[test]

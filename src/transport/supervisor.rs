@@ -1,6 +1,7 @@
 //! [`ConnectionSupervisor`]: one authenticated SSH session per
-//! (host, port, username), shared by every consumer and disconnected after
-//! the last one releases it (doc 04 §Connection supervisor).
+//! (host, port, username) and host-key verification on or off, shared by
+//! every consumer and disconnected after the last one releases it (doc 04
+//! §Connection supervisor).
 
 use std::collections::hash_map::Entry as MapEntry;
 use std::collections::HashMap;
@@ -10,6 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use russh::client::{self, Config, Handle};
+use russh::Preferred;
 
 use crate::store::model::SshOptions;
 use crate::transport::auth::ChallengeResponder;
@@ -25,12 +27,21 @@ const MONITOR_POLL: Duration = Duration::from_millis(250);
 #[cfg(test)]
 const MONITOR_POLL: Duration = Duration::from_millis(25);
 
-/// Where to dial, and the pool key: one connection per identity.
+/// Where to dial: one identity on one endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConnectParams {
     pub host: String,
     pub port: u16,
     pub username: String,
+}
+
+/// What a pooled connection is shared under: its identity, and whether
+/// its host key was checked. A session that verifies host keys is never
+/// handed a connection dialed with verification off.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PoolKey {
+    pub params: ConnectParams,
+    pub verified: bool,
 }
 
 /// What the pool holds: anything it can disconnect once released, and
@@ -53,9 +64,9 @@ impl PooledConnection for SshConnection {
 }
 
 /// Shared with the release monitors, which outlive the supervisor handle.
-type Pool<T> = Arc<Mutex<HashMap<ConnectParams, Arc<T>>>>;
+type Pool<T> = Arc<Mutex<HashMap<PoolKey, Arc<T>>>>;
 
-fn lock_pool<T>(pool: &Pool<T>) -> MutexGuard<'_, HashMap<ConnectParams, Arc<T>>> {
+fn lock_pool<T>(pool: &Pool<T>) -> MutexGuard<'_, HashMap<PoolKey, Arc<T>>> {
     // A poisoned lock still guards a consistent map.
     pool.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -81,7 +92,7 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
 
     /// The pooled connection for `key`. A closed one is evicted instead, so
     /// the caller dials fresh rather than opening channels on a dead session.
-    fn lookup(&self, key: &ConnectParams) -> Option<Arc<T>> {
+    fn lookup(&self, key: &PoolKey) -> Option<Arc<T>> {
         let mut pool = lock_pool(&self.pool);
         let conn = pool.get(key)?;
         if conn.is_closed() {
@@ -97,7 +108,7 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
     /// disconnects its own connection and adopts the winner's.
     async fn get_or_connect_with<F, Fut>(
         &self,
-        key: ConnectParams,
+        key: PoolKey,
         dial: F,
     ) -> Result<Arc<T>, TransportError>
     where
@@ -184,11 +195,17 @@ impl Keepalive {
     }
 }
 
-/// The russh client config for one dial, direct or through a jump host.
-pub(crate) fn client_config(keepalive: Keepalive) -> Arc<Config> {
+/// The russh client config for one dial to `params`, direct or through a
+/// jump host: the hop's keepalives, and the host-key algorithms in the
+/// order its known_hosts entries ask for (doc 04 §Host key verification).
+pub(crate) fn client_config(params: &ConnectParams, auth: &HopAuth) -> Arc<Config> {
     Arc::new(Config {
-        keepalive_interval: keepalive.interval,
-        keepalive_max: keepalive.max,
+        keepalive_interval: auth.keepalive.interval,
+        keepalive_max: auth.keepalive.max,
+        preferred: Preferred {
+            key: auth.verifier.key_preference(&params.host, params.port),
+            ..Preferred::default()
+        },
         ..Config::default()
     })
 }
@@ -201,11 +218,15 @@ impl ConnectionSupervisor<SshConnection> {
         params: &ConnectParams,
         auth: &HopAuth,
     ) -> Result<Arc<SshConnection>, TransportError> {
-        self.get_or_connect_with(params.clone(), || async {
+        let key = PoolKey {
+            params: params.clone(),
+            verified: auth.verifier.verifies(),
+        };
+        self.get_or_connect_with(key, || async {
             let handler =
                 AppClientHandler::new(params.host.clone(), params.port, auth.verifier.clone());
             let handle = client::connect(
-                client_config(auth.keepalive),
+                client_config(params, auth),
                 (params.host.as_str(), params.port),
                 handler,
             )
@@ -255,7 +276,7 @@ pub(crate) fn connect_error(host: &str, err: HandlerError) -> TransportError {
 /// Disconnect and evict once every consumer has released the connection.
 /// Consumers clone under the pool lock and the count is read under it too,
 /// so a strong count of 1 means exactly "only the pool's `Arc` is left".
-async fn monitored_release<T: PooledConnection>(key: ConnectParams, weak: Weak<T>, pool: Pool<T>) {
+async fn monitored_release<T: PooledConnection>(key: PoolKey, weak: Weak<T>, pool: Pool<T>) {
     loop {
         tokio::time::sleep(MONITOR_POLL).await;
         let released = {

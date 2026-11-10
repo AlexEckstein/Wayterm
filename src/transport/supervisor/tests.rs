@@ -21,11 +21,18 @@ impl PooledConnection for FakeConn {
     }
 }
 
-fn key(host: &str) -> ConnectParams {
+fn params(host: &str) -> ConnectParams {
     ConnectParams {
         host: host.to_string(),
         port: 22,
         username: "u".to_string(),
+    }
+}
+
+fn key(host: &str) -> PoolKey {
+    PoolKey {
+        params: params(host),
+        verified: true,
     }
 }
 
@@ -63,6 +70,38 @@ async fn reuse_returns_the_same_connection() {
 
     assert!(Arc::ptr_eq(&first, &second));
     assert_eq!(dials.load(Ordering::SeqCst), 1);
+}
+
+/// A connection dialed with host-key verification off is not the one a
+/// verifying session gets, though both name the same user on the same host.
+#[tokio::test]
+async fn an_unverified_connection_is_not_shared_with_a_verifying_dial() {
+    let sup = ConnectionSupervisor::<FakeConn>::new();
+    let dials = AtomicUsize::new(0);
+    let flags = Mutex::new(Vec::new());
+    let unverified = PoolKey {
+        verified: false,
+        ..key("a")
+    };
+
+    let lab = sup
+        .get_or_connect_with(unverified.clone(), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    let strict = sup
+        .get_or_connect_with(key("a"), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&lab, &strict));
+    assert_eq!(dials.load(Ordering::SeqCst), 2);
+
+    // Each is still shared among its own kind.
+    let lab_again = sup
+        .get_or_connect_with(unverified, || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&lab, &lab_again));
+    assert_eq!(dials.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -242,14 +281,33 @@ fn keepalive_reads_stored_options_over_the_default() {
 }
 
 #[test]
-fn client_config_carries_the_keepalive() {
-    let keepalive = Keepalive {
-        interval: Some(Duration::from_secs(7)),
-        max: 2,
+fn client_config_carries_the_keepalive_and_the_hosts_key_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let known_hosts = dir.path().join("known_hosts");
+    std::fs::write(&known_hosts, "a ssh-rsa AAAAB3NzaC1yc2E\n").unwrap();
+    let auth = HopAuth {
+        method: AuthMethod::None,
+        creds: CredentialManager::new(Vec::new()),
+        verifier: HostKeyVerifier::new(
+            crate::store::model::HostKeyPolicy::Strict,
+            Arc::new(|_| crate::transport::hostkey::HostKeyDecision::Reject),
+            Some(Arc::from(known_hosts)),
+        ),
+        responder: None,
+        keepalive: Keepalive {
+            interval: Some(Duration::from_secs(7)),
+            max: 2,
+        },
     };
-    let config = client_config(keepalive);
+    let config = client_config(&params("a"), &auth);
     assert_eq!(config.keepalive_interval, Some(Duration::from_secs(7)));
     assert_eq!(config.keepalive_max, 2);
+    assert!(matches!(
+        config.preferred.key[0],
+        russh::keys::Algorithm::Rsa { .. }
+    ));
+    let unknown = client_config(&params("b"), &auth);
+    assert_eq!(unknown.preferred.key, Preferred::DEFAULT.key);
 }
 
 #[tokio::test]

@@ -49,11 +49,17 @@ Highlights:
   databases, CRUD and foreign-key behavior; the serde spellings of every
   enum column (doc 09 §Wire formats).
 - **Host keys:** temp `known_hosts` files — unknown, matching, mismatched,
-  `accept-new`, `off`, hashed entries.
+  `accept-new`, `off`, hashed entries; a key of another type, a revoked
+  key, an unreadable file and host names with known_hosts syntax, all
+  rejected; the reader's own cases (tabs, patterns, negation, markers).
 - **Wiring:** `FakeBackend` drives the pump, bridge and drain
   (`src/ui/tabs/terminal_tab/tests.rs`, `tests/local_serial_flow.rs`).
 - **Reconnect:** the policy and driver against tokio's paused clock, so the
   backoff curve is asserted in virtual time (`tests/reconnect.rs`).
+- **Host-key types:** an in-process russh server holding two host keys is
+  asked for the type known_hosts records, and one showing only a key of
+  another type is rejected under `strict` and `accept-new`
+  (`tests/host_key_types.rs`; skips without `ssh-keygen`).
 - **Keepalives:** an in-process russh server behind a proxy that goes
   silent: keepalives close the connection, and the pool dials fresh while
   the dead one is still held (`tests/keepalive.rs`).

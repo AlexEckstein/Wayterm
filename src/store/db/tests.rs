@@ -830,3 +830,43 @@ fn macros_table_is_added_to_an_existing_database() {
     let id = store.insert_macro(&macro_named("m", &[(0, b"x")])).unwrap();
     assert_eq!(store.list_macros().unwrap()[0].id, id);
 }
+
+/// Sessions name hosts and users and macros can hold typed passwords: the
+/// database and SQLite's files beside it are the owner's alone, on a new
+/// database and on one an earlier version left world-readable.
+#[test]
+fn the_database_files_are_readable_by_their_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wayterm.db");
+    let modes = || -> Vec<(String, u32)> {
+        let mut modes: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let mode = entry.metadata().unwrap().permissions().mode() & 0o777;
+                (entry.file_name().to_string_lossy().into_owned(), mode)
+            })
+            .collect();
+        modes.sort();
+        modes
+    };
+
+    let store = SessionStore::open(&path).unwrap();
+    store.insert_folder("A", None).unwrap();
+    let open = modes();
+    assert!(open.iter().any(|(name, _)| name == "wayterm.db-wal"));
+    assert!(open.iter().all(|(_, mode)| *mode == 0o600), "{open:?}");
+    drop(store);
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let store = SessionStore::open(&path).unwrap();
+    assert_eq!(store.list_folders(None).unwrap().len(), 1);
+    store.insert_folder("B", None).unwrap();
+    let reopened = modes();
+    assert!(
+        reopened.iter().all(|(_, mode)| *mode == 0o600),
+        "{reopened:?}"
+    );
+}
