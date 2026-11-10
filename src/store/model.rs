@@ -49,6 +49,15 @@ impl SessionType {
         }
     }
 
+    /// Whether the session opens in a terminal, so its terminal overrides
+    /// (backend, color scheme) apply.
+    pub fn has_terminal(&self) -> bool {
+        match self {
+            Self::SSH | Self::Serial | Self::LocalShell => true,
+            Self::RDP | Self::VNC => false,
+        }
+    }
+
     /// Whether the session dialog offers to save a typed password to the
     /// keyring (doc 05, "Store on save").
     pub fn stores_password_on_save(&self) -> bool {

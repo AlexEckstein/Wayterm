@@ -9,11 +9,12 @@ use crate::store::SessionStore;
 use crate::ui::dialogs::tunnels::model::ForwardRuleDraft;
 
 use super::{
-    collect_folders, collect_peer_sessions, config_from_fields, default_tmux_session_name,
-    folder_labels, format_resolution, jump_candidates, jump_error, jump_missing_label,
-    jump_picker_model, parse_resolution, resolve_jump, session_type_from_index, type_index_for,
-    DialogFields, DEFAULT_SERIAL_BAUD, JUMP_NONE_LABEL, TYPE_INDEX_LOCAL, TYPE_INDEX_RDP,
-    TYPE_INDEX_SERIAL, TYPE_INDEX_SSH, TYPE_INDEX_VNC,
+    backend_picker, collect_folders, collect_peer_sessions, config_from_fields,
+    default_tmux_session_name, folder_labels, format_resolution, jump_candidates, jump_error,
+    jump_missing_label, jump_picker_model, parse_resolution, resolve_jump, scheme_picker,
+    session_type_from_index, type_index_for, DialogFields, DEFAULT_SERIAL_BAUD, JUMP_NONE_LABEL,
+    OVERRIDE_DEFAULT_LABEL, TYPE_INDEX_LOCAL, TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_SSH,
+    TYPE_INDEX_VNC,
 };
 
 fn sample_folders() -> Vec<Folder> {
@@ -186,8 +187,8 @@ fn row_with_hidden_columns(session_type: SessionType) -> SessionConfig {
     }
 }
 
-/// Saving an edit keeps what the dialog cannot show: the appearance
-/// overrides always, the per-type columns while the type stays.
+/// Saving an edit keeps what the dialog cannot show: font and opacity
+/// always, the per-type columns while the type stays.
 #[test]
 fn editing_keeps_the_columns_the_dialog_does_not_show() {
     for (session_type, type_index) in [
@@ -206,8 +207,6 @@ fn editing_keeps_the_columns_the_dialog_does_not_show() {
         assert_eq!(config.font_family, base.font_family, "{session_type:?}");
         assert_eq!(config.font_size, base.font_size);
         assert_eq!(config.opacity, base.opacity);
-        assert_eq!(config.color_scheme, base.color_scheme);
-        assert_eq!(config.preferred_backend, base.preferred_backend);
         let ssh = session_type == SessionType::SSH;
         assert_eq!(config.key_path.is_some(), ssh, "{session_type:?}");
         assert_eq!(config.host_key_policy.is_some(), ssh);
@@ -227,6 +226,96 @@ fn editing_keeps_the_columns_the_dialog_does_not_show() {
         !config_from_fields(&rdp, &[], &[]).rdp_compression,
         "a stored compression choice survives"
     );
+}
+
+/// The backend and scheme overrides store as picked, for every type, and
+/// picking Default clears a stored one.
+#[test]
+fn terminal_overrides_store_as_picked() {
+    for type_index in [
+        TYPE_INDEX_SSH,
+        TYPE_INDEX_SERIAL,
+        TYPE_INDEX_LOCAL,
+        TYPE_INDEX_RDP,
+    ] {
+        let base = row_with_hidden_columns(session_type_from_index(type_index));
+        let picked = DialogFields {
+            type_index,
+            terminal_backend: Some("ghostty".to_string()),
+            color_scheme: Some("Dark".to_string()),
+            base: base.clone(),
+            ..Default::default()
+        };
+        let config = config_from_fields(&picked, &[], &[]);
+        assert_eq!(config.preferred_backend.as_deref(), Some("ghostty"));
+        assert_eq!(config.color_scheme.as_deref(), Some("Dark"));
+        let cleared = DialogFields {
+            type_index,
+            base,
+            ..Default::default()
+        };
+        let config = config_from_fields(&cleared, &[], &[]);
+        assert_eq!(config.preferred_backend, None);
+        assert_eq!(config.color_scheme, None);
+    }
+}
+
+#[test]
+fn only_terminal_types_show_the_terminal_overrides() {
+    for (session_type, terminal) in [
+        (SessionType::SSH, true),
+        (SessionType::Serial, true),
+        (SessionType::LocalShell, true),
+        (SessionType::RDP, false),
+        (SessionType::VNC, false),
+    ] {
+        assert_eq!(session_type.has_terminal(), terminal, "{session_type:?}");
+    }
+}
+
+/// Default first, then the choices; a stored value selects its entry the
+/// way the resolvers read it, and Default stores nothing.
+#[test]
+fn override_pickers_select_the_stored_value() {
+    let backend = backend_picker(None);
+    assert_eq!(backend.labels[0], OVERRIDE_DEFAULT_LABEL);
+    assert_eq!(backend.labels[1], "VTE");
+    assert!(backend.labels[2].starts_with("Ghostty"));
+    assert_eq!(backend.labels.len(), 3);
+    assert_eq!(backend.selected, 0);
+    assert_eq!(backend.value(0), None);
+    assert_eq!(backend.value(1).as_deref(), Some("vte"));
+    assert_eq!(backend.value(2).as_deref(), Some("ghostty"));
+    assert_eq!(backend.value(9), None, "out of range stores nothing");
+    assert_eq!(backend_picker(Some(" GHOSTTY ")).selected, 2);
+    assert_eq!(backend_picker(Some("  ")).selected, 0, "blank is Default");
+
+    let scheme = scheme_picker(None);
+    assert_eq!(
+        scheme.labels,
+        [OVERRIDE_DEFAULT_LABEL, "System", "Light", "Dark"]
+    );
+    let dark = scheme_picker(Some("dark"));
+    assert_eq!(dark.selected, 3);
+    assert_eq!(
+        dark.value(dark.selected).as_deref(),
+        Some("Dark"),
+        "saving normalises the spelling"
+    );
+}
+
+/// A value this build does not know (an import) shows as its own entry and
+/// saves back unchanged.
+#[test]
+fn an_unknown_override_keeps_its_value() {
+    let picker = scheme_picker(Some("Solarized"));
+    assert_eq!(picker.labels.len(), 5);
+    assert_eq!(picker.selected, 4);
+    assert!(picker.labels[4].starts_with("Solarized"));
+    assert_eq!(picker.value(4).as_deref(), Some("Solarized"));
+    let picker = backend_picker(Some("kitty"));
+    assert_eq!(picker.selected, 3);
+    assert_eq!(picker.value(3).as_deref(), Some("kitty"));
 }
 
 /// A type change starts the new type's hidden columns fresh: the old
