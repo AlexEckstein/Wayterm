@@ -25,6 +25,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
@@ -34,6 +35,9 @@ use tokio::task::JoinHandle;
 use crate::store::model::{ForwardKind, ForwardRule};
 use crate::transport::connection::SshConnection;
 use crate::transport::types::TransportError;
+
+/// How long a listener waits after a failed `accept` before the next.
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
 /// Index into the rules slice handed to [`ForwardEngine::start`]. Rule
 /// identity is positional: reordering rules across a restart reassigns ids,
@@ -250,6 +254,10 @@ async fn serve_rule(inner: Arc<EngineInner>, id: RuleId, rule: ForwardRule) {
     let active = Arc::new(AtomicU32::new(0));
     loop {
         let Ok((socket, _)) = listener.accept().await else {
+            // Out of descriptors, most likely, and the error repeats at
+            // once: wait, so a flood of local connections cannot spin a
+            // worker.
+            tokio::time::sleep(ACCEPT_RETRY).await;
             continue;
         };
         let conn = tokio::spawn(handle_one(
