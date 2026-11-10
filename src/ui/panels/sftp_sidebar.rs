@@ -1027,8 +1027,6 @@ pub(in crate::ui) mod gtk_tests {
         assert_eq!(sidebar.path_text(), "/var/log", "ticked: catches up");
     }
 
-    /// Dropping the last handle frees the sidebar, and with it the SFTP
-    /// task's command sender, so the task ends (doc 07 §Connection model).
     /// A sidebar detached mid-transfer shuts its task down and closes its
     /// command channel, though the transfer's futures still hold the
     /// sidebar.
@@ -1059,6 +1057,8 @@ pub(in crate::ui) mod gtk_tests {
         while context.iteration(false) {}
     }
 
+    /// Dropping the last handle frees the sidebar, and with it the SFTP
+    /// task's command sender, so the task ends (doc 07 §Connection model).
     pub(in crate::ui) fn a_dropped_sidebar_is_freed() {
         for sidebar in [SftpSidebar::new(), SftpSidebar::hidden()] {
             let inner = Rc::downgrade(&sidebar.inner);
