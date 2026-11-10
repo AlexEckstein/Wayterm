@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use russh::client::{self, Config, Handle};
+use russh::Preferred;
 
 use crate::store::model::SshOptions;
 use crate::transport::auth::ChallengeResponder;
@@ -184,11 +185,17 @@ impl Keepalive {
     }
 }
 
-/// The russh client config for one dial, direct or through a jump host.
-pub(crate) fn client_config(keepalive: Keepalive) -> Arc<Config> {
+/// The russh client config for one dial to `params`, direct or through a
+/// jump host: the hop's keepalives, and the host-key algorithms in the
+/// order its known_hosts entries ask for (doc 04 §Host key verification).
+pub(crate) fn client_config(params: &ConnectParams, auth: &HopAuth) -> Arc<Config> {
     Arc::new(Config {
-        keepalive_interval: keepalive.interval,
-        keepalive_max: keepalive.max,
+        keepalive_interval: auth.keepalive.interval,
+        keepalive_max: auth.keepalive.max,
+        preferred: Preferred {
+            key: auth.verifier.key_preference(&params.host, params.port),
+            ..Preferred::default()
+        },
         ..Config::default()
     })
 }
@@ -205,7 +212,7 @@ impl ConnectionSupervisor<SshConnection> {
             let handler =
                 AppClientHandler::new(params.host.clone(), params.port, auth.verifier.clone());
             let handle = client::connect(
-                client_config(auth.keepalive),
+                client_config(params, auth),
                 (params.host.as_str(), params.port),
                 handler,
             )

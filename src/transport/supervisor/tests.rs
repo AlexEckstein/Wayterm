@@ -242,14 +242,33 @@ fn keepalive_reads_stored_options_over_the_default() {
 }
 
 #[test]
-fn client_config_carries_the_keepalive() {
-    let keepalive = Keepalive {
-        interval: Some(Duration::from_secs(7)),
-        max: 2,
+fn client_config_carries_the_keepalive_and_the_hosts_key_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let known_hosts = dir.path().join("known_hosts");
+    std::fs::write(&known_hosts, "a ssh-rsa AAAAB3NzaC1yc2E\n").unwrap();
+    let auth = HopAuth {
+        method: AuthMethod::None,
+        creds: CredentialManager::new(Vec::new()),
+        verifier: HostKeyVerifier::new(
+            crate::store::model::HostKeyPolicy::Strict,
+            Arc::new(|_| crate::transport::hostkey::HostKeyDecision::Reject),
+            Some(Arc::from(known_hosts)),
+        ),
+        responder: None,
+        keepalive: Keepalive {
+            interval: Some(Duration::from_secs(7)),
+            max: 2,
+        },
     };
-    let config = client_config(keepalive);
+    let config = client_config(&key("a"), &auth);
     assert_eq!(config.keepalive_interval, Some(Duration::from_secs(7)));
     assert_eq!(config.keepalive_max, 2);
+    assert!(matches!(
+        config.preferred.key[0],
+        russh::keys::Algorithm::Rsa { .. }
+    ));
+    let unknown = client_config(&key("b"), &auth);
+    assert_eq!(unknown.preferred.key, Preferred::DEFAULT.key);
 }
 
 #[tokio::test]

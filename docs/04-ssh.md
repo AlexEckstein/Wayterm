@@ -80,29 +80,62 @@ session that dialed it.
    Accepting always records the key, so the host is never asked about
    twice. Hashed entries are read, but new entries are appended in plain
    text (`host` or `[host]:port`, then the key), even to a hashed file.
-3. **Changed key:** hard fail, never a one-click override.
+3. **Changed key:** hard fail, never a one-click override. A host's key
+   has changed when known_hosts names the host and none of its entries
+   holds the presented key, whatever the types of the keys involved; a
+   key under an `@revoked` entry fails the same way.
 4. The policy is global (`host_key_policy`, seeded `strict`) with a
    per-session override:
    - `strict`: unknown → prompt; changed → fail;
    - `accept-new`: unknown → record silently; changed → fail (OpenSSH's
      `StrictHostKeyChecking=accept-new`);
-   - `off`: no verification, for labs only.
+   - `off`: no verification, for labs only. It skips the question about
+     an unknown host and whatever keeps known_hosts from answering; a
+     changed or revoked key still fails.
 
 ### Implementation
 
 `AppClientHandler::check_server_key` runs during key exchange, before
-authentication, and asks `HostKeyVerifier`, which maps russh's
-`check_known_hosts_path`:
+authentication, and asks `HostKeyVerifier`, which reads the host's entries
+itself (`hostkey/known_hosts.rs`):
 
-| Result | Meaning | Decision |
-|---|---|---|
-| `Ok(true)` | known, matching | accept |
-| `Err(KeyChanged)` | known, **mismatched** | reject, no prompt |
-| `Ok(false)` or another error | unknown (or unreadable file) | apply the policy |
+| known_hosts holds, for the host | Decision |
+|---|---|
+| the presented key | accept |
+| other keys only, or the presented key under `@revoked` | reject, no prompt |
+| nothing | apply the policy |
 
-A key the policy says to record but that cannot be written is rejected,
-never accepted unrecorded. Host certificates are rejected. A rejection
-surfaces as `TransportError::HostKeyRejected`, never as an auth failure.
+russh's own `check_known_hosts_path` is not used: it compares the
+presented key only with recorded keys of its type, so a known host showing
+a key of another type reads as unknown — prompted for under `strict`,
+recorded silently under `accept-new` — and whoever sits in the middle picks
+the type.
+
+- **Reading** follows OpenSSH. Fields split on spaces and tabs; a host is
+  named `host`, or `[host]:port` off port 22, compared without case; the
+  host field is a comma-separated list of names, hashed names (`|1|…`),
+  `*` and `?` patterns and `!` negations, which exclude. `@revoked` entries
+  are honored, `@cert-authority` ones skipped (§Limitations). A missing
+  file holds no entries; bytes that are not UTF-8 hide only their own
+  line.
+- **Key types.** Each dial offers the host-key algorithms of the host's
+  recorded keys first (`HostKeyVerifier::key_preference`, as OpenSSH orders
+  `HostKeyAlgorithms`), so a server that still holds a recorded key
+  presents that one. Without this a host recorded by another client under
+  one type would be rejected for presenting another.
+- **Recording.** A new entry goes in as `host` or `[host]:port` and the
+  key, the name as the session spells it. A name that would read in the
+  file as anything but one plain name is never recorded and so never
+  accepted: blanks, control characters and any of `,*?!|#@[]`, which would
+  make it a second line, a list or a pattern vouching for other hosts. A
+  missing `~/.ssh` is created with mode 0700.
+- **Failing closed.** A known_hosts that cannot be read (anything but a
+  missing file), no home directory to find it in, and a key that should be
+  recorded and cannot be all reject: none of them makes a host unknown.
+  Each is logged with its reason, never with key material.
+
+Host certificates are rejected. A rejection surfaces as
+`TransportError::HostKeyRejected`, never as an auth failure.
 
 ## Authentication
 
@@ -233,12 +266,15 @@ same rule editor, so both accept exactly the same input.
 
 ## Version anchors
 
-- **russh 0.64:** `known_hosts::{check,learn}_known_hosts_path` with the
-  mapping above; keyboard-interactive is client-driven
+- **russh 0.64:** keyboard-interactive is client-driven
   (`authenticate_keyboard_interactive_start`/`_respond`, responses
   `Success | Failure | InfoRequest { prompts }`); agent auth via
   `AgentClient::connect_env` → `request_identities` →
   `authenticate_publickey_with`.
+- **russh 0.65:** `known_hosts::learn_known_hosts_path` appends an entry
+  (lookups are Wayterm's own, §Host key verification), and
+  `Preferred::DEFAULT.key` is the host-key algorithm list that
+  `key_preference` reorders.
 - **russh-sftp 3.0:** doc 07.
 
 Re-verify these when bumping a dependency; these APIs have moved before.
@@ -250,7 +286,12 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   plain connection error; the warning dialog that explains the risk and
   the `ssh-keygen -R` remedy (`dialogs::hostkey::prompt_changed`) exists
   but nothing calls it.
-- Host certificates are rejected; there is no CA support.
+- Host certificates are rejected; there is no CA support, so
+  `@cert-authority` lines in known_hosts are skipped.
+- A host that replaced its key with one of another type is rejected as
+  changed, as in OpenSSH, until the stale entry is removed
+  (`ssh-keygen -R`). Entries for a host's IP address are not consulted
+  unless the session names the address, and new entries are never hashed.
 - The `off` policy has no badge in the UI.
 - `ssh_options.compression` is stored but not applied. The session
   dialog edits no `ssh_options` field, so keepalives can only be set by an

@@ -170,7 +170,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let handler = AppClientHandler::new(target.host.clone(), target.port, auth.verifier.clone());
-    let handle = client::connect_stream(client_config(auth.keepalive), stream, handler)
+    let handle = client::connect_stream(client_config(target, auth), stream, handler)
         .await
         .map_err(|err| connect_error(&target.host, err))?;
     authenticated(handle, target, auth).await
