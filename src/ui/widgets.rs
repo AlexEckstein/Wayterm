@@ -45,6 +45,20 @@ pub fn set_margins(widget: &impl IsA<gtk4::Widget>, margin: i32) {
     widget.set_margin_end(margin);
 }
 
+/// Leave the wheel to the scrolling page around `control`, which would
+/// otherwise change its value when the page is scrolled under the pointer.
+pub fn release_wheel(control: &impl IsA<gtk4::Widget>) {
+    let wheel: Vec<gtk4::EventControllerScroll> = control
+        .observe_controllers()
+        .iter::<glib::Object>()
+        .flatten()
+        .filter_map(|controller| controller.downcast().ok())
+        .collect();
+    for controller in &wheel {
+        control.remove_controller(controller);
+    }
+}
+
 /// A label centered in all the space it is given.
 pub fn centered_label(text: &str) -> gtk4::Label {
     let label = gtk4::Label::new(Some(text));

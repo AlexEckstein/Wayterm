@@ -5,6 +5,8 @@
 //! type reveals that type's group (SSH: auth, jump host, forwards, tmux;
 //! serial: line settings; RDP: domain, resolution, depth; local: shell and
 //! directory; VNC: a note that its password lives in the keyring). Only the selected group's values are stored.
+//! Types with a terminal also show the Terminal group: the session's
+//! backend and color scheme overrides.
 //!
 //! For the password method the SSH group also takes a password, kept only
 //! long enough to hand to the keyring when "Save password to keyring" is
@@ -30,7 +32,7 @@ use crate::transport::credentials::CredentialError;
 use crate::ui::dialogs::tunnels::editor::RuleEditor;
 use crate::ui::dialogs::tunnels::model::{drafts_from_rules, ForwardRuleDraft, V2_NOTE};
 use crate::ui::icons::{session_type_icon, IconPicker};
-use crate::ui::widgets::{button_row, dim_label, error_label, set_margins, Modal};
+use crate::ui::widgets::{button_row, dim_label, error_label, release_wheel, set_margins, Modal};
 
 mod model;
 pub use model::*;
@@ -45,6 +47,11 @@ const VNC_KEYRING_NOTE: &str = "The VNC password is looked up in your OS keyring
                                 Service); the connect prompt stores nothing.";
 const TMUX_LABEL: &str = "Persist via tmux — survive reconnects; sessions on the remote host \
                           are named wayterm-<session name>";
+
+const BACKEND_TOOLTIP: &str = "The terminal this session's tabs open in; Default follows \
+                               Settings. Open tabs keep theirs.";
+const SCHEME_TOOLTIP: &str = "This session's colors; Default follows the backend's scheme \
+                              in Settings. A text or background color set there still applies.";
 
 const SAVE_PASSWORD_LABEL: &str = "Save password to keyring";
 const SAVE_PASSWORD_LABEL_EMPTY: &str = "Save password to keyring (enter password to enable)";
@@ -124,8 +131,10 @@ impl FormGrid {
         entry
     }
 
+    /// The dialog scrolls, so the spin leaves the wheel to it.
     fn spin(&mut self, label: &str, min: f64, max: f64) -> gtk4::SpinButton {
         let spin = gtk4::SpinButton::with_range(min, max, 1.0);
+        release_wheel(&spin);
         self.add(label, &spin);
         spin
     }
@@ -165,15 +174,20 @@ impl FormGrid {
     }
 }
 
-/// The per-type groups, by type index.
+/// The per-type groups, by type index, and the Terminal group.
 #[derive(Clone)]
-struct TypeGroups([gtk4::Revealer; 5]);
+struct TypeGroups {
+    per_type: [gtk4::Revealer; 5],
+    terminal: gtk4::Revealer,
+}
 
 impl TypeGroups {
     fn apply(&self, type_index: u32) {
-        for (index, group) in self.0.iter().enumerate() {
+        for (index, group) in self.per_type.iter().enumerate() {
             group.set_reveal_child(index as u32 == type_index);
         }
+        self.terminal
+            .set_reveal_child(session_type_from_index(type_index).has_terminal());
     }
 }
 
@@ -224,6 +238,10 @@ struct Widgets {
     rdp_color_depth: gtk4::DropDown,
     local_shell: gtk4::Entry,
     local_working_dir: gtk4::Entry,
+    terminal_backend: gtk4::DropDown,
+    backend_picker: OverridePicker,
+    color_scheme: gtk4::DropDown,
+    scheme_picker: OverridePicker,
 }
 
 impl Widgets {
@@ -257,6 +275,8 @@ impl Widgets {
             rdp_color_depth_index: self.rdp_color_depth.selected(),
             local_shell: self.local_shell.text().into(),
             local_working_dir: self.local_working_dir.text().into(),
+            terminal_backend: self.backend_picker.value(self.terminal_backend.selected()),
+            color_scheme: self.scheme_picker.value(self.color_scheme.selected()),
             base: base.clone(),
         }
     }
@@ -370,7 +390,7 @@ pub struct SessionDialog {
 
 impl SessionDialog {
     pub fn new_session(parent: &gtk4::Window, folders: &[Folder], peers: &[SessionConfig]) -> Self {
-        Self::build(parent, folders, peers, 0, None, &[])
+        Self::build(parent, folders, peers, &SessionConfig::default())
     }
 
     pub fn edit(
@@ -379,14 +399,7 @@ impl SessionDialog {
         folders: &[Folder],
         peers: &[SessionConfig],
     ) -> Self {
-        let mut dialog = Self::build(
-            parent,
-            folders,
-            peers,
-            config.id,
-            config.jump_session_id,
-            &drafts_from_rules(config.forward_rules.as_ref()),
-        );
+        let mut dialog = Self::build(parent, folders, peers, config);
         // Fills the type before the port: a type change resets the port.
         dialog.widgets.fill(config, folders);
         // A pre-fill is not a user edit, but a stored name is the user's
@@ -471,14 +484,15 @@ impl SessionDialog {
         self.modal.run()
     }
 
+    /// The widgets, with the pickers built around `config`'s values (the
+    /// jump host, forwards and overrides); [`Widgets::fill`] sets the rest.
     fn build(
         parent: &gtk4::Window,
         folders: &[Folder],
         peers: &[SessionConfig],
-        self_id: i64,
-        current_jump: Option<i64>,
-        initial_drafts: &[ForwardRuleDraft],
+        config: &SessionConfig,
     ) -> Self {
+        let (self_id, current_jump) = (config.id, config.jump_session_id);
         let modal = Modal::new("Session", Some(parent));
         modal.window.set_default_size(560, 680);
 
@@ -580,7 +594,7 @@ impl SessionDialog {
         ssh.span(&dim_label(V2_NOTE));
         let forward_rules = RuleEditor::new(None);
         ssh.span(forward_rules.widget());
-        for draft in initial_drafts {
+        for draft in &drafts_from_rules(config.forward_rules.as_ref()) {
             forward_rules.add(draft, None);
         }
         let forward_add = gtk4::Button::with_label("Add forward");
@@ -616,14 +630,29 @@ impl SessionDialog {
         let local_shell = local.entry("Shell:", "$SHELL (default)");
         let local_working_dir = local.entry("Working Directory:", "~ (default)");
 
-        // In TYPE_INDEX_* order.
-        let groups = TypeGroups([
-            ssh.into_group("SSH"),
-            rdp.into_group("RDP"),
-            vnc.into_group("VNC"),
-            serial.into_group("Serial"),
-            local.into_group("Local Shell"),
-        ]);
+        // Overrides of the Settings rows for this session's tabs (doc 02
+        // §Backend selection, §Color schemes).
+        let mut terminal = FormGrid::new(6);
+        let backend_picker = backend_picker(config.preferred_backend.as_deref());
+        let terminal_backend = terminal.dropdown("Backend:", &backend_picker.labels);
+        terminal_backend.set_selected(backend_picker.selected);
+        terminal_backend.set_tooltip_text(Some(BACKEND_TOOLTIP));
+        let scheme_picker = scheme_picker(config.color_scheme.as_deref());
+        let color_scheme = terminal.dropdown("Color Scheme:", &scheme_picker.labels);
+        color_scheme.set_selected(scheme_picker.selected);
+        color_scheme.set_tooltip_text(Some(SCHEME_TOOLTIP));
+
+        let groups = TypeGroups {
+            // In TYPE_INDEX_* order.
+            per_type: [
+                ssh.into_group("SSH"),
+                rdp.into_group("RDP"),
+                vnc.into_group("VNC"),
+                serial.into_group("Serial"),
+                local.into_group("Local Shell"),
+            ],
+            terminal: terminal.into_group("Terminal"),
+        };
 
         let widgets = Widgets {
             name,
@@ -654,6 +683,10 @@ impl SessionDialog {
             rdp_color_depth,
             local_shell,
             local_working_dir,
+            terminal_backend,
+            backend_picker,
+            color_scheme,
+            scheme_picker,
         };
         let defaults = DialogFields::default();
         widgets.serial_baud.set_value(defaults.serial_baud.into());
@@ -721,15 +754,21 @@ impl SessionDialog {
         });
         tmux_follow.fill(&widgets.tmux_name, &default_tmux_session_name(""));
 
-        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-        vbox.append(&form.grid);
-        for group in &groups.0 {
-            vbox.append(group);
+        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        content.append(&form.grid);
+        for group in &groups.per_type {
+            content.append(group);
         }
-        // Takes the spare height, keeping the buttons at the bottom.
-        let spacer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        spacer.set_vexpand(true);
-        vbox.append(&spacer);
+        content.append(&groups.terminal);
+        // The fields scroll; `run` adds the keyring error and the buttons
+        // below, where they stay in view.
+        let scroller = gtk4::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vexpand(true)
+            .child(&content)
+            .build();
+        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        vbox.append(&scroller);
         modal.window.set_child(Some(&vbox));
 
         Self {
@@ -767,9 +806,9 @@ pub(in crate::ui) mod gtk_tests {
         w.name.set_text("other");
         assert_eq!(w.tmux_name.text(), "wayterm-custom", "a user edit wins");
         dialog.groups.apply(TYPE_INDEX_SSH);
-        assert!(revealed(&dialog.groups.0[TYPE_INDEX_SSH as usize]));
+        assert!(revealed(&dialog.groups.per_type[TYPE_INDEX_SSH as usize]));
         dialog.groups.apply(TYPE_INDEX_SERIAL);
-        assert!(!revealed(&dialog.groups.0[TYPE_INDEX_SSH as usize]));
+        assert!(!revealed(&dialog.groups.per_type[TYPE_INDEX_SSH as usize]));
 
         // Edit mode: a stored name is shown in full and survives renames.
         let stored = SessionConfig {
@@ -810,6 +849,83 @@ pub(in crate::ui) mod gtk_tests {
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-prod");
         dialog.widgets.name.set_text("renamed");
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-renamed");
+    }
+
+    /// The fields scroll, the buttons stay outside the scroller, and the
+    /// spins leave the wheel to it.
+    pub(in crate::ui) fn fields_scroll_and_spins_leave_the_wheel() {
+        let parent = gtk4::Window::new();
+        let dialog = SessionDialog::new_session(&parent, &[], &[]);
+        let w = &dialog.widgets;
+        let scrolled = |widget: &gtk4::Widget| {
+            widget
+                .ancestor(gtk4::ScrolledWindow::static_type())
+                .is_some()
+        };
+        assert!(scrolled(w.name.upcast_ref()));
+        assert!(scrolled(dialog.groups.terminal.upcast_ref()));
+        for spin in [&w.port, &w.serial_baud] {
+            let wheels = spin
+                .observe_controllers()
+                .iter::<gtk4::glib::Object>()
+                .flatten()
+                .filter(|c| c.is::<gtk4::EventControllerScroll>())
+                .count();
+            assert_eq!(wheels, 0);
+        }
+        dialog.modal.window.close();
+    }
+
+    /// The Terminal group shows for terminal types only, prefills the
+    /// stored overrides, and hands the picked ones to the fields.
+    pub(in crate::ui) fn terminal_overrides_prefill_and_follow_the_type() {
+        let parent = gtk4::Window::new();
+        let dialog = SessionDialog::new_session(&parent, &[], &[]);
+        let w = &dialog.widgets;
+        assert!(dialog.groups.terminal.reveals_child(), "SSH has a terminal");
+        assert_eq!(w.terminal_backend.selected(), 0);
+        assert_eq!(w.color_scheme.selected(), 0);
+        let fields = w.fields(&dialog.base);
+        assert_eq!(fields.terminal_backend, None);
+        assert_eq!(fields.color_scheme, None);
+        w.session_type.set_selected(TYPE_INDEX_RDP);
+        assert!(!dialog.groups.terminal.reveals_child());
+        w.session_type.set_selected(TYPE_INDEX_SERIAL);
+        assert!(dialog.groups.terminal.reveals_child());
+        dialog.modal.window.close();
+
+        let stored = SessionConfig {
+            id: 4,
+            name: "box".into(),
+            preferred_backend: Some("ghostty".into()),
+            color_scheme: Some("Solarized".into()),
+            ..Default::default()
+        };
+        let dialog = SessionDialog::edit(&parent, &stored, &[], &[]);
+        let w = &dialog.widgets;
+        assert_eq!(w.terminal_backend.selected(), 2);
+        let fields = w.fields(&dialog.base);
+        assert_eq!(fields.terminal_backend.as_deref(), Some("ghostty"));
+        assert_eq!(
+            fields.color_scheme.as_deref(),
+            Some("Solarized"),
+            "an unknown scheme survives an untouched save"
+        );
+        w.terminal_backend.set_selected(0);
+        w.color_scheme.set_selected(2);
+        let fields = w.fields(&dialog.base);
+        assert_eq!(fields.terminal_backend, None);
+        assert_eq!(fields.color_scheme.as_deref(), Some("Light"));
+        dialog.modal.window.close();
+
+        let rdp = SessionConfig {
+            id: 5,
+            session_type: SessionType::RDP,
+            ..Default::default()
+        };
+        let dialog = SessionDialog::edit(&parent, &rdp, &[], &[]);
+        assert!(!dialog.groups.terminal.reveals_child());
+        dialog.modal.window.close();
     }
 
     /// The jump picker lists SSH peers only, refuses depth>1 with a message

@@ -84,7 +84,8 @@ installed preference.
   keep their backend.
 - A session's `terminal_backend` column (`ghostty` or `vte`, doc 09) wins
   over the row for that session's tabs; an empty or unknown value follows
-  the row. The session dialog does not edit it (doc 09 §Limitations).
+  the row. The session dialog's Terminal group edits it (doc 09 §Session
+  dialog).
 - Ghostty falls back to VTE, with a note on stderr, when the feature is off
   or libghostty-vt cannot allocate a terminal.
 
@@ -172,7 +173,8 @@ palettes, `Light` and `Dark` (GNOME Terminal's Tango light and Tango
 dark), each with a foreground, a background, cursor colors and 16 ANSI
 colors; a test checks both meet WCAG AAA contrast.
 
-A tab's scheme resolves from its session's `color_scheme` override, else
+A tab's scheme resolves from its session's `color_scheme` override (the
+session dialog's Terminal group, doc 09 §Session dialog), else
 its backend's own row (`vte.color_scheme`, `ghostty.color_scheme`), else
 the global `default_color_scheme` row, else `System`. Values are `System`,
 `Light` or `Dark`, case-insensitive; empty or unknown values fall through
@@ -768,8 +770,9 @@ power, VTE 0.84.1, two runs agreeing within 10%:
   holds through Light, Dark, the desktop's changes and a session's own
   scheme. The ANSI colors stay Tango, so some may be hard to read on a
   background neither palette has.
-- **No per-session color scheme picker.** The session dialog has none; an
-  override already in the store (imported, restored) is honored.
+- **Session overrides reach new tabs only.** A saved backend or scheme
+  override applies to the session's tabs opened afterwards; open tabs keep
+  what they started with.
 - **The kept directory has no consumer** (§Reported directory), and only
   OSC 7 fills it: a shell that reports nothing, as many do over SSH (doc
   07 §Following the shell), leaves it empty, and probes do not update it.

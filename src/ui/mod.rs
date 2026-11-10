@@ -54,6 +54,8 @@ mod gtk_tests {
         gtk4::init().expect("gtk init");
         super::dialogs::session::gtk_tests::tmux_group_entry_follows_name_until_user_edits();
         super::dialogs::session::gtk_tests::jump_picker_and_forward_editor();
+        super::dialogs::session::gtk_tests::terminal_overrides_prefill_and_follow_the_type();
+        super::dialogs::session::gtk_tests::fields_scroll_and_spins_leave_the_wheel();
         super::dialogs::tunnels::gtk_tests::rows_status_and_toggle();
         super::panels::session_tree::gtk_tests::context_menu_is_reused_and_parented_cleanly();
         super::panels::session_tree::gtk_tests::rows_nest_expand_and_select();

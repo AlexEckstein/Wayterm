@@ -223,8 +223,20 @@ and is display-free; the GTK part only gathers `DialogFields`.
     depth. Compression has no control; new RDP rows default it on.
   - **VNC:** a note that its password lives in the keyring.
   - **Local:** shell and working directory.
+- **Terminal** group, shown for the types with a terminal (SSH, serial,
+  local): the session's backend (`terminal_backend`, doc 02 §Backend
+  selection) and color scheme (`color_scheme`, doc 02 §Color schemes)
+  overrides. Each picker starts with "Default (from Settings)", which
+  stores NULL, then VTE and Ghostty, or System, Light and Dark. A build
+  without Ghostty still offers it, marked as running VTE. A stored value
+  the build does not know (an import) gets an entry of its own and saves
+  back unchanged. Both columns store as picked whatever the type, like the
+  tmux ones.
 - OK validates and saves; errors (an unparsable forward rule, a bad
   resolution, a jump chain) show inline and keep the dialog open.
+- The fields scroll, with OK, Cancel and a keyring error kept in view
+  below them. The port and baud spins ignore the mouse wheel, so
+  scrolling over one moves the dialog rather than the value.
 
 ## Folders
 
@@ -274,9 +286,8 @@ and a reset to the default.
   exist but nothing writes them (`SessionStore::touch_connected` is never
   called).
 - `sort_order` is never edited: siblings sort by name.
-- The dialog edits neither `terminal_backend` (doc 02 §Backend selection)
-  nor `font_family`, `font_size`, `opacity`, `color_scheme`, `ssh_options`,
-  `host_key_policy`, `vnc_options` or `vnc_color_depth`; imports and JSON
-  restores can set them.
+- The dialog edits none of `font_family`, `font_size`, `opacity`,
+  `ssh_options`, `host_key_policy`, `vnc_options` or `vnc_color_depth`;
+  imports and JSON restores can set them.
 - `hotkeys` has no `UNIQUE (action, context)`, which is why the seed runs
   only once.

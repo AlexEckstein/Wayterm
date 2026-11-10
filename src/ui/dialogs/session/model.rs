@@ -1,5 +1,6 @@
 //! The display-free half of the session dialog: [`DialogFields`] and the
-//! mapping to and from [`SessionConfig`], plus the jump-host picker rules.
+//! mapping to and from [`SessionConfig`], plus the jump-host and terminal
+//! override picker rules.
 
 use crate::store::model::{
     strip_tmux_prefix, vocab_index, vocab_value, AuthMethod, Folder, SessionConfig, SessionType,
@@ -8,6 +9,7 @@ use crate::store::model::{
     SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT, TMUX_NAME_PREFIX,
 };
 use crate::store::SessionStore;
+use crate::terminal::{BackendKind, SchemeChoice, GHOSTTY_COMPILED};
 use crate::ui::dialogs::tunnels::model::{rules_from_drafts, ForwardRuleDraft};
 
 // Type DropDown indices, in doc 09 order.
@@ -61,6 +63,10 @@ pub struct DialogFields {
     /// Editable forward rules (ports as text); only stored for SSH, and
     /// only when every draft validates.
     pub forward_drafts: Vec<ForwardRuleDraft>,
+    /// The `terminal_backend` override; `None` = the Settings default.
+    pub terminal_backend: Option<String>,
+    /// The `color_scheme` override; `None` = the Settings default.
+    pub color_scheme: Option<String>,
     /// The edited row (the default for a new session): its id and
     /// metadata, and the columns the dialog has no widget for, carry
     /// through [`config_from_fields`].
@@ -96,6 +102,8 @@ impl Default for DialogFields {
             local_working_dir: String::new(),
             jump_session_id: None,
             forward_drafts: Vec::new(),
+            terminal_backend: None,
+            color_scheme: None,
             base: SessionConfig::default(),
         }
     }
@@ -256,6 +264,87 @@ pub fn jump_picker_model(
     (labels, ids, selected)
 }
 
+/// The first entry of each override picker: no override, so the session
+/// follows Settings.
+pub const OVERRIDE_DEFAULT_LABEL: &str = "Default (from Settings)";
+
+/// A terminal override picker: entry labels, the value each entry stores
+/// (`None` for the default), and the selected position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverridePicker {
+    pub labels: Vec<String>,
+    pub values: Vec<Option<String>>,
+    pub selected: u32,
+}
+
+impl OverridePicker {
+    /// `choices` are `(label, stored value)`. `current` matches a value the
+    /// way the resolvers read it, trimmed and ignoring case; a blank one is
+    /// the default. Any other value (an import from a build with more
+    /// choices) gets an entry of its own, so saving keeps it rather than
+    /// wiping it.
+    fn new(choices: &[(&str, &str)], current: Option<&str>) -> Self {
+        let mut labels = vec![OVERRIDE_DEFAULT_LABEL.to_string()];
+        let mut values = vec![None];
+        for (label, value) in choices {
+            labels.push((*label).to_string());
+            values.push(Some((*value).to_string()));
+        }
+        let current = current.map(str::trim).filter(|raw| !raw.is_empty());
+        let selected = match current {
+            None => 0,
+            Some(raw) => values
+                .iter()
+                .position(|v| v.as_deref().is_some_and(|v| v.eq_ignore_ascii_case(raw)))
+                .unwrap_or_else(|| {
+                    labels.push(format!("{raw} (unknown; uses Default)"));
+                    values.push(Some(raw.to_string()));
+                    values.len() - 1
+                }),
+        };
+        Self {
+            labels,
+            values,
+            selected: selected as u32,
+        }
+    }
+
+    /// The value the entry at `index` stores.
+    pub fn value(&self, index: u32) -> Option<String> {
+        self.values.get(index as usize).cloned().flatten()
+    }
+}
+
+/// The label of the Ghostty entry: a build without it runs VTE instead
+/// (doc 02 §Backend selection).
+fn ghostty_label() -> &'static str {
+    if GHOSTTY_COMPILED {
+        "Ghostty (experimental)"
+    } else {
+        "Ghostty (not in this build; uses VTE)"
+    }
+}
+
+/// The terminal backend picker for a stored `terminal_backend`.
+pub fn backend_picker(current: Option<&str>) -> OverridePicker {
+    OverridePicker::new(
+        &[
+            ("VTE", BackendKind::Vte.as_setting()),
+            (ghostty_label(), BackendKind::Ghostty.as_setting()),
+        ],
+        current,
+    )
+}
+
+/// The color scheme picker for a stored `color_scheme`.
+pub fn scheme_picker(current: Option<&str>) -> OverridePicker {
+    let choices: Vec<(&str, &str)> = SchemeChoice::ALL
+        .iter()
+        .map(|choice| (choice.as_setting(), choice.as_setting()))
+        .collect();
+    OverridePicker::new(&choices, current)
+}
+
 /// Every folder in the store, nested ones included, in tree order (each
 /// folder directly followed by its subfolders): the folder picker's source.
 pub fn collect_folders(store: &SessionStore) -> rusqlite::Result<Vec<Folder>> {
@@ -329,8 +418,10 @@ pub fn collect_peer_sessions(store: &SessionStore) -> Vec<SessionConfig> {
 /// invalid drafts (which the dialog's OK validation never lets through)
 /// defensively store as no rules rather than partial ones.
 ///
-/// Columns without a widget — the appearance overrides, and per type the
-/// key path, host-key policy and SSH, RDP or VNC options — keep the edited
+/// The terminal backend and color scheme overrides are common columns too,
+/// stored as picked whatever the type (only types with a terminal read
+/// them). Columns without a widget — font and opacity, and per type the key
+/// path, host-key policy and SSH, RDP or VNC options — keep the edited
 /// row's values, the per-type ones only while its type is unchanged: a
 /// save must never wipe what the dialog cannot show.
 pub fn config_from_fields(
@@ -371,8 +462,8 @@ pub fn config_from_fields(
         tmux_enabled: fields.tmux_enabled,
         tmux_session_name,
         icon: trimmed_opt(&fields.icon),
-        preferred_backend: base.preferred_backend.clone(),
-        color_scheme: base.color_scheme.clone(),
+        preferred_backend: fields.terminal_backend.clone(),
+        color_scheme: fields.color_scheme.clone(),
         font_family: base.font_family.clone(),
         font_size: base.font_size,
         opacity: base.opacity,

@@ -14,6 +14,7 @@ use crate::store::SessionStore;
 use crate::terminal::options::{color_row as stored_color, RowChoice};
 use crate::ui::settings::general::apply;
 use crate::ui::settings::{described, row};
+use crate::ui::widgets::release_wheel;
 
 /// A row's title and subtitle.
 pub(super) type Text<'a> = (&'a str, &'a str);
@@ -64,21 +65,6 @@ fn save_when_settled(
     pending.replace(Some(id));
 }
 
-/// Leave the wheel to the scrolling page. A page scrolled under the pointer
-/// would otherwise change the value, and a lowered scrollback drops lines
-/// from open tabs for good.
-fn release_wheel(control: &impl IsA<gtk4::Widget>) {
-    let wheel: Vec<gtk4::EventControllerScroll> = control
-        .observe_controllers()
-        .iter::<glib::Object>()
-        .flatten()
-        .filter_map(|controller| controller.downcast().ok())
-        .collect();
-    for controller in &wheel {
-        control.remove_controller(controller);
-    }
-}
-
 /// title over subtitle | `control`, a numeric control over `adjustment`.
 pub(super) fn settled_row<S>(
     store: &Rc<SessionStore>,
@@ -92,6 +78,8 @@ where
     S: Fn(&SessionStore, f64) -> rusqlite::Result<()> + Clone + 'static,
 {
     control.set_valign(gtk4::Align::Center);
+    // A lowered scrollback scrolled into by accident drops lines from open
+    // tabs for good.
     release_wheel(control);
     let text = described(title, Some(subtitle), control);
     let store = Rc::clone(store);

@@ -107,7 +107,7 @@ passphrase is never copied.
   import roundtrip is tested.
 
 The JSON import is also how fields the session dialog does not edit
-(`ssh_options`, `host_key_policy`, `color_scheme`, …, doc 09 §Limitations)
+(`ssh_options`, `host_key_policy`, `font_family`, …, doc 09 §Limitations)
 get set.
 
 ## Limitations
