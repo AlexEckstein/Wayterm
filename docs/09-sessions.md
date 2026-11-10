@@ -234,6 +234,9 @@ and is display-free; the GTK part only gathers `DialogFields`.
   tmux ones.
 - OK validates and saves; errors (an unparsable forward rule, a bad
   resolution, a jump chain) show inline and keep the dialog open.
+- The fields scroll, with OK, Cancel and a keyring error kept in view
+  below them. The port and baud spins ignore the mouse wheel, so
+  scrolling over one moves the dialog rather than the value.
 
 ## Folders
 
