@@ -4,17 +4,21 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 use gtk4::glib;
+use tokio_util::sync::CancellationToken;
 
-use super::ssh::{follow_terminal_directory, mark_sidebar_attached};
+use super::ssh::{arm_fake_forwards, follow_terminal_directory, mark_sidebar_attached};
 use super::terminal::{
-    focus_after_connect, focus_terminal, keep_shell_directory, show_session_ended,
-    spawn_notification_drain, terminal_state,
+    focus_after_connect, focus_terminal, keep_shell_directory, page_events, show_session_ended,
+    spawn_notification_drain, spawn_state_forward, terminal_state,
 };
+use super::terminal_tab::TerminalTab;
 use super::*;
 use crate::hotkeys::engine::focus_within;
+use crate::sftp::SftpClient;
 use crate::terminal::color_scheme::{Brightness, Rgb, DARK, LIGHT};
 use crate::terminal::options::{DefaultColors, SelectionColors, VteBlink, VteCursor, VteOptions};
 use crate::terminal::{create_terminal, TerminalDefaults};
+use crate::transport::types::TransportEvent;
 use crate::ui::translucency::gtk_tests::pixel_at;
 use vte4::prelude::*;
 
@@ -364,10 +368,21 @@ pub(in crate::ui) fn a_replaced_terminal_no_longer_reports_to_the_tab() {
     );
 }
 
-/// The shell exiting lets go of the page's SFTP sidebar: an empty one
-/// takes its place, keeping the follow setting, and the old one is freed
-/// with its SFTP task.
-pub(in crate::ui) fn the_sftp_session_ends_with_the_shell() {
+/// An SSH page as `on_connect` leaves it: a terminal with its transport
+/// wired, an attached sidebar that does not follow the shell, and armed
+/// forwards.
+struct ConnectedPage {
+    notebook: gtk4::Notebook,
+    page: gtk4::Widget,
+    /// Weak, so a check can tell the sidebar was let go.
+    sidebar: glib::WeakRef<gtk4::Widget>,
+    /// Fired when the transport's wiring closes.
+    transport: CancellationToken,
+    /// Fired when the sidebar's SFTP task is shut down.
+    sftp: CancellationToken,
+}
+
+fn connected_ssh_page() -> ConnectedPage {
     let session = SessionConfig {
         id: 1,
         name: "ssh-1".into(),
@@ -377,19 +392,125 @@ pub(in crate::ui) fn the_sftp_session_ends_with_the_shell() {
     let page = page_content(&Rc::new(session));
     let backend = create_terminal().backend;
     set_terminal_area(&page, &backend.widget());
-    terminal_state(&page).terminal.replace(Some(backend));
+    let (wiring, transport) = TerminalTab::idle();
+    let terminal = terminal_state(&page);
+    terminal.terminal.replace(Some(backend));
+    terminal.terminal_tab.replace(Some(wiring));
     let notebook = gtk4::Notebook::new();
     notebook.append_page(&page, None::<&gtk4::Widget>);
-    let old = SessionTab::sidebar_for_page(&page).expect("an SSH page's sidebar");
-    old.set_following(false);
+    let sidebar = SessionTab::sidebar_for_page(&page).expect("an SSH page's sidebar");
+    sidebar.set_following(false);
+    let sftp = CancellationToken::new();
+    let (commands, _) = tokio::sync::mpsc::channel(1);
+    sidebar.attach_client(SftpClient::from_parts(commands, sftp.clone()));
     mark_sidebar_attached(&page);
-    let old_widget = old.widget().downgrade();
-    drop(old);
+    arm_fake_forwards(&page);
+    ConnectedPage {
+        notebook,
+        sidebar: sidebar.widget().downgrade(),
+        page,
+        transport,
+        sftp,
+    }
+}
 
-    show_session_ended(&notebook, &page);
-    let new = SessionTab::sidebar_for_page(&page).expect("a sidebar after the end");
-    assert!(old_widget.upgrade().is_none(), "the old sidebar lives on");
-    assert!(!new.is_following(), "the follow setting carries over");
+impl ConnectedPage {
+    /// Send `event` down the page's state channel and let it land.
+    fn receive(&self, event: TransportEvent) {
+        let session = state(&self.page)
+            .session
+            .get()
+            .cloned()
+            .expect("a session tab");
+        let events = page_events(&self.notebook, &self.page, &session, "box".into(), 22);
+        events.send(event).unwrap();
+        settle();
+    }
+
+    /// The page let go of everything holding its connection, and has an
+    /// empty sidebar in the old one's place.
+    fn assert_released(&self) {
+        settle();
+        assert!(
+            ssh::forward_source(&self.page).is_none(),
+            "the forwards run on"
+        );
+        assert!(self.transport.is_cancelled(), "the transport stays wired");
+        assert!(self.sftp.is_cancelled(), "the SFTP task runs on");
+        assert!(self.sidebar.upgrade().is_none(), "the old sidebar lives on");
+        let new = SessionTab::sidebar_for_page(&self.page).expect("a sidebar after the end");
+        assert!(!new.is_following(), "the follow setting carries over");
+    }
+}
+
+/// Run the main context until it has nothing left to do.
+fn settle() {
+    let context = glib::MainContext::default();
+    while context.iteration(false) {}
+}
+
+/// The shell exiting ends the forwards, the transport and the SFTP session.
+pub(in crate::ui) fn the_connection_ends_with_the_shell() {
+    let ssh = connected_ssh_page();
+    show_session_ended(&ssh.notebook, &ssh.page);
+    ssh.assert_released();
+}
+
+/// Disconnect ends them too, and the tab reads as disconnected.
+pub(in crate::ui) fn disconnect_ends_the_connection() {
+    let ssh = connected_ssh_page();
+    let cancel = CancellationToken::new();
+    let (_state_tx, state_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (events, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+    spawn_state_forward(
+        &ssh.notebook,
+        &ssh.page,
+        current_gen(&ssh.page),
+        cancel.clone(),
+        state_rx,
+        events,
+    );
+    cancel.cancel();
+    ssh.assert_released();
+    assert_eq!(
+        state(&ssh.page).status.borrow().state,
+        TransportState::Disconnected
+    );
+}
+
+/// So does a lost connection, even when reconnecting waits for the user
+/// (`reconnect_on_drop` off).
+pub(in crate::ui) fn a_lost_connection_ends_it_without_auto_reconnect() {
+    resilience::install_settings(true, false);
+    let ssh = connected_ssh_page();
+    ssh.receive(TransportEvent::ConnectionLost);
+    resilience::reset_registry();
+    ssh.assert_released();
+}
+
+/// So does a transport that fails to connect after the page was wired:
+/// the error view must not sit over live forwards and a live sidebar.
+pub(in crate::ui) fn a_failed_transport_ends_the_connection() {
+    let ssh = connected_ssh_page();
+    ssh.receive(TransportEvent::Error("channel refused".into()));
+    ssh.assert_released();
+    assert_eq!(
+        state(&ssh.page).status.borrow().state,
+        TransportState::Error("channel refused".into())
+    );
+}
+
+/// Closing the tab ends its forwards and its SFTP task at once: neither
+/// waits for the page to be freed, which a running transfer would delay.
+pub(in crate::ui) fn closing_a_tab_ends_its_forwards_and_sftp() {
+    let ssh = connected_ssh_page();
+    install_teardown_on_remove(&ssh.notebook);
+    ssh.notebook.remove_page(ssh.notebook.page_num(&ssh.page));
+    assert!(
+        ssh::forward_source(&ssh.page).is_none(),
+        "the forwards run on"
+    );
+    assert!(ssh.sftp.is_cancelled(), "the SFTP task runs on");
 }
 
 /// The connect flow end to end on a local shell: opening the tab wires

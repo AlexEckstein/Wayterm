@@ -186,6 +186,20 @@ impl TerminalTab {
         (tab, state_rx)
     }
 
+    /// A tab with no tasks, and the token that closing or dropping it
+    /// fires.
+    #[cfg(test)]
+    pub(crate) fn idle() -> (Self, CancellationToken) {
+        let cancel = CancellationToken::new();
+        let tab = Self {
+            pump_task: None,
+            bridge_task: None,
+            cancel: cancel.clone(),
+            description: String::new(),
+        };
+        (tab, cancel)
+    }
+
     /// The transport's description (shell path, `device@baud`), shown in
     /// the status bar for sessions without a host.
     pub fn description(&self) -> &str {

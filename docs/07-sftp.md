@@ -13,9 +13,12 @@ Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe),
 Each SSH tab owns its sidebar, but the tab's page holds only the
 terminal: the side dock's SFTP panel hosts the current tab's sidebar and
 swaps it as the notebook switches tabs. Tabs without one (local, serial,
-RDP, VNC, Home) get a placeholder. A redial, or the tab's shell exiting
-(doc 03 §Session end), replaces the page's sidebar with an empty one,
-ending the old SFTP task, and the panel hosts the new one.
+RDP, VNC, Home) get a placeholder. Whenever the tab lets go of its
+connection (a redial, Disconnect, a lost connection, the shell's exit or
+a transport that fails to connect, doc 03 §Reconnect), the old sidebar
+detaches, ending its SFTP task and cancelling any running transfer
+(§Transfers), and an empty one replaces it in the panel. A closing tab's
+sidebar detaches the same way (doc 03 §Closing a tab).
 
 The sidebar, top to bottom:
 
@@ -43,7 +46,10 @@ spawns one SFTP task per sidebar; until then the sidebar is empty with its
 toolbar disabled. The task opens a session channel with the `sftp`
 subsystem and turns it into a `russh_sftp` session on the first command.
 Dropping the last sidebar handle ends the task, once any transfer still
-running has finished; the connection stays with the supervisor.
+running has finished (its futures hold the sidebar). Detaching (§Layout)
+shuts it down at once: the command in progress is dropped, queued ones
+are discarded, and running transfers are cancelled. Either way the
+connection stays with the supervisor.
 
 When it attaches depends on the `sftp_on_connect` setting (on by default,
 doc 13 §Settings rows):
@@ -79,7 +85,9 @@ The enum is a module boundary (AGENTS.md).
   `IdleSender` (doc 02 §Backpressure) and awaits each oneshot reply in a
   main-context future.
 - Every command but `Cancel` is answered exactly once — with `Err` when
-  the session is dead. Any failure drops the cached SFTP session and the
+  the session is dead — unless the task shuts down first: then its reply
+  channel closes unanswered, which the sidebar shows as the session
+  ending. Any failure drops the cached SFTP session and the
   next command reopens it, so a server closing the subsystem shows up as
   an error ("SFTP session ended — reconnect?") and recovers.
 - `Cd` doubles as the listing command. There is no `getcwd`, so the path
@@ -101,7 +109,9 @@ out with `try_send` (a stale-but-moving bar is fine, a stalled transfer is
 not). The bar shows whichever transfer updated last and Cancel targets the
 newest. An upload's final flush and close must succeed or the transfer
 fails, since the remote file may be incomplete. Every successful operation
-refreshes the listing.
+refreshes the listing. Cancel takes effect at whatever step a transfer is
+on, even one waiting on a stalled server. Ending the tab's session, or
+closing the tab, cancels every running transfer, as Cancel does (§Layout).
 
 ## Following the shell
 
@@ -171,6 +181,7 @@ disabled.
   "SFTP is not available for jumped sessions yet", and nothing follows the
   shell.
 - No right-click menu, and no dragging files out of the listing.
+- A cancelled transfer leaves its partial file behind, local or remote.
 - Following the shell: plain-tab probes need a Linux remote. Tabs to the
   same user@host share one connection, and probing tells their shells
   apart only while at most one of them is a plain shell; with two, it

@@ -80,7 +80,10 @@ struct Attached {
 
 impl Attached {
     fn new(connection: Arc<SshConnection>) -> Self {
-        let client = SftpClient::new(connection);
+        Self::with_client(SftpClient::new(connection))
+    }
+
+    fn with_client(client: SftpClient) -> Self {
         let commands = IdleSender::new(client.sender());
         Self { client, commands }
     }
@@ -141,6 +144,18 @@ impl SftpSidebar {
         }
     }
 
+    /// End the SFTP task now, cancelling its running transfers and
+    /// discarding queued commands, and drop a connection kept for the
+    /// first show. A transfer's own futures hold the sidebar until their
+    /// reply comes, so dropping the last handle alone would let a transfer
+    /// run on unseen.
+    pub fn detach(&self) {
+        self.inner.deferred.borrow_mut().take();
+        if let Some(attached) = self.inner.attached.borrow_mut().take() {
+            attached.client.shutdown();
+        }
+    }
+
     /// Show the jumped-session state instead of attaching: no SFTP task
     /// runs over a jumped connection (doc 04 §Limitations), so any deferred
     /// connection is dropped and the previous client, if any, is replaced
@@ -196,6 +211,12 @@ impl SftpSidebar {
     #[cfg(test)]
     pub(crate) fn path_text(&self) -> String {
         self.inner.path_entry.text().into()
+    }
+
+    /// Attach to `client` instead of spawning a task.
+    #[cfg(test)]
+    pub(crate) fn attach_client(&self, client: SftpClient) {
+        *self.inner.attached.borrow_mut() = Some(Attached::with_client(client));
     }
 
     /// Press a toolbar button as a click would, and only while it is
@@ -1010,6 +1031,32 @@ pub(in crate::ui) mod gtk_tests {
         sidebar.set_following(true);
         assert!(inner.follow_check.is_active());
         assert_eq!(sidebar.path_text(), "/var/log", "ticked: catches up");
+    }
+
+    /// A sidebar detached mid-transfer shuts its task down and closes its
+    /// command channel, though the transfer's futures still hold the
+    /// sidebar.
+    pub(in crate::ui) fn detaching_mid_transfer_ends_the_task() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let sidebar = SftpSidebar::new();
+        sidebar.attach_client(SftpClient::from_parts(tx, shutdown.clone()));
+        sidebar.inner.download("/srv/f".into(), "/tmp/f".into());
+        let Ok(SftpCommand::Download { reply, .. }) = rx.try_recv() else {
+            panic!("no download sent");
+        };
+
+        sidebar.detach();
+        drop(sidebar);
+        assert!(shutdown.is_cancelled(), "the task was not shut down");
+        assert_eq!(
+            rx.try_recv().err(),
+            Some(mpsc::error::TryRecvError::Disconnected),
+            "the transfer keeps the task alive"
+        );
+        drop(reply);
+        let context = glib::MainContext::default();
+        while context.iteration(false) {}
     }
 
     /// Dropping the last handle frees the sidebar, and with it the SFTP

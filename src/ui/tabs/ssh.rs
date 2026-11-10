@@ -288,15 +288,27 @@ fn arm_forward_engine(page: &gtk4::Widget, session: &Rc<SessionConfig>, conn: &A
     stop_forward_engine(page);
     let (tx, rx) = mpsc::channel::<ForwardEvent>(FWD_EVENT_BUF);
     let engine = ForwardEngine::new(conn.clone(), tx);
-    let bridge = Arc::new(EngineStatusBridge::new(engine.clone()));
-    ssh_state(page).forward.replace(Some(bridge.clone()));
+    let bridge = bridge_events(engine.clone(), rx);
+    ssh_state(page).forward.replace(Some(bridge));
     engine.start(forward_rules_for(session));
+}
+
+/// Wrap `engine` in a status bridge fed from `rx`. The feed holds the
+/// bridge weakly: the bridge owns the engine, whose sender keeps `rx` open,
+/// so a strong hold would keep the engine and its connection forever.
+fn bridge_events(
+    engine: ForwardEngine,
+    mut rx: mpsc::Receiver<ForwardEvent>,
+) -> Arc<EngineStatusBridge> {
+    let bridge = Arc::new(EngineStatusBridge::new(engine));
+    let weak = Arc::downgrade(&bridge);
     tokio::spawn(async move {
-        let mut rx = rx;
         while let Some(event) = rx.recv().await {
+            let Some(bridge) = weak.upgrade() else { break };
             bridge.handle_event(event);
         }
     });
+    bridge
 }
 
 /// Stop the page's forward engine, if any: listeners close and terminal
@@ -310,9 +322,9 @@ pub(super) fn stop_forward_engine(page: &gtk4::Widget) {
     }
 }
 
-/// Let go of the sidebar's SFTP task (or the connection it keeps for its
-/// first show) by swapping in a fresh sidebar that keeps the old one's
-/// shown and following state.
+/// End the sidebar's SFTP task, cancelling its transfers (or drop the
+/// connection it keeps for its first show), and swap in a fresh sidebar
+/// that keeps the old one's shown and following state.
 pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     let Some(ssh) = existing_ssh_state(page) else {
         return;
@@ -323,6 +335,7 @@ pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     let Some(old) = sidebar_of(page) else {
         return;
     };
+    old.detach();
     let sidebar = if old.is_shown() {
         SftpSidebar::new()
     } else {
@@ -333,11 +346,31 @@ pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     side_dock::sidebar_replaced(notebook);
 }
 
+/// The page is closing: end its sidebar's SFTP task now, as a transfer
+/// still running would otherwise keep it, and its connection, going.
+pub(super) fn detach_sidebar(page: &gtk4::Widget) {
+    if let Some(sidebar) = sidebar_of(page) {
+        sidebar.detach();
+    }
+}
+
 /// Mark `page`'s sidebar attached, as [`on_connect`] does, without a
 /// connection.
 #[cfg(test)]
 pub(super) fn mark_sidebar_attached(page: &gtk4::Widget) {
     ssh_state(page).sidebar_attached.set(true);
+}
+
+/// Arm `page` with a forward engine whose opener never dials, as
+/// [`on_connect`] arms a real one.
+#[cfg(test)]
+pub(super) fn arm_fake_forwards(page: &gtk4::Widget) {
+    let opener: crate::transport::forward::ChannelOpener =
+        Arc::new(|_, _| Box::pin(async { Err(TransportError::Cancelled) }));
+    let (tx, _) = mpsc::channel(FWD_EVENT_BUF);
+    let engine = ForwardEngine::with_opener(opener, tx);
+    let bridge = Arc::new(EngineStatusBridge::new(engine));
+    ssh_state(page).forward.replace(Some(bridge));
 }
 
 /// Keep the page's SFTP sidebar on the shell's working directory (doc 07
@@ -541,6 +574,24 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(forward_rules_for(&session), rules);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_bridge_lets_its_engine_go() {
+        let held = Arc::new(());
+        let probe = Arc::downgrade(&held);
+        let opener: crate::transport::forward::ChannelOpener = Arc::new(move |_, _| {
+            let _held = &held;
+            Box::pin(async { Err(TransportError::Cancelled) })
+        });
+        let (tx, rx) = mpsc::channel(FWD_EVENT_BUF);
+        let bridge = bridge_events(ForwardEngine::with_opener(opener, tx), rx);
+        tokio::task::yield_now().await;
+        assert!(probe.upgrade().is_some());
+
+        drop(bridge);
+        tokio::task::yield_now().await;
+        assert!(probe.upgrade().is_none(), "the engine outlived its bridge");
     }
 
     #[test]

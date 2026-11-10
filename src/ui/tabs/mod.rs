@@ -356,9 +356,11 @@ fn install_teardown_on_remove(notebook: &gtk4::Notebook) {
     notebook.connect_page_removed(|notebook, page, _| {
         if let Some(tab_id) = tab_id_of(page) {
             bump_gen(page);
-            // Closing by any path stops the engine deterministically
-            // (`close_tab` removes the page, so it lands here too).
+            // Closing by any path stops the engine and the SFTP task
+            // deterministically (`close_tab` removes the page, so it
+            // lands here too).
             ssh::stop_forward_engine(page);
+            ssh::detach_sidebar(page);
             resilience::teardown_tab(tab_id);
         }
         terminal::focus_after_close(notebook);
