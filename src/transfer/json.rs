@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::{FolderSpec, ImportError, ImportReport, Parsed};
-use crate::store::model::SessionConfig;
+use crate::store::model::{HostKeyPolicy, SessionConfig};
 use crate::store::SessionStore;
 
 /// Export document schema version.
@@ -180,9 +180,17 @@ impl Collector {
     }
 
     /// Resolve `jump_session` names to positions (first session of that
-    /// name wins).
+    /// name wins). A session that turns host-key verification off is
+    /// warned about first, so the confirmation shows it.
     fn finish(mut self) -> Parsed {
         let mut report = ImportReport::default();
+        for session in &self.sessions {
+            if session.host_key_policy == Some(HostKeyPolicy::Off) {
+                report
+                    .warnings
+                    .push(format!("{}: host key verification is off", session.name));
+            }
+        }
         let mut by_name = HashMap::new();
         for (index, session) in self.sessions.iter().enumerate() {
             by_name.entry(session.name.clone()).or_insert(index);

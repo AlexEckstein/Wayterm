@@ -484,6 +484,25 @@ fn json_import_shapes() {
     assert!(has_warning(&report, "\"ghost\" is not in this import"));
 }
 
+/// A document can carry any `host_key_policy`: one that stops verifying
+/// a host says so before anything else, and the stricter ones are quiet.
+#[test]
+fn json_import_warns_when_a_session_stops_verifying_host_keys() {
+    let text = r#"{
+        "version": 1,
+        "sessions": [
+            {"name": "s", "jump_session": "ghost"},
+            {"name": "lab", "host": "h", "host_key_policy": "off"},
+            {"name": "new", "host": "h", "host_key_policy": "accept-new"},
+            {"name": "plain", "host": "h"}
+        ]
+    }"#;
+    let (_, sessions, report) = parse_source(ImportSource::Wayterm, text, None).unwrap();
+    assert_eq!(sessions.len(), 4);
+    assert_eq!(report.warnings[0], "lab: host key verification is off");
+    assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+}
+
 #[test]
 fn json_newer_version_is_refused() {
     let err = parse_source(
