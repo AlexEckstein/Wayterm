@@ -114,6 +114,14 @@ fn store_attributes(session_id: &str, session_name: &str, secret_type: &str) -> 
     attributes
 }
 
+/// Whether an item may answer for session `session_id`. One stored under
+/// another session's id never does: it carries its session's name too, and
+/// two sessions may share a name without sharing a host.
+fn serves(item: &Attributes, session_id: &str) -> bool {
+    item.get("session_id")
+        .is_none_or(|owner| owner == session_id)
+}
+
 fn item_label(session_name: &str, secret_type: &str) -> String {
     format!("Wayterm — {session_name} ({secret_type})")
 }
@@ -124,12 +132,18 @@ fn item_label(session_name: &str, secret_type: &str) -> String {
 trait KeyringBackend: Send + Sync {
     /// `Err` when the keyring cannot be opened.
     fn probe(&self) -> Result<(), String>;
-    /// The secret of the first item matching every attribute.
-    fn find(&self, attributes: &Attributes) -> Result<Option<Zeroizing<Vec<u8>>>, String>;
+    /// The secret of the first item matching every attribute that
+    /// [`serves`] `session_id`.
+    fn find(
+        &self,
+        attributes: &Attributes,
+        session_id: &str,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, String>;
     /// Create or replace the item with exactly these attributes.
     fn create(&self, label: &str, attributes: &Attributes, secret: &[u8]) -> Result<(), String>;
-    /// Delete every item matching; returns how many there were.
-    fn delete(&self, attributes: &Attributes) -> Result<usize, String>;
+    /// Delete every matching item that [`serves`] `session_id`; returns
+    /// how many there were.
+    fn delete(&self, attributes: &Attributes, session_id: &str) -> Result<usize, String>;
 }
 
 /// The Secret Service over D-Bus, or the portal-backed file keyring when
@@ -157,14 +171,21 @@ impl KeyringBackend for Oo7Backend {
         Self::run(|_| async { Ok(()) })
     }
 
-    fn find(&self, attributes: &Attributes) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    fn find(
+        &self,
+        attributes: &Attributes,
+        session_id: &str,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
         Self::run(|keyring| async move {
-            let Some(item) = keyring.search_items(attributes).await?.into_iter().next() else {
-                return Ok(None);
-            };
-            // oo7 zeroizes its own buffer on drop; this is the one copy.
-            let secret = item.secret().await?;
-            Ok(Some(Zeroizing::new(secret.as_bytes().to_vec())))
+            for item in keyring.search_items(attributes).await? {
+                if serves(&item.attributes().await?, session_id) {
+                    // oo7 zeroizes its own buffer on drop; this is the
+                    // one copy.
+                    let secret = item.secret().await?;
+                    return Ok(Some(Zeroizing::new(secret.as_bytes().to_vec())));
+                }
+            }
+            Ok(None)
         })
     }
 
@@ -174,21 +195,25 @@ impl KeyringBackend for Oo7Backend {
         )
     }
 
-    fn delete(&self, attributes: &Attributes) -> Result<usize, String> {
+    fn delete(&self, attributes: &Attributes, session_id: &str) -> Result<usize, String> {
         Self::run(|keyring| async move {
-            let items = keyring.search_items(attributes).await?;
-            for item in &items {
-                item.delete().await?;
+            let mut deleted = 0;
+            for item in keyring.search_items(attributes).await? {
+                if serves(&item.attributes().await?, session_id) {
+                    item.delete().await?;
+                    deleted += 1;
+                }
             }
-            Ok(items.len())
+            Ok(deleted)
         })
     }
 }
 
 /// The OS keyring (libsecret schema `com.alex-eckstein.wayterm.Session`,
 /// doc 05) for one saved session. Lookups key on the session id, then fall
-/// back to the session name (items made by other tools); an unreachable
-/// keyring is a miss, so the prompt source answers.
+/// back to the session name (items made by other tools), never to an item
+/// stored under another session's id; an unreachable keyring is a miss, so
+/// the prompt source answers.
 pub struct KeyringSource {
     session_id: String,
     session_name: String,
@@ -227,12 +252,12 @@ impl KeyringSource {
         let by_id = search_attributes(KeyedBy::Id(session_id), secret_type);
         let deleted = self
             .backend
-            .delete(&by_id)
+            .delete(&by_id, session_id)
             .map_err(CredentialError::StoreError)?;
         if let (0, Some(name)) = (deleted, self.name_fallback(session_id)) {
             let by_name = search_attributes(KeyedBy::Name(name), secret_type);
             self.backend
-                .delete(&by_name)
+                .delete(&by_name, session_id)
                 .map_err(CredentialError::StoreError)?;
         }
         Ok(())
@@ -267,7 +292,10 @@ impl CredentialSource for KeyringSource {
         }
         let name = self.name_fallback(session_id).map(KeyedBy::Name);
         for key in std::iter::once(KeyedBy::Id(session_id)).chain(name) {
-            match self.backend.find(&search_attributes(key, secret_type)) {
+            match self
+                .backend
+                .find(&search_attributes(key, secret_type), session_id)
+            {
                 Ok(Some(secret)) => return Some(secret),
                 Ok(None) => {}
                 Err(reason) => {

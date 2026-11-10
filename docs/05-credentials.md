@@ -59,8 +59,12 @@ orphans stored credentials.
 
 Lookups match attributes exactly (never a substring): by session id
 first, then by session name, so items made by other tools for that
-session are found. An unreachable keyring is a miss, and the next source
-answers.
+session are found. The name search never returns an item stored under
+another session's id: sessions may share a name — an import adds a second
+"prod" without asking — and a stored item carries its session's name, so
+without that rule the namesake would be handed the first session's secret,
+and send it to whatever host it points at. Deleting follows the same rule.
+An unreachable keyring is a miss, and the next source answers.
 
 ### Bitwarden
 
@@ -120,5 +124,6 @@ one entry. The Bitwarden source keys on the session name instead.
 - Only SSH passwords can be saved from the UI. VNC and RDP prompt on every
   connect unless the keyring already holds the secret (stored by another
   tool under the session's id or name) or Bitwarden answers.
-- Bitwarden is read-only and matches one exact item name.
+- Bitwarden is read-only and matches one exact item name, so sessions
+  that share a name resolve the same item, whatever host each points at.
 - A secret typed at the prompt is not offered for saving.
