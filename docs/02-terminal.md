@@ -342,7 +342,7 @@ display. Clones share the recordings.
 
 An engine backend, experimental and opt-in: built only with the
 `backend-ghostty` Cargo feature, against libghostty-vt from one pinned
-upstream commit (§libghostty-vt pin). The default build has none of it.
+upstream release (§libghostty-vt pin). The default build has none of it.
 `src/terminal/ghostty/`:
 
 - **FFI.** `shim.c` wraps the C API, whose sized structs and tagged unions
@@ -666,18 +666,24 @@ deleted, with nothing to track on Wayterm's side.
 
 ### libghostty-vt pin
 
-libghostty-vt has no tagged release and its C API still moves, so the pin
+libghostty-vt is released on its own, under `vt-X.Y.Z` tags, and keeps
+its C ABI stable within a major version. The pin is one release, and it
 changes only in a deliberate bump: rebuild, rerun the checks below, and
 update this section, the comment in `build.rs` and the `ghostty` job's
 `env` in `.github/workflows/ci.yml` together; that job fails while its
-commit differs from the other two.
+source checksum differs from the other two.
 
 | | |
 |---|---|
-| Upstream | <https://github.com/ghostty-org/ghostty> |
-| Commit | `9ee02ae601d3eec567723287e1c20bd0e9f1489c` (2026-10-26) |
-| Zig | 0.17.0 (`minimum_zig_version` in upstream `build.zig.zon`) |
-| Library version | `0.1.0-dev` (upstream pkg-config) |
+| Release | 1.0.0, tag `vt-1.0.0` (2026-11-06) of <https://github.com/ghostty-org/ghostty> |
+| Files | <https://release.files.ghostty.org/libghostty-vt/1.0.0/> |
+| Source | `libghostty-vt-1.0.0.tar.gz`, sha256 `4a6ef758be721923e1969e7b81b443dcc92d8dd3fb5a39600c03a8817a753676` |
+| Dependencies | `libghostty-vt-1.0.0-deps.tar.gz`, sha256 `4d5ea5e448e4c7ea8fb55ccbaa8668f2a97d44f438cee831e2b7ecd162d85c29` |
+| Zig | 0.17.0 (`minimum_zig_version` in the source's `build.zig.zon`) |
+
+Both checksums are from the release's `SHA256SUMS`, which upstream signs
+with minisign (the key is in its `PACKAGING-LIBGHOSTTY.md`); a bump
+checks that signature before taking them.
 
 Build it outside the Wayterm checkout:
 
@@ -688,23 +694,34 @@ curl -LO https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
 tar -xJf zig-x86_64-linux-0.17.0.tar.xz -C ~/.local/zig
 ln -sf ~/.local/zig/zig-x86_64-linux-0.17.0/zig ~/.local/bin/zig
 
-git clone https://github.com/ghostty-org/ghostty.git ghostty-build
-cd ghostty-build
-git checkout --detach 9ee02ae601d3eec567723287e1c20bd0e9f1489c
-zig build -Demit-lib-vt -Doptimize=fast --prefix "$PWD/out"
+base=https://release.files.ghostty.org/libghostty-vt/1.0.0
+curl -LO $base/libghostty-vt-1.0.0.tar.gz
+curl -LO $base/libghostty-vt-1.0.0-deps.tar.gz
+# Nothing is extracted or built unless both checksums match.
+echo "4a6ef758be721923e1969e7b81b443dcc92d8dd3fb5a39600c03a8817a753676  libghostty-vt-1.0.0.tar.gz" | sha256sum -c - &&
+  echo "4d5ea5e448e4c7ea8fb55ccbaa8668f2a97d44f438cee831e2b7ecd162d85c29  libghostty-vt-1.0.0-deps.tar.gz" | sha256sum -c - &&
+  tar -xzf libghostty-vt-1.0.0.tar.gz &&
+  tar -xzf libghostty-vt-1.0.0-deps.tar.gz &&
+  (cd libghostty-vt-1.0.0 &&
+    ZIG_GLOBAL_CACHE_DIR="$(mktemp -d)" zig build \
+      --system ../libghostty-vt-1.0.0-deps -Doptimize=ReleaseFast --prefix "$PWD/out")
+vt_out="$PWD/libghostty-vt-1.0.0/out"
 ```
 
-`zig build` fetches upstream's own hash-pinned dependencies into
-`~/.cache/zig/p`; nothing else is downloaded. `out/` then holds
-`include/ghostty/vt.h` (+ `vt/`) and `lib/libghostty-vt.a`.
+The build is offline: with `--system` Zig takes its packages from the
+dependency tarball, and the cache directory must be a new, empty one,
+hence `mktemp -d`.
+`out/` then holds `include/ghostty/vt.h` (+ `vt/`) and
+`lib/libghostty-vt.a`, beside a shared library Wayterm does not link.
 
 `build.rs` looks for them under `$WAYTERM_GHOSTTY_VT_DIR`, default
-`third_party/libghostty-vt/` in the checkout:
+`third_party/libghostty-vt/` in the checkout. From the checkout's root,
+in the same shell:
 
 ```sh
 mkdir -p third_party/libghostty-vt/lib
-cp -r ghostty-build/out/include third_party/libghostty-vt/
-cp ghostty-build/out/lib/libghostty-vt.a third_party/libghostty-vt/lib/
+cp -r "$vt_out/include" third_party/libghostty-vt/
+cp "$vt_out/lib/libghostty-vt.a" third_party/libghostty-vt/lib/
 printf '*\n' > third_party/libghostty-vt/.gitignore   # never committed
 ```
 
@@ -722,7 +739,7 @@ Embeddable terminals for a Rust + GTK 4 app:
 | Library | Model | Language | License | Verdict |
 |---|---|---|---|---|
 | **VTE** (`vte4`) | GTK 4 widget | C | LGPL | default — the most widely used Linux terminal widget (GNOME Terminal, Tilix, Ptyxis) |
-| libghostty-vt | engine, C API | Zig | MIT | opt-in second backend — fastest parsing (§Benchmark), Kitty graphics; C API not yet stable |
+| libghostty-vt | engine, C API | Zig | MIT | opt-in second backend — fastest parsing (§Benchmark), Kitty graphics; C ABI stable from 1.0 |
 | alacritty_terminal | engine crate | Rust | Apache-2.0 | possible — no FFI, but an unstable internal API |
 | QTermWidget, Konsole KPart | Qt widget | C++ | GPL | wrong toolkit |
 | xterm.js | browser | JS | MIT | browser only |
@@ -730,9 +747,9 @@ Embeddable terminals for a Rust + GTK 4 app:
 
 Wayterm's value is session management, SFTP, remote desktops and
 hotkeys, not rendering, so VTE is the default. libghostty-vt sits behind
-the same trait with no change to the rest of the app; because its C API is
-unstable it is opt-in twice over: compiled only with the feature, against
-one pinned commit, and used only when the user ticks the Settings box.
+the same trait with no change to the rest of the app. It is opt-in twice
+over: compiled only with the feature, against one pinned release, and
+used only when the user ticks the Settings box.
 
 ## Benchmark
 
@@ -842,7 +859,7 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **Ghostty scrollback:** `set_scrollback_limit` drops libghostty-vt's
   byte limit, so lines alone bound it, but it prunes whole pages: what is
   kept lands within a page of the limit, often just under it (a page is
-  387 rows at 120 columns, and a limit below one page keeps part of a
+  383 rows at 120 columns, and a limit below one page keeps part of a
   page). Only 0 is exact.
 - **Ghostty underline styles and underline color:** a cell's underline
   color stays as the program set it under the selection, the cursor and

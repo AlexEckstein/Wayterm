@@ -33,7 +33,7 @@ on any machine.
   xvfb, all with `--features backend-ghostty` (§Ghostty backend). It
   builds libghostty-vt at the pin as doc 02 §libghostty-vt pin does and
   caches it per pin, so Zig and upstream's dependencies are downloaded
-  only after a bump. It fails first if its pinned commit differs from
+  only after a bump. It fails first if its source checksum differs from
   `build.rs` or doc 02.
 - **audit:** a weekly `cargo audit` sweep.
 - **dependabot:** opens weekly update PRs for `cargo` (minor/patch

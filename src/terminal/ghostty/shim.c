@@ -45,12 +45,9 @@
 #define WT_LAYER_BELOW_BG 0
 #define WT_LAYER_BELOW_TEXT 1
 #define WT_LAYER_ABOVE_TEXT 2
-_Static_assert(WT_LAYER_BELOW_BG ==
-                       GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_BACKGROUND &&
-                   WT_LAYER_BELOW_TEXT ==
-                       GHOSTTY_RENDER_STATE_IMAGE_LAYER_BELOW_TEXT &&
-                   WT_LAYER_ABOVE_TEXT ==
-                       GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT,
+_Static_assert(WT_LAYER_BELOW_BG == GHOSTTY_IMAGE_LAYER_BELOW_BACKGROUND &&
+                   WT_LAYER_BELOW_TEXT == GHOSTTY_IMAGE_LAYER_BELOW_TEXT &&
+                   WT_LAYER_ABOVE_TEXT == GHOSTTY_IMAGE_LAYER_ABOVE_TEXT,
                "image layers");
 
 /* Bytes of Kitty images each screen holds, Ghostty's default (mirrored in
@@ -144,7 +141,7 @@ typedef struct {
   uint8_t bg[3];
   uint8_t cursor_rgb[3];
   uint8_t cursor_has_rgb;
-  uint8_t cursor_style; /* GhosttyRenderStateCursorVisualStyle */
+  uint8_t cursor_style; /* GhosttyCursorStyle */
   uint8_t cursor_blinking;
 } WtFrame;
 
@@ -197,6 +194,7 @@ typedef struct {
   GhosttyMouseEncoder mouse_encoder;
   GhosttyMouseEvent mouse_event;
   GhosttySelectionGesture gesture;
+  GhosttyFormatter formatter; /* plain text, wrapped lines joined */
   WtEffectFn effect;
   WtNotificationFn notification;
   void *userdata;
@@ -253,8 +251,7 @@ static void on_notification(GhosttyTerminal t, void *ud,
                             const GhosttyTerminalDesktopNotification *n) {
   (void)t;
   WtGhostty *g = ud;
-  /* A sized struct: only read what its size reports. */
-  if (!g->notification || n->size < sizeof *n) return;
+  if (!g->notification) return;
   g->notification(g->userdata, (const uint8_t *)n->title.ptr, n->title.len,
                   (const uint8_t *)n->body.ptr, n->body.len);
 }
@@ -330,6 +327,7 @@ void wt_ghostty_free(WtGhostty *g) {
   ghostty_render_state_row_iterator_free(g->rows);
   ghostty_render_state_free(g->render);
   ghostty_selection_gesture_free(g->gesture, g->terminal);
+  ghostty_formatter_free(g->formatter);
   ghostty_terminal_free(g->terminal);
   free(g);
 }
@@ -351,10 +349,14 @@ WtGhostty *wt_ghostty_new(uint16_t cols, uint16_t rows) {
       ghostty_key_event_new(NULL, &g->key_event) != GHOSTTY_SUCCESS ||
       ghostty_mouse_encoder_new(NULL, &g->mouse_encoder) != GHOSTTY_SUCCESS ||
       ghostty_mouse_event_new(NULL, &g->mouse_event) != GHOSTTY_SUCCESS ||
-      ghostty_selection_gesture_new(NULL, &g->gesture) != GHOSTTY_SUCCESS) {
+      ghostty_selection_gesture_new(NULL, &g->gesture) != GHOSTTY_SUCCESS ||
+      ghostty_formatter_terminal_new(NULL, &g->formatter, g->terminal) !=
+          GHOSTTY_SUCCESS) {
     wt_ghostty_free(g);
     return NULL;
   }
+  bool unwrap = true;
+  ghostty_formatter_set(g->formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap);
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_USERDATA, g);
   ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
                        (const void *)on_write_pty);
@@ -416,10 +418,9 @@ void wt_ghostty_reset(WtGhostty *g) {
 /* The line limit decides: left in place, the default byte limit is reached
  * first. Pruning goes by page, so only a byte limit of zero keeps nothing. */
 int wt_ghostty_set_scrollback_lines(WtGhostty *g, size_t lines) {
-  size_t none = 0;
-  int r = ghostty_terminal_set(g->terminal,
-                               GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
-                               lines == 0 ? &none : NULL);
+  size_t bytes = lines == 0 ? 0 : SIZE_MAX;
+  int r = ghostty_terminal_set(
+      g->terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &bytes);
   if (r != GHOSTTY_SUCCESS) return r;
   return ghostty_terminal_set(g->terminal,
                               GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &lines);
@@ -427,7 +428,7 @@ int wt_ghostty_set_scrollback_lines(WtGhostty *g, size_t lines) {
 
 /* What CSI 0 q goes back to; the cursor in force stays until then. */
 int wt_ghostty_set_cursor_default(WtGhostty *g, uint8_t style, bool blink) {
-  GhosttyTerminalCursorStyle default_style = style;
+  GhosttyCursorStyle default_style = style;
   int r = ghostty_terminal_set(g->terminal,
                                GHOSTTY_TERMINAL_OPT_DEFAULT_CURSOR_STYLE,
                                &default_style);
@@ -476,14 +477,14 @@ int wt_ghostty_set_colors(WtGhostty *g, const uint8_t *fg, const uint8_t *bg,
 void wt_ghostty_scroll(WtGhostty *g, int where, intptr_t delta) {
   GhosttyTerminalScrollViewport s = {0};
   switch (where) {
-    case 0: s.tag = GHOSTTY_SCROLL_VIEWPORT_TOP; break;
-    case 1: s.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM; break;
+    case 0: s.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_TOP; break;
+    case 1: s.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM; break;
     case 3:
-      s.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA_PROMPT;
+      s.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA_PROMPT;
       s.value.delta_prompt = delta;
       break;
     default:
-      s.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA;
+      s.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA;
       s.value.delta = delta;
       break;
   }
@@ -494,38 +495,40 @@ void wt_ghostty_free_bytes(uint8_t *ptr, size_t len) {
   ghostty_free(NULL, ptr, len);
 }
 
+/* Aim the formatter at `selection`, or at the whole active screen for NULL.
+ * It keeps a copy that the terminal's next change invalidates, so every use
+ * sets it again. */
+static int format_target(WtGhostty *g, const GhosttySelection *selection,
+                         bool trim) {
+  int r =
+      ghostty_formatter_set(g->formatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim);
+  if (r != GHOSTTY_SUCCESS) return r;
+  return ghostty_formatter_set(g->formatter, GHOSTTY_FORMATTER_OPT_SELECTION,
+                               selection);
+}
+
 /* Plain text of the active screen, scrollback included; free the result
  * with wt_ghostty_free_bytes. */
 int wt_ghostty_screen_text(WtGhostty *g, uint8_t **out, size_t *len) {
-  GhosttyFormatterTerminalOptions opts =
-      GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
-  opts.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
-  opts.unwrap = true;
-  opts.trim = true;
-  GhosttyFormatter f = NULL;
-  int r = ghostty_formatter_terminal_new(NULL, &f, g->terminal, opts);
+  int r = format_target(g, NULL, true);
   if (r != GHOSTTY_SUCCESS) return r;
-  r = ghostty_formatter_format_alloc(f, NULL, out, len);
-  ghostty_formatter_free(f);
-  return r;
+  return ghostty_formatter_format_alloc(g->formatter, NULL, out, len);
 }
 
 /* Plain text of the terminal's selection; GHOSTTY_NO_VALUE when none. */
 int wt_ghostty_selection_text(WtGhostty *g, uint8_t **out, size_t *len) {
-  GhosttyTerminalSelectionFormatOptions opts =
-      GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
-  opts.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
-  opts.unwrap = true;
-  opts.trim = true;
-  opts.selection = NULL;
   *out = NULL;
   *len = 0;
-  return ghostty_terminal_selection_format_alloc(g->terminal, NULL, opts, out,
-                                                 len);
+  GhosttySelection sel = {0};
+  int r = ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_SELECTION,
+                               &sel);
+  if (r == GHOSTTY_SUCCESS) r = format_target(g, &sel, true);
+  if (r != GHOSTTY_SUCCESS) return r;
+  return ghostty_formatter_format_alloc(g->formatter, NULL, out, len);
 }
 
 int wt_ghostty_select_all(WtGhostty *g) {
-  GhosttySelection sel = GHOSTTY_INIT_SIZED(GhosttySelection);
+  GhosttySelection sel = {0};
   int r = ghostty_terminal_select_all(g->terminal, &sel);
   if (r != GHOSTTY_SUCCESS) return r;
   return ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION,
@@ -536,7 +539,7 @@ int wt_ghostty_select_all(WtGhostty *g) {
 static bool screen_row(WtGhostty *g, GhosttyPointTag tag, uint32_t y,
                        uint32_t *row) {
   GhosttyPoint p = {.tag = tag, .value = {.coordinate = {.x = 0, .y = y}}};
-  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  GhosttyGridRef ref = {0};
   GhosttyPointCoordinate c;
   if (ghostty_terminal_grid_ref(g->terminal, p, &ref) != GHOSTTY_SUCCESS ||
       ghostty_terminal_point_from_grid_ref(g->terminal, &ref,
@@ -589,10 +592,10 @@ int wt_ghostty_select_output(WtGhostty *g) {
   bool scrolled = top != active;
   int64_t step = scrolled ? 1 : -1;
   for (int64_t y = scrolled ? top : cursor; y >= 0 && y <= cursor; y += step) {
-    GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    GhosttyGridRef ref = {0};
     if (!output_row(g, (uint32_t)y, &ref)) continue;
-    GhosttySelection sel = GHOSTTY_INIT_SIZED(GhosttySelection);
-    r = ghostty_terminal_select_output(g->terminal, ref, &sel);
+    GhosttySelection sel = {0};
+    r = ghostty_terminal_select_output(g->terminal, &ref, &sel);
     if (r != GHOSTTY_SUCCESS) return r;
     return ghostty_terminal_set(g->terminal, GHOSTTY_TERMINAL_OPT_SELECTION,
                                 &sel);
@@ -612,7 +615,7 @@ static int gesture_event(WtGhostty *g, GhosttySelectionGestureEventType type,
                          GhosttySelectionGestureEvent *out) {
   GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT,
                         .value = {.coordinate = {.x = col, .y = row}}};
-  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  GhosttyGridRef ref = {0};
   int r = ghostty_terminal_grid_ref(g->terminal, point, &ref);
   if (r != GHOSTTY_SUCCESS) return r;
   r = ghostty_selection_gesture_event_new(NULL, out, type);
@@ -624,7 +627,7 @@ static int gesture_event(WtGhostty *g, GhosttySelectionGestureEventType type,
 }
 
 static int gesture_apply(WtGhostty *g, GhosttySelectionGestureEvent event) {
-  GhosttySelection sel = GHOSTTY_INIT_SIZED(GhosttySelection);
+  GhosttySelection sel = {0};
   int r = ghostty_selection_gesture_event(g->gesture, g->terminal, event, &sel);
   ghostty_selection_gesture_event_free(event);
   if (r == GHOSTTY_NO_VALUE) {
@@ -748,16 +751,10 @@ static int set_needle(WtGhostty *g, const uint8_t *needle, size_t len) {
 /* Whether a match reads exactly as the needle, case included. */
 static bool exact(WtGhostty *g, const GhosttySelection *match) {
   if (!g->needle_cased) return true;
-  GhosttyTerminalSelectionFormatOptions opts =
-      GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
-  opts.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
-  opts.unwrap = true;
-  opts.trim = false;
-  opts.selection = match;
   size_t written = 0;
-  return ghostty_terminal_selection_format_buf(g->terminal, opts, g->scratch,
-                                               g->needle_len, &written) ==
-             GHOSTTY_SUCCESS &&
+  return format_target(g, match, false) == GHOSTTY_SUCCESS &&
+         ghostty_formatter_format_buf(g->formatter, g->scratch, g->needle_len,
+                                      &written) == GHOSTTY_SUCCESS &&
          written == g->needle_len &&
          memcmp(g->scratch, g->needle, written) == 0;
 }
@@ -822,9 +819,7 @@ static bool current_match(WtGhostty *g, GhosttySelection *match) {
                            &screen) != GHOSTTY_SUCCESS ||
       screen != g->found_screen)
     return false;
-  *match = GHOSTTY_INIT_SIZED(GhosttySelection);
-  match->start = GHOSTTY_INIT_SIZED(GhosttyGridRef);
-  match->end = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  *match = (GhosttySelection){0};
   return ghostty_tracked_grid_ref_snapshot(g->found_first, &match->start) ==
              GHOSTTY_SUCCESS &&
          ghostty_tracked_grid_ref_snapshot(g->found_last, &match->end) ==
@@ -1007,7 +1002,8 @@ int wt_ghostty_encode_paste(WtGhostty *g, char *text, size_t len, char *out,
   if (ghostty_terminal_get(g->terminal, GHOSTTY_TERMINAL_DATA_MODE, &mode) ==
       GHOSTTY_SUCCESS)
     bracketed = mode.value;
-  return ghostty_paste_encode(text, len, bracketed, out, cap, written);
+  return ghostty_paste_encode(text, len, bracketed, (uint8_t *)out, cap,
+                              written);
 }
 
 /* Whether DEC private mode `value` is set (9, 1000, 1004, 1049, …). */
@@ -1025,7 +1021,7 @@ int wt_ghostty_encode_focus(WtGhostty *g, bool gained, char *out, size_t cap,
   *written = 0;
   if (!wt_ghostty_dec_mode(g, 1004)) return GHOSTTY_SUCCESS;
   return ghostty_focus_encode(gained ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST,
-                              out, cap, written);
+                              (uint8_t *)out, cap, written);
 }
 
 static GhosttyMods mods_from_wt(uint32_t mods) {
@@ -1058,12 +1054,12 @@ int wt_ghostty_encode_mouse(WtGhostty *g, const WtMouse *mouse, char *out,
   size.padding_bottom = size.screen_height - grid_h;
   bool any_pressed = mouse->any_pressed != 0;
 
-  ghostty_mouse_encoder_setopt_from_terminal(g->mouse_encoder, g->terminal);
-  ghostty_mouse_encoder_setopt(g->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
-                               &size);
-  ghostty_mouse_encoder_setopt(g->mouse_encoder,
-                               GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
-                               &any_pressed);
+  ghostty_mouse_encoder_set_from_terminal(g->mouse_encoder, g->terminal);
+  ghostty_mouse_encoder_set(g->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE,
+                            &size);
+  ghostty_mouse_encoder_set(g->mouse_encoder,
+                            GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
+                            &any_pressed);
 
   GhosttyMouseAction action = GHOSTTY_MOUSE_ACTION_PRESS;
   if (mouse->action == WT_MOUSE_RELEASE) action = GHOSTTY_MOUSE_ACTION_RELEASE;
@@ -1097,8 +1093,8 @@ int wt_ghostty_encode_mouse(WtGhostty *g, const WtMouse *mouse, char *out,
   ghostty_mouse_event_set_mods(g->mouse_event, mods_from_wt(mouse->mods));
   ghostty_mouse_event_set_position(
       g->mouse_event, (GhosttyMousePosition){.x = mouse->x, .y = mouse->y});
-  return ghostty_mouse_encoder_encode(g->mouse_encoder, g->mouse_event, out,
-                                      cap, written);
+  return ghostty_mouse_encoder_encode(g->mouse_encoder, g->mouse_event,
+                                      (uint8_t *)out, cap, written);
 }
 
 /* X11/GDK keysym → physical key, for the keys the encoder treats
@@ -1146,16 +1142,18 @@ int wt_ghostty_encode_key(WtGhostty *g, const WtKey *key, char *out,
                           size_t cap, size_t *written) {
   GhosttyMods m = mods_from_wt(key->mods);
 
-  ghostty_key_encoder_setopt_from_terminal(g->encoder, g->terminal);
+  ghostty_key_encoder_set_from_terminal(g->encoder, g->terminal);
   ghostty_key_event_set_action(g->key_event, GHOSTTY_KEY_ACTION_PRESS);
   ghostty_key_event_set_key(g->key_event, key_from_keysym(key->keysym));
   ghostty_key_event_set_mods(g->key_event, m);
   ghostty_key_event_set_consumed_mods(g->key_event, 0);
   ghostty_key_event_set_composing(g->key_event, false);
-  ghostty_key_event_set_utf8(g->key_event, key->utf8, key->utf8_len);
+  ghostty_key_event_set_utf8(
+      g->key_event,
+      (GhosttyString){.ptr = (const uint8_t *)key->utf8, .len = key->utf8_len});
   ghostty_key_event_set_unshifted_codepoint(g->key_event, key->unshifted);
-  return ghostty_key_encoder_encode(g->encoder, g->key_event, out, cap,
-                                    written);
+  return ghostty_key_encoder_encode(g->encoder, g->key_event, (uint8_t *)out,
+                                    cap, written);
 }
 
 /* The PNG decoder, process-wide as libghostty-vt's own is. */
@@ -1219,8 +1217,7 @@ int wt_ghostty_placements(WtGhostty *g, WtPlacement *out, size_t cap,
   if (r != GHOSTTY_SUCCESS) return r;
   while (ghostty_render_state_image_iterator_next(g->images)) {
     GhosttyImageProtocol protocol = GHOSTTY_IMAGE_PROTOCOL_KITTY;
-    GhosttyRenderStateImageLayer layer =
-        GHOSTTY_RENDER_STATE_IMAGE_LAYER_ABOVE_TEXT;
+    GhosttyImageLayer layer = GHOSTTY_IMAGE_LAYER_ABOVE_TEXT;
     WtPlacement p = {0};
     GhosttyRenderStateImageData keys[] = {
         GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL,
@@ -1269,15 +1266,19 @@ int wt_ghostty_image_pixels(WtGhostty *g, uint32_t image_id, WtPixels *out) {
       ghostty_kitty_graphics_image(graphics, image_id);
   if (!image) return GHOSTTY_NO_VALUE;
   GhosttyKittyImageFormat format = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA;
+  GhosttyString pixels = {0};
   GhosttyKittyGraphicsImageData keys[] = {
-      GHOSTTY_KITTY_IMAGE_DATA_WIDTH,    GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
-      GHOSTTY_KITTY_IMAGE_DATA_FORMAT,   GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR,
-      GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN,
+      GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH,
+      GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT,
+      GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT,
+      GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS,
   };
-  void *values[] = {&out->width, &out->height, &format, &out->data, &out->len};
+  void *values[] = {&out->width, &out->height, &format, &pixels};
   r = ghostty_kitty_graphics_image_get_multi(
       image, sizeof keys / sizeof keys[0], keys, values, NULL);
   out->format = (uint8_t)format;
+  out->data = pixels.ptr;
+  out->len = pixels.len;
   return r;
 }
 
@@ -1332,7 +1333,7 @@ static size_t read_link(WtGhostty *g, size_t x, size_t y) {
   GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_VIEWPORT};
   point.value.coordinate.x = (uint16_t)x;
   point.value.coordinate.y = (uint32_t)y;
-  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  GhosttyGridRef ref = {0};
   if (ghostty_terminal_grid_ref(g->terminal, point, &ref) != GHOSTTY_SUCCESS)
     return 0;
   size_t start = g->link_uris_len, len = 0;
@@ -1468,19 +1469,22 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
       ghostty_render_state_row_cells_get(
           g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &len);
       if (len == 1) {
+        GhosttyCodepointBuffer one = {.ptr = &cell->codepoint, .cap = 1};
         if (ghostty_render_state_row_cells_get(
                 g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
-                &cell->codepoint) == GHOSTTY_SUCCESS)
+                &one) == GHOSTTY_SUCCESS)
           cell->grapheme_len = 1;
       } else if (len > 1 && len <= UINT16_MAX) {
         /* Past the cap only count, so the caller can grow the buffer. */
-        if (used + len <= graphemes_cap &&
-            ghostty_render_state_row_cells_get(
-                g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
-                graphemes + used) == GHOSTTY_SUCCESS) {
-          cell->codepoint = graphemes[used];
-          cell->grapheme = (uint32_t)used;
-          cell->grapheme_len = (uint16_t)len;
+        if (used + len <= graphemes_cap) {
+          GhosttyCodepointBuffer cluster = {.ptr = graphemes + used, .cap = len};
+          if (ghostty_render_state_row_cells_get(
+                  g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
+                  &cluster) == GHOSTTY_SUCCESS) {
+            cell->codepoint = graphemes[used];
+            cell->grapheme = (uint32_t)used;
+            cell->grapheme_len = (uint16_t)len;
+          }
         }
         used += len;
       }
@@ -1503,20 +1507,23 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
       ghostty_render_state_row_cells_get(
           g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_HAS_STYLING, &styled);
       if (styled) {
-        GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+        GhosttyStyle style = {0};
         if (ghostty_render_state_row_cells_get(
                 g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style) ==
             GHOSTTY_SUCCESS) {
-          if (style.bold) cell->flags |= WT_CELL_BOLD;
-          if (style.italic) cell->flags |= WT_CELL_ITALIC;
-          cell->underline = (uint8_t)style.underline;
+          GhosttyStyleFlags on = style.flags;
+          if (on & GHOSTTY_STYLE_FLAG_BOLD) cell->flags |= WT_CELL_BOLD;
+          if (on & GHOSTTY_STYLE_FLAG_ITALIC) cell->flags |= WT_CELL_ITALIC;
+          cell->underline = (uint8_t)GHOSTTY_STYLE_UNDERLINE(style);
           cell->underline_has_rgb = style_rgb(
               cell->underline_rgb, style.underline_color, colors.palette);
-          if (style.strikethrough) cell->flags |= WT_CELL_STRIKE;
-          if (style.inverse) cell->flags |= WT_CELL_INVERSE;
-          if (style.invisible) cell->flags |= WT_CELL_INVISIBLE;
-          if (style.faint) cell->flags |= WT_CELL_FAINT;
-          if (style.blink) cell->flags |= WT_CELL_BLINK;
+          if (on & GHOSTTY_STYLE_FLAG_STRIKETHROUGH)
+            cell->flags |= WT_CELL_STRIKE;
+          if (on & GHOSTTY_STYLE_FLAG_INVERSE) cell->flags |= WT_CELL_INVERSE;
+          if (on & GHOSTTY_STYLE_FLAG_INVISIBLE)
+            cell->flags |= WT_CELL_INVISIBLE;
+          if (on & GHOSTTY_STYLE_FLAG_FAINT) cell->flags |= WT_CELL_FAINT;
+          if (on & GHOSTTY_STYLE_FLAG_BLINK) cell->flags |= WT_CELL_BLINK;
         }
       }
       bool selected = false;
