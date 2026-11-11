@@ -96,6 +96,28 @@ Every action with its binding, Capture and Reset (doc 11 §Settings page).
 Import from other tools and export to JSON (doc 10 §Backup / Restore
 page). It opens by itself once on a first start with an empty store.
 
+### About
+
+`src/ui/settings/about.rs`, read-only. The Wayterm mark
+(`assets/icons/scalable/apps/wayterm-mark-symbolic.svg`, embedded with the
+app icon) in the theme's text color, with the name under it, then:
+
+| Row | Shows |
+|---|---|
+| Wayterm | the crate version |
+| Commit | the short commit hash `build.rs` recorded (doc 14 §Build); left out of a build made outside a git checkout |
+| libghostty-vt | the linked library's version (doc 02 §libghostty-vt pin), or "Not included in this build" without the `backend-ghostty` feature |
+| VTE | the loaded library's version |
+| GTK | the loaded library's version |
+
+The values can be selected and copied. A Project section links the
+repository and names the license, both from `Cargo.toml`.
+
+The mark is a copy of `wayterm_mark.svg` without its invisible
+background rectangle, because GTK fills every shape of a `-symbolic` icon.
+The name is a label, not the wordmark `wayterm_full.svg`: that file's
+word is live text in a font few systems have.
+
 ## Settings rows
 
 The `settings` table (doc 09 §Schema) is a key-value store. The seed runs

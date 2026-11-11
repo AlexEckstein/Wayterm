@@ -238,7 +238,7 @@ pub fn register_icons(display: &gdk::Display) {
 
 /// Register the embedded GResource bundles (once per process) and put
 /// their icons on `display`'s theme.
-fn register_builtin_icons(display: &gdk::Display) {
+pub(in crate::ui) fn register_builtin_icons(display: &gdk::Display) {
     static REGISTER: std::sync::Once = std::sync::Once::new();
     REGISTER.call_once(|| {
         if let Err(err) = gio::resources_register_include!("tree-icons.gresource") {
