@@ -1,10 +1,13 @@
 //! The display-free half of the SFTP sidebar: listing rows, the visible
 //! columns, toolbar rules, transfer status text, `text/uri-list` parsing,
-//! and following the shell's directory. Everything here is plain data,
-//! unit-tested without a display.
+//! following the shell's directory, and keeping a file opened in an editor
+//! in step with the server. Everything here is plain data, unit-tested
+//! without a display.
 
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::time::SystemTime;
 
 use crate::sftp::DirEntry;
 
@@ -443,6 +446,131 @@ fn hex_value(byte: u8) -> Option<u8> {
         b'a'..=b'f' => Some(byte - b'a' + 10),
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
+    }
+}
+
+/// Where the local copies of files opened in an editor live:
+/// `$XDG_CACHE_HOME/wayterm/sftp-edit` (doc 07 §Opening files).
+pub fn edit_root() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("wayterm")
+        .join("sftp-edit")
+}
+
+/// A new directory under `root`, private to its owner, for one opened
+/// file. Each file gets its own, so it keeps its name and whatever an
+/// editor writes beside it is never mistaken for another opened file.
+pub fn create_edit_dir(root: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut private = std::fs::DirBuilder::new();
+    private.mode(0o700).recursive(true).create(root)?;
+    private.recursive(false);
+    let pid = std::process::id();
+    for n in 0u32.. {
+        let dir = root.join(format!("{pid}-{n}"));
+        match private.create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("the counter never ends")
+}
+
+/// Whether `name` can name a local copy: one path component, and not a
+/// directory reference.
+pub fn is_plain_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\0'])
+}
+
+/// What tells one saved version of a local file from the next.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileStamp {
+    pub modified: Option<SystemTime>,
+    pub len: u64,
+}
+
+impl FileStamp {
+    /// `None` while there is no regular file at `path`, as in the middle
+    /// of an editor's save.
+    pub fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok().filter(|meta| meta.is_file())?;
+        Some(Self {
+            modified: meta.modified().ok(),
+            len: meta.len(),
+        })
+    }
+}
+
+/// Keeps the local copy of a file opened in an editor in step with the
+/// server (doc 07 §Opening files): each version the editor saves is
+/// uploaded once, one transfer at a time.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EditSync {
+    /// The local version the server has, or is being sent.
+    synced: Option<FileStamp>,
+    /// A download or upload of this file is running.
+    busy: bool,
+    /// The file changed during an upload: look again when it ends.
+    changed_meanwhile: bool,
+}
+
+impl EditSync {
+    /// A file whose download is about to start.
+    pub fn fetching() -> Self {
+        Self {
+            busy: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    /// A download into the local copy starts; `false` while another
+    /// transfer of this file runs.
+    pub fn begin_fetch(&mut self) -> bool {
+        !std::mem::replace(&mut self.busy, true)
+    }
+
+    /// The download ended, leaving the local copy at `stamp`. What it
+    /// wrote is the server's version, never an edit, even when it failed
+    /// part-way.
+    pub fn fetched(&mut self, stamp: Option<FileStamp>) {
+        self.busy = false;
+        self.changed_meanwhile = false;
+        self.synced = stamp;
+    }
+
+    /// The local copy may have changed and is now at `stamp`. `true` when
+    /// it must be uploaded: the caller starts the upload, then reports
+    /// [`uploaded`](Self::uploaded).
+    pub fn local_changed(&mut self, stamp: FileStamp) -> bool {
+        if self.busy {
+            self.changed_meanwhile = true;
+            return false;
+        }
+        if self.synced == Some(stamp) {
+            return false;
+        }
+        self.synced = Some(stamp);
+        self.busy = true;
+        true
+    }
+
+    /// The upload ended. `true` when the file must be looked at again: it
+    /// changed while the upload ran. A failed upload leaves the server
+    /// behind, so the next change, or look, uploads again.
+    pub fn uploaded(&mut self, ok: bool) -> bool {
+        self.busy = false;
+        if !ok {
+            self.synced = None;
+        }
+        std::mem::take(&mut self.changed_meanwhile)
     }
 }
 

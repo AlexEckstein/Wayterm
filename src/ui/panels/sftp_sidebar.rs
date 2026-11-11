@@ -13,10 +13,16 @@
 //! the sidebar follows the shell: from its OSC 7 reports, or, for a shell
 //! that sends none, by asking the remote ([`ShellCwdProbe`]) after each
 //! command.
+//!
+//! A file opens in the desktop's application for it from a local copy
+//! ([`OpenFile`]); each version the application saves is uploaded over
+//! the remote file (doc 07 §Opening files).
 
 use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib, pango};
@@ -25,7 +31,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::backpressure::IdleSender;
 use crate::sftp::{Progress, SftpClient, SftpCommand, ShellCwdProbe};
 use crate::transport::connection::SshConnection;
-use crate::ui::widgets::{confirm, prompt_text, set_margins, window_of};
+use crate::ui::widgets::{confirm, data, prompt_text, set_data, set_margins, window_of};
 
 mod model;
 pub use model::*;
@@ -52,6 +58,8 @@ struct SidebarInner {
     column_view: gtk4::ColumnView,
     /// The columns a header's menu can hide, each with the menu's action.
     columns: Vec<(Column, gtk4::ColumnViewColumn, gio::SimpleAction)>,
+    /// The row menu, reused for every right-click on a row.
+    row_menu: gtk4::PopoverMenu,
     /// The listing's rows, each a boxed [`RowView`].
     model: gio::ListStore,
     selection: gtk4::SingleSelection,
@@ -70,6 +78,54 @@ struct SidebarInner {
     /// A probe is running; another request waits for it (`probe_again`).
     probing: Cell<bool>,
     probe_again: Cell<bool>,
+    /// The files opened in an editor since attaching.
+    edits: RefCell<Vec<OpenFile>>,
+    next_edit: Cell<u64>,
+    /// Where their local copies go.
+    edit_root: RefCell<PathBuf>,
+    /// What [`launch`](Self::launch) was asked to open, instead of opening it.
+    #[cfg(test)]
+    launched: RefCell<Vec<(PathBuf, bool)>>,
+}
+
+/// How long a local copy must stay untouched before it is looked at: an
+/// editor's save is several writes.
+const SETTLE: Duration = Duration::from_millis(300);
+
+/// Key under which each cell keeps a weak ref to its `ListItem`, so a
+/// click can be traced back to a row.
+const LIST_ITEM_KEY: &str = "wayterm-sftp-list-item";
+
+/// A remote file opened in an editor: its local copy, watched for saves.
+struct OpenFile {
+    id: u64,
+    remote: String,
+    /// The local copy's own directory, removed with it.
+    dir: PathBuf,
+    local: PathBuf,
+    sync: EditSync,
+    /// Watches `dir`, once the first download has ended.
+    monitor: Option<gio::FileMonitor>,
+    /// The look at the local copy due once the editor stops writing.
+    settle: Option<glib::SourceId>,
+}
+
+impl Drop for OpenFile {
+    fn drop(&mut self) {
+        if let Some(monitor) = self.monitor.take() {
+            monitor.cancel();
+        }
+        if let Some(settle) = self.settle.take() {
+            settle.remove();
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Remove every local copy of an opened file, whichever sidebar made it:
+/// for startup, when they are a killed run's leftovers, and shutdown.
+pub fn discard_edit_copies() {
+    let _ = std::fs::remove_dir_all(edit_root());
 }
 
 /// One attached SFTP task: its client, and the never-blocking sender its
@@ -88,6 +144,38 @@ impl Attached {
     fn with_client(client: SftpClient) -> Self {
         let commands = IdleSender::new(client.sender());
         Self { client, commands }
+    }
+}
+
+/// A file transfer to queue.
+enum Transfer {
+    Download { remote: String, local: String },
+    Upload { local: String, remote: String },
+}
+
+impl Transfer {
+    fn command(
+        self,
+        transfer_id: u64,
+        progress: mpsc::Sender<Progress>,
+        reply: oneshot::Sender<Result<u64, String>>,
+    ) -> SftpCommand {
+        match self {
+            Self::Download { remote, local } => SftpCommand::Download {
+                transfer_id,
+                remote_path: remote,
+                local_path: local,
+                progress,
+                reply,
+            },
+            Self::Upload { local, remote } => SftpCommand::Upload {
+                transfer_id,
+                local_path: local,
+                remote_path: remote,
+                progress,
+                reply,
+            },
+        }
     }
 }
 
@@ -122,6 +210,7 @@ impl SftpSidebar {
     pub fn attach(&self, connection: Arc<SshConnection>) {
         self.inner.deferred.borrow_mut().take();
         *self.inner.attached.borrow_mut() = Some(Attached::new(connection));
+        self.inner.edits.borrow_mut().clear();
         self.inner.state.borrow_mut().attach();
         self.inner.render();
         let start = self.inner.state.borrow().current_path().to_string();
@@ -150,9 +239,11 @@ impl SftpSidebar {
     /// discarding queued commands, and drop a connection kept for the
     /// first show. A transfer's own futures hold the sidebar until their
     /// reply comes, so dropping the last handle alone would let a transfer
-    /// run on unseen.
+    /// run on unseen. The local copies of files opened in an editor go
+    /// too: a save could no longer reach the server.
     pub fn detach(&self) {
         self.inner.deferred.borrow_mut().take();
+        self.inner.edits.borrow_mut().clear();
         if let Some(attached) = self.inner.attached.borrow_mut().take() {
             attached.client.shutdown();
         }
@@ -302,6 +393,7 @@ fn name_column() -> gtk4::ColumnViewColumn {
                 .width_chars(NAME_MIN_CHARS)
                 .build(),
         );
+        set_data(&cell, LIST_ITEM_KEY, item.downgrade());
         item.set_child(Some(&cell));
     });
     factory.connect_bind(|_, object| {
@@ -362,6 +454,7 @@ fn detail_column(column: Column) -> gtk4::ColumnViewColumn {
             .build();
         label.add_css_class("dim-label");
         pad_cell(&label);
+        set_data(&label, LIST_ITEM_KEY, item.downgrade());
         item.set_child(Some(&label));
     });
     factory.connect_bind(move |_, object| {
@@ -464,6 +557,16 @@ fn build_sidebar() -> Rc<SidebarInner> {
         .vexpand(true)
         .hexpand(true)
         .build();
+    let row_menu = gtk4::PopoverMenu::from_model(None::<&gio::MenuModel>);
+    row_menu.set_parent(&scrolled);
+    row_menu.set_has_arrow(false);
+    row_menu.set_halign(gtk4::Align::Start);
+    // The scrolled window only unparents the children it knows about.
+    scrolled.connect_destroy(glib::clone!(
+        #[strong]
+        row_menu,
+        move |_| row_menu.unparent()
+    ));
 
     // 4. Inline error line, hidden while there is no error.
     let error_label = gtk4::Label::new(None);
@@ -507,6 +610,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
         path_entry,
         column_view,
         columns,
+        row_menu,
         model,
         selection,
         error_label,
@@ -520,6 +624,11 @@ fn build_sidebar() -> Rc<SidebarInner> {
         probe: RefCell::new(None),
         probing: Cell::new(false),
         probe_again: Cell::new(false),
+        edits: RefCell::default(),
+        next_edit: Cell::new(0),
+        edit_root: RefCell::new(edit_root()),
+        #[cfg(test)]
+        launched: RefCell::default(),
     });
     inner.connect_signals();
     inner.connect_drag_drop();
@@ -541,25 +650,33 @@ impl SidebarInner {
             }
         });
 
-        // Double-click a directory navigates into it; `..` goes up.
+        // Double-click a directory navigates into it, `..` goes up, and a
+        // file opens.
         let weak = Rc::downgrade(self);
         self.column_view.connect_activate(move |_, position| {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
-            let row = inner.model.item(position).and_then(|item| row_of(&item));
-            let target = {
-                let state = inner.state.borrow();
-                match row {
-                    Some(row) if row.is_parent => parent_path(state.current_path()),
-                    Some(row) if row.is_dir => Some(join_path(state.current_path(), &row.name)),
-                    _ => None,
-                }
-            };
-            if let Some(target) = target {
-                inner.cd(target);
+            if let Some(row) = inner.model.item(position).and_then(|item| row_of(&item)) {
+                inner.open_row(&row, false);
             }
         });
+
+        // A right-click selects the row under it and offers to open it.
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(gdk::BUTTON_SECONDARY);
+        let weak = Rc::downgrade(self);
+        gesture.connect_pressed(move |gesture, _, x, y| {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            if let Some(position) = inner.position_at(x, y) {
+                gesture.set_state(gtk4::EventSequenceState::Claimed);
+                inner.selection.set_selected(position);
+                inner.show_row_menu(x, y);
+            }
+        });
+        self.column_view.add_controller(gesture);
 
         for (column, _, action) in &self.columns {
             let (column, weak) = (*column, Rc::downgrade(self));
@@ -656,6 +773,83 @@ impl SidebarInner {
             let shown = chosen.shows(*column);
             view_column.set_visible(shown);
             action.set_state(&shown.to_variant());
+        }
+    }
+
+    /// The model position of the row at `(x, y)` in listing coordinates;
+    /// `None` over the headers or below the rows.
+    fn position_at(&self, x: f64, y: f64) -> Option<u32> {
+        let mut widget = self.column_view.pick(x, y, gtk4::PickFlags::DEFAULT);
+        while let Some(current) = widget {
+            if let Some(item) = data::<glib::WeakRef<gtk4::ListItem>>(&current, LIST_ITEM_KEY) {
+                return item
+                    .upgrade()
+                    .map(|item| item.position())
+                    .filter(|&position| position != gtk4::INVALID_LIST_POSITION);
+            }
+            if current == *self.column_view.upcast_ref::<gtk4::Widget>() {
+                break;
+            }
+            widget = current.parent();
+        }
+        None
+    }
+
+    /// The selected row's menu, at the pointer: Open, and for a file Open
+    /// With….
+    fn show_row_menu(self: &Rc<Self>, x: f64, y: f64) {
+        let Some(row) = self.selection.selected_item().and_then(|i| row_of(&i)) else {
+            return;
+        };
+        let menu = gio::Menu::new();
+        let group = gio::SimpleActionGroup::new();
+        let item = |label: &str, name: &str, ask: bool| {
+            menu.append(Some(label), Some(&format!("row.{name}")));
+            let action = gio::SimpleAction::new(name, None);
+            let (weak, row) = (Rc::downgrade(self), row.clone());
+            action.connect_activate(move |_, _| {
+                if let Some(inner) = weak.upgrade() {
+                    inner.open_row(&row, ask);
+                }
+            });
+            group.add_action(&action);
+        };
+        item("Open", "open", false);
+        if !row.is_dir {
+            item("Open With…", "open-with", true);
+        }
+        self.row_menu.set_menu_model(Some(&menu));
+        self.row_menu.insert_action_group("row", Some(&group));
+        let click = gtk4::graphene::Point::new(x as f32, y as f32);
+        let at = self
+            .row_menu
+            .parent()
+            .and_then(|parent| self.column_view.compute_point(&parent, &click))
+            .unwrap_or(click);
+        self.row_menu.set_pointing_to(Some(&gdk::Rectangle::new(
+            at.x() as i32,
+            at.y() as i32,
+            0,
+            0,
+        )));
+        self.row_menu.popup();
+    }
+
+    /// Open `row`: go into a directory, up from `..`, or open a file in
+    /// its application (`ask` to pick one).
+    fn open_row(self: &Rc<Self>, row: &RowView, ask: bool) {
+        let target = {
+            let state = self.state.borrow();
+            if row.is_parent {
+                parent_path(state.current_path())
+            } else {
+                Some(join_path(state.current_path(), &row.name))
+            }
+        };
+        match target {
+            Some(target) if row.is_dir => self.cd(target),
+            Some(target) => self.open_file(target, ask),
+            None => {}
         }
     }
 
@@ -847,40 +1041,43 @@ impl SidebarInner {
             return;
         }
         let remote = join_path(self.state.borrow().current_path(), &name);
-        self.run_transfer(format!("Upload {name}"), move |id, progress, reply| {
-            SftpCommand::Upload {
-                transfer_id: id,
-                local_path,
-                remote_path: remote,
-                progress,
-                reply,
-            }
-        });
+        self.run_transfer(
+            format!("Upload {name}"),
+            Transfer::Upload {
+                local: local_path,
+                remote,
+            },
+            Self::refresh_after,
+        );
     }
 
     fn download(self: &Rc<Self>, remote: String, local: String) {
         let label = format!("Download {}", file_name(&remote));
-        self.run_transfer(label, move |id, progress, reply| SftpCommand::Download {
-            transfer_id: id,
-            remote_path: remote,
-            local_path: local,
-            progress,
-            reply,
-        });
+        self.run_transfer(
+            label,
+            Transfer::Download { remote, local },
+            Self::refresh_after,
+        );
     }
 
-    /// Queue a transfer, mirror its progress, and refresh when it ends.
+    /// A finished transfer changed what the listing shows.
+    fn refresh_after(self: &Rc<Self>, succeeded: bool) {
+        if succeeded {
+            self.refresh();
+        }
+    }
+
+    /// Queue a transfer and mirror its progress. `on_done` runs once, with
+    /// whether it succeeded, also when it could not be queued.
     fn run_transfer(
         self: &Rc<Self>,
         label: String,
-        make_cmd: impl FnOnce(
-            u64,
-            mpsc::Sender<Progress>,
-            oneshot::Sender<Result<u64, String>>,
-        ) -> SftpCommand,
+        transfer: Transfer,
+        on_done: impl FnOnce(&Rc<Self>, bool) + 'static,
     ) {
         let Some(client) = self.client() else {
             self.set_error(NOT_CONNECTED);
+            on_done(self, false);
             return;
         };
         let transfer_id = client.next_transfer_id();
@@ -890,12 +1087,13 @@ impl SidebarInner {
         self.state.borrow_mut().begin_transfer(transfer_id, label);
         self.render();
 
-        if !self.send(make_cmd(transfer_id, progress_tx, reply)) {
+        if !self.send(transfer.command(transfer_id, progress_tx, reply)) {
             // The command never reached the task — take the display back.
             self.state
                 .borrow_mut()
                 .end_transfer(transfer_id, &Err(COMMAND_FAILED.to_string()));
             self.render();
+            on_done(self, false);
             return;
         }
 
@@ -917,13 +1115,205 @@ impl SidebarInner {
                 Ok(result) => result,
                 Err(_) => Err(SESSION_ENDED.to_string()),
             };
-            let succeeded = result.is_ok();
             done.state.borrow_mut().end_transfer(transfer_id, &result);
             done.render();
-            if succeeded {
-                done.refresh();
+            on_done(&done, result.is_ok());
+        });
+    }
+
+    /// Open the remote file in its application, or one the user picks
+    /// (`ask`), from a local copy: a fresh download into the copy it
+    /// already has, if it was opened before.
+    fn open_file(self: &Rc<Self>, remote: String, ask: bool) {
+        let name = file_name(&remote);
+        if !is_plain_file_name(&name) {
+            self.set_error(&format!("Cannot open '{name}': not a usable file name"));
+            return;
+        }
+        if self.client().is_none() {
+            self.set_error(NOT_CONNECTED);
+            return;
+        }
+        let known = self
+            .edits
+            .borrow_mut()
+            .iter_mut()
+            .find(|edit| edit.remote == remote)
+            .map(|edit| (edit.id, edit.local.clone(), edit.sync.begin_fetch()));
+        let (id, local) = match known {
+            // A transfer of it is running: its end shows or stores it.
+            Some((_, _, false)) => return,
+            Some((id, local, true)) => (id, local),
+            None => {
+                let dir = match create_edit_dir(&self.edit_root.borrow()) {
+                    Ok(dir) => dir,
+                    Err(err) => {
+                        self.set_error(&format!("Cannot open '{name}': {err}"));
+                        return;
+                    }
+                };
+                let id = self.next_edit.replace(self.next_edit.get() + 1);
+                let local = dir.join(&name);
+                self.edits.borrow_mut().push(OpenFile {
+                    id,
+                    remote: remote.clone(),
+                    dir,
+                    local: local.clone(),
+                    sync: EditSync::fetching(),
+                    monitor: None,
+                    settle: None,
+                });
+                (id, local)
+            }
+        };
+        let transfer = Transfer::Download {
+            remote,
+            local: local.to_string_lossy().into_owned(),
+        };
+        self.run_transfer(format!("Open {name}"), transfer, move |inner, succeeded| {
+            inner.fetched(id, succeeded, ask)
+        });
+    }
+
+    /// The download of an opened file ended: watch the local copy and
+    /// show it. A first download that failed leaves nothing to show.
+    fn fetched(self: &Rc<Self>, id: u64, succeeded: bool, ask: bool) {
+        let mut edits = self.edits.borrow_mut();
+        let Some(index) = edits.iter().position(|edit| edit.id == id) else {
+            return;
+        };
+        let edit = &mut edits[index];
+        edit.sync.fetched(FileStamp::of(&edit.local));
+        if !succeeded {
+            if edit.monitor.is_none() {
+                edits.remove(index);
+            }
+            return;
+        }
+        if edit.monitor.is_none() {
+            match self.watch(id, &edit.dir) {
+                Ok(monitor) => edit.monitor = Some(monitor),
+                Err(err) => {
+                    // Shown unwatched, its saves would go nowhere.
+                    let name = file_name(&edit.remote);
+                    edits.remove(index);
+                    drop(edits);
+                    self.set_error(&format!("Cannot watch '{name}' for changes: {err}"));
+                    return;
+                }
+            }
+        }
+        let local = edit.local.clone();
+        drop(edits);
+        self.launch(&local, ask);
+    }
+
+    /// Watch an opened file's directory: editors save by writing the file
+    /// in place, or by renaming a new one over it.
+    fn watch(self: &Rc<Self>, id: u64, dir: &Path) -> Result<gio::FileMonitor, glib::Error> {
+        let monitor = gio::File::for_path(dir)
+            .monitor_directory(gio::FileMonitorFlags::NONE, gio::Cancellable::NONE)?;
+        let weak = Rc::downgrade(self);
+        monitor.connect_changed(move |_, _, _, _| {
+            if let Some(inner) = weak.upgrade() {
+                inner.local_touched(id);
             }
         });
+        Ok(monitor)
+    }
+
+    /// Something in an opened file's directory changed: look at the copy
+    /// once the writes stop.
+    fn local_touched(self: &Rc<Self>, id: u64) {
+        let mut edits = self.edits.borrow_mut();
+        let Some(edit) = edits.iter_mut().find(|edit| edit.id == id) else {
+            return;
+        };
+        if let Some(pending) = edit.settle.take() {
+            pending.remove();
+        }
+        let weak = Rc::downgrade(self);
+        edit.settle = Some(glib::timeout_add_local_once(SETTLE, move || {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            if let Some(edit) = inner.edits.borrow_mut().iter_mut().find(|e| e.id == id) {
+                edit.settle = None;
+            }
+            inner.sync_edit(id);
+        }));
+    }
+
+    /// Upload an opened file's local copy over the remote file, if the
+    /// editor saved a version the server does not have.
+    fn sync_edit(self: &Rc<Self>, id: u64) {
+        let changed = {
+            let mut edits = self.edits.borrow_mut();
+            let Some(edit) = edits.iter_mut().find(|edit| edit.id == id) else {
+                return;
+            };
+            // Gone in the middle of a save: the write that brings it back
+            // looks again.
+            let Some(stamp) = FileStamp::of(&edit.local) else {
+                return;
+            };
+            edit.sync
+                .local_changed(stamp)
+                .then(|| (edit.local.clone(), edit.remote.clone()))
+        };
+        let Some((local, remote)) = changed else {
+            return;
+        };
+        let label = format!("Save {}", file_name(&remote));
+        let transfer = Transfer::Upload {
+            local: local.to_string_lossy().into_owned(),
+            remote,
+        };
+        self.run_transfer(label, transfer, move |inner, succeeded| {
+            let again = inner
+                .edits
+                .borrow_mut()
+                .iter_mut()
+                .find(|edit| edit.id == id)
+                .is_some_and(|edit| edit.sync.uploaded(succeeded));
+            inner.refresh_after(succeeded);
+            if again {
+                inner.sync_edit(id);
+            }
+        });
+    }
+
+    /// Hand the local copy to the desktop: its default application, or
+    /// the one the user picks when `ask`. Writable, so a sandboxed
+    /// application can save it.
+    #[cfg(not(test))]
+    fn launch(self: &Rc<Self>, local: &Path, ask: bool) {
+        let launcher = gtk4::FileLauncher::new(Some(&gio::File::for_path(local)));
+        launcher.set_always_ask(ask);
+        launcher.set_writable(true);
+        let weak = Rc::downgrade(self);
+        let name = file_name(&local.to_string_lossy());
+        launcher.launch(
+            self.parent_window().as_ref(),
+            gio::Cancellable::NONE,
+            move |result| {
+                let Err(err) = result else {
+                    return;
+                };
+                // Closing the application chooser opens nothing.
+                if err.matches(gtk4::DialogError::Dismissed) {
+                    return;
+                }
+                if let Some(inner) = weak.upgrade() {
+                    inner.set_error(&format!("Cannot open '{name}': {}", err.message()));
+                }
+            },
+        );
+    }
+
+    #[cfg(test)]
+    fn launch(self: &Rc<Self>, local: &Path, ask: bool) {
+        self.launched.borrow_mut().push((local.to_path_buf(), ask));
     }
 
     fn cancel_transfer(self: &Rc<Self>) {
@@ -1168,6 +1558,130 @@ pub(in crate::ui) mod gtk_tests {
         assert_eq!(visible_columns(&sidebar), Column::ALL);
         assert_eq!(saved.borrow().as_deref(), Some("size,modified,permissions"));
         save_columns_with(|_| {});
+    }
+
+    /// Run the main loop until `rx` has a command (the sidebar sends from
+    /// idle and reply futures).
+    fn next_command(rx: &mut mpsc::Receiver<SftpCommand>) -> SftpCommand {
+        let context = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(command) = rx.try_recv() {
+                return command;
+            }
+            assert!(std::time::Instant::now() < deadline, "no command was sent");
+            if !context.iteration(false) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    fn settle() {
+        let context = glib::MainContext::default();
+        while context.iteration(false) {}
+    }
+
+    /// A sidebar over a fake task, its opened files' copies under `root`.
+    fn editing_sidebar(root: &Path) -> (SftpSidebar, mpsc::Receiver<SftpCommand>) {
+        let (tx, rx) = mpsc::channel(8);
+        let sidebar = SftpSidebar::new();
+        let client = SftpClient::from_parts(tx, tokio_util::sync::CancellationToken::new());
+        sidebar.attach_client(client);
+        *sidebar.inner.edit_root.borrow_mut() = root.to_path_buf();
+        (sidebar, rx)
+    }
+
+    /// Activating a file downloads it to a local copy and opens that; a
+    /// save of the copy is uploaded over the remote file, an untouched
+    /// copy is not, and the copy goes when the sidebar detaches.
+    pub(in crate::ui) fn an_opened_file_uploads_each_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (sidebar, mut rx) = editing_sidebar(tmp.path());
+        let inner = &sidebar.inner;
+        inner.state.borrow_mut().attach();
+        inner
+            .state
+            .borrow_mut()
+            .set_listing("/srv", &[entry("notes.txt", false)]);
+        inner.render();
+
+        inner.column_view.emit_by_name::<()>("activate", &[&1u32]);
+        let SftpCommand::Download {
+            remote_path,
+            local_path,
+            reply,
+            ..
+        } = next_command(&mut rx)
+        else {
+            panic!("activating a file sends no download");
+        };
+        assert_eq!(remote_path, "/srv/notes.txt");
+        let local = PathBuf::from(&local_path);
+        assert!(local.starts_with(tmp.path()) && local.ends_with("notes.txt"));
+        assert!(
+            inner.launched.borrow().is_empty(),
+            "opened before it arrived"
+        );
+
+        std::fs::write(&local, b"from the server").unwrap();
+        reply.send(Ok(15)).unwrap();
+        settle();
+        assert_eq!(*inner.launched.borrow(), [(local.clone(), false)]);
+
+        // An editor that saves by renaming a new file over the old one.
+        let scratch = local.with_file_name("notes.txt~");
+        std::fs::write(&scratch, b"edited in the editor").unwrap();
+        std::fs::rename(&scratch, &local).unwrap();
+        let SftpCommand::Upload {
+            local_path,
+            remote_path,
+            reply,
+            ..
+        } = next_command(&mut rx)
+        else {
+            panic!("a save sends no upload");
+        };
+        assert_eq!(
+            (local_path.as_str(), remote_path.as_str()),
+            (local.to_str().unwrap(), "/srv/notes.txt")
+        );
+        reply.send(Ok(20)).unwrap();
+        assert!(
+            matches!(next_command(&mut rx), SftpCommand::Cd { .. }),
+            "the listing shows the new size"
+        );
+
+        // Nothing changed since: the monitor's echoes upload nothing.
+        std::thread::sleep(SETTLE * 2);
+        settle();
+        assert!(rx.try_recv().is_err());
+
+        sidebar.detach();
+        assert!(!local.exists(), "the copy outlived the session");
+        settle();
+    }
+
+    /// A file whose download fails is not opened, and keeps no copy.
+    pub(in crate::ui) fn a_failed_open_leaves_no_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (sidebar, mut rx) = editing_sidebar(tmp.path());
+        let inner = &sidebar.inner;
+        inner.open_file("/srv/secret".into(), true);
+        let SftpCommand::Download {
+            local_path, reply, ..
+        } = next_command(&mut rx)
+        else {
+            panic!("no download sent");
+        };
+        let dir = PathBuf::from(local_path);
+        let dir = dir.parent().unwrap();
+        assert!(dir.is_dir());
+        reply.send(Err("permission denied".into())).unwrap();
+        settle();
+        assert!(inner.launched.borrow().is_empty());
+        assert!(inner.edits.borrow().is_empty());
+        assert!(!dir.exists(), "the empty copy's directory stayed");
+        assert!(inner.state.borrow().status.contains("permission denied"));
     }
 
     /// "Follow terminal directory" is the bottom row, ticked. Unticked, the

@@ -103,7 +103,8 @@ build, gets one that can write.
   (`--share=network` at build time) — fine for local builds, not for
   Flathub, which needs vendored cargo sources. The release workflow does
   not build it, and its sandbox access to SSH keys, the keyring and files
-  is not verified.
+  is not verified, nor is handing a file opened from the SFTP sidebar to
+  another application (doc 07 §Opening files).
 - Packages are built without `backend-ghostty`.
 - The AppImage and `.deb` target x86_64 only.
 - The AppImage bundles GTK 4 and GLib from Ubuntu 26.04, which need

@@ -64,6 +64,8 @@ mod gtk_tests {
         super::panels::session_tree::gtk_tests::a_long_name_ellipsizes();
         super::panels::sftp_sidebar::gtk_tests::listing_renders_and_selection_drives_toolbar();
         super::panels::sftp_sidebar::gtk_tests::the_header_menu_picks_the_columns();
+        super::panels::sftp_sidebar::gtk_tests::an_opened_file_uploads_each_save();
+        super::panels::sftp_sidebar::gtk_tests::a_failed_open_leaves_no_copy();
         super::panels::sftp_sidebar::gtk_tests::follow_checkbox_toggles_following();
         super::panels::sftp_sidebar::gtk_tests::detaching_mid_transfer_ends_the_task();
         super::panels::sftp_sidebar::gtk_tests::a_dropped_sidebar_is_freed();

@@ -2,11 +2,12 @@
 
 A remote file browser for each SSH tab, shown in the side dock's SFTP
 panel (doc 01 §Side dock): navigate, upload, download, delete, rename,
-create folders, drag files in, and follow the shell's working directory.
+create folders, drag files in, open files in a local application, and
+follow the shell's working directory.
 
 Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe),
 `src/ui/panels/sftp_sidebar.rs` (the GTK half), `src/ui/panels/sftp_sidebar/model.rs`
-(its display-free model: rows, columns, toolbar rules).
+(its display-free model: rows, columns, toolbar rules, opened files).
 
 ## Layout
 
@@ -64,8 +65,43 @@ shows. The choice is one for every tab, stored in the `sftp_columns`
 settings row (doc 13 §Settings rows) and applied to another tab's sidebar
 when the panel next shows it.
 
-Double-clicking a row, or Enter on it, goes into a directory or up from
-`..`.
+Double-clicking a row, or Enter on it, goes into a directory, up from
+`..`, or opens a file (§Opening files). A right-click on a row selects it
+and offers Open, the same, and for a file Open With….
+
+## Opening files
+
+Opening a file downloads it to a local copy and hands that to the desktop
+(`GtkFileLauncher`: the OpenURI portal where there is one, else GIO), which
+starts the default application for the file's type; Open With… asks which
+application instead. The transfer shows in the progress bar as
+`Open <name>` and can be cancelled like any other.
+
+While the tab's session lasts the sidebar watches the copy, and each
+version the application saves is uploaded over the remote file
+(`Save <name>` in the status line), so saving in the editor saves to the
+server:
+
+- The copy's directory is watched, not the file, so both ways editors
+  save are seen: writing the file in place, and renaming a new file over
+  it. A look at the copy waits until 300 ms pass without a change there,
+  and uploads only when the copy's size or modification time differs from
+  the version the server has (`EditSync`).
+- One transfer per file at a time: a save during an upload is sent when
+  that upload ends. A failed upload shows in the status line, and the
+  next save sends the file again.
+- Opening a file that is already open downloads it again into the same
+  copy, so the application shows what the server has now.
+
+Copies live in `$XDG_CACHE_HOME/wayterm/sftp-edit/<pid>-<n>/<name>`, one
+directory per opened file, readable by the user only. They are removed
+when the sidebar detaches (§Layout): a later save has no session to go
+to, and fails in the editor rather than landing in a file nobody
+uploads. Whatever is left is removed when Wayterm starts and when it
+quits.
+
+Opening needs no new `SftpCommand`: it is a `Download`, then an `Upload`
+per save.
 
 ## Connection model
 
@@ -209,8 +245,19 @@ disabled.
 - Jumped sessions have no SFTP task (doc 04 §Jump hosts): the sidebar shows
   "SFTP is not available for jumped sessions yet", and nothing follows the
   shell.
-- No right-click menu on rows, and no dragging files out of the listing.
+- The row menu has only Open and Open With…; the toolbar's operations
+  are not in it. No dragging files out of the listing.
 - A cancelled transfer leaves its partial file behind, local or remote.
+- Opened files: a save overwrites the remote file as it is then, without
+  checking whether it changed on the server since it was opened, and
+  writes it in place, so a failed upload can leave it incomplete. The
+  editor is not told when an upload fails; the status line is. Once the
+  session ends the copy is gone, and an editor still holding the file has
+  to save it elsewhere. Which application opens a file is the desktop's
+  choice (Open With… to pick another); Wayterm has no editor setting of
+  its own. Open With… asks only through the portal: without one GTK
+  starts the default application, as Open does. The Flatpak's hand-off
+  through the portal is not verified (doc 14 §Limitations).
 - The columns cannot be reordered or sorted by, and their widths are not
   remembered.
 - Following the shell: plain-tab probes need a Linux remote. Tabs to the

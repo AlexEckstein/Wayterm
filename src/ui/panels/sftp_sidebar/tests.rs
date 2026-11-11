@@ -116,6 +116,101 @@ fn the_columns_row_names_the_shown_columns() {
     }
 }
 
+// --- opening files ---------------------------------------------------------
+
+fn stamp(len: u64) -> FileStamp {
+    FileStamp {
+        modified: None,
+        len,
+    }
+}
+
+#[test]
+fn each_opened_file_gets_its_own_private_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("cache/sftp-edit");
+    let first = create_edit_dir(&root).unwrap();
+    let second = create_edit_dir(&root).unwrap();
+    assert_ne!(first, second);
+    for dir in [&root, &first, &second] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
+    }
+}
+
+#[test]
+fn only_a_single_path_component_names_a_local_copy() {
+    assert!(is_plain_file_name("notes.txt"));
+    assert!(is_plain_file_name(".bashrc"));
+    for name in ["", ".", "..", "a/b", "/etc/passwd"] {
+        assert!(!is_plain_file_name(name), "{name:?}");
+    }
+}
+
+#[test]
+fn a_file_stamp_needs_a_regular_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("f");
+    assert_eq!(FileStamp::of(&path), None);
+    assert_eq!(FileStamp::of(tmp.path()), None, "a directory");
+    std::fs::write(&path, b"abc").unwrap();
+    assert_eq!(FileStamp::of(&path).map(|stamp| stamp.len), Some(3));
+}
+
+#[test]
+fn what_a_download_wrote_is_not_an_edit() {
+    let mut sync = EditSync::fetching();
+    assert!(sync.is_busy());
+    assert!(!sync.local_changed(stamp(10)), "the download's own writes");
+    sync.fetched(Some(stamp(22)));
+    assert!(!sync.is_busy());
+    assert!(!sync.local_changed(stamp(22)), "the copy is as downloaded");
+}
+
+#[test]
+fn each_saved_version_uploads_once() {
+    let mut sync = EditSync::fetching();
+    sync.fetched(Some(stamp(22)));
+    assert!(sync.local_changed(stamp(30)), "a save");
+    assert!(!sync.uploaded(true));
+    assert!(!sync.local_changed(stamp(30)), "the same version again");
+    assert!(sync.local_changed(stamp(31)), "the next save");
+}
+
+#[test]
+fn a_save_during_an_upload_is_looked_at_when_it_ends() {
+    let mut sync = EditSync::fetching();
+    sync.fetched(Some(stamp(22)));
+    assert!(sync.local_changed(stamp(30)));
+    assert!(!sync.local_changed(stamp(40)), "one upload at a time");
+    assert!(sync.uploaded(true), "look again");
+    assert!(sync.local_changed(stamp(40)));
+    assert!(!sync.uploaded(true), "nothing changed meanwhile");
+}
+
+#[test]
+fn a_failed_upload_is_sent_again_at_the_next_look() {
+    let mut sync = EditSync::fetching();
+    sync.fetched(Some(stamp(22)));
+    assert!(sync.local_changed(stamp(30)));
+    assert!(!sync.uploaded(false));
+    assert!(sync.local_changed(stamp(30)), "the server never got it");
+}
+
+#[test]
+fn opening_again_downloads_unless_a_transfer_of_the_file_runs() {
+    let mut sync = EditSync::fetching();
+    assert!(!sync.begin_fetch(), "the first download still runs");
+    sync.fetched(Some(stamp(22)));
+    assert!(sync.begin_fetch());
+    sync.fetched(Some(stamp(25)));
+    assert!(!sync.local_changed(stamp(25)), "a fresh copy, not an edit");
+
+    assert!(sync.local_changed(stamp(26)));
+    assert!(!sync.begin_fetch(), "its upload runs");
+}
+
 // --- path arithmetic -------------------------------------------------------
 
 #[test]
