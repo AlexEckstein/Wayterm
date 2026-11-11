@@ -495,6 +495,8 @@ void wt_ghostty_free_bytes(uint8_t *ptr, size_t len) {
   ghostty_free(NULL, ptr, len);
 }
 
+const char *wt_ghostty_version(void) { return ghostty_version(); }
+
 /* Aim the formatter at `selection`, or at the whole active screen for NULL.
  * It keeps a copy that the terminal's next change invalidates, so every use
  * sets it again. */
