@@ -1476,14 +1476,15 @@ int wt_ghostty_snapshot(WtGhostty *g, WtFrame *frame, WtCell *cells,
           cell->grapheme_len = 1;
       } else if (len > 1 && len <= UINT16_MAX) {
         /* Past the cap only count, so the caller can grow the buffer. */
-        GhosttyCodepointBuffer cluster = {.ptr = graphemes + used, .cap = len};
-        if (used + len <= graphemes_cap &&
-            ghostty_render_state_row_cells_get(
-                g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
-                &cluster) == GHOSTTY_SUCCESS) {
-          cell->codepoint = graphemes[used];
-          cell->grapheme = (uint32_t)used;
-          cell->grapheme_len = (uint16_t)len;
+        if (used + len <= graphemes_cap) {
+          GhosttyCodepointBuffer cluster = {.ptr = graphemes + used, .cap = len};
+          if (ghostty_render_state_row_cells_get(
+                  g->cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
+                  &cluster) == GHOSTTY_SUCCESS) {
+            cell->codepoint = graphemes[used];
+            cell->grapheme = (uint32_t)used;
+            cell->grapheme_len = (uint16_t)len;
+          }
         }
         used += len;
       }
