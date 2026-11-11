@@ -697,27 +697,31 @@ ln -sf ~/.local/zig/zig-x86_64-linux-0.17.0/zig ~/.local/bin/zig
 base=https://release.files.ghostty.org/libghostty-vt/1.0.0
 curl -LO $base/libghostty-vt-1.0.0.tar.gz
 curl -LO $base/libghostty-vt-1.0.0-deps.tar.gz
-echo "4a6ef758be721923e1969e7b81b443dcc92d8dd3fb5a39600c03a8817a753676  libghostty-vt-1.0.0.tar.gz" | sha256sum -c -
-echo "4d5ea5e448e4c7ea8fb55ccbaa8668f2a97d44f438cee831e2b7ecd162d85c29  libghostty-vt-1.0.0-deps.tar.gz" | sha256sum -c -
-tar -xzf libghostty-vt-1.0.0.tar.gz
-tar -xzf libghostty-vt-1.0.0-deps.tar.gz
-cd libghostty-vt-1.0.0
-ZIG_GLOBAL_CACHE_DIR="$PWD/../zig-cache" zig build \
-  --system ../libghostty-vt-1.0.0-deps -Doptimize=ReleaseFast --prefix "$PWD/out"
+# Nothing is extracted or built unless both checksums match.
+echo "4a6ef758be721923e1969e7b81b443dcc92d8dd3fb5a39600c03a8817a753676  libghostty-vt-1.0.0.tar.gz" | sha256sum -c - &&
+  echo "4d5ea5e448e4c7ea8fb55ccbaa8668f2a97d44f438cee831e2b7ecd162d85c29  libghostty-vt-1.0.0-deps.tar.gz" | sha256sum -c - &&
+  tar -xzf libghostty-vt-1.0.0.tar.gz &&
+  tar -xzf libghostty-vt-1.0.0-deps.tar.gz &&
+  (cd libghostty-vt-1.0.0 &&
+    ZIG_GLOBAL_CACHE_DIR="$(mktemp -d)" zig build \
+      --system ../libghostty-vt-1.0.0-deps -Doptimize=ReleaseFast --prefix "$PWD/out")
+vt_out="$PWD/libghostty-vt-1.0.0/out"
 ```
 
 The build is offline: with `--system` Zig takes its packages from the
-dependency tarball, and the cache directory must be a new, empty one.
+dependency tarball, and the cache directory must be a new, empty one,
+hence `mktemp -d`.
 `out/` then holds `include/ghostty/vt.h` (+ `vt/`) and
 `lib/libghostty-vt.a`, beside a shared library Wayterm does not link.
 
 `build.rs` looks for them under `$WAYTERM_GHOSTTY_VT_DIR`, default
-`third_party/libghostty-vt/` in the checkout:
+`third_party/libghostty-vt/` in the checkout. From the checkout's root,
+in the same shell:
 
 ```sh
 mkdir -p third_party/libghostty-vt/lib
-cp -r libghostty-vt-1.0.0/out/include third_party/libghostty-vt/
-cp libghostty-vt-1.0.0/out/lib/libghostty-vt.a third_party/libghostty-vt/lib/
+cp -r "$vt_out/include" third_party/libghostty-vt/
+cp "$vt_out/lib/libghostty-vt.a" third_party/libghostty-vt/lib/
 printf '*\n' > third_party/libghostty-vt/.gitignore   # never committed
 ```
 
