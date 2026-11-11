@@ -25,13 +25,12 @@ The sidebar, top to bottom:
 - a path bar (Enter navigates);
 - a toolbar: Upload, Download, Delete, Rename, Refresh, New folder;
 - an inline error line;
-- the listing: name, size, modified (UTC), permissions; directories first,
-  then files, case-insensitive; a `..` row except at `/`;
+- the listing (§Listing);
 - a progress bar with Cancel and a status line;
 - the "Follow terminal directory" check box (§Following the shell).
 
-The toolbar's icons ship in the binary (doc 09 §Icons), so they are the
-same on every desktop.
+The toolbar's and the rows' icons ship in the binary (doc 09 §Icons), so
+they are the same on every desktop.
 
 `toggle_sftp` (Ctrl+Shift+B) switches the dock to the SFTP panel, or back
 to the panel it came from; a panel hidden by `toggle_session_tree` comes
@@ -40,6 +39,27 @@ back on SFTP. While focus is in the panel (not its path bar), the
 buttons, enabled or not as clicks are (doc 11 §Handlers). Download and
 Upload use file choosers; Rename and New folder ask for a name; Delete
 asks for confirmation.
+
+## Listing
+
+Directories first, then files, case-insensitive; a `..` row except at `/`.
+Four columns:
+
+| Column | Shows |
+|---|---|
+| Name | the row's icon (folder, file, or parent folder for `..`) beside its name |
+| Size | a file's size in binary units, against the column's right edge; empty for a directory |
+| Modified | `YYYY-MM-DD HH:MM`, UTC |
+| Permissions | `rwxr-xr-x` |
+
+Name takes the width the others leave. A name too long for it is cut in
+the middle, keeping its extension, and shown whole in a tooltip. Name
+never gets narrower than about 14 characters: in a panel too narrow for
+every column the listing scrolls sideways instead. Columns are resized by
+dragging a header's edge.
+
+Double-clicking a row, or Enter on it, goes into a directory or up from
+`..`.
 
 ## Connection model
 
@@ -185,6 +205,8 @@ disabled.
   shell.
 - No right-click menu, and no dragging files out of the listing.
 - A cancelled transfer leaves its partial file behind, local or remote.
+- The columns cannot be hidden, reordered or sorted by, and their widths
+  are not remembered.
 - Following the shell: plain-tab probes need a Linux remote. Tabs to the
   same user@host share one connection, and probing tells their shells
   apart only while at most one of them is a plain shell; with two, it

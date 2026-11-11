@@ -75,6 +75,12 @@ fn row_icons_distinguish_directories_files_and_the_parent_row() {
     assert_ne!(parent.icon, rows[1].icon, "parent and directory differ");
     assert_ne!(rows[1].icon, rows[2].icon, "directory and file differ");
     assert!(parent.is_dir, "the parent row navigates like a directory");
+    for icon in [parent.icon, rows[1].icon, rows[2].icon] {
+        assert!(
+            crate::ui::icons::CHROME.contains(&icon) || icon == crate::ui::icons::FOLDER_ICON,
+            "{icon} ships with the app"
+        );
+    }
 }
 
 // --- path arithmetic -------------------------------------------------------

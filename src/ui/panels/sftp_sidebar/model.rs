@@ -14,9 +14,10 @@ pub const PARENT_ROW: &str = "..";
 /// directory first ([`SftpView::start_at`]).
 pub const START_PATH: &str = ".";
 
-const DIR_ICON: &str = "📁";
-const FILE_ICON: &str = "📄";
-const PARENT_ICON: &str = "⬆";
+/// Row icons, bundled with the app (`ui::icons`).
+pub const DIR_ICON: &str = "wayterm-folder-symbolic";
+pub const FILE_ICON: &str = "wayterm-file-symbolic";
+pub const PARENT_ICON: &str = "wayterm-folder-up-symbolic";
 
 /// Inline error shown while no SSH connection backs the sidebar.
 pub const NOT_CONNECTED: &str = "SFTP needs a live SSH connection";
@@ -52,9 +53,31 @@ pub fn attach_on_connect(open_on_connect: bool, shown: bool) -> bool {
     open_on_connect || shown
 }
 
+/// A listing column beside Name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Column {
+    Size,
+    Modified,
+    Permissions,
+}
+
+impl Column {
+    /// Listing order, after Name.
+    pub const ALL: [Column; 3] = [Column::Size, Column::Modified, Column::Permissions];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Column::Size => "Size",
+            Column::Modified => "Modified",
+            Column::Permissions => "Permissions",
+        }
+    }
+}
+
 /// One listing row, in store order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RowView {
+    /// An icon name: [`DIR_ICON`], [`FILE_ICON`] or [`PARENT_ICON`].
     pub icon: &'static str,
     pub name: String,
     /// Already human-formatted; empty for directories.

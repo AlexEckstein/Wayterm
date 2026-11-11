@@ -19,7 +19,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gtk4::prelude::*;
-use gtk4::{gdk, gio, glib};
+use gtk4::{gdk, gio, glib, pango};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::backpressure::IdleSender;
@@ -274,21 +274,94 @@ fn row_of(item: &glib::Object) -> Option<RowView> {
     Some(row)
 }
 
-/// Append a column of labels showing `text` of each row.
-fn add_column(
-    column_view: &gtk4::ColumnView,
-    title: &str,
-    expand: bool,
-    text: fn(&RowView) -> &str,
-) {
+/// The `ListItem` a factory callback was handed.
+fn list_item(object: &glib::Object) -> Option<&gtk4::ListItem> {
+    object.downcast_ref::<gtk4::ListItem>()
+}
+
+/// The Name column: each row's icon beside its name, which takes the
+/// width the other columns leave and is cut in the middle when short of it.
+fn name_column() -> gtk4::ColumnViewColumn {
     let factory = gtk4::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
-        if let Some(item) = item.downcast_ref::<gtk4::ListItem>() {
-            item.set_child(Some(&gtk4::Label::builder().xalign(0.0).build()));
+    factory.connect_setup(|_, object| {
+        let Some(item) = list_item(object) else {
+            return;
+        };
+        let cell = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        pad_cell(&cell);
+        cell.append(&gtk4::Image::new());
+        cell.append(
+            &gtk4::Label::builder()
+                .xalign(0.0)
+                .hexpand(true)
+                .ellipsize(pango::EllipsizeMode::Middle)
+                .width_chars(NAME_MIN_CHARS)
+                .build(),
+        );
+        item.set_child(Some(&cell));
+    });
+    factory.connect_bind(|_, object| {
+        let Some(item) = list_item(object) else {
+            return;
+        };
+        let (Some(cell), Some(row)) = (item.child(), item.item().and_then(|o| row_of(&o))) else {
+            return;
+        };
+        if let Some(image) = cell.first_child().and_downcast::<gtk4::Image>() {
+            image.set_icon_name(Some(row.icon));
+        }
+        if let Some(label) = cell.last_child().and_downcast::<gtk4::Label>() {
+            label.set_text(&row.name);
+            label.set_tooltip_text(Some(&row.name));
         }
     });
-    factory.connect_bind(move |_, item| {
-        let Some(item) = item.downcast_ref::<gtk4::ListItem>() else {
+    gtk4::ColumnViewColumn::builder()
+        .title("Name")
+        .expand(true)
+        .resizable(true)
+        .factory(&factory)
+        .build()
+}
+
+/// The narrowest the Name column gets before the listing scrolls sideways.
+const NAME_MIN_CHARS: i32 = 14;
+
+/// Space between a cell's content and its column's edges: not every theme
+/// pads cells, and unpadded columns run into each other.
+fn pad_cell(cell: &impl IsA<gtk4::Widget>) {
+    cell.set_margin_start(6);
+    cell.set_margin_end(6);
+}
+
+/// A column of `column`'s text for each row, dimmed beside the names.
+/// Digits are all one width, so sizes and dates line up down the column;
+/// sizes sit against the column's right edge.
+fn detail_column(column: Column) -> gtk4::ColumnViewColumn {
+    let (xalign, text): (f32, fn(&RowView) -> &str) = match column {
+        Column::Size => (1.0, |row| &row.size),
+        Column::Modified => (0.0, |row| &row.modified),
+        Column::Permissions => (0.0, |row| &row.permissions),
+    };
+    let factory = gtk4::SignalListItemFactory::new();
+    factory.connect_setup(move |_, object| {
+        let Some(item) = list_item(object) else {
+            return;
+        };
+        let attributes = pango::AttrList::new();
+        attributes.insert(pango::AttrFontFeatures::new("tnum=1"));
+        if column == Column::Permissions {
+            attributes.insert(pango::AttrString::new_family("monospace"));
+        }
+        let label = gtk4::Label::builder()
+            .xalign(xalign)
+            .attributes(&attributes)
+            .build();
+        label.add_css_class("dim-label");
+        pad_cell(&label);
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(move |_, object| {
+        let Some(item) = list_item(object) else {
             return;
         };
         let label = item.child().and_downcast::<gtk4::Label>();
@@ -297,12 +370,11 @@ fn add_column(
             label.set_text(text(&row));
         }
     });
-    let column = gtk4::ColumnViewColumn::builder()
-        .title(title)
-        .expand(expand)
+    gtk4::ColumnViewColumn::builder()
+        .title(column.title())
+        .resizable(true)
         .factory(&factory)
-        .build();
-    column_view.append_column(&column);
+        .build()
 }
 
 /// Local paths of a file dialog's selection (entries without one are
@@ -360,11 +432,10 @@ fn build_sidebar() -> Rc<SidebarInner> {
         .can_unselect(true)
         .build();
     let column_view = gtk4::ColumnView::builder().model(&selection).build();
-    add_column(&column_view, "Name", true, |row| &row.name);
-    add_column(&column_view, "Size", false, |row| &row.size);
-    add_column(&column_view, "Modified", false, |row| &row.modified);
-    add_column(&column_view, "Perms", false, |row| &row.permissions);
-    add_column(&column_view, "", false, |row| row.icon);
+    column_view.append_column(&name_column());
+    for column in Column::ALL {
+        column_view.append_column(&detail_column(column));
+    }
 
     let scrolled = gtk4::ScrolledWindow::builder()
         .child(&column_view)
@@ -981,7 +1052,7 @@ pub(in crate::ui) mod gtk_tests {
             .filter_map(|column| column.downcast::<gtk4::ColumnViewColumn>().ok())
             .filter_map(|column| column.title().map(|title| title.to_string()))
             .collect();
-        assert_eq!(titles, ["Name", "Size", "Modified", "Perms", ""]);
+        assert_eq!(titles, ["Name", "Size", "Modified", "Permissions"]);
 
         inner.state.borrow_mut().attach();
         inner
