@@ -855,7 +855,7 @@ power, VTE 0.84.1, two runs agreeing within 10%:
 - **Ghostty scrollback:** `set_scrollback_limit` drops libghostty-vt's
   byte limit, so lines alone bound it, but it prunes whole pages: what is
   kept lands within a page of the limit, often just under it (a page is
-  387 rows at 120 columns, and a limit below one page keeps part of a
+  383 rows at 120 columns, and a limit below one page keeps part of a
   page). Only 0 is exact.
 - **Ghostty underline styles and underline color:** a cell's underline
   color stays as the program set it under the selection, the cursor and

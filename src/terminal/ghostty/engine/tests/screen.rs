@@ -385,7 +385,7 @@ fn kept_lines(limit: usize, count: usize) -> usize {
 #[test]
 fn the_line_limit_alone_bounds_the_scrollback() {
     assert_eq!(kept_lines(10_000, 5_000), 5_000);
-    // Pruning goes by page: 387 rows at this width.
+    // Pruning goes by page: 383 rows at this width.
     let kept = kept_lines(1_000, 5_000);
     assert!(kept.abs_diff(1_000) < 400, "{kept}");
 }
