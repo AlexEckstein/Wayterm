@@ -18,9 +18,10 @@ cargo build --release
 
 `build.rs`:
 
-- compiles `assets/tree-icons/` (the session-tree and side-dock icons,
-  doc 09 §Icons) and `assets/icons/` (the app icon, and the mark the About
-  page draws) into GResource bundles that `ui::icons` embeds in the binary;
+- compiles `assets/tree-icons/` (the session-tree, side-dock and SFTP
+  sidebar icons, doc 09 §Icons) and `assets/icons/` (the app icon, and
+  the mark the About page draws) into GResource bundles that `ui::icons`
+  embeds in the binary;
 - sets `WAYTERM_GIT_COMMIT` to the checkout's short commit hash for the
   About page (doc 13 §About); a build outside a git checkout, or without
   git, leaves it unset;

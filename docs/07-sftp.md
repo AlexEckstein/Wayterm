@@ -30,6 +30,9 @@ The sidebar, top to bottom:
 - a progress bar with Cancel and a status line;
 - the "Follow terminal directory" check box (§Following the shell).
 
+The toolbar's icons ship in the binary (doc 09 §Icons), so they are the
+same on every desktop.
+
 `toggle_sftp` (Ctrl+Shift+B) switches the dock to the SFTP panel, or back
 to the panel it came from; a panel hidden by `toggle_session_tree` comes
 back on SFTP. While focus is in the panel (not its path bar), the

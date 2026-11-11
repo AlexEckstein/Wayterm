@@ -324,14 +324,15 @@ fn build_sidebar() -> Rc<SidebarInner> {
     path_entry.set_placeholder_text(Some("remote path"));
     path_entry.set_hexpand(true);
 
-    // 2. Toolbar — exactly doc 07's six buttons.
+    // 2. Toolbar — exactly doc 07's six buttons, their icons bundled with
+    // the app (`ui::icons`).
     let buttons = Buttons {
-        upload: icon_button("document-send-symbolic", "Upload"),
-        download: icon_button("document-receive-symbolic", "Download"),
-        delete: icon_button("user-trash-symbolic", "Delete"),
-        rename: icon_button("document-edit-symbolic", "Rename"),
-        refresh: icon_button("view-refresh-symbolic", "Refresh"),
-        mkdir: icon_button("folder-new-symbolic", "New folder"),
+        upload: icon_button("wayterm-upload-symbolic", "Upload"),
+        download: icon_button("wayterm-download-symbolic", "Download"),
+        delete: icon_button("wayterm-trash-symbolic", "Delete"),
+        rename: icon_button("wayterm-rename-symbolic", "Rename"),
+        refresh: icon_button("wayterm-refresh-symbolic", "Refresh"),
+        mkdir: icon_button("wayterm-folder-new-symbolic", "New folder"),
         cancel: gtk4::Button::with_label("Cancel"),
     };
     buttons
