@@ -50,6 +50,8 @@ struct SidebarInner {
     container: gtk4::Box,
     path_entry: gtk4::Entry,
     column_view: gtk4::ColumnView,
+    /// The columns a header's menu can hide, each with the menu's action.
+    columns: Vec<(Column, gtk4::ColumnViewColumn, gio::SimpleAction)>,
     /// The listing's rows, each a boxed [`RowView`].
     model: gio::ListStore,
     selection: gtk4::SingleSelection,
@@ -242,6 +244,8 @@ impl SftpSidebar {
     /// Show the sidebar: the side dock's SFTP panel has it in view. The
     /// first show attaches a deferred connection.
     pub fn show(&self) {
+        // Another tab's sidebar may have changed them since.
+        self.inner.apply_columns();
         if !self.inner.state.borrow_mut().show() {
             return;
         }
@@ -432,9 +436,27 @@ fn build_sidebar() -> Rc<SidebarInner> {
         .can_unselect(true)
         .build();
     let column_view = gtk4::ColumnView::builder().model(&selection).build();
-    column_view.append_column(&name_column());
+    let name = name_column();
+    column_view.append_column(&name);
+    // A right-click on any header picks the columns shown beside Name.
+    let header_menu = gio::Menu::new();
+    let column_actions = gio::SimpleActionGroup::new();
+    let mut columns = Vec::new();
     for column in Column::ALL {
-        column_view.append_column(&detail_column(column));
+        let action = gio::SimpleAction::new_stateful(column.id(), None, &true.to_variant());
+        column_actions.add_action(&action);
+        header_menu.append(
+            Some(column.title()),
+            Some(&format!("columns.{}", column.id())),
+        );
+        let view_column = detail_column(column);
+        column_view.append_column(&view_column);
+        columns.push((column, view_column, action));
+    }
+    column_view.insert_action_group("columns", Some(&column_actions));
+    name.set_header_menu(Some(&header_menu));
+    for (_, view_column, _) in &columns {
+        view_column.set_header_menu(Some(&header_menu));
     }
 
     let scrolled = gtk4::ScrolledWindow::builder()
@@ -484,6 +506,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
         container,
         path_entry,
         column_view,
+        columns,
         model,
         selection,
         error_label,
@@ -500,6 +523,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
     });
     inner.connect_signals();
     inner.connect_drag_drop();
+    inner.apply_columns();
     inner.render();
     inner
 }
@@ -536,6 +560,17 @@ impl SidebarInner {
                 inner.cd(target);
             }
         });
+
+        for (column, _, action) in &self.columns {
+            let (column, weak) = (*column, Rc::downgrade(self));
+            action.connect_change_state(move |_, state| {
+                let shown = state.and_then(|state| state.get::<bool>());
+                if let (Some(shown), Some(inner)) = (shown, weak.upgrade()) {
+                    choose_columns(columns().with(column, shown));
+                    inner.apply_columns();
+                }
+            });
+        }
 
         // Selection drives the toolbar rules (model layer, unit-tested).
         let weak = Rc::downgrade(self);
@@ -612,6 +647,16 @@ impl SidebarInner {
             true
         });
         self.column_view.add_controller(uri_target);
+    }
+
+    /// Show the chosen columns, and tick them in the header menu.
+    fn apply_columns(&self) {
+        let chosen = columns();
+        for (column, view_column, action) in &self.columns {
+            let shown = chosen.shows(*column);
+            view_column.set_visible(shown);
+            action.set_state(&shown.to_variant());
+        }
     }
 
     /// Render the view into the widgets.
@@ -1077,6 +1122,52 @@ pub(in crate::ui) mod gtk_tests {
         inner.render();
         assert_eq!(inner.state.borrow().selected_path(), None);
         assert!(!inner.buttons.download.is_sensitive());
+    }
+
+    fn visible_columns(sidebar: &SftpSidebar) -> Vec<Column> {
+        let columns = &sidebar.inner.columns;
+        let shown = columns.iter().filter(|(_, column, _)| column.is_visible());
+        shown.map(|(column, _, _)| *column).collect()
+    }
+
+    /// Every header carries the menu of optional columns. Unticking one
+    /// hides it, stores the choice, and reaches another tab's sidebar when
+    /// that is shown.
+    pub(in crate::ui) fn the_header_menu_picks_the_columns() {
+        let saved = Rc::new(RefCell::new(None));
+        save_columns_with({
+            let saved = saved.clone();
+            move |columns| *saved.borrow_mut() = Some(columns.to_setting())
+        });
+        install_columns(Columns::ALL);
+        let sidebar = SftpSidebar::new();
+        let other = SftpSidebar::new();
+        let inner = &sidebar.inner;
+        let view_columns = inner.column_view.columns();
+        for index in 0..view_columns.n_items() {
+            let column = view_columns
+                .item(index)
+                .and_downcast::<gtk4::ColumnViewColumn>();
+            let menu = column.and_then(|column| column.header_menu());
+            assert_eq!(menu.map(|menu| menu.n_items()), Some(3), "column {index}");
+        }
+        assert_eq!(visible_columns(&sidebar), Column::ALL);
+
+        let permissions = &inner.columns[2].2;
+        assert_eq!(permissions.name(), "permissions");
+        permissions.change_state(&false.to_variant());
+        assert_eq!(visible_columns(&sidebar), [Column::Size, Column::Modified]);
+        assert_eq!(permissions.state(), Some(false.to_variant()));
+        assert_eq!(saved.borrow().as_deref(), Some("size,modified"));
+
+        assert_eq!(visible_columns(&other), Column::ALL, "not in view yet");
+        other.show();
+        assert_eq!(visible_columns(&other), [Column::Size, Column::Modified]);
+
+        permissions.change_state(&true.to_variant());
+        assert_eq!(visible_columns(&sidebar), Column::ALL);
+        assert_eq!(saved.borrow().as_deref(), Some("size,modified,permissions"));
+        save_columns_with(|_| {});
     }
 
     /// "Follow terminal directory" is the bottom row, ticked. Unticked, the

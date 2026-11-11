@@ -6,7 +6,7 @@ create folders, drag files in, and follow the shell's working directory.
 
 Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe),
 `src/ui/panels/sftp_sidebar.rs` (the GTK half), `src/ui/panels/sftp_sidebar/model.rs`
-(its display-free model).
+(its display-free model: rows, columns, toolbar rules).
 
 ## Layout
 
@@ -57,6 +57,12 @@ the middle, keeping its extension, and shown whole in a tooltip. Name
 never gets narrower than about 14 characters: in a panel too narrow for
 every column the listing scrolls sideways instead. Columns are resized by
 dragging a header's edge.
+
+A right-click on any column header lists Size, Modified and Permissions,
+each with a check box: unticking one hides that column. Name always
+shows. The choice is one for every tab, stored in the `sftp_columns`
+settings row (doc 13 §Settings rows) and applied to another tab's sidebar
+when the panel next shows it.
 
 Double-clicking a row, or Enter on it, goes into a directory or up from
 `..`.
@@ -203,10 +209,10 @@ disabled.
 - Jumped sessions have no SFTP task (doc 04 §Jump hosts): the sidebar shows
   "SFTP is not available for jumped sessions yet", and nothing follows the
   shell.
-- No right-click menu, and no dragging files out of the listing.
+- No right-click menu on rows, and no dragging files out of the listing.
 - A cancelled transfer leaves its partial file behind, local or remote.
-- The columns cannot be hidden, reordered or sorted by, and their widths
-  are not remembered.
+- The columns cannot be reordered or sorted by, and their widths are not
+  remembered.
 - Following the shell: plain-tab probes need a Linux remote. Tabs to the
   same user@host share one connection, and probing tells their shells
   apart only while at most one of them is a plain shell; with two, it

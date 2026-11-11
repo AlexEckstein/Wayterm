@@ -100,15 +100,15 @@ GTK binds to the first thread that initializes it, so every widget check
 in the library runs from one ignored test, `ui::gtk_tests::widgets`, under
 xvfb, with GLib warnings and criticals made fatal for each check. It
 covers the session dialog, Tunnels dialog, session tree (menu, nesting,
-drag moves, folder cycles), SFTP sidebar, side dock, host picker, macro
-editor and panel (record and play through a real VTE), icons, folder
-dialog, Settings window, tab focus and close behavior, what an SSH tab
-lets go of when its session ends (forwards, transport, SFTP task), a
-local-shell tab that connects and closes, color schemes and the system
-theme, the user stylesheet reload, terminal opacity (the rendered alpha
-of a VTE terminal and of the window under it, across tab switches), the
-VNC view, RDP embedding, the tab bar's "+", and that every shortcut has a
-window action.
+drag moves, folder cycles), SFTP sidebar (the header's column menu
+included), side dock, host picker, macro editor and panel (record and
+play through a real VTE), icons, folder dialog, Settings window, tab
+focus and close behavior, what an SSH tab lets go of when its session
+ends (forwards, transport, SFTP task), a local-shell tab that connects
+and closes, color schemes and the system theme, the user stylesheet
+reload, terminal opacity (the rendered alpha of a VTE terminal and of the
+window under it, across tab switches), the VNC view, RDP embedding, the
+tab bar's "+", and that every shortcut has a window action.
 
 Other ignored display tests: VTE scrollback extraction
 (`tests/terminal_polish.rs`), VTE search (`tests/vte_search.rs`) and the

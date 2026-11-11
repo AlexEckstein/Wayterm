@@ -83,6 +83,39 @@ fn row_icons_distinguish_directories_files_and_the_parent_row() {
     }
 }
 
+// --- visible columns -------------------------------------------------------
+
+#[test]
+fn a_missing_columns_row_shows_every_column() {
+    let columns = Columns::from_setting(None);
+    assert_eq!(columns, Columns::ALL);
+    assert!(Column::ALL.into_iter().all(|column| columns.shows(column)));
+    assert_eq!(columns.to_setting(), "size,modified,permissions");
+}
+
+#[test]
+fn the_columns_row_names_the_shown_columns() {
+    let columns = Columns::from_setting(Some("modified, size"));
+    assert!(columns.shows(Column::Size) && columns.shows(Column::Modified));
+    assert!(!columns.shows(Column::Permissions));
+    assert_eq!(columns.to_setting(), "size,modified");
+
+    assert_eq!(Columns::from_setting(Some("")), Columns::NONE);
+    assert_eq!(Columns::NONE.to_setting(), "");
+    assert_eq!(
+        Columns::from_setting(Some("owner,size")),
+        Columns::NONE.with(Column::Size, true),
+        "an unknown name is skipped"
+    );
+    for columns in [
+        Columns::ALL,
+        Columns::NONE,
+        Columns::ALL.with(Column::Size, false),
+    ] {
+        assert_eq!(Columns::from_setting(Some(&columns.to_setting())), columns);
+    }
+}
+
 // --- path arithmetic -------------------------------------------------------
 
 #[test]

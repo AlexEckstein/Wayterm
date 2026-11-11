@@ -128,6 +128,9 @@ pub fn apply(store: &SessionStore) {
         store.flag(resilience::RECONNECT_ON_DROP_SETTING),
     );
     sftp_sidebar::install_settings(store.flag(sftp_sidebar::SFTP_ON_CONNECT_SETTING));
+    sftp_sidebar::install_columns(sftp_sidebar::Columns::from_setting(
+        store.setting(sftp_sidebar::SFTP_COLUMNS_SETTING).as_deref(),
+    ));
     crate::terminal::install_backend_preference(backend(store));
     appearance::install_schemes(
         store.setting(DEFAULT_COLOR_SCHEME_SETTING),
