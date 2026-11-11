@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- The app icon, so windows draw it when Wayterm is not installed
-     (cargo run, an AppImage); compiled by build.rs. -->
+     (cargo run, an AppImage), and the mark the About page draws in the
+     theme's text color (doc 13 §About); compiled by build.rs. -->
 <gresources>
   <gresource prefix="/com/alex-eckstein/wayterm/icons/scalable/apps">
     <file alias="com.alex-eckstein.wayterm.svg">scalable/apps/com.alex-eckstein.wayterm.svg</file>
+    <file alias="wayterm-mark-symbolic.svg">scalable/apps/wayterm-mark-symbolic.svg</file>
   </gresource>
 </gresources>

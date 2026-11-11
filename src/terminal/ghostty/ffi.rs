@@ -254,6 +254,8 @@ extern "C" {
     ) -> c_int;
     pub fn wt_ghostty_scroll(g: *mut WtGhostty, place: c_int, delta: isize);
     pub fn wt_ghostty_free_bytes(ptr: *mut u8, len: usize);
+    /// The linked library's version, such as `1.0.0`; static, never NULL.
+    pub fn wt_ghostty_version() -> *const c_char;
     pub fn wt_ghostty_screen_text(g: *mut WtGhostty, out: *mut *mut u8, len: *mut usize) -> c_int;
     pub fn wt_ghostty_selection_text(
         g: *mut WtGhostty,

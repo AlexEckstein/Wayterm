@@ -121,6 +121,20 @@ pub const DEFAULT_BACKEND_SETTING: &str = "default_backend";
 /// (`backend-ghostty` feature).
 pub const GHOSTTY_COMPILED: bool = cfg!(feature = "backend-ghostty");
 
+/// The linked libghostty-vt's version, such as `1.0.0`; `None` in a build
+/// without the backend.
+pub fn ghostty_version() -> Option<String> {
+    #[cfg(feature = "backend-ghostty")]
+    {
+        // SAFETY: a static NUL-terminated string the library owns.
+        let version =
+            unsafe { std::ffi::CStr::from_ptr(super::ghostty::ffi::wt_ghostty_version()) };
+        Some(version.to_string_lossy().into_owned())
+    }
+    #[cfg(not(feature = "backend-ghostty"))]
+    None
+}
+
 /// The stderr note when Ghostty was asked for and VTE is built instead.
 const GHOSTTY_UNAVAILABLE: &str = "Wayterm: libghostty-vt terminal unavailable; using VTE";
 
@@ -227,6 +241,18 @@ pub fn create_terminal_for(kind: BackendKind) -> TerminalHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ghostty_version_exactly_when_the_backend_is_built() {
+        let version = ghostty_version();
+        assert_eq!(version.is_some(), GHOSTTY_COMPILED);
+        if let Some(version) = version {
+            assert!(
+                version.starts_with(|c: char| c.is_ascii_digit()),
+                "{version}"
+            );
+        }
+    }
 
     #[test]
     fn default_backend_values_parse_with_vte_as_fallback() {

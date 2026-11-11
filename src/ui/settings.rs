@@ -1,9 +1,10 @@
 //! The Settings window: a sidebar of pages beside the selected one —
 //! [`general`], [`customize`], [`credentials`] (doc 05), Keyboard Shortcuts
-//! ([`hotkeys`], doc 11), and Backup / Restore ([`backup`], doc 10). Every
-//! page saves each change at once and applies it live; there is no Apply
-//! button.
+//! ([`hotkeys`], doc 11), Backup / Restore ([`backup`], doc 10), and
+//! [`about`]. Every page saves each change at once and applies it live;
+//! there is no Apply button.
 
+pub mod about;
 pub mod backup;
 pub mod credentials;
 pub mod customize;
@@ -25,6 +26,7 @@ pub const CUSTOMIZE_PAGE: &str = "customize";
 pub const CREDENTIALS_PAGE: &str = "credentials";
 pub const SHORTCUTS_PAGE: &str = "keyboard-shortcuts";
 pub const BACKUP_PAGE: &str = "backup-restore";
+pub const ABOUT_PAGE: &str = "about";
 
 /// The settings window (unpresented), opened on the page named `page` (a
 /// `*_PAGE`). `on_import` runs after the Backup / Restore page writes an
@@ -111,6 +113,7 @@ fn pages(
         Some(BACKUP_PAGE),
         "Backup / Restore",
     );
+    stack.add_titled(&about::page(), Some(ABOUT_PAGE), "About");
     stack
 }
 
@@ -211,7 +214,7 @@ pub(super) mod gtk_tests {
     }
 
     /// The sidebar lists General, Customize, Credentials, Keyboard
-    /// Shortcuts, then Backup / Restore, and opens on General; each General
+    /// Shortcuts, Backup / Restore, then About, and opens on General; each General
     /// switch shows and saves its own row.
     pub(in crate::ui) fn pages_and_general_switches() {
         let store = Rc::new(SessionStore::in_memory().unwrap());
@@ -239,6 +242,7 @@ pub(super) mod gtk_tests {
                 (CREDENTIALS_PAGE.to_string(), "Credentials".to_string()),
                 (SHORTCUTS_PAGE.to_string(), "Keyboard Shortcuts".to_string()),
                 (BACKUP_PAGE.to_string(), "Backup / Restore".to_string()),
+                (ABOUT_PAGE.to_string(), "About".to_string()),
             ]
         );
         assert_eq!(stack.visible_child_name().as_deref(), Some(GENERAL_PAGE));
@@ -303,6 +307,31 @@ pub(super) mod gtk_tests {
 
         terminal_appearance_controls();
         backend_sections();
+        about_page(&stack);
+    }
+
+    /// The mark resolves from the built-in icons, and every version shows
+    /// beside its title.
+    fn about_page(stack: &gtk4::Stack) {
+        let page = stack.child_by_name(ABOUT_PAGE).unwrap();
+        let mut images: Vec<gtk4::Image> = Vec::new();
+        descendants(&page, &mut images);
+        let name = images[0].icon_name().unwrap();
+        assert_eq!(name, about::MARK_ICON);
+        crate::ui::icons::register_builtin_icons(&page.display());
+        let theme = gtk4::IconTheme::for_display(&page.display());
+        assert!(theme.has_icon(&name), "the mark is not registered");
+
+        let mut labels: Vec<gtk4::Label> = Vec::new();
+        descendants(&page, &mut labels);
+        let texts: Vec<String> = labels.iter().map(|l| l.text().to_string()).collect();
+        // Past the name label, which also reads "Wayterm".
+        let start = texts.iter().position(|t| t == "Versions").unwrap();
+        let texts = &texts[start..];
+        for (title, value) in about::versions() {
+            let at = texts.iter().position(|t| t == title).unwrap();
+            assert_eq!(texts[at + 1], value, "{title}");
+        }
     }
 
     /// Spin the main loop until `done`; numeric controls save on a timer.

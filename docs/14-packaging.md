@@ -19,8 +19,11 @@ cargo build --release
 `build.rs`:
 
 - compiles `assets/tree-icons/` (the session-tree and side-dock icons,
-  doc 09 §Icons) and `assets/icons/` (the app icon) into GResource bundles
-  that `ui::icons` embeds in the binary;
+  doc 09 §Icons) and `assets/icons/` (the app icon, and the mark the About
+  page draws) into GResource bundles that `ui::icons` embeds in the binary;
+- sets `WAYTERM_GIT_COMMIT` to the checkout's short commit hash for the
+  About page (doc 13 §About); a build outside a git checkout, or without
+  git, leaves it unset;
 - with the `backend-ghostty` feature only, compiles the libghostty-vt shim
   and links the pinned static library (doc 02 §libghostty-vt pin).
 

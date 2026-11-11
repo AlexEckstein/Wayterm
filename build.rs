@@ -1,6 +1,7 @@
 //! Compiles the built-in tree icons (`assets/tree-icons`, doc 09 §Icons)
 //! and the app icon (`assets/icons`, doc 14 §App icon) into GResource
-//! bundles that `ui::icons` embeds, and — with the `backend-ghostty` feature only —
+//! bundles that `ui::icons` embeds, records the git commit for the About
+//! page (doc 13 §About), and — with the `backend-ghostty` feature only —
 //! links libghostty-vt (doc 02).
 
 use std::path::PathBuf;
@@ -9,9 +10,35 @@ use std::process::Command;
 fn main() {
     compile_resources("assets/tree-icons", "tree-icons");
     compile_resources("assets/icons", "app-icon");
+    git_commit();
 
     #[cfg(feature = "backend-ghostty")]
     ghostty::link();
+}
+
+/// Set `WAYTERM_GIT_COMMIT` to the checkout's short commit hash. Outside a
+/// git checkout, or without git, it stays unset.
+fn git_commit() {
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(args).output().ok()?;
+        let text = String::from_utf8(out.stdout).ok()?;
+        (out.status.success() && !text.trim().is_empty()).then(|| text.trim().to_string())
+    };
+    let Some(commit) = git(&["rev-parse", "--short", "HEAD"]) else {
+        return;
+    };
+    println!("cargo:rustc-env=WAYTERM_GIT_COMMIT={commit}");
+    // HEAD moves on a checkout, the branch ref on a commit. Cargo reruns
+    // every build for a missing path, so only existing ones are watched.
+    let mut refs = vec!["HEAD".to_string(), "packed-refs".to_string()];
+    refs.extend(git(&["symbolic-ref", "-q", "HEAD"]));
+    for name in refs {
+        if let Some(path) = git(&["rev-parse", "--git-path", &name]) {
+            if PathBuf::from(&path).exists() {
+                println!("cargo:rerun-if-changed={path}");
+            }
+        }
+    }
 }
 
 /// `<source>/<name>.gresource.xml` → `$OUT_DIR/<name>.gresource`.

@@ -18,6 +18,19 @@ pub use options::install_options;
 /// VTE requires this on search regexes; vte4 does not export it.
 const PCRE2_MULTILINE: u32 = 0x0000_0400;
 
+/// The loaded VTE library's version, such as `0.84.0`.
+pub fn vte_version() -> String {
+    // SAFETY: plain getters for the loaded library's version.
+    let (major, minor, micro) = unsafe {
+        (
+            vte4::ffi::vte_get_major_version(),
+            vte4::ffi::vte_get_minor_version(),
+            vte4::ffi::vte_get_micro_version(),
+        )
+    };
+    format!("{major}.{minor}.{micro}")
+}
+
 /// The built-in backend: the GTK4 VTE widget (doc 02). Main thread only.
 pub struct VteBackend {
     terminal: VteTerminal,
