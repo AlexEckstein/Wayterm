@@ -35,7 +35,7 @@ pub const CELL_FAINT: u16 = 1 << 7;
 /// SGR 5 or 6: libghostty-vt keeps one flag for both.
 pub const CELL_BLINK: u16 = 1 << 8;
 
-/// `GhosttyRenderStateCursorVisualStyle`, as `WtFrame` carries it.
+/// `GhosttyCursorStyle`, as `WtFrame` carries it.
 pub const CURSOR_BAR: u8 = 0;
 pub const CURSOR_BLOCK: u8 = 1;
 pub const CURSOR_UNDERLINE: u8 = 2;

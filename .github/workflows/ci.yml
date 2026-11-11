@@ -170,7 +170,9 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       # The libghostty-vt pin (doc 02 §libghostty-vt pin); a bump changes
       # it here, in build.rs and in the doc together.
-      GHOSTTY_COMMIT: 9ee02ae601d3eec567723287e1c20bd0e9f1489c
+      GHOSTTY_VT_VERSION: 1.0.0
+      GHOSTTY_VT_SHA256: 4a6ef758be721923e1969e7b81b443dcc92d8dd3fb5a39600c03a8817a753676
+      GHOSTTY_VT_DEPS_SHA256: 4d5ea5e448e4c7ea8fb55ccbaa8668f2a97d44f438cee831e2b7ecd162d85c29
       ZIG_VERSION: 0.17.0
       ZIG_SHA256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
     steps:
@@ -185,8 +187,8 @@ jobs:
       - name: Check the pin matches build.rs and doc 02
         run: |
           for f in build.rs docs/02-terminal.md; do
-            grep -q "$GHOSTTY_COMMIT" "$f" || {
-              echo "::error file=$f::does not pin libghostty-vt at $GHOSTTY_COMMIT like ci.yml"
+            grep -q "$GHOSTTY_VT_SHA256" "$f" || {
+              echo "::error file=$f::does not pin libghostty-vt $GHOSTTY_VT_VERSION ($GHOSTTY_VT_SHA256) like ci.yml"
               exit 1
             }
           done
@@ -207,14 +209,14 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # Built once per pin into build.rs's default location; Zig and
-      # upstream's dependencies are only downloaded on a cache miss.
+      # Built once per pin into build.rs's default location; Zig and the
+      # release tarballs are only downloaded on a cache miss.
       - name: Cache libghostty-vt
         id: libghostty-vt
         uses: actions/cache@v6
         with:
           path: third_party/libghostty-vt
-          key: libghostty-vt-${{ runner.os }}-${{ env.GHOSTTY_COMMIT }}-zig-${{ env.ZIG_VERSION }}
+          key: libghostty-vt-${{ runner.os }}-${{ env.GHOSTTY_VT_SHA256 }}-zig-${{ env.ZIG_VERSION }}
 
       - name: Build libghostty-vt
         if: steps.libghostty-vt.outputs.cache-hit != 'true'
@@ -224,12 +226,21 @@ jobs:
           curl -fsSLO "https://ziglang.org/download/$ZIG_VERSION/$tarball"
           echo "$ZIG_SHA256  $tarball" | sha256sum -c -
           tar -xJf "$tarball"
-          git init -q ghostty
-          git -C ghostty fetch -q --depth 1 https://github.com/ghostty-org/ghostty.git "$GHOSTTY_COMMIT"
-          git -C ghostty checkout -q --detach FETCH_HEAD
-          cd ghostty
-          "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION/zig" build \
-            -Demit-lib-vt -Doptimize=fast --prefix "$RUNNER_TEMP/ghostty-out"
+          src="libghostty-vt-$GHOSTTY_VT_VERSION"
+          base="https://release.files.ghostty.org/libghostty-vt/$GHOSTTY_VT_VERSION"
+          curl -fsSLO "$base/$src.tar.gz"
+          curl -fsSLO "$base/$src-deps.tar.gz"
+          echo "$GHOSTTY_VT_SHA256  $src.tar.gz" | sha256sum -c -
+          echo "$GHOSTTY_VT_DEPS_SHA256  $src-deps.tar.gz" | sha256sum -c -
+          tar -xzf "$src.tar.gz"
+          tar -xzf "$src-deps.tar.gz"
+          cd "$src"
+          # Offline: packages come from the dependency tarball, into a
+          # cache that must start empty.
+          ZIG_GLOBAL_CACHE_DIR="$RUNNER_TEMP/zig-cache" \
+            "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION/zig" build \
+            --system "../$src-deps" -Doptimize=ReleaseFast \
+            --prefix "$RUNNER_TEMP/ghostty-out"
           vt="$GITHUB_WORKSPACE/third_party/libghostty-vt"
           mkdir -p "$vt/lib"
           cp -r "$RUNNER_TEMP/ghostty-out/include" "$vt/"
