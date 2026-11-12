@@ -590,18 +590,18 @@ fn progress_and_status_lines_use_human_sizes() {
     assert_eq!(progress_text(1234, 4096), "1.2 KB / 4.0 KB");
     assert_eq!(progress_text(1234, 0), "1.2 KB / ?");
     assert_eq!(
-        running_status("Upload a.txt", 512, 1024),
+        running_text("Upload a.txt", 512, 1024),
         "Upload a.txt — 512 B / 1.0 KB"
     );
     assert_eq!(
         done_status("Upload a.txt", 2048),
-        "Upload a.txt — done — 2048 bytes"
+        "Upload a.txt — done — 2.0 KB"
     );
     assert_eq!(
         failed_status("Upload a.txt", "permission denied"),
         "Upload a.txt — failed: permission denied"
     );
-    assert_eq!(started_status("Upload a.txt"), "Upload a.txt — starting…");
+    assert_eq!(started_text("Upload a.txt"), "Upload a.txt — starting…");
 }
 
 // --- the view state machine ------------------------------------------------
@@ -690,56 +690,104 @@ fn selecting_a_directory_enables_delete_but_not_download() {
     assert!(view.toolbar().rename);
 }
 
+fn bar(fraction: f64, text: &str) -> Option<BarState> {
+    Some(BarState {
+        fraction,
+        text: text.to_string(),
+    })
+}
+
 #[test]
-fn transfer_progress_moves_the_bar_and_the_status_line() {
+fn the_bar_shows_only_while_a_transfer_runs_and_names_it() {
     let mut view = SftpView::detached();
     view.attach();
-    view.begin_transfer(7, "Upload notes.txt".to_string());
+    assert_eq!(view.bar(), None, "idle: no bar");
+    assert_eq!(view.status, "", "idle: no status line");
 
-    assert_eq!(view.fraction, 0.0);
+    view.begin_transfer(7, "Upload notes.txt".to_string());
     assert!(view.toolbar().cancel, "a running transfer enables Cancel");
-    assert_eq!(view.status, "Upload notes.txt — starting…");
+    assert_eq!(view.bar(), bar(0.0, "Upload notes.txt — starting…"));
+    assert_eq!(view.status, "", "the bar says it all");
 
     view.on_progress(7, 512, 1024);
-    assert_eq!(view.fraction, 0.5);
-    assert_eq!(view.progress_text, "512 B / 1.0 KB");
-    assert_eq!(view.status, "Upload notes.txt — 512 B / 1.0 KB");
+    assert_eq!(view.bar(), bar(0.5, "Upload notes.txt — 512 B / 1.0 KB"));
 
     view.end_transfer(7, &Ok(1024));
-    assert_eq!(view.fraction, 1.0, "a finished transfer shows 100%");
-    assert_eq!(view.status, "Upload notes.txt — done — 1024 bytes");
+    assert_eq!(view.bar(), None, "the result line takes the bar's place");
+    assert_eq!(view.status, "Upload notes.txt — done — 1.0 KB");
     assert!(!view.toolbar().cancel, "no transfer, no Cancel");
     assert!(view.transfers.is_empty());
 }
 
 #[test]
-fn a_failed_transfer_reports_the_error_and_keeps_the_bar() {
+fn a_success_line_expires_but_only_its_own() {
+    let mut view = SftpView::detached();
+    view.attach();
+    view.begin_transfer(1, "Upload a".to_string());
+    view.end_transfer(1, &Ok(10));
+    view.begin_transfer(2, "Upload b".to_string());
+    view.end_transfer(2, &Ok(20));
+
+    view.expire_status(1);
+    assert_eq!(view.status, "Upload b — done — 20 B", "a newer line stays");
+    view.expire_status(2);
+    assert_eq!(view.status, "");
+}
+
+#[test]
+fn a_failure_stays_until_the_next_transfer_starts() {
     let mut view = SftpView::detached();
     view.attach();
     view.begin_transfer(3, "Download a.bin".to_string());
     view.on_progress(3, 256, 1024);
     view.end_transfer(3, &Err("No such file".to_string()));
 
+    assert_eq!(view.bar(), None);
     assert_eq!(view.status, "Download a.bin — failed: No such file");
-    assert_eq!(view.fraction, 0.25, "the bar keeps the last sample");
-    assert!(view.transfers.is_empty());
+    view.expire_status(3);
+    assert_eq!(view.status, "Download a.bin — failed: No such file");
+
+    view.begin_transfer(4, "Download b.bin".to_string());
+    assert_eq!(view.status, "", "a new transfer clears the old result");
 }
 
 #[test]
-fn concurrent_transfers_show_the_last_started_one_and_cancel_targets_it() {
+fn a_success_does_not_hide_a_concurrent_failure() {
+    let mut view = SftpView::detached();
+    view.attach();
+    view.begin_transfer(1, "Upload a".to_string());
+    view.begin_transfer(2, "Upload b".to_string());
+    view.end_transfer(1, &Err("disk full".to_string()));
+    assert_eq!(view.status, "Upload a — failed: disk full");
+    assert!(view.bar().is_some(), "b still runs beside the failure");
+
+    view.end_transfer(2, &Ok(10));
+    assert_eq!(view.status, "Upload a — failed: disk full");
+}
+
+#[test]
+fn concurrent_transfers_show_the_last_updated_one_and_cancel_targets_the_newest() {
     let mut view = SftpView::detached();
     view.attach();
     view.begin_transfer(1, "Upload a".to_string());
     view.begin_transfer(2, "Upload b".to_string());
 
-    assert_eq!(view.cancel_target(), Some(2), "last-updated wins");
-    view.on_progress(1, 512, 1024);
+    assert_eq!(view.cancel_target(), Some(2));
     view.on_progress(2, 256, 1024);
-    assert_eq!(view.fraction, 0.25, "the bar follows the last sample");
+    view.on_progress(1, 512, 1024);
+    assert_eq!(view.bar(), bar(0.5, "Upload a — 512 B / 1.0 KB"));
+
+    view.end_transfer(1, &Ok(1024));
+    assert_eq!(
+        view.bar(),
+        bar(0.25, "Upload b — 256 B / 1.0 KB"),
+        "the bar falls back to the one still running, at its last sample"
+    );
+    assert_eq!(view.status, "Upload a — done — 1.0 KB");
 
     view.end_transfer(2, &Ok(1024));
-    assert_eq!(view.cancel_target(), Some(1), "the older one is still live");
-    assert!(view.toolbar().cancel);
+    assert_eq!(view.cancel_target(), None);
+    assert_eq!(view.bar(), None);
 }
 
 #[test]
@@ -747,10 +795,11 @@ fn progress_for_an_unknown_transfer_is_ignored() {
     let mut view = SftpView::detached();
     view.attach();
     view.on_progress(99, 512, 1024);
-    assert_eq!(view.fraction, 0.0);
+    assert_eq!(view.bar(), None);
     assert_eq!(view.status, "");
     view.end_transfer(99, &Ok(10));
     assert!(view.transfers.is_empty());
+    assert_eq!(view.status, "");
 }
 
 #[test]

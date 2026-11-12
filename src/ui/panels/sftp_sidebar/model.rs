@@ -315,7 +315,7 @@ pub fn progress_fraction(transferred: u64, total: u64) -> f64 {
     (transferred as f64 / total as f64).clamp(0.0, 1.0)
 }
 
-/// Progress bar text, e.g. `1.2 KB / 4.0 MB`.
+/// Byte counts, e.g. `1.2 KB / 4.0 MB`.
 pub fn progress_text(transferred: u64, total: u64) -> String {
     if total == 0 {
         format!("{} / ?", format_size(transferred))
@@ -324,19 +324,19 @@ pub fn progress_text(transferred: u64, total: u64) -> String {
     }
 }
 
-/// Status line for a transfer that is about to start.
-pub fn started_status(label: &str) -> String {
+/// Bar text for a transfer that has sent no sample yet.
+pub fn started_text(label: &str) -> String {
     format!("{label} — starting…")
 }
 
-/// Status line for one progress sample.
-pub fn running_status(label: &str, transferred: u64, total: u64) -> String {
+/// Bar text for one progress sample.
+pub fn running_text(label: &str, transferred: u64, total: u64) -> String {
     format!("{label} — {}", progress_text(transferred, total))
 }
 
 /// Status line for a finished transfer.
 pub fn done_status(label: &str, bytes: u64) -> String {
-    format!("{label} — done — {bytes} bytes")
+    format!("{label} — done — {}", format_size(bytes))
 }
 
 /// Status line for a failed transfer.
@@ -697,8 +697,17 @@ impl EditSync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferState {
     pub id: u64,
-    /// Status-line prefix, e.g. `Upload notes.txt`.
+    /// Bar and status-line prefix, e.g. `Upload notes.txt`.
     pub label: String,
+    /// The last `(transferred, total)` sample, if any came yet.
+    sample: Option<(u64, u64)>,
+}
+
+/// What the progress bar shows while a transfer runs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BarState {
+    pub fraction: f64,
+    pub text: String,
 }
 
 /// Everything the sidebar shows; handlers mutate it, then render.
@@ -712,12 +721,11 @@ pub struct SftpView {
     pub rows: Vec<RowView>,
     /// Inline error text, or `None`; cleared by the next successful listing.
     pub error: Option<String>,
-    /// Progress bar fraction in `0.0..=1.0`.
-    pub fraction: f64,
-    /// Progress bar text.
-    pub progress_text: String,
-    /// Transfer status line.
+    /// The last transfer result, "" for none: a success until it expires,
+    /// a failure until the next transfer starts.
     pub status: String,
+    /// The transfer whose success `status` shows, so it can expire.
+    done_by: Option<u64>,
     /// Whether the sidebar has been shown — in view in the side dock, or
     /// built while `sftp_on_connect` is on. A hidden sidebar keeps its
     /// connection for the first show.
@@ -734,8 +742,10 @@ pub struct SftpView {
     shell_dir: Option<String>,
     /// The shell reports its directory itself, so probing stops.
     shell_reports: bool,
-    /// Running transfers, oldest first; the bar shows whichever updated last.
+    /// Running transfers, oldest first.
     pub transfers: Vec<TransferState>,
+    /// The transfer that sent the last sample; the bar shows it.
+    bar_follows: Option<u64>,
     /// The selected listing row, if any.
     selected: Option<RowView>,
 }
@@ -748,9 +758,8 @@ impl SftpView {
             path_text: START_PATH.to_string(),
             rows: Vec::new(),
             error: None,
-            fraction: 0.0,
-            progress_text: String::new(),
             status: String::new(),
+            done_by: None,
             shown: true,
             connected: false,
             start: START_PATH.to_string(),
@@ -758,6 +767,7 @@ impl SftpView {
             shell_dir: None,
             shell_reports: false,
             transfers: Vec::new(),
+            bar_follows: None,
             selected: None,
         }
     }
@@ -862,41 +872,78 @@ impl SftpView {
         Some(join_path(self.current_path(), &row.name))
     }
 
-    /// A transfer started; it owns the progress display until it ends.
+    /// A transfer started: the bar shows it, and the last result goes.
     pub fn begin_transfer(&mut self, id: u64, label: String) {
-        self.status = started_status(&label);
-        self.transfers.push(TransferState { id, label });
-        self.fraction = 0.0;
+        self.transfers.push(TransferState {
+            id,
+            label,
+            sample: None,
+        });
+        self.bar_follows = Some(id);
+        self.set_status(String::new(), None);
     }
 
     /// One progress sample from a running transfer.
     pub fn on_progress(&mut self, id: u64, transferred: u64, total: u64) {
-        let Some(label) = self.transfer_label(id) else {
+        let Some(transfer) = self.transfers.iter_mut().find(|t| t.id == id) else {
             return;
         };
-        self.fraction = progress_fraction(transferred, total);
-        self.progress_text = progress_text(transferred, total);
-        self.status = running_status(&label, transferred, total);
+        transfer.sample = Some((transferred, total));
+        self.bar_follows = Some(id);
     }
 
-    /// The transfer ended: `Ok(bytes)` completes the bar at 100%, `Err` puts
-    /// the failure in the status line.
+    /// The transfer ended and its result goes to the status line. A
+    /// success does not hide another transfer's failure.
     pub fn end_transfer(&mut self, id: u64, result: &Result<u64, String>) {
         let Some(index) = self.transfers.iter().position(|t| t.id == id) else {
             return;
         };
-        let label = self.transfers[index].label.clone();
-        self.transfers.remove(index);
-        match result {
-            Ok(bytes) => {
-                self.fraction = 1.0;
-                self.progress_text = progress_text(*bytes, *bytes);
-                self.status = done_status(&label, *bytes);
-            }
-            Err(err) => {
-                self.status = failed_status(&label, err);
-            }
+        let label = self.transfers.remove(index).label;
+        if self.bar_follows == Some(id) {
+            self.bar_follows = None;
         }
+        match result {
+            Ok(bytes) if !self.shows_failure() => {
+                self.set_status(done_status(&label, *bytes), Some(id));
+            }
+            Ok(_) => {}
+            Err(err) => self.set_status(failed_status(&label, err), None),
+        }
+    }
+
+    /// Drop the success line transfer `id` left, if it still shows.
+    pub fn expire_status(&mut self, id: u64) {
+        if self.done_by == Some(id) {
+            self.set_status(String::new(), None);
+        }
+    }
+
+    /// The progress bar, while a transfer runs: the one that sent the last
+    /// sample, or else the newest.
+    pub fn bar(&self) -> Option<BarState> {
+        let followed = self
+            .bar_follows
+            .and_then(|id| self.transfers.iter().find(|t| t.id == id));
+        let transfer = followed.or(self.transfers.last())?;
+        Some(match transfer.sample {
+            Some((transferred, total)) => BarState {
+                fraction: progress_fraction(transferred, total),
+                text: running_text(&transfer.label, transferred, total),
+            },
+            None => BarState {
+                fraction: 0.0,
+                text: started_text(&transfer.label),
+            },
+        })
+    }
+
+    fn set_status(&mut self, status: String, done_by: Option<u64>) {
+        self.status = status;
+        self.done_by = done_by;
+    }
+
+    fn shows_failure(&self) -> bool {
+        !self.status.is_empty() && self.done_by.is_none()
     }
 
     /// Cancel targets the most recently started transfer.
@@ -907,13 +954,6 @@ impl SftpView {
     /// Mark the sidebar shown; `true` on its first show.
     pub fn show(&mut self) -> bool {
         !std::mem::replace(&mut self.shown, true)
-    }
-
-    fn transfer_label(&self, id: u64) -> Option<String> {
-        self.transfers
-            .iter()
-            .find(|transfer| transfer.id == id)
-            .map(|transfer| transfer.label.clone())
     }
 
     /// The toolbar's button sensitivity for the current state.

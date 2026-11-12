@@ -70,6 +70,8 @@ struct SidebarInner {
     model: gio::ListStore,
     selection: gtk4::SingleSelection,
     error_label: gtk4::Label,
+    /// The bar and Cancel, shown only while a transfer runs.
+    progress_row: gtk4::Box,
     progress_bar: gtk4::ProgressBar,
     status_label: gtk4::Label,
     follow_check: gtk4::CheckButton,
@@ -98,6 +100,10 @@ struct SidebarInner {
 /// How long a local copy must stay untouched before it is looked at: an
 /// editor's save is several writes.
 const SETTLE: Duration = Duration::from_millis(300);
+
+/// How long a finished transfer's line stays; a failure's stays until the
+/// next transfer.
+const DONE_SHOWS_FOR: Duration = Duration::from_secs(5);
 
 /// Key under which each cell keeps a weak ref to its `ListItem`, so a
 /// click can be traced back to a row.
@@ -652,10 +658,12 @@ fn build_sidebar(local: bool) -> Rc<SidebarInner> {
     error_label.add_css_class("dim-label");
     error_label.set_visible(false);
 
-    // 5. Progress bar with Cancel, then the transfer status line.
+    // 5. Progress bar with Cancel, in the transfer status line's place
+    // while a transfer runs; each shows only when it has something to say.
     let progress_bar = gtk4::ProgressBar::new();
     progress_bar.set_show_text(true);
     progress_bar.set_hexpand(true);
+    progress_bar.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
     let progress_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
     progress_row.append(&progress_bar);
     progress_row.append(&buttons.cancel);
@@ -692,6 +700,7 @@ fn build_sidebar(local: bool) -> Rc<SidebarInner> {
         model,
         selection,
         error_label,
+        progress_row,
         progress_bar,
         status_label,
         follow_check,
@@ -957,12 +966,28 @@ impl SidebarInner {
             }
         }
 
-        self.progress_bar.set_fraction(state.fraction);
-        self.progress_bar
-            .set_text(Some(state.progress_text.as_str()));
-        self.status_label.set_text(&state.status);
         self.follow_check.set_active(state.following);
         self.container.set_visible(state.shown);
+        drop(state);
+        self.render_transfers();
+    }
+
+    /// Only the bar, the status line and the toolbar: a progress sample or
+    /// an expiring result leaves the listing, and its selection, alone.
+    fn render_transfers(&self) {
+        let state = self.state.borrow();
+        let bar = state.bar();
+        if let Some(bar) = &bar {
+            self.progress_bar.set_fraction(bar.fraction);
+            self.progress_bar.set_text(Some(bar.text.as_str()));
+            self.progress_bar.set_tooltip_text(Some(bar.text.as_str()));
+        }
+        self.progress_row.set_visible(bar.is_some());
+        // A long error is cut short in a narrow dock; hovering shows it all.
+        self.status_label.set_text(&state.status);
+        self.status_label
+            .set_tooltip_text(Some(state.status.as_str()).filter(|s| !s.is_empty()));
+        self.status_label.set_visible(!state.status.is_empty());
         drop(state);
         self.render_toolbar();
     }
@@ -1182,14 +1207,14 @@ impl SidebarInner {
         let (reply, reply_rx) = oneshot::channel();
 
         self.state.borrow_mut().begin_transfer(transfer_id, label);
-        self.render();
+        self.render_transfers();
 
         if !self.send(transfer.command(transfer_id, progress_tx, reply)) {
             // The command never reached the task — take the display back.
             self.state
                 .borrow_mut()
                 .end_transfer(transfer_id, &Err(COMMAND_FAILED.to_string()));
-            self.render();
+            self.render_transfers();
             on_done(self, false);
             return;
         }
@@ -1201,7 +1226,7 @@ impl SidebarInner {
                 pump.state
                     .borrow_mut()
                     .on_progress(transfer_id, sample.transferred, sample.total);
-                pump.render();
+                pump.render_transfers();
             }
         });
 
@@ -1213,7 +1238,16 @@ impl SidebarInner {
                 Err(_) => Err(SESSION_ENDED.to_string()),
             };
             done.state.borrow_mut().end_transfer(transfer_id, &result);
-            done.render();
+            done.render_transfers();
+            if result.is_ok() {
+                let weak = Rc::downgrade(&done);
+                glib::timeout_add_local_once(DONE_SHOWS_FOR, move || {
+                    if let Some(inner) = weak.upgrade() {
+                        inner.state.borrow_mut().expire_status(transfer_id);
+                        inner.render_transfers();
+                    }
+                });
+            }
             on_done(&done, result.is_ok());
         });
     }
@@ -2036,6 +2070,69 @@ pub(in crate::ui) mod gtk_tests {
         drop(reply);
         let context = glib::MainContext::default();
         while context.iteration(false) {}
+    }
+
+    /// The bar and Cancel show only while a transfer runs, its result
+    /// replaces them, and neither progress nor the result moves the
+    /// selection.
+    pub(in crate::ui) fn the_progress_row_shows_only_while_transferring() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let sidebar = SftpSidebar::new();
+        let inner = &sidebar.inner;
+        sidebar.attach_client(SftpClient::from_parts(
+            tx,
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        inner.state.borrow_mut().attach();
+        inner
+            .state
+            .borrow_mut()
+            .set_listing("/srv", &[entry("a.txt", false)]);
+        inner.render();
+        settle();
+        assert!(!inner.progress_row.is_visible(), "idle shows no bar");
+        assert!(!inner.status_label.is_visible(), "idle shows no status");
+
+        inner.selection.set_selected(1);
+        inner.download("/srv/a.txt".into(), "/tmp/a.txt".into());
+        let SftpCommand::Download {
+            progress, reply, ..
+        } = next_command(&mut rx)
+        else {
+            panic!("no download sent");
+        };
+        assert!(inner.progress_row.is_visible());
+        assert!(!inner.status_label.is_visible());
+
+        progress
+            .try_send(Progress {
+                transferred: 1024,
+                total: 4096,
+            })
+            .unwrap();
+        spin(|| inner.progress_bar.fraction() > 0.0);
+        assert_eq!(
+            inner.progress_bar.text().as_deref(),
+            Some("Download a.txt — 1.0 KB / 4.0 KB")
+        );
+        assert_eq!(inner.selection.selected(), 1, "a sample kept the selection");
+
+        reply.send(Err("permission denied".into())).unwrap();
+        spin(|| inner.status_label.is_visible());
+        assert!(
+            !inner.progress_row.is_visible(),
+            "the result took its place"
+        );
+        assert_eq!(
+            inner.status_label.text(),
+            "Download a.txt — failed: permission denied"
+        );
+        assert_eq!(
+            inner.selection.selected(),
+            1,
+            "the result kept the selection"
+        );
+        settle();
     }
 
     /// Dropping the last handle frees the sidebar, and with it the SFTP
