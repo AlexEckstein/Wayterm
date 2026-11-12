@@ -128,9 +128,10 @@ A release goes out like this:
 - Packages are built without `backend-ghostty`.
 - The AppImage and `.deb` target x86_64 only.
 - The AppImage bundles GTK 4 and GLib from Ubuntu 26.04, which need
-  glibc 2.43, so it does not run on Ubuntu 24.04 or Debian 13. The
-  `.deb` uses the system's libraries and needs only what its `Depends`
-  names (libc6 2.39 at 0.1.0).
+  glibc 2.42 (the highest version symbol its bundled libraries ask for;
+  the image's name carries it), so it does not run on Ubuntu 24.04 or
+  Debian 13. The `.deb` uses the system's libraries and needs only
+  what its `Depends` names (libc6 2.39 at 0.1.0).
 - The recipe names its archive (`resolute`) while the workflow follows
   `ubuntu-latest`: when GitHub moves `ubuntu-latest` to a newer Ubuntu,
   the recipe must move with it.
