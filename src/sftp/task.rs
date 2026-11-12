@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::sftp::commands::{DirEntry, Progress, SftpCommand};
 use crate::sftp::listing::sort_entries;
 use crate::sftp::local::local_task;
-use crate::sftp::transfer::{copy_with_progress, text, Transfers};
+use crate::sftp::transfer::{copy_with_progress, open_source, text, Transfers};
 use crate::transport::connection::SshConnection;
 
 const COMMAND_QUEUE: usize = 32;
@@ -270,10 +270,9 @@ async fn upload_file(
     remote_path: &str,
     progress: &mpsc::Sender<Progress>,
 ) -> Result<u64, String> {
-    let local = tokio::fs::File::open(local_path).await.map_err(text)?;
-    let total = local.metadata().await.map(|m| m.len()).unwrap_or_default();
+    let (local, meta) = open_source(local_path).await?;
     let mut remote = sftp.create(remote_path).await.map_err(text)?;
-    let transferred = copy_with_progress(local, &mut remote, total, progress).await?;
+    let transferred = copy_with_progress(local, &mut remote, meta.len(), progress).await?;
     remote.flush().await.map_err(text)?;
     remote.close().await.map_err(text)?;
     Ok(transferred)

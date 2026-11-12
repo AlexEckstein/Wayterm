@@ -195,7 +195,9 @@ newest; both go when the last transfer ends. A transfer's result shows
 in the status line: a success for 5 seconds, a failure until the next
 transfer starts, and a success never replaces a failure still shown. An
 upload's final flush and close must succeed or the transfer fails, since
-the remote file may be incomplete. Every successful operation
+the remote file may be incomplete. Only a regular file is uploaded: a
+folder, chosen or dropped, is refused before the server is asked to
+create a file of its name. Every successful operation
 refreshes the listing. Cancel takes effect at whatever step a transfer is
 on, even one waiting on a stalled server. Ending the tab's session, or
 closing the tab, cancels every running transfer, as Cancel does (§Layout).

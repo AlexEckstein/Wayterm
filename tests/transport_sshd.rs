@@ -467,6 +467,41 @@ async fn sftp_command_errors_after_connection_disconnect() {
     drop(client);
 }
 
+/// A folder is no upload: it is refused before the server is asked to
+/// create, or empty, a file of its name.
+#[tokio::test]
+async fn sftp_upload_refuses_a_directory_and_creates_nothing() {
+    let Some(f) = fixture() else { return };
+
+    let connection = connect_any(&f).await;
+    let client = SftpClient::new(connection.clone());
+    let folder = tempfile::tempdir().expect("create tempdir");
+    let remote = format!("/home/{}/wayterm-sftp-dir-{}", f.user, unique_tag());
+
+    let (progress, _samples) = mpsc::channel(4);
+    let uploaded: Result<u64, String> = sftp_cmd(&client, |reply| SftpCommand::Upload {
+        transfer_id: client.next_transfer_id(),
+        local_path: folder.path().to_string_lossy().into_owned(),
+        remote_path: remote.clone(),
+        progress,
+        reply,
+    })
+    .await;
+    // Removes what a wrongly started upload left, too.
+    let left = sftp_cmd(&client, |reply| SftpCommand::Delete {
+        path: remote.clone(),
+        reply,
+    })
+    .await;
+
+    let err = uploaded.expect_err("a directory was uploaded");
+    assert!(err.ends_with("is not a regular file"), "got: {err}");
+    assert!(left.is_err(), "the refused upload made a remote file");
+
+    drop(client);
+    connection.disconnect().await.expect("disconnect failed");
+}
+
 // ---- Following the shell (doc 07) ----
 
 /// Key auth when the fixture has a key, so the probe tests also run
