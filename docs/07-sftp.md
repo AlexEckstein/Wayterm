@@ -18,7 +18,8 @@ RDP, VNC, Home) get a placeholder. Whenever the tab lets go of its
 connection (a redial, Disconnect, a lost connection, the shell's exit or
 a transport that fails to connect, doc 03 §Reconnect), the old sidebar
 detaches, ending its SFTP task and cancelling any running transfer
-(§Transfers), and an empty one replaces it in the panel. A closing tab's
+(§Transfers), and an empty one replaces it in the panel, keeping only the
+files the old one had open in editors (§Opening files). A closing tab's
 sidebar detaches the same way (doc 03 §Closing a tab).
 
 The sidebar, top to bottom:
@@ -75,12 +76,13 @@ Opening a file downloads it to a local copy and hands that to the desktop
 (`GtkFileLauncher`: the OpenURI portal where there is one, else GIO), which
 starts the default application for the file's type; Open With… asks which
 application instead. The transfer shows in the progress bar as
-`Open <name>` and can be cancelled like any other.
+`Open <name>` and can be cancelled like any other. The download lands in
+a staging file and is moved over the copy only once it is whole, so a
+failed or cancelled one never leaves half a file where an editor reads.
 
-While the tab's session lasts the sidebar watches the copy, and each
-version the application saves is uploaded over the remote file
-(`Save <name>` in the status line), so saving in the editor saves to the
-server:
+While the tab stays open the sidebar watches the copy, and each version
+the application saves is uploaded over the remote file (`Save <name>` in
+the status line), so saving in the editor saves to the server:
 
 - The copy's directory is watched, not the file, so both ways editors
   save are seen: writing the file in place, and renaming a new file over
@@ -89,16 +91,24 @@ server:
   the version the server has (`EditSync`).
 - One transfer per file at a time: a save during an upload is sent when
   that upload ends. A failed upload shows in the status line, and the
-  next save sends the file again.
+  next save, or opening the file again, sends it again.
 - Opening a file that is already open downloads it again into the same
-  copy, so the application shows what the server has now.
+  copy, so the application shows what the server has now. A save is
+  never downloaded over: if the copy holds a version the server lacks,
+  that version is uploaded and shown instead, and a save that lands
+  while the download runs is kept and uploaded, the download dropped.
+- When the tab lets go of its connection (§Layout) the sidebar that
+  replaces the old one takes the opened files over and keeps watching
+  them. A save made with no session shows "SFTP needs a live SSH
+  connection" and is uploaded when the tab connects again, as is one
+  whose upload the lost connection cut off.
 
-Copies live in `$XDG_CACHE_HOME/wayterm/sftp-edit/<pid>-<n>/<name>`, one
-directory per opened file, readable by the user only. They are removed
-when the sidebar detaches (§Layout): a later save has no session to go
-to, and fails in the editor rather than landing in a file nobody
-uploads. Whatever is left is removed when Wayterm starts and when it
-quits.
+Copies live in `$XDG_CACHE_HOME/wayterm/sftp-edit/<pid>-<n>/<name>` (the
+staging file is `<pid>-<n>.part` beside the directory), one directory per
+opened file, readable by the user only. The copies are removed when the tab closes, or its session turns out to
+be a jumped one: a later save has nowhere to go, and fails in the editor
+rather than landing in a file nobody uploads. Whatever is left is removed
+when Wayterm starts and when it quits.
 
 Opening needs no new `SftpCommand`: it is a `Download`, then an `Upload`
 per save.
@@ -250,10 +260,14 @@ disabled.
 - A cancelled transfer leaves its partial file behind, local or remote.
 - Opened files: a save overwrites the remote file as it is then, without
   checking whether it changed on the server since it was opened, and
-  writes it in place, so a failed upload can leave it incomplete. The
-  editor is not told when an upload fails; the status line is. Once the
-  session ends the copy is gone, and an editor still holding the file has
-  to save it elsewhere. Which application opens a file is the desktop's
+  writes it in place, so a failed upload can leave it incomplete until
+  the next one (SFTP has no replace-by-rename every server accepts, and
+  a renamed-in file would lose the original's owner and mode). The
+  editor is not told when an upload fails; the status line is. Closing
+  the tab, or quitting, removes the copies, a save not yet uploaded
+  included (one made in the last 300 ms, during a transfer, or while
+  disconnected), and an editor still holding the file has to save it
+  elsewhere. Which application opens a file is the desktop's
   choice (Open With… to pick another); Wayterm has no editor setting of
   its own. Open With… asks only through the portal: without one GTK
   starts the default application, as Open does. The Flatpak's hand-off

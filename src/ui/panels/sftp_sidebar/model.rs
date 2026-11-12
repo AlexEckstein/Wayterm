@@ -505,52 +505,95 @@ impl FileStamp {
     }
 }
 
+/// Move a finished download from `staged` over the local copy; the
+/// stamp the copy then has, or `None` when it could not be moved.
+pub fn place_download(staged: &Path, local: &Path) -> Option<FileStamp> {
+    let stamp = FileStamp::of(staged)?;
+    std::fs::rename(staged, local).ok()?;
+    Some(stamp)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Running {
+    Fetch,
+    Upload,
+}
+
+/// What opening an already opened file does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Reopen {
+    /// A transfer of the file runs: its end shows or stores it.
+    Busy,
+    /// The local copy holds a version the server lacks: send that, and
+    /// show it, instead of downloading over it.
+    Unsent,
+    /// Download the server's version again.
+    Fetch,
+}
+
 /// Keeps the local copy of a file opened in an editor in step with the
 /// server (doc 07 §Opening files): each version the editor saves is
-/// uploaded once, one transfer at a time.
+/// uploaded once, one transfer at a time, and a download never replaces a
+/// version the server lacks.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EditSync {
     /// The local version the server has, or is being sent.
     synced: Option<FileStamp>,
-    /// A download or upload of this file is running.
-    busy: bool,
-    /// The file changed during an upload: look again when it ends.
+    running: Option<Running>,
+    /// The copy changed during a transfer: look again when it ends.
     changed_meanwhile: bool,
 }
 
 impl EditSync {
-    /// A file whose download is about to start.
+    /// A file whose first download is about to start.
     pub fn fetching() -> Self {
         Self {
-            busy: true,
+            running: Some(Running::Fetch),
             ..Self::default()
         }
     }
 
     pub fn is_busy(&self) -> bool {
-        self.busy
+        self.running.is_some()
     }
 
-    /// A download into the local copy starts; `false` while another
-    /// transfer of this file runs.
-    pub fn begin_fetch(&mut self) -> bool {
-        !std::mem::replace(&mut self.busy, true)
+    /// Whether the copy, now at `local`, holds nothing the server lacks:
+    /// it is as last downloaded or uploaded, or not there at all.
+    pub fn is_sent(&self, local: Option<FileStamp>) -> bool {
+        local.is_none() || local == self.synced
     }
 
-    /// The download ended, leaving the local copy at `stamp`. What it
-    /// wrote is the server's version, never an edit, even when it failed
-    /// part-way.
-    pub fn fetched(&mut self, stamp: Option<FileStamp>) {
-        self.busy = false;
-        self.changed_meanwhile = false;
-        self.synced = stamp;
+    /// The file is opened again while its copy is at `local`.
+    /// [`Reopen::Fetch`] starts a download, to be reported with
+    /// [`fetch_ended`](Self::fetch_ended).
+    pub fn reopen(&mut self, local: Option<FileStamp>) -> Reopen {
+        if self.is_busy() {
+            Reopen::Busy
+        } else if !self.is_sent(local) {
+            Reopen::Unsent
+        } else {
+            self.running = Some(Running::Fetch);
+            Reopen::Fetch
+        }
+    }
+
+    /// The download ended. `placed` is the copy's stamp if the download
+    /// replaced it; a failed download, or one the editor overtook with a
+    /// save, leaves the copy as it was. `true` when the copy changed
+    /// meanwhile and must be looked at.
+    pub fn fetch_ended(&mut self, placed: Option<FileStamp>) -> bool {
+        self.running = None;
+        if placed.is_some() {
+            self.synced = placed;
+        }
+        std::mem::take(&mut self.changed_meanwhile)
     }
 
     /// The local copy may have changed and is now at `stamp`. `true` when
     /// it must be uploaded: the caller starts the upload, then reports
     /// [`uploaded`](Self::uploaded).
     pub fn local_changed(&mut self, stamp: FileStamp) -> bool {
-        if self.busy {
+        if self.is_busy() {
             self.changed_meanwhile = true;
             return false;
         }
@@ -558,7 +601,7 @@ impl EditSync {
             return false;
         }
         self.synced = Some(stamp);
-        self.busy = true;
+        self.running = Some(Running::Upload);
         true
     }
 
@@ -566,11 +609,20 @@ impl EditSync {
     /// changed while the upload ran. A failed upload leaves the server
     /// behind, so the next change, or look, uploads again.
     pub fn uploaded(&mut self, ok: bool) -> bool {
-        self.busy = false;
+        self.running = None;
         if !ok {
             self.synced = None;
         }
         std::mem::take(&mut self.changed_meanwhile)
+    }
+
+    /// The session ended under whatever transfer ran. An upload cut off
+    /// may not have reached the server, so the copy counts as unsent.
+    pub fn interrupted(&mut self) {
+        if self.running.take() == Some(Running::Upload) {
+            self.synced = None;
+        }
+        self.changed_meanwhile = false;
     }
 }
 

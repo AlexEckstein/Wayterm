@@ -324,7 +324,8 @@ pub(super) fn stop_forward_engine(page: &gtk4::Widget) {
 
 /// End the sidebar's SFTP task, cancelling its transfers (or drop the
 /// connection it keeps for its first show), and swap in a fresh sidebar
-/// that keeps the old one's shown and following state.
+/// that keeps the old one's shown and following state, and the files it
+/// has open in editors (doc 07 §Opening files).
 pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     let Some(ssh) = existing_ssh_state(page) else {
         return;
@@ -335,12 +336,13 @@ pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     let Some(old) = sidebar_of(page) else {
         return;
     };
-    old.detach();
     let sidebar = if old.is_shown() {
         SftpSidebar::new()
     } else {
         SftpSidebar::hidden()
     };
+    sidebar.adopt_open_files(&old);
+    old.detach();
     sidebar.set_following(old.is_following());
     SessionTab::set_sidebar_for_page(page, sidebar);
     side_dock::sidebar_replaced(notebook);

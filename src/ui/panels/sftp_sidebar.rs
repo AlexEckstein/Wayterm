@@ -103,6 +103,9 @@ struct OpenFile {
     /// The local copy's own directory, removed with it.
     dir: PathBuf,
     local: PathBuf,
+    /// Where a download lands before it replaces the copy, outside `dir`:
+    /// a failed one leaves the copy alone.
+    staged: PathBuf,
     sync: EditSync,
     /// Watches `dir`, once the first download has ended.
     monitor: Option<gio::FileMonitor>,
@@ -118,6 +121,7 @@ impl Drop for OpenFile {
         if let Some(settle) = self.settle.take() {
             settle.remove();
         }
+        let _ = std::fs::remove_file(&self.staged);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -209,12 +213,20 @@ impl SftpSidebar {
     /// replaces (and ends) the previous task.
     pub fn attach(&self, connection: Arc<SshConnection>) {
         self.inner.deferred.borrow_mut().take();
-        *self.inner.attached.borrow_mut() = Some(Attached::new(connection));
-        self.inner.edits.borrow_mut().clear();
+        let previous = self
+            .inner
+            .attached
+            .borrow_mut()
+            .replace(Attached::new(connection));
+        if previous.is_some() {
+            // Its transfers still answer, about files this task never saw.
+            self.inner.edits.borrow_mut().clear();
+        }
         self.inner.state.borrow_mut().attach();
         self.inner.render();
         let start = self.inner.state.borrow().current_path().to_string();
         self.inner.cd(start);
+        self.inner.send_unsent_edits();
         // A reattached tmux session may be anywhere already.
         self.inner.probe_shell();
     }
@@ -240,7 +252,8 @@ impl SftpSidebar {
     /// first show. A transfer's own futures hold the sidebar until their
     /// reply comes, so dropping the last handle alone would let a transfer
     /// run on unseen. The local copies of files opened in an editor go
-    /// too: a save could no longer reach the server.
+    /// too, unless another sidebar took them over first
+    /// ([`adopt_open_files`](Self::adopt_open_files)).
     pub fn detach(&self) {
         self.inner.deferred.borrow_mut().take();
         self.inner.edits.borrow_mut().clear();
@@ -256,8 +269,17 @@ impl SftpSidebar {
     pub fn show_jump_placeholder(&self) {
         self.inner.deferred.borrow_mut().take();
         *self.inner.attached.borrow_mut() = None;
+        self.inner.edits.borrow_mut().clear();
         self.inner.state.borrow_mut().mark_jump_unsupported();
         self.inner.render();
+    }
+
+    /// Take over the files `old` has open in editors, before it detaches:
+    /// the tab let go of its connection, and this sidebar replaces `old`.
+    /// Their copies stay watched, and a version saved while there is no
+    /// session is uploaded once this sidebar attaches.
+    pub fn adopt_open_files(&self, old: &SftpSidebar) {
+        self.inner.adopt_edits(&old.inner);
     }
 
     /// A sidebar that stays hidden, and opens no SFTP channel, until its
@@ -1122,8 +1144,9 @@ impl SidebarInner {
     }
 
     /// Open the remote file in its application, or one the user picks
-    /// (`ask`), from a local copy: a fresh download into the copy it
-    /// already has, if it was opened before.
+    /// (`ask`), from a local copy. A file opened before is downloaded
+    /// again into the copy it has, unless that holds a version the server
+    /// lacks: then that version is sent, and shown.
     fn open_file(self: &Rc<Self>, remote: String, ask: bool) {
         let name = file_name(&remote);
         if !is_plain_file_name(&name) {
@@ -1139,11 +1162,18 @@ impl SidebarInner {
             .borrow_mut()
             .iter_mut()
             .find(|edit| edit.remote == remote)
-            .map(|edit| (edit.id, edit.local.clone(), edit.sync.begin_fetch()));
-        let (id, local) = match known {
-            // A transfer of it is running: its end shows or stores it.
-            Some((_, _, false)) => return,
-            Some((id, local, true)) => (id, local),
+            .map(|edit| {
+                let reopen = edit.sync.reopen(FileStamp::of(&edit.local));
+                (edit.id, edit.local.clone(), edit.staged.clone(), reopen)
+            });
+        let (id, staged) = match known {
+            Some((_, _, _, Reopen::Busy)) => return,
+            Some((id, local, _, Reopen::Unsent)) => {
+                self.sync_edit(id);
+                self.launch(&local, ask);
+                return;
+            }
+            Some((id, _, staged, Reopen::Fetch)) => (id, staged),
             None => {
                 let dir = match create_edit_dir(&self.edit_root.borrow()) {
                     Ok(dir) => dir,
@@ -1153,59 +1183,103 @@ impl SidebarInner {
                     }
                 };
                 let id = self.next_edit.replace(self.next_edit.get() + 1);
-                let local = dir.join(&name);
+                let staged = dir.with_extension("part");
                 self.edits.borrow_mut().push(OpenFile {
                     id,
                     remote: remote.clone(),
+                    local: dir.join(&name),
                     dir,
-                    local: local.clone(),
+                    staged: staged.clone(),
                     sync: EditSync::fetching(),
                     monitor: None,
                     settle: None,
                 });
-                (id, local)
+                (id, staged)
             }
         };
         let transfer = Transfer::Download {
             remote,
-            local: local.to_string_lossy().into_owned(),
+            local: staged.to_string_lossy().into_owned(),
         };
         self.run_transfer(format!("Open {name}"), transfer, move |inner, succeeded| {
             inner.fetched(id, succeeded, ask)
         });
     }
 
-    /// The download of an opened file ended: watch the local copy and
-    /// show it. A first download that failed leaves nothing to show.
+    /// The download of an opened file ended: move it over the local
+    /// copy, watch that and show it. A failed download leaves the copy as
+    /// it was, and so does one the editor overtook with a save, which is
+    /// sent instead. A first download that failed leaves nothing to show.
     fn fetched(self: &Rc<Self>, id: u64, succeeded: bool, ask: bool) {
         let mut edits = self.edits.borrow_mut();
         let Some(index) = edits.iter().position(|edit| edit.id == id) else {
             return;
         };
         let edit = &mut edits[index];
-        edit.sync.fetched(FileStamp::of(&edit.local));
-        if !succeeded {
-            if edit.monitor.is_none() {
-                edits.remove(index);
-            }
-            return;
+        let overtaken = !edit.sync.is_sent(FileStamp::of(&edit.local));
+        let placed = (succeeded && !overtaken)
+            .then(|| place_download(&edit.staged, &edit.local))
+            .flatten();
+        if placed.is_none() {
+            let _ = std::fs::remove_file(&edit.staged);
         }
-        if edit.monitor.is_none() {
+        let changed = edit.sync.fetch_ended(placed) || overtaken;
+        let name = file_name(&edit.remote);
+        let first = edit.monitor.is_none();
+        let mut failure = (succeeded && !overtaken && placed.is_none())
+            .then(|| format!("Cannot open '{name}': its copy could not be written"));
+        if first && placed.is_some() {
             match self.watch(id, &edit.dir) {
                 Ok(monitor) => edit.monitor = Some(monitor),
-                Err(err) => {
-                    // Shown unwatched, its saves would go nowhere.
-                    let name = file_name(&edit.remote);
-                    edits.remove(index);
-                    drop(edits);
-                    self.set_error(&format!("Cannot watch '{name}' for changes: {err}"));
-                    return;
-                }
+                // Shown unwatched, its saves would go nowhere.
+                Err(err) => failure = Some(format!("Cannot watch '{name}' for changes: {err}")),
             }
         }
         let local = edit.local.clone();
+        if edit.monitor.is_none() {
+            edits.remove(index);
+        }
         drop(edits);
-        self.launch(&local, ask);
+        if let Some(failure) = failure {
+            return self.set_error(&failure);
+        }
+        if changed {
+            self.sync_edit(id);
+        }
+        if succeeded {
+            self.launch(&local, ask);
+        }
+    }
+
+    /// Take `old`'s opened files (see [`SftpSidebar::adopt_open_files`]).
+    /// One whose first download had not ended has nothing to keep.
+    fn adopt_edits(self: &Rc<Self>, old: &SidebarInner) {
+        let mut edits = std::mem::take(&mut *old.edits.borrow_mut());
+        edits.retain_mut(|edit| {
+            if let Some(pending) = edit.settle.take() {
+                pending.remove();
+            }
+            let Some(monitor) = edit.monitor.take() else {
+                return false;
+            };
+            monitor.cancel();
+            edit.sync.interrupted();
+            let _ = std::fs::remove_file(&edit.staged);
+            edit.monitor = self.watch(edit.id, &edit.dir).ok();
+            edit.monitor.is_some()
+        });
+        self.next_edit.set(old.next_edit.get());
+        *self.edit_root.borrow_mut() = old.edit_root.borrow().clone();
+        *self.edits.borrow_mut() = edits;
+    }
+
+    /// Upload whatever the opened files' copies hold that the server
+    /// lacks: versions saved while there was no session.
+    fn send_unsent_edits(self: &Rc<Self>) {
+        let ids: Vec<u64> = self.edits.borrow().iter().map(|edit| edit.id).collect();
+        for id in ids {
+            self.sync_edit(id);
+        }
     }
 
     /// Watch an opened file's directory: editors save by writing the file
@@ -1581,14 +1655,75 @@ pub(in crate::ui) mod gtk_tests {
         while context.iteration(false) {}
     }
 
+    /// Run the main loop until `done`, or for as long as a save takes to
+    /// be noticed and looked at several times over.
+    fn spin(done: impl Fn() -> bool) {
+        let context = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + SETTLE * 5;
+        while !done() && std::time::Instant::now() < deadline {
+            if !context.iteration(false) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
     /// A sidebar over a fake task, its opened files' copies under `root`.
     fn editing_sidebar(root: &Path) -> (SftpSidebar, mpsc::Receiver<SftpCommand>) {
         let (tx, rx) = mpsc::channel(8);
         let sidebar = SftpSidebar::new();
         let client = SftpClient::from_parts(tx, tokio_util::sync::CancellationToken::new());
         sidebar.attach_client(client);
-        *sidebar.inner.edit_root.borrow_mut() = root.to_path_buf();
+        *sidebar.inner.edit_root.borrow_mut() = root.join("sftp-edit");
         (sidebar, rx)
+    }
+
+    fn expect_download(rx: &mut mpsc::Receiver<SftpCommand>) -> (PathBuf, Reply) {
+        match next_command(rx) {
+            SftpCommand::Download {
+                local_path, reply, ..
+            } => (PathBuf::from(local_path), reply),
+            _ => panic!("no download was sent"),
+        }
+    }
+
+    fn expect_upload(rx: &mut mpsc::Receiver<SftpCommand>) -> (PathBuf, String, Reply) {
+        match next_command(rx) {
+            SftpCommand::Upload {
+                local_path,
+                remote_path,
+                reply,
+                ..
+            } => (PathBuf::from(local_path), remote_path, reply),
+            _ => panic!("no upload was sent"),
+        }
+    }
+
+    type Reply = oneshot::Sender<Result<u64, String>>;
+
+    /// Open `/srv/notes.txt` from a listing by activating its row, serve
+    /// the download with `content`, and return the local copy.
+    fn open_notes(
+        sidebar: &SftpSidebar,
+        rx: &mut mpsc::Receiver<SftpCommand>,
+        content: &[u8],
+    ) -> PathBuf {
+        let inner = &sidebar.inner;
+        inner.state.borrow_mut().attach();
+        inner
+            .state
+            .borrow_mut()
+            .set_listing("/srv", &[entry("notes.txt", false)]);
+        inner.render();
+        inner.column_view.emit_by_name::<()>("activate", &[&1u32]);
+        let (staged, reply) = expect_download(rx);
+        assert!(inner.launched.borrow().is_empty(), "opened before it came");
+        std::fs::write(&staged, content).unwrap();
+        reply.send(Ok(content.len() as u64)).unwrap();
+        settle();
+        assert!(!staged.exists(), "the download was not moved to the copy");
+        let (local, ask) = inner.launched.borrow()[0].clone();
+        assert!(!ask);
+        local
     }
 
     /// Activating a file downloads it to a local copy and opens that; a
@@ -1598,53 +1733,16 @@ pub(in crate::ui) mod gtk_tests {
         let tmp = tempfile::tempdir().unwrap();
         let (sidebar, mut rx) = editing_sidebar(tmp.path());
         let inner = &sidebar.inner;
-        inner.state.borrow_mut().attach();
-        inner
-            .state
-            .borrow_mut()
-            .set_listing("/srv", &[entry("notes.txt", false)]);
-        inner.render();
-
-        inner.column_view.emit_by_name::<()>("activate", &[&1u32]);
-        let SftpCommand::Download {
-            remote_path,
-            local_path,
-            reply,
-            ..
-        } = next_command(&mut rx)
-        else {
-            panic!("activating a file sends no download");
-        };
-        assert_eq!(remote_path, "/srv/notes.txt");
-        let local = PathBuf::from(&local_path);
+        let local = open_notes(&sidebar, &mut rx, b"from the server");
         assert!(local.starts_with(tmp.path()) && local.ends_with("notes.txt"));
-        assert!(
-            inner.launched.borrow().is_empty(),
-            "opened before it arrived"
-        );
-
-        std::fs::write(&local, b"from the server").unwrap();
-        reply.send(Ok(15)).unwrap();
-        settle();
-        assert_eq!(*inner.launched.borrow(), [(local.clone(), false)]);
+        assert_eq!(std::fs::read(&local).unwrap(), b"from the server");
 
         // An editor that saves by renaming a new file over the old one.
         let scratch = local.with_file_name("notes.txt~");
         std::fs::write(&scratch, b"edited in the editor").unwrap();
         std::fs::rename(&scratch, &local).unwrap();
-        let SftpCommand::Upload {
-            local_path,
-            remote_path,
-            reply,
-            ..
-        } = next_command(&mut rx)
-        else {
-            panic!("a save sends no upload");
-        };
-        assert_eq!(
-            (local_path.as_str(), remote_path.as_str()),
-            (local.to_str().unwrap(), "/srv/notes.txt")
-        );
+        let (sent, remote, reply) = expect_upload(&mut rx);
+        assert_eq!((sent, remote.as_str()), (local.clone(), "/srv/notes.txt"));
         reply.send(Ok(20)).unwrap();
         assert!(
             matches!(next_command(&mut rx), SftpCommand::Cd { .. }),
@@ -1652,12 +1750,81 @@ pub(in crate::ui) mod gtk_tests {
         );
 
         // Nothing changed since: the monitor's echoes upload nothing.
-        std::thread::sleep(SETTLE * 2);
-        settle();
+        spin(|| false);
         assert!(rx.try_recv().is_err());
+        assert_eq!(inner.launched.borrow().len(), 1);
 
         sidebar.detach();
         assert!(!local.exists(), "the copy outlived the session");
+        settle();
+    }
+
+    /// Opening a file again never loses a save: one not yet uploaded is
+    /// sent instead of downloaded over, and a download that fails leaves
+    /// the copy as it was.
+    pub(in crate::ui) fn opening_again_keeps_an_unsent_save() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (sidebar, mut rx) = editing_sidebar(tmp.path());
+        let inner = &sidebar.inner;
+        let local = open_notes(&sidebar, &mut rx, b"from the server");
+
+        std::fs::write(&local, b"saved a moment ago").unwrap();
+        inner.open_file("/srv/notes.txt".into(), false);
+        let (sent, _, reply) = expect_upload(&mut rx);
+        assert_eq!(sent, local);
+        assert_eq!(std::fs::read(&local).unwrap(), b"saved a moment ago");
+        assert_eq!(inner.launched.borrow().len(), 2, "the copy is shown");
+        reply.send(Ok(18)).unwrap();
+        assert!(matches!(next_command(&mut rx), SftpCommand::Cd { .. }));
+
+        inner.open_file("/srv/notes.txt".into(), false);
+        let (staged, reply) = expect_download(&mut rx);
+        assert_ne!(staged, local, "downloaded straight into the copy");
+        std::fs::write(&staged, b"half of").unwrap();
+        reply.send(Err("connection lost".into())).unwrap();
+        settle();
+        assert_eq!(std::fs::read(&local).unwrap(), b"saved a moment ago");
+        assert!(!staged.exists());
+        assert_eq!(inner.launched.borrow().len(), 2, "a failed download opens");
+
+        spin(|| false);
+        assert!(rx.try_recv().is_err(), "nothing changed, nothing is sent");
+        sidebar.detach();
+        settle();
+    }
+
+    /// The sidebar replacing one whose session ended keeps its opened
+    /// files: a save made while there is no session is uploaded once the
+    /// new sidebar has a task, and the copies go with the new sidebar.
+    pub(in crate::ui) fn opened_files_survive_a_reconnect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (old, mut rx) = editing_sidebar(tmp.path());
+        let local = open_notes(&old, &mut rx, b"from the server");
+
+        let next = SftpSidebar::new();
+        next.adopt_open_files(&old);
+        old.detach();
+        drop(old);
+        assert!(local.exists(), "the copy went with the old session");
+
+        std::fs::write(&local, b"saved while disconnected").unwrap();
+        spin(|| next.inner.state.borrow().error.is_some());
+        assert_eq!(
+            next.inner.state.borrow().error.as_deref(),
+            Some(NOT_CONNECTED)
+        );
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        next.attach_client(SftpClient::from_parts(tx, shutdown));
+        next.inner.send_unsent_edits();
+        let (sent, remote, reply) = expect_upload(&mut rx);
+        assert_eq!((sent, remote.as_str()), (local.clone(), "/srv/notes.txt"));
+        reply.send(Ok(24)).unwrap();
+        assert!(matches!(next_command(&mut rx), SftpCommand::Cd { .. }));
+
+        next.detach();
+        assert!(!local.exists(), "the copy outlived the tab");
         settle();
     }
 
@@ -1667,20 +1834,15 @@ pub(in crate::ui) mod gtk_tests {
         let (sidebar, mut rx) = editing_sidebar(tmp.path());
         let inner = &sidebar.inner;
         inner.open_file("/srv/secret".into(), true);
-        let SftpCommand::Download {
-            local_path, reply, ..
-        } = next_command(&mut rx)
-        else {
-            panic!("no download sent");
-        };
-        let dir = PathBuf::from(local_path);
-        let dir = dir.parent().unwrap();
+        let (staged, reply) = expect_download(&mut rx);
+        let dir = staged.with_extension("");
         assert!(dir.is_dir());
+        std::fs::write(&staged, b"half of").unwrap();
         reply.send(Err("permission denied".into())).unwrap();
         settle();
         assert!(inner.launched.borrow().is_empty());
         assert!(inner.edits.borrow().is_empty());
-        assert!(!dir.exists(), "the empty copy's directory stayed");
+        assert!(!dir.exists() && !staged.exists(), "the failed copy stayed");
         assert!(inner.state.borrow().status.contains("permission denied"));
     }
 

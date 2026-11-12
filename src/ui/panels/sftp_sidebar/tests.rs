@@ -159,19 +159,43 @@ fn a_file_stamp_needs_a_regular_file() {
 }
 
 #[test]
-fn what_a_download_wrote_is_not_an_edit() {
+fn a_download_is_moved_over_the_copy_whole() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (staged, local) = (tmp.path().join("f.part"), tmp.path().join("f"));
+    std::fs::write(&local, b"old").unwrap();
+    assert_eq!(
+        place_download(&staged, &local),
+        None,
+        "nothing was downloaded"
+    );
+    assert_eq!(std::fs::read(&local).unwrap(), b"old");
+
+    std::fs::write(&staged, b"fresh from the server").unwrap();
+    let placed = place_download(&staged, &local);
+    assert_eq!(placed, FileStamp::of(&local));
+    assert_eq!(placed.map(|stamp| stamp.len), Some(21));
+    assert!(!staged.exists());
+}
+
+/// A file whose first download put the copy at `len`.
+fn opened(len: u64) -> EditSync {
     let mut sync = EditSync::fetching();
     assert!(sync.is_busy());
-    assert!(!sync.local_changed(stamp(10)), "the download's own writes");
-    sync.fetched(Some(stamp(22)));
+    assert!(!sync.fetch_ended(Some(stamp(len))));
+    sync
+}
+
+#[test]
+fn what_a_download_wrote_is_not_an_edit() {
+    let mut sync = opened(22);
     assert!(!sync.is_busy());
+    assert!(sync.is_sent(Some(stamp(22))));
     assert!(!sync.local_changed(stamp(22)), "the copy is as downloaded");
 }
 
 #[test]
 fn each_saved_version_uploads_once() {
-    let mut sync = EditSync::fetching();
-    sync.fetched(Some(stamp(22)));
+    let mut sync = opened(22);
     assert!(sync.local_changed(stamp(30)), "a save");
     assert!(!sync.uploaded(true));
     assert!(!sync.local_changed(stamp(30)), "the same version again");
@@ -180,8 +204,7 @@ fn each_saved_version_uploads_once() {
 
 #[test]
 fn a_save_during_an_upload_is_looked_at_when_it_ends() {
-    let mut sync = EditSync::fetching();
-    sync.fetched(Some(stamp(22)));
+    let mut sync = opened(22);
     assert!(sync.local_changed(stamp(30)));
     assert!(!sync.local_changed(stamp(40)), "one upload at a time");
     assert!(sync.uploaded(true), "look again");
@@ -191,24 +214,68 @@ fn a_save_during_an_upload_is_looked_at_when_it_ends() {
 
 #[test]
 fn a_failed_upload_is_sent_again_at_the_next_look() {
-    let mut sync = EditSync::fetching();
-    sync.fetched(Some(stamp(22)));
+    let mut sync = opened(22);
     assert!(sync.local_changed(stamp(30)));
     assert!(!sync.uploaded(false));
+    assert!(!sync.is_sent(Some(stamp(30))));
     assert!(sync.local_changed(stamp(30)), "the server never got it");
 }
 
 #[test]
-fn opening_again_downloads_unless_a_transfer_of_the_file_runs() {
+fn opening_again_downloads_only_over_a_copy_the_server_has() {
     let mut sync = EditSync::fetching();
-    assert!(!sync.begin_fetch(), "the first download still runs");
-    sync.fetched(Some(stamp(22)));
-    assert!(sync.begin_fetch());
-    sync.fetched(Some(stamp(25)));
-    assert!(!sync.local_changed(stamp(25)), "a fresh copy, not an edit");
+    assert_eq!(sync.reopen(None), Reopen::Busy, "the first download runs");
+    sync.fetch_ended(Some(stamp(22)));
 
-    assert!(sync.local_changed(stamp(26)));
-    assert!(!sync.begin_fetch(), "its upload runs");
+    assert_eq!(sync.reopen(Some(stamp(30))), Reopen::Unsent, "a save");
+    assert!(!sync.is_busy(), "nothing was started");
+
+    assert_eq!(sync.reopen(Some(stamp(22))), Reopen::Fetch);
+    assert_eq!(sync.reopen(Some(stamp(22))), Reopen::Busy);
+    assert!(!sync.fetch_ended(Some(stamp(25))));
+    assert!(!sync.local_changed(stamp(25)), "a fresh copy, not an edit");
+    assert_eq!(sync.reopen(None), Reopen::Fetch, "the copy is gone");
+}
+
+#[test]
+fn a_download_the_editor_overtook_leaves_its_save_to_send() {
+    let mut sync = opened(22);
+    assert_eq!(sync.reopen(Some(stamp(22))), Reopen::Fetch);
+    assert!(!sync.local_changed(stamp(30)), "the download still runs");
+    assert!(!sync.is_sent(Some(stamp(30))), "so it must not be replaced");
+    assert!(sync.fetch_ended(None), "look at the copy");
+    assert!(sync.local_changed(stamp(30)), "the save goes up");
+}
+
+#[test]
+fn a_failed_download_changes_nothing() {
+    let mut sync = opened(22);
+    assert_eq!(sync.reopen(Some(stamp(22))), Reopen::Fetch);
+    assert!(!sync.fetch_ended(None));
+    assert!(
+        !sync.local_changed(stamp(22)),
+        "the copy is what the server has"
+    );
+}
+
+#[test]
+fn a_transfer_the_session_end_cut_off_is_not_counted() {
+    let mut sync = opened(22);
+    assert!(sync.local_changed(stamp(30)));
+    sync.interrupted();
+    assert!(!sync.is_busy());
+    assert!(
+        sync.local_changed(stamp(30)),
+        "the upload may not have arrived"
+    );
+    sync.uploaded(true);
+
+    assert_eq!(sync.reopen(Some(stamp(30))), Reopen::Fetch);
+    sync.interrupted();
+    assert!(
+        !sync.local_changed(stamp(30)),
+        "a cut-off download changed nothing"
+    );
 }
 
 // --- path arithmetic -------------------------------------------------------
