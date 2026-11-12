@@ -29,9 +29,11 @@ The sidebar, top to bottom:
 
 - a path bar (Enter navigates);
 - a toolbar: Upload, Download, Delete, Rename, Refresh, New folder;
-- an inline error line;
+- an inline error line, shown only while there is an error;
 - the listing (§Listing);
-- a progress bar with Cancel and a status line;
+- a progress bar with Cancel, shown only while a transfer runs, and a
+  status line for the last transfer's result, shown only while it has
+  one (§Transfers);
 - the "Follow terminal directory" check box (§Following the shell).
 
 The toolbar's and the rows' icons ship in the binary (doc 09 §Icons), so
@@ -85,7 +87,7 @@ failed or cancelled one never leaves half a file where an editor reads.
 
 While the tab stays open the sidebar watches the copy, and each version
 the application saves is uploaded over the remote file (`Save <name>` in
-the status line), so saving in the editor saves to the server:
+the progress bar), so saving in the editor saves to the server:
 
 - The copy's directory is watched, not the file, so both ways editors
   save are seen: writing the file in place, and renaming a new file over
@@ -187,9 +189,13 @@ Downloads and uploads run as their own tasks, registered by a
 `transfer_id` the client pre-generates, so `Cancel` and browsing stay
 responsive mid-transfer. They copy in 32 KiB chunks; progress samples go
 out with `try_send` (a stale-but-moving bar is fine, a stalled transfer is
-not). The bar shows whichever transfer updated last and Cancel targets the
-newest. An upload's final flush and close must succeed or the transfer
-fails, since the remote file may be incomplete. Every successful operation
+not). The bar shows whichever transfer updated last, named and with its
+byte counts (`Upload notes.txt — 1.2 KB / 4.0 MB`), and Cancel targets the
+newest; both go when the last transfer ends. A transfer's result shows
+in the status line: a success for 5 seconds, a failure until the next
+transfer starts, and a success never replaces a failure still shown. An
+upload's final flush and close must succeed or the transfer fails, since
+the remote file may be incomplete. Every successful operation
 refreshes the listing. Cancel takes effect at whatever step a transfer is
 on, even one waiting on a stalled server. Ending the tab's session, or
 closing the tab, cancels every running transfer, as Cancel does (§Layout).

@@ -71,6 +71,7 @@ mod gtk_tests {
         super::panels::sftp_sidebar::gtk_tests::follow_checkbox_toggles_following();
         super::panels::sftp_sidebar::gtk_tests::a_local_sidebar_browses_this_machines_files();
         super::panels::sftp_sidebar::gtk_tests::detaching_mid_transfer_ends_the_task();
+        super::panels::sftp_sidebar::gtk_tests::the_progress_row_shows_only_while_transferring();
         super::panels::sftp_sidebar::gtk_tests::a_dropped_sidebar_is_freed();
         super::panels::side_dock::gtk_tests::icon_tabs_switch_the_panel();
         super::panels::side_dock::gtk_tests::the_panel_is_as_wide_as_its_page();
