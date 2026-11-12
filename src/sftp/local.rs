@@ -149,25 +149,43 @@ fn spawn_copy(
     });
 }
 
-/// Copy the regular file `from` over `to`, keeping its mode. Copying a
-/// file onto itself is refused: creating the target would empty the source.
+/// Copy the regular file `from` to `to`, as `cp` does: a new file gets the
+/// source's mode, one already there is replaced and keeps its own. Neither
+/// end may be a pipe or a device, and a file is never copied onto itself:
+/// creating the target would empty the source.
 async fn copy_file(from: &str, to: &str, progress: &mpsc::Sender<Progress>) -> Result<u64, String> {
-    let source = tokio::fs::File::open(from).await.map_err(text)?;
+    // Non-blocking: opening a FIFO would otherwise wait for its writer, on
+    // a thread no cancel reaches.
+    let source = tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(from)
+        .await
+        .map_err(text)?;
     let meta = source.metadata().await.map_err(text)?;
     if !meta.is_file() {
         return Err(format!("{from} is not a regular file"));
     }
     if let Ok(existing) = tokio::fs::metadata(to).await {
+        if !existing.is_file() {
+            return Err(format!("{to} is not a regular file"));
+        }
         if existing.dev() == meta.dev() && existing.ino() == meta.ino() {
             return Err(format!("{from} and {to} are the same file"));
         }
     }
-    let mut target = tokio::fs::File::create(to).await.map_err(text)?;
+    let mut target = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(meta.mode() & 0o777)
+        .open(to)
+        .await
+        .map_err(text)?;
     let copied = copy_with_progress(source, &mut target, meta.len(), progress).await?;
     // tokio writes in the background: only the flush reports a failed last
     // write (a full disk).
     target.flush().await.map_err(text)?;
-    let _ = target.set_permissions(meta.permissions()).await;
     Ok(copied)
 }
 

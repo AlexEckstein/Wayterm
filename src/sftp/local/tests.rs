@@ -136,12 +136,17 @@ async fn folders_are_made_renamed_and_deleted() {
 }
 
 #[tokio::test]
-async fn upload_and_download_copy_a_file_with_its_mode() {
+async fn upload_and_download_copy_a_file_as_cp_does() {
     let root = tempfile::tempdir().unwrap();
     let dir = root.path();
+    let mode = |name: &str| {
+        let permissions = std::fs::metadata(dir.join(name)).unwrap().permissions();
+        permissions.mode() & 0o777
+    };
     let body = vec![7u8; 100_000];
     std::fs::write(dir.join("script"), &body).unwrap();
-    std::fs::set_permissions(dir.join("script"), PermissionsExt::from_mode(0o750)).unwrap();
+    // Owner bits only, so no umask changes what a copy gets.
+    std::fs::set_permissions(dir.join("script"), PermissionsExt::from_mode(0o700)).unwrap();
     std::fs::create_dir(dir.join("sub")).unwrap();
     let client = SftpClient::local();
 
@@ -149,13 +154,48 @@ async fn upload_and_download_copy_a_file_with_its_mode() {
         let copied = copy(&client, upload, &dir.join("script"), &dir.join(target)).await;
         assert_eq!(copied, Ok(100_000));
         assert_eq!(std::fs::read(dir.join(target)).unwrap(), body);
-        let mode = std::fs::metadata(dir.join(target)).unwrap().permissions();
-        assert_eq!(mode.mode() & 0o777, 0o750);
+        assert_eq!(mode(target), 0o700, "a new file gets the source's mode");
     }
 
-    let err = copy(&client, true, &dir.join("sub"), &dir.join("copy")).await;
-    assert!(err.unwrap_err().ends_with("is not a regular file"));
-    assert!(!dir.join("copy").exists());
+    std::fs::write(dir.join("old"), b"a longer body than the new one").unwrap();
+    std::fs::set_permissions(dir.join("old"), PermissionsExt::from_mode(0o600)).unwrap();
+    std::fs::write(dir.join("new"), b"short").unwrap();
+    std::fs::set_permissions(dir.join("new"), PermissionsExt::from_mode(0o400)).unwrap();
+    let copied = copy(&client, true, &dir.join("new"), &dir.join("old")).await;
+    assert_eq!(copied, Ok(5));
+    assert_eq!(std::fs::read(dir.join("old")).unwrap(), b"short");
+    assert_eq!(mode("old"), 0o600, "a replaced file keeps its own mode");
+}
+
+/// A directory, and a FIFO, which an ordinary open would wait on forever.
+#[tokio::test]
+async fn only_regular_files_are_copied() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path();
+    std::fs::write(dir.join("file"), b"data").unwrap();
+    std::fs::create_dir(dir.join("sub")).unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(dir.join("pipe"))
+        .status()
+        .expect("mkfifo");
+    assert!(made.success());
+    let client = SftpClient::local();
+
+    for source in ["sub", "pipe"] {
+        let err = copy(&client, true, &dir.join(source), &dir.join("copy")).await;
+        assert!(
+            err.unwrap_err().ends_with("is not a regular file"),
+            "{source}"
+        );
+        assert!(!dir.join("copy").exists());
+    }
+    for target in ["sub", "pipe"] {
+        let err = copy(&client, false, &dir.join("file"), &dir.join(target)).await;
+        assert!(
+            err.unwrap_err().ends_with("is not a regular file"),
+            "{target}"
+        );
+    }
 }
 
 /// Creating the target first would empty the file being read.
