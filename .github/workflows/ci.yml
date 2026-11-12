@@ -175,6 +175,10 @@ jobs:
       GHOSTTY_VT_DEPS_SHA256: 4d5ea5e448e4c7ea8fb55ccbaa8668f2a97d44f438cee831e2b7ecd162d85c29
       ZIG_VERSION: 0.17.0
       ZIG_SHA256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
+      # Zig builds for the CPU it runs on unless told otherwise, and the
+      # cached library is restored on runners with older CPUs, where such
+      # a build dies with SIGILL. `baseline` runs on every x86_64.
+      GHOSTTY_VT_CPU: baseline
     steps:
       - name: Free runner disk space
         run: |
@@ -209,14 +213,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # Built once per pin into build.rs's default location; Zig and the
-      # release tarballs are only downloaded on a cache miss.
+      # Built once per pin and target CPU into build.rs's default
+      # location; Zig and the release tarballs are only downloaded on a
+      # cache miss.
       - name: Cache libghostty-vt
         id: libghostty-vt
         uses: actions/cache@v6
         with:
           path: third_party/libghostty-vt
-          key: libghostty-vt-${{ runner.os }}-${{ env.GHOSTTY_VT_SHA256 }}-zig-${{ env.ZIG_VERSION }}
+          key: libghostty-vt-${{ runner.os }}-${{ env.GHOSTTY_VT_SHA256 }}-zig-${{ env.ZIG_VERSION }}-cpu-${{ env.GHOSTTY_VT_CPU }}
 
       - name: Build libghostty-vt
         if: steps.libghostty-vt.outputs.cache-hit != 'true'
@@ -240,6 +245,7 @@ jobs:
           ZIG_GLOBAL_CACHE_DIR="$RUNNER_TEMP/zig-cache" \
             "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION/zig" build \
             --system "../$src-deps" -Doptimize=ReleaseFast \
+            -Dcpu="$GHOSTTY_VT_CPU" \
             --prefix "$RUNNER_TEMP/ghostty-out"
           vt="$GITHUB_WORKSPACE/third_party/libghostty-vt"
           mkdir -p "$vt/lib"
@@ -254,6 +260,11 @@ jobs:
 
       - name: Ghostty widget test (xvfb)
         run: xvfb-run -a cargo test --features backend-ghostty -- --ignored ghostty_display
+
+      # A SIGILL above means a binary built for another runner's CPU.
+      - name: Runner CPU (on failure)
+        if: failure()
+        run: grep -m2 -E '^(model name|flags)' /proc/cpuinfo
 
   audit:
     name: Cargo audit (weekly advisory sweep)
