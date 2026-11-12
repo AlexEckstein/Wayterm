@@ -23,7 +23,7 @@
     <binary>wayterm</binary>
   </provides>
   <releases>
-    <release version="0.1.0" type="stable" date="2026-10-11">
+    <release version="0.1.0" type="stable" date="2026-11-12">
       <description>
         <p>First packaged release; see GitHub for details.</p>
       </description>
