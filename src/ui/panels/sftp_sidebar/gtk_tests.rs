@@ -1,7 +1,13 @@
 //! Widget checks; they need a display and run from `ui::gtk_tests`.
 
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use tokio::sync::mpsc;
+
+use super::open_files::SETTLE;
 use super::*;
-use crate::sftp::DirEntry;
+use crate::sftp::{DirEntry, Progress};
 
 fn entry(name: &str, is_dir: bool) -> DirEntry {
     DirEntry {
@@ -19,8 +25,8 @@ fn entry(name: &str, is_dir: bool) -> DirEntry {
 pub(in crate::ui) fn listing_renders_and_selection_drives_toolbar() {
     let sidebar = SftpSidebar::new();
     let inner = &sidebar.inner;
-    let titles: Vec<String> = (0..inner.column_view.columns().n_items())
-        .filter_map(|index| inner.column_view.columns().item(index))
+    let titles: Vec<String> = (0..inner.widgets.column_view.columns().n_items())
+        .filter_map(|index| inner.widgets.column_view.columns().item(index))
         .filter_map(|column| column.downcast::<gtk4::ColumnViewColumn>().ok())
         .filter_map(|column| column.title().map(|title| title.to_string()))
         .collect();
@@ -32,27 +38,27 @@ pub(in crate::ui) fn listing_renders_and_selection_drives_toolbar() {
         .borrow_mut()
         .set_listing("/home/u", &[entry("docs", true), entry("a.txt", false)]);
     inner.render();
-    assert_eq!(inner.model.n_items(), 3, "`..`, docs, a.txt");
+    assert_eq!(inner.widgets.rows.n_items(), 3, "`..`, docs, a.txt");
 
-    inner.selection.set_selected(2);
+    inner.widgets.selection.set_selected(2);
     assert_eq!(
         inner.state.borrow().selected_path().as_deref(),
         Some("/home/u/a.txt")
     );
-    assert!(inner.buttons.download.is_sensitive());
+    assert!(inner.widgets.buttons.download.is_sensitive());
 
-    inner.selection.set_selected(0);
+    inner.widgets.selection.set_selected(0);
     assert_eq!(inner.state.borrow().selected_path(), None);
-    assert!(!inner.buttons.download.is_sensitive());
+    assert!(!inner.widgets.buttons.download.is_sensitive());
 
-    inner.selection.set_selected(2);
+    inner.widgets.selection.set_selected(2);
     inner.render();
     assert_eq!(inner.state.borrow().selected_path(), None);
-    assert!(!inner.buttons.download.is_sensitive());
+    assert!(!inner.widgets.buttons.download.is_sensitive());
 }
 
 fn visible_columns(sidebar: &SftpSidebar) -> Vec<Column> {
-    let columns = &sidebar.inner.columns;
+    let columns = &sidebar.inner.widgets.columns;
     let shown = columns.iter().filter(|(_, column, _)| column.is_visible());
     shown.map(|(column, _, _)| *column).collect()
 }
@@ -70,7 +76,7 @@ pub(in crate::ui) fn the_header_menu_picks_the_columns() {
     let sidebar = SftpSidebar::new();
     let other = SftpSidebar::new();
     let inner = &sidebar.inner;
-    let view_columns = inner.column_view.columns();
+    let view_columns = inner.widgets.column_view.columns();
     for index in 0..view_columns.n_items() {
         let column = view_columns
             .item(index)
@@ -80,7 +86,7 @@ pub(in crate::ui) fn the_header_menu_picks_the_columns() {
     }
     assert_eq!(visible_columns(&sidebar), Column::ALL);
 
-    let permissions = &inner.columns[2].2;
+    let permissions = &inner.widgets.columns[2].2;
     assert_eq!(permissions.name(), "permissions");
     permissions.change_state(&false.to_variant());
     assert_eq!(visible_columns(&sidebar), [Column::Size, Column::Modified]);
@@ -136,7 +142,8 @@ fn editing_sidebar(root: &Path) -> (SftpSidebar, mpsc::Receiver<SftpCommand>) {
     let sidebar = SftpSidebar::new();
     let client = SftpClient::from_parts(tx, tokio_util::sync::CancellationToken::new());
     sidebar.attach_client(client);
-    *sidebar.inner.edit_root.borrow_mut() = Some(root.join("sftp-edit"));
+    let copies = Some(root.join("sftp-edit"));
+    sidebar.inner.open_files.root.replace(copies);
     (sidebar, rx)
 }
 
@@ -177,14 +184,20 @@ fn open_notes(
         .borrow_mut()
         .set_listing("/srv", &[entry("notes.txt", false)]);
     inner.render();
-    inner.column_view.emit_by_name::<()>("activate", &[&1u32]);
+    inner
+        .widgets
+        .column_view
+        .emit_by_name::<()>("activate", &[&1u32]);
     let (staged, reply) = expect_download(rx);
-    assert!(inner.launched.borrow().is_empty(), "opened before it came");
+    assert!(
+        inner.open_files.launched.borrow().is_empty(),
+        "opened before it came"
+    );
     std::fs::write(&staged, content).unwrap();
     reply.send(Ok(content.len() as u64)).unwrap();
     settle();
     assert!(!staged.exists(), "the download was not moved to the copy");
-    let (local, ask) = inner.launched.borrow()[0].clone();
+    let (local, ask) = inner.open_files.launched.borrow()[0].clone();
     assert!(!ask);
     local
 }
@@ -215,7 +228,7 @@ pub(in crate::ui) fn an_opened_file_uploads_each_save() {
     // Nothing changed since: the monitor's echoes upload nothing.
     spin(|| false);
     assert!(rx.try_recv().is_err());
-    assert_eq!(inner.launched.borrow().len(), 1);
+    assert_eq!(inner.open_files.launched.borrow().len(), 1);
 
     sidebar.detach();
     assert!(!local.exists(), "the copy outlived the session");
@@ -236,7 +249,11 @@ pub(in crate::ui) fn opening_again_keeps_an_unsent_save() {
     let (sent, _, reply) = expect_upload(&mut rx);
     assert_eq!(sent, local);
     assert_eq!(std::fs::read(&local).unwrap(), b"saved a moment ago");
-    assert_eq!(inner.launched.borrow().len(), 2, "the copy is shown");
+    assert_eq!(
+        inner.open_files.launched.borrow().len(),
+        2,
+        "the copy is shown"
+    );
     reply.send(Ok(18)).unwrap();
     assert!(matches!(next_command(&mut rx), SftpCommand::Cd { .. }));
 
@@ -248,7 +265,11 @@ pub(in crate::ui) fn opening_again_keeps_an_unsent_save() {
     settle();
     assert_eq!(std::fs::read(&local).unwrap(), b"saved a moment ago");
     assert!(!staged.exists());
-    assert_eq!(inner.launched.borrow().len(), 2, "a failed download opens");
+    assert_eq!(
+        inner.open_files.launched.borrow().len(),
+        2,
+        "a failed download opens"
+    );
 
     spin(|| false);
     assert!(rx.try_recv().is_err(), "nothing changed, nothing is sent");
@@ -303,8 +324,8 @@ pub(in crate::ui) fn a_failed_open_leaves_no_copy() {
     std::fs::write(&staged, b"half of").unwrap();
     reply.send(Err("permission denied".into())).unwrap();
     settle();
-    assert!(inner.launched.borrow().is_empty());
-    assert!(inner.edits.borrow().is_empty());
+    assert!(inner.open_files.launched.borrow().is_empty());
+    assert!(inner.open_files.is_empty());
     assert!(!dir.exists() && !staged.exists(), "the failed copy stayed");
     assert!(inner.state.borrow().status.contains("permission denied"));
 }
@@ -316,22 +337,22 @@ pub(in crate::ui) fn follow_checkbox_toggles_following() {
     let sidebar = SftpSidebar::new();
     let inner = &sidebar.inner;
     assert_eq!(
-        inner.container.last_child().as_ref(),
-        Some(inner.follow_check.upcast_ref::<gtk4::Widget>())
+        inner.widgets.container.last_child().as_ref(),
+        Some(inner.widgets.follow_check.upcast_ref::<gtk4::Widget>())
     );
-    assert!(inner.follow_check.is_active());
+    assert!(inner.widgets.follow_check.is_active());
     assert!(sidebar.is_following());
 
     sidebar.follow_shell("/srv".into());
     assert_eq!(sidebar.path_text(), "/srv");
 
-    inner.follow_check.set_active(false);
+    inner.widgets.follow_check.set_active(false);
     assert!(!sidebar.is_following());
     sidebar.follow_shell("/var/log".into());
     assert_eq!(sidebar.path_text(), "/srv", "unticked: stays");
 
     sidebar.set_following(true);
-    assert!(inner.follow_check.is_active());
+    assert!(inner.widgets.follow_check.is_active());
     assert_eq!(sidebar.path_text(), "/var/log", "ticked: catches up");
 }
 
@@ -368,14 +389,20 @@ pub(in crate::ui) fn a_local_sidebar_browses_this_machines_files() {
     assert_eq!(sidebar.path_text(), docs);
     assert_eq!(names(), [PARENT_ROW, "notes.txt"]);
 
-    inner.column_view.emit_by_name::<()>("activate", &[&1u32]);
+    inner
+        .widgets
+        .column_view
+        .emit_by_name::<()>("activate", &[&1u32]);
     assert_eq!(
-        *inner.launched.borrow(),
+        *inner.open_files.launched.borrow(),
         [(tmp.path().join("docs/notes.txt"), false)]
     );
-    assert!(inner.edits.borrow().is_empty(), "a copy of a local file");
+    assert!(inner.open_files.is_empty(), "a copy of a local file");
 
-    inner.column_view.emit_by_name::<()>("activate", &[&0u32]);
+    inner
+        .widgets
+        .column_view
+        .emit_by_name::<()>("activate", &[&0u32]);
     spin(|| listed(&start));
     assert_eq!(sidebar.path_text(), start);
     sidebar.follow_shell(docs.clone());
@@ -435,10 +462,16 @@ pub(in crate::ui) fn the_progress_row_shows_only_while_transferring() {
         .set_listing("/srv", &[entry("a.txt", false)]);
     inner.render();
     settle();
-    assert!(!inner.progress_row.is_visible(), "idle shows no bar");
-    assert!(!inner.status_label.is_visible(), "idle shows no status");
+    assert!(
+        !inner.widgets.progress_row.is_visible(),
+        "idle shows no bar"
+    );
+    assert!(
+        !inner.widgets.status_label.is_visible(),
+        "idle shows no status"
+    );
 
-    inner.selection.set_selected(1);
+    inner.widgets.selection.set_selected(1);
     inner.download("/srv/a.txt".into(), "/tmp/a.txt".into());
     let SftpCommand::Download {
         progress, reply, ..
@@ -446,8 +479,8 @@ pub(in crate::ui) fn the_progress_row_shows_only_while_transferring() {
     else {
         panic!("no download sent");
     };
-    assert!(inner.progress_row.is_visible());
-    assert!(!inner.status_label.is_visible());
+    assert!(inner.widgets.progress_row.is_visible());
+    assert!(!inner.widgets.status_label.is_visible());
 
     progress
         .try_send(Progress {
@@ -455,25 +488,29 @@ pub(in crate::ui) fn the_progress_row_shows_only_while_transferring() {
             total: 4096,
         })
         .unwrap();
-    spin(|| inner.progress_bar.fraction() > 0.0);
+    spin(|| inner.widgets.progress_bar.fraction() > 0.0);
     assert_eq!(
-        inner.progress_bar.text().as_deref(),
+        inner.widgets.progress_bar.text().as_deref(),
         Some("Download a.txt — 1.0 KB / 4.0 KB")
     );
-    assert_eq!(inner.selection.selected(), 1, "a sample kept the selection");
+    assert_eq!(
+        inner.widgets.selection.selected(),
+        1,
+        "a sample kept the selection"
+    );
 
     reply.send(Err("permission denied".into())).unwrap();
-    spin(|| inner.status_label.is_visible());
+    spin(|| inner.widgets.status_label.is_visible());
     assert!(
-        !inner.progress_row.is_visible(),
+        !inner.widgets.progress_row.is_visible(),
         "the result took its place"
     );
     assert_eq!(
-        inner.status_label.text(),
+        inner.widgets.status_label.text(),
         "Download a.txt — failed: permission denied"
     );
     assert_eq!(
-        inner.selection.selected(),
+        inner.widgets.selection.selected(),
         1,
         "the result kept the selection"
     );
