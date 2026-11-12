@@ -440,8 +440,8 @@ pub struct DirectoryFollower {
 
 impl DirectoryFollower {
     /// For a shell on this machine, named `hostname`: only its own reports
-    /// count — no host, `localhost`, or `hostname` with or without its
-    /// domain.
+    /// count — no host, `localhost`, or `hostname`, where a name with no
+    /// domain matches the same name with one.
     pub fn local(hostname: &str) -> Self {
         Self {
             host: None,
@@ -466,13 +466,15 @@ impl DirectoryFollower {
 }
 
 fn is_this_machine(host: &str, own: &str) -> bool {
-    let short = |name: &str| {
-        name.split('.')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-    };
-    host.is_empty() || host.eq_ignore_ascii_case("localhost") || short(host) == short(own)
+    if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let (host, own) = (host.to_ascii_lowercase(), own.to_ascii_lowercase());
+    match (host.split_once('.'), own.split_once('.')) {
+        (Some((short, _)), None) => short == own,
+        (None, Some((short, _))) => host == short,
+        _ => host == own,
+    }
 }
 
 /// Decode `%XX` escapes in a URI path; invalid escapes stay verbatim.

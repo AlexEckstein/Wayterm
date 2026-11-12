@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gtk4::glib;
 
 use super::terminal::finish_connect;
-use super::{current_gen, filled, ssh};
+use super::{current_gen, ssh};
 use crate::store::model::SessionConfig;
 
 /// Connect `session` for attempt `gen`: straight to the terminal.
@@ -42,7 +42,9 @@ pub(super) fn on_connect(page: &gtk4::Widget, session: &SessionConfig, terminal:
 /// directory, else Wayterm's own (doc 06 §Local shell).
 fn shell_start_dir(session: &SessionConfig) -> String {
     let own = std::env::current_dir().unwrap_or_else(|_| "/".into());
-    let dir = match filled(&session.local_working_dir) {
+    // Not trimmed: the transport takes the directory as it is written.
+    let configured = session.local_working_dir.as_deref();
+    let dir = match configured.filter(|dir| !dir.is_empty()) {
         Some(dir) => own.join(dir),
         None => own,
     };

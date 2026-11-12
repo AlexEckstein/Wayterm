@@ -835,11 +835,16 @@ fn a_local_shells_follower_takes_only_this_machines_reports() {
         Some("/var")
     );
     assert_eq!(follower.report("file://boxer/var"), None);
+    assert_eq!(follower.report("file://box.other/srv"), None, "its domain");
     assert_eq!(
         follower.report("file://remote/srv"),
         None,
         "still not pinned"
     );
+
+    let mut short = DirectoryFollower::local("box");
+    assert_eq!(short.report("file://box.lan/var").as_deref(), Some("/var"));
+    assert_eq!(short.report("file://boxer.lan/var"), None);
 }
 
 #[test]
