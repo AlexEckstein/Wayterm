@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The built-in tree icons and the side dock's icons (doc 09 §Icons),
-     compiled by build.rs. -->
+<!-- The built-in tree icons, the side dock's and the SFTP sidebar's icons
+     (doc 09 §Icons), compiled by build.rs. -->
 <gresources>
   <gresource prefix="/com/alex-eckstein/wayterm/icons/scalable/actions">
     <file alias="wayterm-backup-symbolic.svg">scalable/actions/wayterm-backup-symbolic.svg</file>
@@ -12,8 +12,12 @@
     <file alias="wayterm-cpu-symbolic.svg">scalable/actions/wayterm-cpu-symbolic.svg</file>
     <file alias="wayterm-database-symbolic.svg">scalable/actions/wayterm-database-symbolic.svg</file>
     <file alias="wayterm-desktop-symbolic.svg">scalable/actions/wayterm-desktop-symbolic.svg</file>
+    <file alias="wayterm-download-symbolic.svg">scalable/actions/wayterm-download-symbolic.svg</file>
+    <file alias="wayterm-file-symbolic.svg">scalable/actions/wayterm-file-symbolic.svg</file>
     <file alias="wayterm-firewall-symbolic.svg">scalable/actions/wayterm-firewall-symbolic.svg</file>
+    <file alias="wayterm-folder-new-symbolic.svg">scalable/actions/wayterm-folder-new-symbolic.svg</file>
     <file alias="wayterm-folder-symbolic.svg">scalable/actions/wayterm-folder-symbolic.svg</file>
+    <file alias="wayterm-folder-up-symbolic.svg">scalable/actions/wayterm-folder-up-symbolic.svg</file>
     <file alias="wayterm-gear-symbolic.svg">scalable/actions/wayterm-gear-symbolic.svg</file>
     <file alias="wayterm-harddisk-symbolic.svg">scalable/actions/wayterm-harddisk-symbolic.svg</file>
     <file alias="wayterm-home-symbolic.svg">scalable/actions/wayterm-home-symbolic.svg</file>
@@ -27,7 +31,9 @@
     <file alias="wayterm-nas-symbolic.svg">scalable/actions/wayterm-nas-symbolic.svg</file>
     <file alias="wayterm-power-symbolic.svg">scalable/actions/wayterm-power-symbolic.svg</file>
     <file alias="wayterm-printer-symbolic.svg">scalable/actions/wayterm-printer-symbolic.svg</file>
+    <file alias="wayterm-refresh-symbolic.svg">scalable/actions/wayterm-refresh-symbolic.svg</file>
     <file alias="wayterm-remote-desktop-symbolic.svg">scalable/actions/wayterm-remote-desktop-symbolic.svg</file>
+    <file alias="wayterm-rename-symbolic.svg">scalable/actions/wayterm-rename-symbolic.svg</file>
     <file alias="wayterm-router-symbolic.svg">scalable/actions/wayterm-router-symbolic.svg</file>
     <file alias="wayterm-sbc-symbolic.svg">scalable/actions/wayterm-sbc-symbolic.svg</file>
     <file alias="wayterm-sensor-symbolic.svg">scalable/actions/wayterm-sensor-symbolic.svg</file>
@@ -38,6 +44,8 @@
     <file alias="wayterm-star-symbolic.svg">scalable/actions/wayterm-star-symbolic.svg</file>
     <file alias="wayterm-switch-symbolic.svg">scalable/actions/wayterm-switch-symbolic.svg</file>
     <file alias="wayterm-terminal-symbolic.svg">scalable/actions/wayterm-terminal-symbolic.svg</file>
+    <file alias="wayterm-trash-symbolic.svg">scalable/actions/wayterm-trash-symbolic.svg</file>
+    <file alias="wayterm-upload-symbolic.svg">scalable/actions/wayterm-upload-symbolic.svg</file>
     <file alias="wayterm-ups-symbolic.svg">scalable/actions/wayterm-ups-symbolic.svg</file>
     <file alias="wayterm-vm-symbolic.svg">scalable/actions/wayterm-vm-symbolic.svg</file>
     <file alias="wayterm-vpn-symbolic.svg">scalable/actions/wayterm-vpn-symbolic.svg</file>

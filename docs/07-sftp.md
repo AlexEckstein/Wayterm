@@ -2,11 +2,12 @@
 
 A remote file browser for each SSH tab, shown in the side dock's SFTP
 panel (doc 01 §Side dock): navigate, upload, download, delete, rename,
-create folders, drag files in, and follow the shell's working directory.
+create folders, drag files in, open files in a local application, and
+follow the shell's working directory.
 
 Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe),
 `src/ui/panels/sftp_sidebar.rs` (the GTK half), `src/ui/panels/sftp_sidebar/model.rs`
-(its display-free model).
+(its display-free model: rows, columns, toolbar rules, opened files).
 
 ## Layout
 
@@ -17,7 +18,8 @@ RDP, VNC, Home) get a placeholder. Whenever the tab lets go of its
 connection (a redial, Disconnect, a lost connection, the shell's exit or
 a transport that fails to connect, doc 03 §Reconnect), the old sidebar
 detaches, ending its SFTP task and cancelling any running transfer
-(§Transfers), and an empty one replaces it in the panel. A closing tab's
+(§Transfers), and an empty one replaces it in the panel, keeping only the
+files the old one had open in editors (§Opening files). A closing tab's
 sidebar detaches the same way (doc 03 §Closing a tab).
 
 The sidebar, top to bottom:
@@ -25,10 +27,12 @@ The sidebar, top to bottom:
 - a path bar (Enter navigates);
 - a toolbar: Upload, Download, Delete, Rename, Refresh, New folder;
 - an inline error line;
-- the listing: name, size, modified (UTC), permissions; directories first,
-  then files, case-insensitive; a `..` row except at `/`;
+- the listing (§Listing);
 - a progress bar with Cancel and a status line;
 - the "Follow terminal directory" check box (§Following the shell).
+
+The toolbar's and the rows' icons ship in the binary (doc 09 §Icons), so
+they are the same on every desktop.
 
 `toggle_sftp` (Ctrl+Shift+B) switches the dock to the SFTP panel, or back
 to the panel it came from; a panel hidden by `toggle_session_tree` comes
@@ -37,6 +41,80 @@ back on SFTP. While focus is in the panel (not its path bar), the
 buttons, enabled or not as clicks are (doc 11 §Handlers). Download and
 Upload use file choosers; Rename and New folder ask for a name; Delete
 asks for confirmation.
+
+## Listing
+
+Directories first, then files, case-insensitive; a `..` row except at `/`.
+Four columns:
+
+| Column | Shows |
+|---|---|
+| Name | the row's icon (folder, file, or parent folder for `..`) beside its name |
+| Size | a file's size in binary units, against the column's right edge; empty for a directory |
+| Modified | `YYYY-MM-DD HH:MM`, UTC |
+| Permissions | `rwxr-xr-x` |
+
+Name takes the width the others leave. A name too long for it is cut in
+the middle, keeping its extension, and shown whole in a tooltip. Name
+never gets narrower than about 14 characters: in a panel too narrow for
+every column the listing scrolls sideways instead. Columns are resized by
+dragging a header's edge.
+
+A right-click on any column header lists Size, Modified and Permissions,
+each with a check box: unticking one hides that column. Name always
+shows. The choice is one for every tab, stored in the `sftp_columns`
+settings row (doc 13 §Settings rows) and applied to another tab's sidebar
+when the panel next shows it.
+
+Double-clicking a row, or Enter on it, goes into a directory, up from
+`..`, or opens a file (§Opening files). A right-click on a row selects it
+and offers Open, the same, and for a file Open With….
+
+## Opening files
+
+Opening a file downloads it to a local copy and hands that to the desktop
+(`GtkFileLauncher`: the OpenURI portal where there is one, else GIO), which
+starts the default application for the file's type; Open With… asks which
+application instead. The transfer shows in the progress bar as
+`Open <name>` and can be cancelled like any other. The download lands in
+a staging file and is moved over the copy only once it is whole, so a
+failed or cancelled one never leaves half a file where an editor reads.
+
+While the tab stays open the sidebar watches the copy, and each version
+the application saves is uploaded over the remote file (`Save <name>` in
+the status line), so saving in the editor saves to the server:
+
+- The copy's directory is watched, not the file, so both ways editors
+  save are seen: writing the file in place, and renaming a new file over
+  it. A look at the copy waits until 300 ms pass without a change there,
+  and uploads only when the copy's size or modification time differs from
+  the version the server has (`EditSync`).
+- One transfer per file at a time: a save during an upload is sent when
+  that upload ends. A failed upload shows in the status line, and the
+  next save, or opening the file again, sends it again.
+- Opening a file that is already open downloads it again into the same
+  copy, so the application shows what the server has now. A save is
+  never downloaded over: if the copy holds a version the server lacks,
+  that version is uploaded and shown instead, and a save that lands
+  while the download runs is kept and uploaded, the download dropped.
+- When the tab lets go of its connection (§Layout) the sidebar that
+  replaces the old one takes the opened files over and keeps watching
+  them. A save made with no session shows "SFTP needs a live SSH
+  connection" and is uploaded when the tab connects again, as is one
+  whose upload the lost connection cut off.
+
+Copies live in `$XDG_CACHE_HOME/wayterm/sftp-edit/<pid>-<n>/<name>` (the
+staging file is `<pid>-<n>.part` beside the directory), one directory per
+opened file. `sftp-edit` must be the user's own directory with no access
+for anyone else, or nothing is opened; without `XDG_CACHE_HOME` or `HOME`
+there is no such place, and a shared temporary directory is never used.
+The copies are removed when the tab closes, or its session turns out to
+be a jumped one: a later save has nowhere to go, and fails in the editor
+rather than landing in a file nobody uploads. Whatever is left is removed
+when Wayterm starts and when it quits.
+
+Opening needs no new `SftpCommand`: it is a `Download`, then an `Upload`
+per save.
 
 ## Connection model
 
@@ -180,8 +258,25 @@ disabled.
 - Jumped sessions have no SFTP task (doc 04 §Jump hosts): the sidebar shows
   "SFTP is not available for jumped sessions yet", and nothing follows the
   shell.
-- No right-click menu, and no dragging files out of the listing.
+- The row menu has only Open and Open With…; the toolbar's operations
+  are not in it. No dragging files out of the listing.
 - A cancelled transfer leaves its partial file behind, local or remote.
+- Opened files: a save overwrites the remote file as it is then, without
+  checking whether it changed on the server since it was opened, and
+  writes it in place, so a failed upload can leave it incomplete until
+  the next one (SFTP has no replace-by-rename every server accepts, and
+  a renamed-in file would lose the original's owner and mode). The
+  editor is not told when an upload fails; the status line is. Closing
+  the tab, or quitting, removes the copies, a save not yet uploaded
+  included (one made in the last 300 ms, during a transfer, or while
+  disconnected), and an editor still holding the file has to save it
+  elsewhere. Which application opens a file is the desktop's
+  choice (Open With… to pick another); Wayterm has no editor setting of
+  its own. Open With… asks only through the portal: without one GTK
+  starts the default application, as Open does. The Flatpak's hand-off
+  through the portal is not verified (doc 14 §Limitations).
+- The columns cannot be reordered or sorted by, and their widths are not
+  remembered.
 - Following the shell: plain-tab probes need a Linux remote. Tabs to the
   same user@host share one connection, and probing tells their shells
   apart only while at most one of them is a plain shell; with two, it

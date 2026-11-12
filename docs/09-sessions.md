@@ -265,10 +265,13 @@ gear, monitoring, key), devices (desktop, remote desktop, laptop, serial,
 printer, camera, media, mail, home, light bulb, sensor), plus folder and
 star. Names are `wayterm-<icon>-symbolic`. Defaults: `folder` for folders,
 and per type `server` (SSH), `desktop` (RDP), `remote-desktop` (VNC),
-`serial` (serial), `terminal` (local). Two more, `macro` and `sftp`, are
-the side dock's tab icons: bundled the same way but not offered in the
-picker. Built-in SVGs use only filled `rect`/`circle`/`path` shapes — the
-only ones GTK recolors — which a test enforces.
+`serial` (serial), `terminal` (local). Ten more are bundled the same way
+but not offered in the picker: `macro` and `sftp`, the side dock's tab
+icons, and the SFTP sidebar's (doc 07 §Layout) — `upload`, `download`,
+`trash`, `rename`, `refresh` and `folder-new` on its toolbar, `file` and
+`folder-up` on its rows. Built-in SVGs use only filled
+`rect`/`circle`/`path` shapes — the only ones GTK recolors — which a test
+enforces.
 
 **Custom icons** are SVG only. "Import SVG…" copies the file into
 `$XDG_DATA_HOME/wayterm/icons/`, which is on the icon theme's search path,

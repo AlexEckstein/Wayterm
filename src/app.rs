@@ -17,6 +17,10 @@ pub const APP_ID: &str = "com.alex-eckstein.wayterm";
 pub fn run() -> glib::ExitCode {
     install_tokio_runtime();
     let app = gtk4::Application::builder().application_id(APP_ID).build();
+    // Local copies of files opened from an SFTP sidebar (doc 07 §Opening
+    // files) do not outlive the run, nor a run that was killed.
+    app.connect_startup(|_| crate::ui::panels::sftp_sidebar::discard_edit_copies());
+    app.connect_shutdown(|_| crate::ui::panels::sftp_sidebar::discard_edit_copies());
     app.connect_activate(build_ui);
     app.run()
 }

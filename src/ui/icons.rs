@@ -83,10 +83,22 @@ pub const BUILTIN: &[&str] = &[
     "wayterm-star-symbolic",
 ];
 
-/// Icons the window itself draws (the side dock's tabs, `ui::panels::side_dock`):
+/// Icons the window itself draws (the side dock's tabs, `ui::panels::side_dock`,
+/// and the SFTP sidebar's toolbar and rows, `ui::panels::sftp_sidebar`):
 /// bundled with [`BUILTIN`] so they look the same on every theme, but not
 /// offered in the picker.
-pub const CHROME: &[&str] = &["wayterm-macro-symbolic", "wayterm-sftp-symbolic"];
+pub const CHROME: &[&str] = &[
+    "wayterm-macro-symbolic",
+    "wayterm-sftp-symbolic",
+    "wayterm-upload-symbolic",
+    "wayterm-download-symbolic",
+    "wayterm-trash-symbolic",
+    "wayterm-rename-symbolic",
+    "wayterm-refresh-symbolic",
+    "wayterm-folder-new-symbolic",
+    "wayterm-folder-up-symbolic",
+    "wayterm-file-symbolic",
+];
 
 /// Every icon in the GResource bundle.
 fn bundled() -> impl Iterator<Item = &'static str> {

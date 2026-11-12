@@ -139,6 +139,7 @@ inserts 28 informational hotkey rows (doc 11 §Persistence).
 | `host_key_policy` | `strict` | global host-key policy (doc 04 §Host key verification) |
 | `minimize_to_tray` | — | missing = on |
 | `sftp_on_connect` | — | missing = on; off defers the SFTP channel until first viewed |
+| `sftp_columns` | — | the SFTP listing's optional columns that are shown, e.g. `size,modified`; missing = `size,modified,permissions`; written by the listing's header menu, no Settings control (doc 07 §Listing) |
 | `duplicate_tmux_notice` | — | missing = on; off after "Do not show me again" on the duplicate-tab tmux notice |
 | `confirm_close_notice` | — | missing = on; off after closing with "Do not show me again" ticked |
 | `bitwarden.enabled` | — | missing = **off** (doc 05 §Settings) |

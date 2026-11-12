@@ -75,6 +75,225 @@ fn row_icons_distinguish_directories_files_and_the_parent_row() {
     assert_ne!(parent.icon, rows[1].icon, "parent and directory differ");
     assert_ne!(rows[1].icon, rows[2].icon, "directory and file differ");
     assert!(parent.is_dir, "the parent row navigates like a directory");
+    for icon in [parent.icon, rows[1].icon, rows[2].icon] {
+        assert!(
+            crate::ui::icons::CHROME.contains(&icon) || icon == crate::ui::icons::FOLDER_ICON,
+            "{icon} ships with the app"
+        );
+    }
+}
+
+// --- visible columns -------------------------------------------------------
+
+#[test]
+fn a_missing_columns_row_shows_every_column() {
+    let columns = Columns::from_setting(None);
+    assert_eq!(columns, Columns::ALL);
+    assert!(Column::ALL.into_iter().all(|column| columns.shows(column)));
+    assert_eq!(columns.to_setting(), "size,modified,permissions");
+}
+
+#[test]
+fn the_columns_row_names_the_shown_columns() {
+    let columns = Columns::from_setting(Some("modified, size"));
+    assert!(columns.shows(Column::Size) && columns.shows(Column::Modified));
+    assert!(!columns.shows(Column::Permissions));
+    assert_eq!(columns.to_setting(), "size,modified");
+
+    assert_eq!(Columns::from_setting(Some("")), Columns::NONE);
+    assert_eq!(Columns::NONE.to_setting(), "");
+    assert_eq!(
+        Columns::from_setting(Some("owner,size")),
+        Columns::NONE.with(Column::Size, true),
+        "an unknown name is skipped"
+    );
+    for columns in [
+        Columns::ALL,
+        Columns::NONE,
+        Columns::ALL.with(Column::Size, false),
+    ] {
+        assert_eq!(Columns::from_setting(Some(&columns.to_setting())), columns);
+    }
+}
+
+// --- opening files ---------------------------------------------------------
+
+fn stamp(len: u64) -> FileStamp {
+    FileStamp {
+        modified: None,
+        len,
+    }
+}
+
+#[test]
+fn each_opened_file_gets_its_own_private_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("cache/sftp-edit");
+    let first = create_edit_dir(&root).unwrap();
+    let second = create_edit_dir(&root).unwrap();
+    assert_ne!(first, second);
+    for dir in [&root, &first, &second] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
+    }
+}
+
+#[test]
+fn only_a_single_path_component_names_a_local_copy() {
+    assert!(is_plain_file_name("notes.txt"));
+    assert!(is_plain_file_name(".bashrc"));
+    for name in ["", ".", "..", "a/b", "/etc/passwd"] {
+        assert!(!is_plain_file_name(name), "{name:?}");
+    }
+}
+
+#[test]
+fn a_file_stamp_needs_a_regular_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("f");
+    assert_eq!(FileStamp::of(&path), None);
+    assert_eq!(FileStamp::of(tmp.path()), None, "a directory");
+    std::fs::write(&path, b"abc").unwrap();
+    assert_eq!(FileStamp::of(&path).map(|stamp| stamp.len), Some(3));
+}
+
+#[test]
+fn a_root_that_is_not_the_users_private_directory_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let shared = tmp.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(create_edit_dir(&shared).is_err(), "others can look inside");
+
+    let target = tmp.path().join("elsewhere");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(create_edit_dir(&link).is_err(), "a link to somewhere else");
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+}
+
+#[test]
+fn a_download_is_moved_over_the_copy_whole() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (staged, local) = (tmp.path().join("f.part"), tmp.path().join("f"));
+    std::fs::write(&local, b"old").unwrap();
+    assert_eq!(
+        place_download(&staged, &local),
+        None,
+        "nothing was downloaded"
+    );
+    assert_eq!(std::fs::read(&local).unwrap(), b"old");
+
+    std::fs::write(&staged, b"fresh from the server").unwrap();
+    let placed = place_download(&staged, &local);
+    assert_eq!(placed, FileStamp::of(&local));
+    assert_eq!(placed.map(|stamp| stamp.len), Some(21));
+    assert!(!staged.exists());
+}
+
+/// A file whose first download put the copy at `len`.
+fn opened(len: u64) -> EditSync {
+    let mut sync = EditSync::fetching();
+    assert!(sync.is_busy());
+    assert!(!sync.fetch_ended(Some(stamp(len))));
+    sync
+}
+
+#[test]
+fn what_a_download_wrote_is_not_an_edit() {
+    let mut sync = opened(22);
+    assert!(!sync.is_busy());
+    assert!(sync.is_sent(Some(stamp(22))));
+    assert!(!sync.local_changed(stamp(22)), "the copy is as downloaded");
+}
+
+#[test]
+fn each_saved_version_uploads_once() {
+    let mut sync = opened(22);
+    assert!(sync.local_changed(stamp(30)), "a save");
+    assert!(!sync.uploaded(true));
+    assert!(!sync.local_changed(stamp(30)), "the same version again");
+    assert!(sync.local_changed(stamp(31)), "the next save");
+}
+
+#[test]
+fn a_save_during_an_upload_is_looked_at_when_it_ends() {
+    let mut sync = opened(22);
+    assert!(sync.local_changed(stamp(30)));
+    assert!(!sync.local_changed(stamp(40)), "one upload at a time");
+    assert!(sync.uploaded(true), "look again");
+    assert!(sync.local_changed(stamp(40)));
+    assert!(!sync.uploaded(true), "nothing changed meanwhile");
+}
+
+#[test]
+fn a_failed_upload_is_sent_again_at_the_next_look() {
+    let mut sync = opened(22);
+    assert!(sync.local_changed(stamp(30)));
+    assert!(!sync.uploaded(false));
+    assert!(!sync.is_sent(Some(stamp(30))));
+    assert!(sync.local_changed(stamp(30)), "the server never got it");
+}
+
+#[test]
+fn opening_again_downloads_only_over_a_copy_the_server_has() {
+    let mut sync = EditSync::fetching();
+    assert_eq!(sync.reopen(None), Reopen::Busy, "the first download runs");
+    sync.fetch_ended(Some(stamp(22)));
+
+    assert_eq!(sync.reopen(Some(stamp(30))), Reopen::Unsent, "a save");
+    assert!(!sync.is_busy(), "nothing was started");
+
+    assert_eq!(sync.reopen(Some(stamp(22))), Reopen::Fetch);
+    assert_eq!(sync.reopen(Some(stamp(22))), Reopen::Busy);
+    assert!(!sync.fetch_ended(Some(stamp(25))));
+    assert!(!sync.local_changed(stamp(25)), "a fresh copy, not an edit");
+    assert_eq!(sync.reopen(None), Reopen::Fetch, "the copy is gone");
+}
+
+#[test]
+fn a_download_the_editor_overtook_leaves_its_save_to_send() {
+    let mut sync = opened(22);
+    assert_eq!(sync.reopen(Some(stamp(22))), Reopen::Fetch);
+    assert!(!sync.local_changed(stamp(30)), "the download still runs");
+    assert!(!sync.is_sent(Some(stamp(30))), "so it must not be replaced");
+    assert!(sync.fetch_ended(None), "look at the copy");
+    assert!(sync.local_changed(stamp(30)), "the save goes up");
+}
+
+#[test]
+fn a_failed_download_changes_nothing() {
+    let mut sync = opened(22);
+    assert_eq!(sync.reopen(Some(stamp(22))), Reopen::Fetch);
+    assert!(!sync.fetch_ended(None));
+    assert!(
+        !sync.local_changed(stamp(22)),
+        "the copy is what the server has"
+    );
+}
+
+#[test]
+fn a_transfer_the_session_end_cut_off_is_not_counted() {
+    let mut sync = opened(22);
+    assert!(sync.local_changed(stamp(30)));
+    sync.interrupted();
+    assert!(!sync.is_busy());
+    assert!(
+        sync.local_changed(stamp(30)),
+        "the upload may not have arrived"
+    );
+    sync.uploaded(true);
+
+    assert_eq!(sync.reopen(Some(stamp(30))), Reopen::Fetch);
+    sync.interrupted();
+    assert!(
+        !sync.local_changed(stamp(30)),
+        "a cut-off download changed nothing"
+    );
 }
 
 // --- path arithmetic -------------------------------------------------------

@@ -19,7 +19,7 @@ use crate::transport::types::TransportState;
 use crate::ui::dialogs::tunnels;
 use crate::ui::panels::macros_panel::MacrosPanel;
 use crate::ui::panels::session_tree::SessionTree;
-use crate::ui::panels::sftp_sidebar::SftpButton;
+use crate::ui::panels::sftp_sidebar::{self, SftpButton};
 use crate::ui::panels::side_dock::SideDock;
 use crate::ui::status_bar::StatusBar;
 use crate::ui::tabs::restore::TabPersistence;
@@ -122,6 +122,15 @@ impl MainWindow {
         appearance::track(&notebook);
         translucency::install();
         settings::general::apply(&store);
+        sftp_sidebar::save_columns_with({
+            let store = store.clone();
+            move |columns| {
+                let shown = columns.to_setting();
+                if let Err(err) = store.set_setting(sftp_sidebar::SFTP_COLUMNS_SETTING, &shown) {
+                    eprintln!("Wayterm: failed to save the SFTP columns: {err}");
+                }
+            }
+        });
 
         let session_tree = {
             let (store, notebook) = (store.clone(), notebook.clone());
