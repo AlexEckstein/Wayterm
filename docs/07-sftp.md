@@ -6,10 +6,22 @@ create folders, drag files in, open files in a local application, and
 follow the shell's working directory. A local-shell tab gets the same
 sidebar over this machine's own files (§Local tabs).
 
-Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe,
-and the local file task),
-`src/ui/panels/sftp_sidebar.rs` (the GTK half), `src/ui/panels/sftp_sidebar/model.rs`
-(its display-free model: rows, columns, toolbar rules, opened files).
+Code: `src/sftp/` is the tokio half: the commands, the SFTP task and the
+local file task with the transfer and listing code they share, and the
+shell-directory probe. `src/ui/panels/sftp_sidebar.rs` is the GTK half:
+the sidebar's life cycle and browsing, with its parts in
+`src/ui/panels/sftp_sidebar/`:
+
+| File | Holds |
+|---|---|
+| `widgets.rs` | the widgets of §Layout |
+| `transfers.rs` | uploads and downloads, their choosers and drops (§Transfers) |
+| `open_files.rs` | files opened in editors (§Opening files) |
+| `follow.rs` | following the shell (§Following the shell) |
+| `model.rs` | display-free: rows, toolbar rules, transfer status, the view state |
+| `paths.rs` | display-free: paths, `text/uri-list`, the `DirectoryFollower` |
+| `edit_sync.rs` | display-free: an opened file's copy and which version the server has |
+| `settings.rs` | the `sftp_on_connect` and `sftp_columns` settings rows |
 
 ## Layout
 
