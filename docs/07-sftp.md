@@ -175,7 +175,8 @@ The enum is a module boundary (AGENTS.md).
   an error ("SFTP session ended — reconnect?") and recovers.
 - `Cd` doubles as the listing command. There is no `getcwd`, so the path
   bar shows the requested path; browsing starts at `.`, the SFTP home,
-  unless the shell's directory is known by then.
+  unless the shell's directory is known by then. From `.` the `..` row
+  lists `..`, then `../..`, which the server resolves against the home.
 - `Delete` stats first: russh-sftp 3 splits removal into file and
   directory calls (directories must be empty).
 

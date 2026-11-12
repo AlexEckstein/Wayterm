@@ -15,16 +15,25 @@ pub fn join_path(dir: &str, name: &str) -> String {
 }
 
 /// The [`PARENT_ROW`] target; `None` at the root or for an empty path.
+/// A relative path that names no directory goes up with `..` steps, for
+/// the server to resolve: `.`, where browsing starts, has `..` above it.
 pub fn parent_path(path: &str) -> Option<String> {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
         return None;
     }
-    match trimmed.rsplit_once('/') {
-        Some(("", _)) => Some("/".to_string()),
-        Some((head, _)) => Some(head.to_string()),
-        None => Some(".".to_string()),
-    }
+    let (head, last) = match trimmed.rsplit_once('/') {
+        Some((head, last)) => (Some(head), last),
+        None => (None, trimmed),
+    };
+    Some(match (head, last) {
+        (_, "..") => format!("{trimmed}/.."),
+        (Some(head), ".") => format!("{head}/.."),
+        (None, ".") => "..".to_string(),
+        (Some(""), _) => "/".to_string(),
+        (Some(head), _) => head.to_string(),
+        (None, _) => ".".to_string(),
+    })
 }
 
 /// Where a local-shell tab's sidebar goes for `typed` (doc 07 §Local

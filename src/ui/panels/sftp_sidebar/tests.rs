@@ -323,6 +323,24 @@ fn parent_path_walks_to_the_root_and_stops_there() {
     assert_eq!(parent_path("docs"), Some(".".to_string()));
 }
 
+/// Browsing starts at `.`, which names no directory to strip: its `..`
+/// row must still go somewhere, and back down again.
+#[test]
+fn parent_path_goes_above_the_start_path_with_dot_steps() {
+    assert_eq!(parent_path(START_PATH), Some("..".to_string()));
+    assert_eq!(parent_path(".."), Some("../..".to_string()));
+    assert_eq!(parent_path("../.."), Some("../../..".to_string()));
+    assert_eq!(parent_path("./docs"), Some(".".to_string()));
+    assert_eq!(parent_path("docs/."), Some("docs/..".to_string()));
+
+    let above = parent_path(START_PATH).unwrap();
+    let rows = listing_rows(&above, &listing());
+    assert!(rows[0].is_parent, "`..` lost its own parent row");
+    let into = join_path(&above, &rows[1].name);
+    assert_eq!(into, "../docs");
+    assert_eq!(parent_path(&into), Some(above));
+}
+
 #[test]
 fn file_name_takes_the_last_component() {
     assert_eq!(file_name("/home/user/notes.txt"), "notes.txt");
