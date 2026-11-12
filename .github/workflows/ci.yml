@@ -139,14 +139,17 @@ jobs:
           sudo chown -R wayterm-test:wayterm-test /home/wayterm-test/.ssh
           sudo chmod 700 /home/wayterm-test/.ssh
           sudo chmod 600 /home/wayterm-test/.ssh/authorized_keys
-          sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/^#*KbdInteractiveAuthentication.*/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
+          # sshd keeps the first value it reads, and some images turn password
+          # auth off in an sshd_config.d drop-in included at the top, so an
+          # in-place edit loses: put both options on the config's first lines.
+          sudo sed -i '1i PasswordAuthentication yes\nKbdInteractiveAuthentication yes' /etc/ssh/sshd_config
           # The image may ship sshd already running on its own config, where
           # `start` is a no-op: restart, then check what sshd will serve.
           sudo systemctl restart ssh
           for opt in passwordauthentication kbdinteractiveauthentication; do
-            sudo sshd -T | grep -qx "$opt yes" || {
+            sudo sshd -T | grep -qix "$opt yes" || {
               echo "::error::test sshd has $opt off"
+              sudo grep -rni "$opt" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ || true
               exit 1
             }
           done
