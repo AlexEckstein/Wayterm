@@ -3,30 +3,23 @@
 //! is no session to open or lose; `Upload` and `Download` both copy a file.
 
 use std::os::unix::fs::MetadataExt;
-use std::sync::{Arc, Mutex};
 
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::task::{
-    copy_with_progress, format_perms, format_timestamp, lock, sort_entries, until_cancelled,
-    TransferRegistry,
-};
 use crate::sftp::commands::{DirEntry, Progress, SftpCommand};
+use crate::sftp::listing::sort_entries;
+use crate::sftp::transfer::{copy_with_progress, open_source, text, Transfers};
 
 /// Serve commands until every sender is gone or `shutdown` fires.
 pub async fn local_task(mut rx: mpsc::Receiver<SftpCommand>, shutdown: CancellationToken) {
-    let transfers = Arc::new(Mutex::new(TransferRegistry::default()));
-    tokio::select! {
-        biased;
-        () = shutdown.cancelled() => {}
-        () = serve(&mut rx, &transfers) => {}
-    }
-    lock(&transfers).cancel_all();
+    let transfers = Transfers::default();
+    let serving = serve(&mut rx, &transfers);
+    transfers.serve_until(&shutdown, serving).await;
 }
 
-async fn serve(rx: &mut mpsc::Receiver<SftpCommand>, transfers: &Arc<Mutex<TransferRegistry>>) {
+async fn serve(rx: &mut mpsc::Receiver<SftpCommand>, transfers: &Transfers) {
     while let Some(cmd) = rx.recv().await {
         match cmd {
             SftpCommand::Cd { path, reply } => {
@@ -41,43 +34,26 @@ async fn serve(rx: &mut mpsc::Receiver<SftpCommand>, transfers: &Arc<Mutex<Trans
             SftpCommand::Mkdir { path, reply } => {
                 let _ = reply.send(tokio::fs::create_dir(&path).await.map_err(text));
             }
+            // Either way a copy, from the first path to the second.
             SftpCommand::Download {
                 transfer_id,
-                remote_path,
-                local_path,
+                remote_path: from,
+                local_path: to,
                 progress,
                 reply,
-            } => spawn_copy(
-                transfers,
-                transfer_id,
-                reply,
-                remote_path,
-                local_path,
-                progress,
-            ),
-            SftpCommand::Upload {
-                transfer_id,
-                local_path,
-                remote_path,
-                progress,
-                reply,
-            } => spawn_copy(
-                transfers,
-                transfer_id,
-                reply,
-                local_path,
-                remote_path,
-                progress,
-            ),
-            SftpCommand::Cancel { transfer_id } => {
-                lock(transfers).cancel(transfer_id);
             }
+            | SftpCommand::Upload {
+                transfer_id,
+                local_path: from,
+                remote_path: to,
+                progress,
+                reply,
+            } => transfers.spawn(transfer_id, reply, async move {
+                copy_file(&from, &to, &progress).await
+            }),
+            SftpCommand::Cancel { transfer_id } => transfers.cancel(transfer_id),
         }
     }
-}
-
-fn text(err: std::io::Error) -> String {
-    err.to_string()
 }
 
 /// List `path` in one blocking pass: a directory of thousands is one hop
@@ -85,7 +61,7 @@ fn text(err: std::io::Error) -> String {
 async fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     tokio::task::spawn_blocking(move || read_entries(&path))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(text)?
 }
 
 /// A link shows as what it points to, so a linked directory opens; a
@@ -97,15 +73,13 @@ fn read_entries(path: &str) -> Result<Vec<DirEntry>, String> {
         let Ok(meta) = std::fs::metadata(entry.path()).or_else(|_| entry.metadata()) else {
             continue;
         };
-        entries.push(DirEntry {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            size: meta.len(),
-            modified: u32::try_from(meta.mtime())
-                .map(format_timestamp)
-                .unwrap_or_default(),
-            permissions: format_perms(meta.mode()),
-            is_dir: meta.is_dir(),
-        });
+        entries.push(DirEntry::new(
+            entry.file_name().to_string_lossy().into_owned(),
+            meta.len(),
+            u32::try_from(meta.mtime()).ok(),
+            Some(meta.mode()),
+            meta.is_dir(),
+        ));
     }
     sort_entries(&mut entries);
     Ok(entries)
@@ -131,41 +105,12 @@ async fn rename(from: &str, to: &str) -> Result<(), String> {
     tokio::fs::rename(from, to).await.map_err(text)
 }
 
-/// Run a copy on its own task, registered for `Cancel`.
-fn spawn_copy(
-    transfers: &Arc<Mutex<TransferRegistry>>,
-    transfer_id: u64,
-    reply: oneshot::Sender<Result<u64, String>>,
-    from: String,
-    to: String,
-    progress: mpsc::Sender<Progress>,
-) {
-    let cancel = lock(transfers).register(transfer_id);
-    let transfers = Arc::clone(transfers);
-    tokio::spawn(async move {
-        let result = until_cancelled(&cancel, copy_file(&from, &to, &progress)).await;
-        lock(&transfers).finish(transfer_id);
-        let _ = reply.send(result);
-    });
-}
-
 /// Copy the regular file `from` to `to`, as `cp` does: a new file gets the
 /// source's mode, one already there is replaced and keeps its own. Neither
 /// end may be a pipe or a device, and a file is never copied onto itself:
 /// creating the target would empty the source.
 async fn copy_file(from: &str, to: &str, progress: &mpsc::Sender<Progress>) -> Result<u64, String> {
-    // Non-blocking: opening a FIFO would otherwise wait for its writer, on
-    // a thread no cancel reaches.
-    let source = tokio::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(from)
-        .await
-        .map_err(text)?;
-    let meta = source.metadata().await.map_err(text)?;
-    if !meta.is_file() {
-        return Err(format!("{from} is not a regular file"));
-    }
+    let (source, meta) = open_source(from).await?;
     if let Ok(existing) = tokio::fs::metadata(to).await {
         if !existing.is_file() {
             return Err(format!("{to} is not a regular file"));

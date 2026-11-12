@@ -1,19 +1,10 @@
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use super::*;
-
-fn entry(name: &str, is_dir: bool) -> DirEntry {
-    DirEntry {
-        name: name.to_string(),
-        size: 0,
-        modified: String::new(),
-        permissions: String::new(),
-        is_dir,
-    }
-}
 
 async fn expect_err<T: std::fmt::Debug>(rx: oneshot::Receiver<Result<T, String>>) -> String {
     timeout(Duration::from_secs(5), rx)
@@ -21,66 +12,6 @@ async fn expect_err<T: std::fmt::Debug>(rx: oneshot::Receiver<Result<T, String>>
         .expect("reply timed out")
         .expect("task exited without replying")
         .expect_err("expected an error reply")
-}
-
-#[test]
-fn dir_entries_sort_directories_first_then_case_insensitive() {
-    let mut entries = vec![
-        entry("beta", false),
-        entry("Alpha", false),
-        entry("gamma", true),
-        entry("Beta", true),
-        entry("alpha", true),
-    ];
-    sort_entries(&mut entries);
-    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert_eq!(names, ["alpha", "Beta", "gamma", "Alpha", "beta"]);
-}
-
-#[test]
-fn format_perms_masks_file_type_bits_to_rwx_style() {
-    assert_eq!(format_perms(0o100644), "rw-r--r--");
-    assert_eq!(format_perms(0o40755), "rwxr-xr-x");
-    assert_eq!(format_perms(0o100750), "rwxr-x---");
-    assert_eq!(format_perms(0o100777), "rwxrwxrwx");
-    assert_eq!(format_perms(0), "---------");
-    // setuid/setgid/sticky are not part of the nine-character display
-    assert_eq!(format_perms(0o104755), "rwxr-xr-x");
-}
-
-#[test]
-fn format_timestamp_formats_utc_minutes() {
-    assert_eq!(format_timestamp(0), "1970-01-01 00:00");
-    assert_eq!(format_timestamp(86_399), "1970-01-01 23:59");
-    assert_eq!(format_timestamp(86_400), "1970-01-02 00:00");
-    assert_eq!(format_timestamp(1_700_000_000), "2023-11-14 22:13");
-    // Past the year 2100, where naive date math goes wrong
-    assert_eq!(format_timestamp(u32::MAX), "2106-02-07 06:28");
-}
-
-#[test]
-fn transfer_registry_cancels_by_id_and_forgets_finished_transfers() {
-    let mut registry = TransferRegistry::default();
-    let token = registry.register(7);
-    assert!(!token.is_cancelled());
-    assert!(!registry.cancel(99), "unknown id must be a no-op");
-
-    assert!(registry.cancel(7));
-    assert!(token.is_cancelled());
-
-    registry.finish(7);
-    assert!(!registry.cancel(7), "finished transfer must be forgotten");
-}
-
-#[test]
-fn transfer_registry_cancel_all_aborts_every_live_transfer() {
-    let mut registry = TransferRegistry::default();
-    let first = registry.register(1);
-    let second = registry.register(2);
-    registry.cancel_all();
-    assert!(first.is_cancelled());
-    assert!(second.is_cancelled());
-    assert!(registry.active.is_empty());
 }
 
 #[tokio::test]
@@ -243,49 +174,4 @@ async fn shutdown_interrupts_a_stuck_command_and_discards_the_queue() {
     assert!(queued.await.is_err(), "a queued command must not run");
     assert_eq!(opens.load(Ordering::SeqCst), 1);
     drop(tx);
-}
-
-/// A writer whose writes never complete, like a stalled server.
-struct StalledWriter;
-
-impl tokio::io::AsyncWrite for StalledWriter {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-        _: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::task::Poll::Pending
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Pending
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Pending
-    }
-}
-
-#[tokio::test]
-async fn a_cancel_interrupts_a_stalled_write() {
-    let cancel = CancellationToken::new();
-    let (progress, _keep) = mpsc::channel(4);
-    let mut dst = StalledWriter;
-    let copy = until_cancelled(
-        &cancel,
-        copy_with_progress(&b"data"[..], &mut dst, 4, &progress),
-    );
-    let cancelling = async {
-        tokio::task::yield_now().await;
-        cancel.cancel();
-    };
-    let (result, ()) = tokio::join!(timeout(Duration::from_secs(5), copy), cancelling);
-    let result = result.expect("the stalled write held the cancelled transfer");
-    assert_eq!(result, Err("transfer cancelled".to_string()));
 }

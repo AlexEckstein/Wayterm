@@ -6,10 +6,22 @@ create folders, drag files in, open files in a local application, and
 follow the shell's working directory. A local-shell tab gets the same
 sidebar over this machine's own files (§Local tabs).
 
-Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe,
-and the local file task),
-`src/ui/panels/sftp_sidebar.rs` (the GTK half), `src/ui/panels/sftp_sidebar/model.rs`
-(its display-free model: rows, columns, toolbar rules, opened files).
+Code: `src/sftp/` is the tokio half: the commands, the SFTP task and the
+local file task with the transfer and listing code they share, and the
+shell-directory probe. `src/ui/panels/sftp_sidebar.rs` is the GTK half:
+the sidebar's life cycle and browsing, with its parts in
+`src/ui/panels/sftp_sidebar/`:
+
+| File | Holds |
+|---|---|
+| `widgets.rs` | the widgets of §Layout |
+| `transfers.rs` | uploads and downloads, their choosers and drops (§Transfers) |
+| `open_files.rs` | files opened in editors (§Opening files) |
+| `follow.rs` | following the shell (§Following the shell) |
+| `model.rs` | display-free: rows, toolbar rules, transfer status, the view state |
+| `paths.rs` | display-free: paths, `text/uri-list`, the `DirectoryFollower` |
+| `edit_sync.rs` | display-free: an opened file's copy and which version the server has |
+| `settings.rs` | the `sftp_on_connect` and `sftp_columns` settings rows |
 
 ## Layout
 
@@ -175,7 +187,8 @@ The enum is a module boundary (AGENTS.md).
   an error ("SFTP session ended — reconnect?") and recovers.
 - `Cd` doubles as the listing command. There is no `getcwd`, so the path
   bar shows the requested path; browsing starts at `.`, the SFTP home,
-  unless the shell's directory is known by then.
+  unless the shell's directory is known by then. From `.` the `..` row
+  lists `..`, then `../..`, which the server resolves against the home.
 - `Delete` stats first: russh-sftp 3 splits removal into file and
   directory calls (directories must be empty).
 
@@ -195,7 +208,9 @@ newest; both go when the last transfer ends. A transfer's result shows
 in the status line: a success for 5 seconds, a failure until the next
 transfer starts, and a success never replaces a failure still shown. An
 upload's final flush and close must succeed or the transfer fails, since
-the remote file may be incomplete. Every successful operation
+the remote file may be incomplete. Only a regular file is uploaded: a
+folder, chosen or dropped, is refused before the server is asked to
+create a file of its name. Every successful operation
 refreshes the listing. Cancel takes effect at whatever step a transfer is
 on, even one waiting on a stalled server. Ending the tab's session, or
 closing the tab, cancels every running transfer, as Cancel does (§Layout).

@@ -15,9 +15,11 @@
 //! is, so the sidebar can follow it (doc 07 §Following the shell).
 
 pub mod commands;
+mod listing;
 pub mod local;
 pub mod shell_cwd;
 pub mod task;
+mod transfer;
 
 pub use commands::{DirEntry, Progress, SftpCommand};
 pub use shell_cwd::ShellCwdProbe;

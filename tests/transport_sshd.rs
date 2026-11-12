@@ -263,6 +263,33 @@ async fn sftp_list_dir_returns_seeded_home() {
     connection.disconnect().await.expect("disconnect failed");
 }
 
+/// Browsing starts at `.` and goes up from there by `..` steps (doc 07
+/// §Commands): the server resolves both against the home directory.
+#[tokio::test]
+async fn sftp_lists_above_the_home_by_dot_steps() {
+    let Some(f) = fixture() else { return };
+
+    let connection = connect_any(&f).await;
+    let client = SftpClient::new(connection.clone());
+    let list = |path: &str| {
+        let path = path.to_string();
+        sftp_cmd(&client, |reply| SftpCommand::Cd { path, reply })
+    };
+
+    let home = list(".").await.expect("listing the home failed");
+    assert!(home.iter().any(|e| e.name == ".ssh" && e.is_dir));
+    let above = list("..").await.expect("listing above the home failed");
+    assert!(
+        above.iter().any(|e| e.name == f.user && e.is_dir),
+        "`..` is not the directory holding the home"
+    );
+    let back = list(&format!("../{}", f.user)).await;
+    assert_eq!(back.expect("listing back down failed"), home);
+
+    drop(client);
+    connection.disconnect().await.expect("disconnect failed");
+}
+
 #[tokio::test]
 async fn sftp_upload_download_round_trip_reports_progress() {
     let Some(f) = fixture() else { return };
@@ -465,6 +492,41 @@ async fn sftp_command_errors_after_connection_disconnect() {
     );
 
     drop(client);
+}
+
+/// A folder is no upload: it is refused before the server is asked to
+/// create, or empty, a file of its name.
+#[tokio::test]
+async fn sftp_upload_refuses_a_directory_and_creates_nothing() {
+    let Some(f) = fixture() else { return };
+
+    let connection = connect_any(&f).await;
+    let client = SftpClient::new(connection.clone());
+    let folder = tempfile::tempdir().expect("create tempdir");
+    let remote = format!("/home/{}/wayterm-sftp-dir-{}", f.user, unique_tag());
+
+    let (progress, _samples) = mpsc::channel(4);
+    let uploaded: Result<u64, String> = sftp_cmd(&client, |reply| SftpCommand::Upload {
+        transfer_id: client.next_transfer_id(),
+        local_path: folder.path().to_string_lossy().into_owned(),
+        remote_path: remote.clone(),
+        progress,
+        reply,
+    })
+    .await;
+    // Removes what a wrongly started upload left, too.
+    let left = sftp_cmd(&client, |reply| SftpCommand::Delete {
+        path: remote.clone(),
+        reply,
+    })
+    .await;
+
+    let err = uploaded.expect_err("a directory was uploaded");
+    assert!(err.ends_with("is not a regular file"), "got: {err}");
+    assert!(left.is_err(), "the refused upload made a remote file");
+
+    drop(client);
+    connection.disconnect().await.expect("disconnect failed");
 }
 
 // ---- Following the shell (doc 07) ----

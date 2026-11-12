@@ -154,7 +154,7 @@ them all with `--test-threads=1`:
 
 | Suite | Proves |
 |---|---|
-| `transport_sshd` | the SSH transport, auth chain and SFTP task: listing, round-trip transfers with progress, mkdir/rename/delete, errors after disconnect (the one CI runs) |
+| `transport_sshd` | the SSH transport, auth chain and SFTP task: listing (above the home too), round-trip transfers with progress, a refused folder upload, mkdir/rename/delete, errors after disconnect (the one CI runs) |
 | `connect_flow` | one shared connection per identity, kept alive by any consumer, released after the last |
 | `tmux_persistence` | the tmux command, the same tmux session id and environment surviving a dropped transport *and* connection, the off path, and a program in the pane surviving the auto-reconnect |
 | `reconnect_sshd` | the reconnect driver's curve and cancellation against a real redial |
