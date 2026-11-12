@@ -102,7 +102,8 @@ fn entry_name(host: &str, port: u16) -> String {
     }
 }
 
-fn unpadded(base64: &str) -> &str {
+/// `base64` without its padding, the form keys are compared in.
+pub(super) fn unpadded(base64: &str) -> &str {
     base64.trim_end_matches('=')
 }
 

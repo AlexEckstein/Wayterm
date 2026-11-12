@@ -272,7 +272,9 @@ impl client::Handler for AppClientHandler {
             fingerprint_sha256: key.fingerprint(HashAlg::Sha256).to_string(),
         };
         match self.verifier.verify(&facts, key) {
-            HostKeyDecision::Accept | HostKeyDecision::AcceptAndSave => Ok(true),
+            HostKeyDecision::Accept
+            | HostKeyDecision::AcceptAndSave
+            | HostKeyDecision::AcceptAndSaveSession => Ok(true),
             HostKeyDecision::Reject => Err(HandlerError::HostKeyRejected(self.host.clone())),
         }
     }

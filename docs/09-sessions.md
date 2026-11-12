@@ -36,6 +36,7 @@ and runs on every open.
 | 3 | `sessions.icon`, added where missing |
 | 4 | drop the retired `sessions.notes` column where present |
 | 5 | `macros (id, name, steps, created_at, updated_at)` (doc 12 §Storage) |
+| 6 | `sessions.host_keys`, added where missing |
 
 ## Schema
 
@@ -71,6 +72,7 @@ CREATE TABLE sessions (
     ssh_options     TEXT,                 -- JSON SshOptions
     jump_session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
     forward_rules   TEXT,                 -- JSON [ForwardRule]
+    host_keys       TEXT,                 -- JSON [SessionHostKey]; NULL = none of its own
 
     -- RDP
     rdp_domain      TEXT,
@@ -165,13 +167,22 @@ JSON columns:
 |---|---|
 | `ssh_options` | `SshOptions { compression, keepalive_interval, keepalive_count, ssh_w_fallback }` |
 | `forward_rules` | `[{kind: "local"\|"remote"\|"dynamic", bind_addr, bind_port, remote_host, remote_port, enabled}]` |
+| `host_keys` | `[{key_type: "ssh-ed25519"\|…, key: "<base64 key blob, no padding>"}]`: the host keys the session trusts beside known_hosts (doc 04 §Host key verification) |
 | `rdp_options` | `RdpOptions { audio, clipboard, fonts, printer }` |
 | `vnc_options` | `VncOptions { quality (0–9), scaling, view_only }` |
 
 `SessionConfig` mirrors one row and never holds a secret. It deserializes
 with defaults, so JSON written before a field existed still loads (an old
-`ssh_options` loads `ssh_w_fallback` as `false`); its `icon` is serialized
-only when set, so a session without one keeps the earlier wire format.
+`ssh_options` loads `ssh_w_fallback` as `false`); its `icon` and
+`host_keys` are serialized only when set, so a session without them keeps
+the earlier wire format.
+
+`host_keys` has its own writer: `insert_session` stores it (an import, a
+clone), and only `SessionStore::add_session_host_keys` changes it after
+that — the changed-key prompt's acceptance (doc 04), merged into the row
+without duplicates. `update_session` leaves the column alone, so an editor
+that rebuilds a row from its widgets, like the session dialog, never wipes
+the keys a session trusts.
 
 `SessionType` answers each per-protocol question in one place (default
 port, SFTP support, default icon, …) with exhaustive matches, so a new
@@ -199,7 +210,7 @@ sessions — each with its icon.
   only drags from this tree are accepted.
 - **Clone** inserts a copy named "`name` (copy)" in the same folder,
   without the id or connection history; keyring secrets stay with the
-  original.
+  original, and the copy trusts the original's host keys.
 - **Delete** also removes the session's keyring entries (doc 05 §Saving
   and deleting).
 - The session-tree shortcuts (`edit_session`, `duplicate_session`,
@@ -295,7 +306,8 @@ and a reset to the default.
   called).
 - `sort_order` is never edited: siblings sort by name.
 - The dialog edits none of `font_family`, `font_size`, `opacity`,
-  `ssh_options`, `host_key_policy`, `vnc_options` or `vnc_color_depth`;
-  imports and JSON restores can set them.
+  `ssh_options`, `host_key_policy`, `host_keys`, `vnc_options` or
+  `vnc_color_depth`; imports and JSON restores can set them (`host_keys`
+  also grows at the changed-key prompt, doc 04).
 - `hotkeys` has no `UNIQUE (action, context)`, which is why the seed runs
   only once.

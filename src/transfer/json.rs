@@ -3,7 +3,8 @@
 //! Folders own their sessions by nesting; sessions never carry ids. A
 //! jump host is named by `jump_session`. Root sessions, which have no
 //! folder, go in a top-level `sessions` array. No secret is ever in it:
-//! `SessionConfig` holds none.
+//! `SessionConfig` holds none. The host keys a session trusts
+//! (`host_keys`) travel with it: they are public keys.
 
 use std::collections::HashMap;
 

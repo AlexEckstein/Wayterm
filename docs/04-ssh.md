@@ -24,9 +24,14 @@ direct-tcpip channels for jump hosts and local forwards. It is a module
 boundary (AGENTS.md).
 
 `ConnectionSupervisor` (one per window) shares one connection per
-(host, port, username), kept apart by whether its host key was checked: a
-session under `strict` or `accept-new` is never handed a connection that
-a session under `off` dialed (§Host key verification).
+(host, port, username), kept apart by whether its host key was checked
+and by the host keys its session trusts (`PoolKey`): a session under
+`strict` or `accept-new` is never handed a connection that a session
+under `off` dialed, and a session is never handed one whose key only
+another session's set trusts (§Host key verification). Sessions trusting
+the same keys — none, usually — share as before. A dial whose session
+accepted a changed key is pooled under the set it ended with, key
+included.
 
 - consumers hold `Arc`s; a monitor task disconnects and evicts the
   connection once only the pool's own reference is left (checked every
@@ -77,35 +82,68 @@ session that dialed it.
 
 ### Policy
 
-1. Use `~/.ssh/known_hosts`, one store shared with every other SSH client.
-2. **Unknown host:** an OpenSSH-style prompt with the SHA-256 fingerprint.
-   Accepting always records the key, so the host is never asked about
-   twice. Hashed entries are read, but new entries are appended in plain
-   text (`host` or `[host]:port`, then the key), even to a hashed file.
-3. **Changed key:** hard fail, never a one-click override. A host's key
-   has changed when known_hosts names the host and none of its entries
-   holds the presented key, whatever the types of the keys involved; a
-   key under an `@revoked` entry fails the same way.
+1. Use `~/.ssh/known_hosts`, one store shared with every other SSH client,
+   and beside it the session's own set of trusted keys
+   (`sessions.host_keys`, doc 09), which only a changed-key acceptance
+   adds to.
+2. **Unknown host** — neither names it: an OpenSSH-style prompt with the
+   SHA-256 fingerprint. Accepting always records the key in known_hosts,
+   so the host is never asked about twice. Hashed entries are read, but
+   new entries are appended in plain text (`host` or `[host]:port`, then
+   the key), even to a hashed file.
+3. **Changed key:** known_hosts names the host, or the session trusts keys
+   of its own, and none of those is the presented key, whatever the types
+   of the keys involved — the man-in-the-middle signal. A warning
+   (`dialogs::hostkey::prompt_changed`) shows the key type, fingerprint and
+   host:port and asks **Deny** (the default) or **Accept and add to this
+   session**. Accepting connects and adds the key to this session's set
+   only: known_hosts is never written, so other sessions and other SSH
+   clients still see the change, and `ssh-keygen -R` stays the remedy for a
+   stale global entry. A key under an `@revoked` entry fails outright,
+   whatever the session trusts.
 4. The policy is global (`host_key_policy`, seeded `strict`) with a
    per-session override:
-   - `strict`: unknown → prompt; changed → fail;
-   - `accept-new`: unknown → record silently; changed → fail (OpenSSH's
-     `StrictHostKeyChecking=accept-new`);
+   - `strict`: unknown → prompt; changed → prompt (deny, or trust it for
+     the session);
+   - `accept-new`: unknown → record silently (OpenSSH's
+     `StrictHostKeyChecking=accept-new`); changed → prompt, as `strict`;
    - `off`: no verification, for labs only. It skips the question about
      an unknown host and whatever keeps known_hosts from answering; a
-     changed or revoked key still fails.
+     changed or revoked key still fails, without a prompt.
 
 ### Implementation
 
 `AppClientHandler::check_server_key` runs during key exchange, before
 authentication, and asks `HostKeyVerifier`, which reads the host's entries
-itself (`hostkey/known_hosts.rs`):
+itself (`hostkey/known_hosts.rs`) and holds the session's set
+(`SessionKeySet`):
 
-| known_hosts holds, for the host | Decision |
+| known_hosts and the session's set hold, for the host | Decision |
 |---|---|
-| the presented key | accept |
-| other keys only, or the presented key under `@revoked` | reject, no prompt |
-| nothing | apply the policy |
+| the presented key under `@revoked` (known_hosts) | reject, no prompt, every policy |
+| the presented key, in either | accept |
+| other keys only, in either | changed: `strict`/`accept-new` ask the changed-key question, `off` rejects |
+| nothing | apply the policy (unknown host) |
+
+The verifier's prompt (`HostKeyPrompt`) is told which question it is
+asked (`HostKeyQuestion::Unknown` or `Changed`), and each has its own
+accepting answer: `AcceptAndSave` records known_hosts, and only answers
+an unknown host; `AcceptAndSaveSession` adds the key to the session's set,
+and only answers a changed key. Any other answer rejects, so a changed key
+can never reach known_hosts.
+
+**The session's set.** The SSH connect flow (`src/ui/tabs/ssh.rs`) seeds
+each hop's set on the main thread from that hop's row, read fresh from the
+store — the tab's copy of the row only when there is no store — so a
+redial after an acceptance is not asked again. The set is a shared handle
+(`Arc<Mutex<…>>`): the verifier adds to it during key exchange, and once
+the dial returns the flow writes what was added back to the row
+(`SessionStore::add_session_host_keys`), before anything else: a key
+accepted stays accepted even when authentication then fails or the attempt
+was cancelled or superseded. The prompt never touches the store, which is
+main-thread only. On a jumped connection each hop has its own row's set,
+so a key accepted on the jump hop is saved to the jump session and one on
+the target to the target.
 
 russh's own `check_known_hosts_path` is not used: it compares the
 presented key only with recorded keys of its type, so a known host showing
@@ -121,22 +159,27 @@ the type.
   file holds no entries; bytes that are not UTF-8 hide only their own
   line.
 - **Key types.** Each dial offers the host-key algorithms of the host's
-  recorded keys first (`HostKeyVerifier::key_preference`, as OpenSSH orders
-  `HostKeyAlgorithms`), so a server that still holds a recorded key
+  recorded keys first — in known_hosts or the session's set
+  (`HostKeyVerifier::key_preference`, as OpenSSH orders
+  `HostKeyAlgorithms`) — so a server that still holds a recorded key
   presents that one. Without this a host recorded by another client under
-  one type would be rejected for presenting another.
-- **Recording.** A new entry goes in as `host` or `[host]:port` and the
-  key, the name as the session spells it. A name that would read in the
-  file as anything but one plain name is never recorded and so never
-  accepted: blanks, control characters and any of `,*?!|#@[]`, which would
-  make it a second line, a list or a pattern vouching for other hosts. A
-  missing `~/.ssh` is created with mode 0700.
+  one type would be reported as changed for presenting another.
+- **Recording.** A new known_hosts entry (an unknown host only) goes in as
+  `host` or `[host]:port` and the key, the name as the session spells it.
+  A name that would read in the file as anything but one plain name is
+  never recorded and so never accepted, whatever the session trusts:
+  blanks, control characters and any of `,*?!|#@[]`, which would make it a
+  second line, a list or a pattern vouching for other hosts. A missing
+  `~/.ssh` is created with mode 0700. The session's set records the key
+  type and the base64 key without padding.
 - **Failing closed.** A known_hosts that cannot be read (anything but a
-  missing file), no home directory to find it in, and a key that should be
-  recorded and cannot be all reject: none of them makes a host unknown.
+  missing file), no home directory to find it in, a key that cannot be
+  encoded, and a key that should be recorded and cannot be all reject,
+  even a key the session trusts: none of them makes a host unknown, and
+  an unreadable file could revoke the key.
 
-Every rejection is logged with its reason — a changed key, a revoked one,
-or one of the failures above — and never with key material.
+Every rejection is logged with its reason — a changed key not accepted, a
+revoked one, or one of the failures above — and never with key material.
 
 Host certificates are rejected. A rejection surfaces as
 `TransportError::HostKeyRejected`, never as an auth failure.
@@ -210,7 +253,9 @@ to the target (originator `127.0.0.1:0`, the OpenSSH `-W` convention),
 and run the target's SSH session over that stream.
 
 - Each hop authenticates as its own session, with its own method,
-  credentials and host-key policy; host keys are verified on both hops.
+  credentials, host-key policy and trusted keys; host keys are verified on
+  both hops, and a changed key accepted on either is saved to that hop's
+  session.
 - Depth > 1 and self-jump are connect errors
   (`transport::jump::check_jump_chain`), also refused in the session
   dialog.
@@ -286,17 +331,21 @@ Re-verify these when bumping a dependency; these APIs have moved before.
 
 ## Limitations
 
-- **The changed-key warning is never shown.** A changed key is rejected
-  without a prompt, as it must be, but the tab shows the rejection as a
-  plain connection error; the warning dialog that explains the risk and
-  the `ssh-keygen -R` remedy (`dialogs::hostkey::prompt_changed`) exists
-  but nothing calls it.
+- A session's trusted keys can only be added to, at the changed-key
+  prompt (or by a JSON import, doc 10): there is no UI to list or remove
+  them, and known_hosts entries are never copied into them. The set
+  belongs to the session, not to a host: editing the session's host or
+  port keeps it, and a key the new host does not present makes it read as
+  changed rather than unknown.
+- A denied changed key shows on the tab as a plain host-key rejection.
 - Host certificates are rejected; there is no CA support, so
   `@cert-authority` lines in known_hosts are skipped.
-- A host that replaced its key with one of another type is rejected as
-  changed, as in OpenSSH, until the stale entry is removed
-  (`ssh-keygen -R`). Entries for a host's IP address are not consulted
-  unless the session names the address, and new entries are never hashed.
+- A host that replaced its key with one of another type is reported as
+  changed, as in OpenSSH: each session that connects to it asks once and
+  then trusts the new key, while known_hosts keeps the stale entry until
+  it is removed (`ssh-keygen -R`). Entries for a host's IP address are not
+  consulted unless the session names the address, and new entries are
+  never hashed.
 - The `off` policy has no badge in the UI.
 - `ssh_options.compression` is stored but not applied. The session
   dialog edits no `ssh_options` field, so keepalives can only be set by an

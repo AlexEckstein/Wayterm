@@ -14,7 +14,7 @@ use rusqlite::{
 use serde::Serialize;
 
 use crate::macros::model::{steps_from_json, steps_to_json, Macro};
-use crate::store::model::{Folder, HostKeyPolicy, SessionConfig};
+use crate::store::model::{Folder, HostKeyPolicy, SessionConfig, SessionHostKey};
 use crate::ui::tabs::state::{tabs_from_json, tabs_to_json, TabState, OPEN_TABS_SETTING_KEY};
 
 /// The settings row holding the global host-key policy (doc 09).
@@ -108,14 +108,15 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Insert a session and return its id.
+    /// Insert a session, its trusted host keys included, and return its id.
     pub fn insert_session(&self, config: &SessionConfig) -> rusqlite::Result<i64> {
         let sql = format!(
-            "INSERT INTO sessions ({SESSION_COLUMNS}) VALUES ({})",
+            "INSERT INTO sessions ({SESSION_COLUMNS}, host_keys) VALUES ({}, ?)",
             placeholders(SESSION_COLUMN_COUNT)
         );
-        self.conn
-            .execute(&sql, params_from_iter(session_values(config)?))?;
+        let mut values = session_values(config)?.to_vec();
+        values.push(json(config.host_keys.as_ref())?);
+        self.conn.execute(&sql, params_from_iter(values))?;
         Ok(self.conn.last_insert_rowid())
     }
 
@@ -136,7 +137,10 @@ impl SessionStore {
     }
 
     /// Persist `config` over the row with its id. `connect_count` and
-    /// `last_connected` are left alone (see [`Self::touch_connected`]).
+    /// `last_connected` are left alone (see [`Self::touch_connected`]), and
+    /// so is `host_keys` ([`Self::add_session_host_keys`]): editors that
+    /// rebuild a row from their widgets never wipe the keys a session
+    /// trusts.
     pub fn update_session(&self, config: &SessionConfig) -> rusqlite::Result<()> {
         let sql = format!(
             "UPDATE sessions SET ({SESSION_COLUMNS}) = ({}), updated_at = datetime('now') \
@@ -147,6 +151,36 @@ impl SessionStore {
         values.push(config.id.into());
         self.conn.execute(&sql, params_from_iter(values))?;
         Ok(())
+    }
+
+    /// Add `keys` to the host keys session `id` trusts (doc 04 §Host key
+    /// verification), keeping those it holds and their order; a key it
+    /// already holds is not added twice. Returns the stored set. A missing
+    /// row is `QueryReturnedNoRows`.
+    pub fn add_session_host_keys(
+        &self,
+        id: i64,
+        keys: &[SessionHostKey],
+    ) -> rusqlite::Result<Vec<SessionHostKey>> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let mut stored: Vec<SessionHostKey> = tx
+            .query_row(
+                "SELECT host_keys FROM sessions WHERE id = ?1",
+                [id],
+                |row| optional_json_column(row, "host_keys"),
+            )?
+            .unwrap_or_default();
+        for key in keys {
+            if !stored.contains(key) {
+                stored.push(key.clone());
+            }
+        }
+        tx.execute(
+            "UPDATE sessions SET host_keys = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![json((!stored.is_empty()).then_some(&stored))?, id],
+        )?;
+        tx.commit()?;
+        Ok(stored)
     }
 
     pub fn delete_session(&self, id: i64) -> rusqlite::Result<()> {
@@ -399,6 +433,7 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     migrate_003(conn)?;
     migrate_004(conn)?;
     conn.execute_batch(MIGRATION_005)?;
+    migrate_006(conn)?;
     // `hotkeys` has no UNIQUE constraint, so re-running the seed would
     // duplicate rows: seed exactly once, atomically, keyed on an empty
     // `settings` table.
@@ -414,6 +449,8 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
 }
 
 /// `sessions` columns written by insert/update, in parameter order.
+/// `host_keys` is not one: only insert and
+/// [`SessionStore::add_session_host_keys`] write it.
 const SESSION_COLUMNS: &str = "name, type, folder_id, sort_order, \
     host, port, username, auth_method, host_key_policy, \
     key_path, tmux_enabled, tmux_session_name, ssh_options, jump_session_id, forward_rules, \
@@ -543,6 +580,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     forward_rules   TEXT,                     -- JSON array, doc 04 §Port forwarding:
                                               -- [{type:"local", bind:"127.0.0.1:8080",
                                               --   remote_host:"web1.lan", remote_port:80, enabled:true}]
+    host_keys       TEXT,                     -- JSON array, doc 04 §Host key verification:
+                                              -- [{key_type:"ssh-ed25519", key:"<base64, unpadded>"}]
 
     -- RDP-specific
     rdp_domain      TEXT,
@@ -671,6 +710,15 @@ CREATE TABLE IF NOT EXISTS macros (
 );
 "#;
 
+/// Schema v6 — `sessions.host_keys` (doc 09), the host keys a session
+/// trusts beside known_hosts; added where missing, as v3 adds `icon`.
+fn migrate_006(conn: &Connection) -> rusqlite::Result<()> {
+    if !has_column(conn, "sessions", "host_keys")? {
+        conn.execute_batch("ALTER TABLE sessions ADD COLUMN host_keys TEXT;")?;
+    }
+    Ok(())
+}
+
 /// First-run seed (doc 13 §Settings rows). The hotkey rows are
 /// informational (`is_default = 1` rows never load); doc 11's table in
 /// `hotkeys::defaults` is the source of truth.
@@ -755,6 +803,7 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
         host_key_policy: optional_json_column(row, "host_key_policy")?,
         jump_session_id: row.get("jump_session_id")?,
         forward_rules: optional_json_column(row, "forward_rules")?,
+        host_keys: optional_json_column(row, "host_keys")?,
         tmux_enabled: row.get("tmux_enabled")?,
         tmux_session_name: row.get("tmux_session_name")?,
         ssh_options: optional_json_column(row, "ssh_options")?,

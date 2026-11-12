@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use super::*;
-use crate::store::model::{AuthMethod, SessionType, SshOptions};
+use crate::store::model::{AuthMethod, SessionHostKey, SessionType, SshOptions};
 
 fn ssh(text: &str, base: Option<&Path>) -> Parsed {
     parse_source(ImportSource::SshConfig, text, base).unwrap()
@@ -461,6 +461,64 @@ fn json_roundtrip_keeps_icons() {
     assert_eq!(lab.icon.as_deref(), Some("wayterm-homelab"));
     let nas = &target.list_sessions(Some(lab.id)).unwrap()[0];
     assert_eq!(nas.icon.as_deref(), Some("drive-multidisk-symbolic"));
+}
+
+/// The host keys a session trusts are public, so an export carries them
+/// whole and an import stores them as they were; a session without any
+/// exports no `host_keys` field at all.
+#[test]
+fn json_roundtrip_keeps_the_host_keys_a_session_trusts() {
+    let keys = vec![
+        SessionHostKey {
+            key_type: "ssh-ed25519".into(),
+            key: "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ".into(),
+        },
+        SessionHostKey {
+            key_type: "ecdsa-sha2-nistp256".into(),
+            key: "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTY".into(),
+        },
+    ];
+    let source = SessionStore::in_memory().unwrap();
+    source
+        .insert_session(&SessionConfig {
+            name: "web".into(),
+            host_keys: Some(keys.clone()),
+            ..SessionConfig::default()
+        })
+        .unwrap();
+    source
+        .insert_session(&SessionConfig {
+            name: "plain".into(),
+            ..SessionConfig::default()
+        })
+        .unwrap();
+
+    let text = export_json(&source).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let exported = doc["sessions"].as_array().unwrap();
+    let by_name = |name: &str| {
+        exported
+            .iter()
+            .find(|session| session["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(
+        by_name("web")["host_keys"],
+        serde_json::json!([
+            {"key_type": "ssh-ed25519", "key": keys[0].key},
+            {"key_type": "ecdsa-sha2-nistp256", "key": keys[1].key},
+        ])
+    );
+    assert!(by_name("plain").get("host_keys").is_none());
+
+    let (folders, sessions, report) = parse_source(ImportSource::Wayterm, &text, None).unwrap();
+    let target = SessionStore::in_memory().unwrap();
+    apply_import(&target, folders, sessions, report).unwrap();
+    let imported = target.list_sessions(None).unwrap();
+    let find = |name: &str| imported.iter().find(|s| s.name == name).unwrap();
+    assert_eq!(find("web").host_keys, Some(keys));
+    assert_eq!(find("plain").host_keys, None);
 }
 
 #[test]
