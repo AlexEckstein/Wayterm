@@ -2,10 +2,10 @@
 //! sends commands, and applies the replies from `spawn_local` futures, so
 //! no GTK callback ever awaits.
 //!
-//! This file is the sidebar's life cycle, browsing, and following the
-//! shell. Around it:
+//! This file is the sidebar's life cycle and browsing. Around it:
 //!
 //! - `widgets` builds what doc 07 §Layout lists;
+//! - `follow` keeps the listing on the shell's directory;
 //! - `transfers` runs uploads and downloads, from the toolbar and drops;
 //! - `open_files` opens a file in the desktop's application from a local
 //!   copy and uploads each version saved there (doc 07 §Opening files);
@@ -24,7 +24,7 @@
 //! machine's files through the same commands (doc 07 §Local tabs): paths
 //! are absolute, a file opens where it is, and nothing is probed.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -38,6 +38,7 @@ use crate::transport::connection::SshConnection;
 use crate::ui::widgets::{confirm, prompt_text, window_of};
 
 mod edit_sync;
+mod follow;
 mod model;
 mod open_files;
 mod paths;
@@ -50,6 +51,7 @@ pub use open_files::discard_edit_copies;
 pub use paths::*;
 pub use settings::*;
 
+use follow::ShellProbe;
 use open_files::OpenFiles;
 use widgets::Widgets;
 
@@ -64,11 +66,7 @@ struct SidebarInner {
     /// What to attach to on the first show (`sftp_on_connect` off, or a
     /// local tab).
     deferred: RefCell<Option<Files>>,
-    /// Asks the remote where the current shell is.
-    probe: RefCell<Option<ShellCwdProbe>>,
-    /// A probe is running; another request waits for it (`probe_again`).
-    probing: Cell<bool>,
-    probe_again: Cell<bool>,
+    shell_probe: ShellProbe,
     open_files: OpenFiles,
 }
 
@@ -145,9 +143,7 @@ impl SftpSidebar {
             state: RefCell::new(state),
             attached: RefCell::new(None),
             deferred: RefCell::new(None),
-            probe: RefCell::new(None),
-            probing: Cell::new(false),
-            probe_again: Cell::new(false),
+            shell_probe: ShellProbe::default(),
             open_files: OpenFiles::new(),
         });
         inner.connect_signals();
@@ -256,7 +252,7 @@ impl SftpSidebar {
     /// attaching, so the first listing can probe.
     pub fn follow_new_shell(&self, probe: ShellCwdProbe) {
         self.inner.state.borrow_mut().new_shell();
-        self.inner.probe.replace(Some(probe));
+        self.inner.shell_probe.probe.replace(Some(probe));
     }
 
     /// The tab's shell reported its directory (OSC 7, picked by a
@@ -585,65 +581,6 @@ impl SidebarInner {
             done(&sidebar, answer.await.unwrap_or_else(ended));
         });
         None
-    }
-
-    /// The shell is in `path` (`reported` over OSC 7, or probed): go there
-    /// if following says so. Before a client is attached, the first
-    /// listing starts there instead.
-    fn shell_seen(self: &Rc<Self>, path: &str, reported: bool) {
-        let target = self.state.borrow_mut().shell_moved(path, reported);
-        if let Some(target) = target {
-            self.go_to_shell_dir(target);
-        }
-    }
-
-    fn go_to_shell_dir(self: &Rc<Self>, path: String) {
-        if self.client().is_some() {
-            self.cd(path);
-        } else {
-            self.state.borrow_mut().start_at(&path);
-            self.sync_path_entry();
-        }
-    }
-
-    /// The checkbox changed (render setting it to the state is no change).
-    /// Ticking it catches up with the shell and asks where it is now.
-    fn set_following(self: &Rc<Self>, on: bool) {
-        if self.state.borrow().following == on {
-            return;
-        }
-        let target = self.state.borrow_mut().set_following(on);
-        if let Some(target) = target {
-            self.go_to_shell_dir(target);
-        }
-        self.probe_shell();
-    }
-
-    /// Ask the remote where the shell is, one probe at a time: a request
-    /// made while one runs is served once it ends.
-    fn probe_shell(self: &Rc<Self>) {
-        if !self.state.borrow().wants_probe() {
-            return;
-        }
-        let Some(probe) = self.probe.borrow().clone() else {
-            return;
-        };
-        if self.probing.replace(true) {
-            self.probe_again.set(true);
-            return;
-        }
-        let reply = probe.spawn();
-        let sidebar = Rc::clone(self);
-        glib::MainContext::default().spawn_local(async move {
-            let dir = reply.await.ok().flatten();
-            sidebar.probing.set(false);
-            if let Some(dir) = dir {
-                sidebar.shell_seen(&dir, false);
-            }
-            if sidebar.probe_again.replace(false) {
-                sidebar.probe_shell();
-            }
-        });
     }
 
     /// Re-list the current directory.
