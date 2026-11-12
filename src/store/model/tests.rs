@@ -143,6 +143,10 @@ fn session_config_json_roundtrip() {
             remote_port: 80,
             enabled: true,
         }]),
+        host_keys: Some(vec![SessionHostKey {
+            key_type: "ssh-ed25519".to_string(),
+            key: "AAAAC3NzaC1lZDI1NTE5AAAAIJdD".to_string(),
+        }]),
         tmux_enabled: true,
         tmux_session_name: Some("wayterm-main".to_string()),
         ssh_options: Some(SshOptions {
@@ -203,6 +207,7 @@ fn session_config_json_roundtrip() {
     assert_eq!(rt.host_key_policy, cfg.host_key_policy);
     assert_eq!(rt.jump_session_id, cfg.jump_session_id);
     assert_eq!(rt.forward_rules, cfg.forward_rules);
+    assert_eq!(rt.host_keys, cfg.host_keys);
     assert_eq!(rt.tmux_enabled, cfg.tmux_enabled);
     assert_eq!(rt.tmux_session_name, cfg.tmux_session_name);
     assert_eq!(rt.ssh_options, cfg.ssh_options);
@@ -283,6 +288,28 @@ fn default_is_sane() {
     assert_eq!(cfg.connect_count, 0);
     assert!(!cfg.tmux_enabled);
     assert_eq!(cfg.folder_id, None);
+    assert_eq!(
+        cfg.host_keys, None,
+        "a new session trusts no keys of its own"
+    );
+}
+
+/// `sessions.host_keys` entries wire as doc 09 names them, and JSON from
+/// before the field existed loads with no keys.
+#[test]
+fn session_host_key_wire_format() {
+    let key = SessionHostKey {
+        key_type: "ssh-ed25519".to_string(),
+        key: "AAAAC3Nza".to_string(),
+    };
+    assert_eq!(
+        wire(&key),
+        r#"{"key_type":"ssh-ed25519","key":"AAAAC3Nza"}"#
+    );
+    let rt: SessionHostKey = serde_json::from_str(&wire(&key)).unwrap();
+    assert_eq!(rt, key);
+    let old: SessionConfig = serde_json::from_str(r#"{"name":"old"}"#).unwrap();
+    assert_eq!(old.host_keys, None);
 }
 
 // ---------------------------------------------------------------------------

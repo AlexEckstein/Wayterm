@@ -86,12 +86,13 @@ pub enum AuthMethod {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostKeyPolicy {
-    /// Unknown → prompt; changed → hard fail.
+    /// Unknown → prompt; changed → prompt (deny, or trust it for this
+    /// session).
     Strict,
-    /// Unknown → record silently; changed → hard fail.
+    /// Unknown → record silently; changed → prompt, as under `Strict`.
     #[serde(rename = "accept-new")]
     AcceptNew,
-    /// No verification (lab use only).
+    /// No verification (lab use only); a changed or revoked key still fails.
     Off,
 }
 
@@ -114,6 +115,16 @@ pub struct ForwardRule {
     pub remote_host: String,
     pub remote_port: u16,
     pub enabled: bool,
+}
+
+/// One entry of the `sessions.host_keys` JSON array (doc 04 §Host key
+/// verification): a host key this session trusts beside known_hosts. `key`
+/// is the base64 key blob without padding, as known_hosts entries are
+/// compared; `key_type` is its type (`ssh-ed25519`, …).
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+pub struct SessionHostKey {
+    pub key_type: String,
+    pub key: String,
 }
 
 /// The `sessions.ssh_options` JSON column.
@@ -176,6 +187,12 @@ pub struct SessionConfig {
     /// ProxyJump-style hop through another session (doc 04; depth ≤ 1).
     pub jump_session_id: Option<i64>,
     pub forward_rules: Option<Vec<ForwardRule>>,
+    /// Host keys this session trusts beyond `~/.ssh/known_hosts`, each
+    /// accepted at a changed-key prompt (doc 04 §Host key verification).
+    /// Left out of the JSON when unset, like `icon`, so the wire format of
+    /// a session without any is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_keys: Option<Vec<SessionHostKey>>,
     /// Run the shell inside a remote tmux session (doc 04). Stored for
     /// every type, read only by the SSH transport.
     pub tmux_enabled: bool,

@@ -458,8 +458,8 @@ fn delete_childless_folder_is_noop() {
 // ---------------------------------------------------------------------------
 
 use crate::store::model::{
-    AuthMethod, ForwardKind, ForwardRule, HostKeyPolicy, RdpOptions, SessionConfig, SessionType,
-    SshOptions, VncOptions,
+    AuthMethod, ForwardKind, ForwardRule, HostKeyPolicy, RdpOptions, SessionConfig, SessionHostKey,
+    SessionType, SshOptions, VncOptions,
 };
 
 /// Build a fully-populated SSH session config for round-trip tests.
@@ -494,6 +494,10 @@ fn sample_ssh_config(folder_id: Option<i64>) -> SessionConfig {
                 enabled: false,
             },
         ]),
+        host_keys: Some(vec![host_key(
+            "ssh-ed25519",
+            "AAAAC3NzaC1lZDI1NTE5AAAAIJdD",
+        )]),
         tmux_enabled: true,
         tmux_session_name: Some("wayterm-main".to_string()),
         ssh_options: Some(SshOptions {
@@ -552,6 +556,7 @@ fn assert_session_eq(left: &SessionConfig, right: &SessionConfig) {
     assert_eq!(left.host_key_policy, right.host_key_policy);
     assert_eq!(left.jump_session_id, right.jump_session_id);
     assert_eq!(left.forward_rules, right.forward_rules);
+    assert_eq!(left.host_keys, right.host_keys);
     assert_eq!(left.tmux_enabled, right.tmux_enabled);
     assert_eq!(left.tmux_session_name, right.tmux_session_name);
     assert_eq!(left.ssh_options, right.ssh_options);
@@ -577,6 +582,123 @@ fn assert_session_eq(left: &SessionConfig, right: &SessionConfig) {
     assert_eq!(left.font_size, right.font_size);
     assert_eq!(left.opacity, right.opacity);
     assert_eq!(left.icon, right.icon);
+}
+
+fn host_key(key_type: &str, key: &str) -> SessionHostKey {
+    SessionHostKey {
+        key_type: key_type.to_string(),
+        key: key.to_string(),
+    }
+}
+
+/// The keys a session trusts are written on insert and by
+/// `add_session_host_keys`, and never wiped by `update_session`, whose
+/// callers (the session dialog among them) rebuild rows without them.
+#[test]
+fn host_keys_round_trip_and_survive_updates() {
+    let store = SessionStore::in_memory().unwrap();
+    let first = host_key("ssh-ed25519", "AAAAC3NzaC1lZDI1NTE5AAAAIJdD");
+    let second = host_key("ecdsa-sha2-nistp256", "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY");
+    let mut config = SessionConfig {
+        name: "web".to_string(),
+        host_keys: Some(vec![first.clone()]),
+        ..Default::default()
+    };
+    config.id = store.insert_session(&config).unwrap();
+    assert_eq!(
+        store.get_session(config.id).unwrap().host_keys,
+        Some(vec![first.clone()])
+    );
+
+    let stored = store
+        .add_session_host_keys(config.id, &[second.clone(), first.clone()])
+        .unwrap();
+    let both = vec![first.clone(), second.clone()];
+    assert_eq!(stored, both, "kept in order, never twice");
+    assert_eq!(
+        store.get_session(config.id).unwrap().host_keys,
+        Some(both.clone())
+    );
+
+    config.name = "renamed".to_string();
+    config.host_keys = None;
+    store.update_session(&config).unwrap();
+    let loaded = store.get_session(config.id).unwrap();
+    assert_eq!(loaded.name, "renamed");
+    assert_eq!(loaded.host_keys, Some(both), "an update keeps the keys");
+
+    // A session without keys stores NULL, not `[]`.
+    let bare = store.insert_session(&SessionConfig::default()).unwrap();
+    assert_eq!(store.get_session(bare).unwrap().host_keys, None);
+    store.add_session_host_keys(bare, &[]).unwrap();
+    let raw: Option<String> = store
+        .conn
+        .query_row(
+            "SELECT host_keys FROM sessions WHERE id = ?1",
+            [bare],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(raw, None);
+    assert!(store.add_session_host_keys(9999, &[first]).is_err());
+}
+
+/// The column holds the JSON shape doc 09 names, unpadded keys and all.
+#[test]
+fn host_keys_column_wire_format() {
+    let store = SessionStore::in_memory().unwrap();
+    let id = store.insert_session(&SessionConfig::default()).unwrap();
+    store
+        .add_session_host_keys(id, &[host_key("ssh-ed25519", "AAAAC3Nza")])
+        .unwrap();
+    let raw: String = store
+        .conn
+        .query_row(
+            "SELECT host_keys FROM sessions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(raw, r#"[{"key_type":"ssh-ed25519","key":"AAAAC3Nza"}]"#);
+}
+
+/// A database created before `sessions.host_keys` existed gains the column
+/// on open, keeps its rows (with no trusted keys), and stores keys after.
+#[test]
+fn open_adds_session_host_keys_to_an_older_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("old.sqlite3");
+    let line = "    host_keys       TEXT,                     -- JSON array, doc 04 §Host key verification:\n                                              -- [{key_type:\"ssh-ed25519\", key:\"<base64, unpadded>\"}]\n";
+    assert!(
+        MIGRATION_001.contains(line),
+        "the fixture must drop the column"
+    );
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&MIGRATION_001.replace(line, ""))
+            .unwrap();
+        assert!(!has_column(&conn, "sessions", "host_keys").unwrap());
+        conn.execute(
+            "INSERT INTO sessions (name, type) VALUES ('old', '\"ssh\"')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let store = SessionStore::open(&path).unwrap();
+    assert!(has_column(&store.conn, "sessions", "host_keys").unwrap());
+    let old = store.list_sessions(None).unwrap().remove(0);
+    assert_eq!(old.name, "old");
+    assert_eq!(old.host_keys, None);
+    let key = host_key("ssh-ed25519", "AAAAC3Nza");
+    store.add_session_host_keys(old.id, &[key.clone()]).unwrap();
+    assert_eq!(
+        store.get_session(old.id).unwrap().host_keys,
+        Some(vec![key])
+    );
+    // Opening again is a no-op.
+    drop(store);
+    SessionStore::open(&path).unwrap();
 }
 
 #[test]
