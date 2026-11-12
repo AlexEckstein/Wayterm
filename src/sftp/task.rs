@@ -1,21 +1,21 @@
-//! The per-sidebar SFTP task, its client handle, and the transfer helpers.
+//! The per-sidebar SFTP task and its client handle.
 
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use russh_sftp::client::SftpSession;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
-use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::sftp::commands::{DirEntry, Progress, SftpCommand};
+use crate::sftp::listing::sort_entries;
 use crate::sftp::local::local_task;
+use crate::sftp::transfer::{copy_with_progress, text, Transfers};
 use crate::transport::connection::SshConnection;
 
-const TRANSFER_BUF_SIZE: usize = 32 * 1024;
 const COMMAND_QUEUE: usize = 32;
 
 /// Handle to one SFTP task; clones share it. When the last clone drops,
@@ -31,18 +31,24 @@ pub struct SftpClient {
 impl SftpClient {
     /// Spawn the task on the current runtime. No I/O until the first command.
     pub fn new(connection: Arc<SshConnection>) -> Self {
-        let (tx, rx) = mpsc::channel(COMMAND_QUEUE);
-        let shutdown = CancellationToken::new();
-        tokio::spawn(sftp_task(rx, connection, shutdown.clone()));
-        Self::from_parts(tx, shutdown)
+        Self::spawn(|rx, shutdown| sftp_task(rx, connection, shutdown))
     }
 
     /// Spawn a task that answers from this machine's own files instead: a
     /// local-shell tab's sidebar (doc 07 §Local tabs).
     pub fn local() -> Self {
+        Self::spawn(local_task)
+    }
+
+    fn spawn<Task>(
+        task: impl FnOnce(mpsc::Receiver<SftpCommand>, CancellationToken) -> Task,
+    ) -> Self
+    where
+        Task: Future<Output = ()> + Send + 'static,
+    {
         let (tx, rx) = mpsc::channel(COMMAND_QUEUE);
         let shutdown = CancellationToken::new();
-        tokio::spawn(local_task(rx, shutdown.clone()));
+        tokio::spawn(task(rx, shutdown.clone()));
         Self::from_parts(tx, shutdown)
     }
 
@@ -94,13 +100,8 @@ pub async fn sftp_task(
 /// `SftpSession::new` consumes the channel, so the session is built here
 /// rather than in the connection seam.
 async fn open_session(connection: &SshConnection) -> Result<SftpSession, String> {
-    let channel = connection
-        .open_sftp_channel()
-        .await
-        .map_err(|e| e.to_string())?;
-    SftpSession::new(channel.into_stream())
-        .await
-        .map_err(|e| e.to_string())
+    let channel = connection.open_sftp_channel().await.map_err(text)?;
+    SftpSession::new(channel.into_stream()).await.map_err(text)
 }
 
 /// The command loop; `open` is the session opener (stubbed in tests).
@@ -113,33 +114,30 @@ async fn run_sftp_task<Open, Fut>(
     Open: FnMut() -> Fut,
     Fut: Future<Output = Result<SftpSession, String>>,
 {
-    let transfers = Arc::new(Mutex::new(TransferRegistry::default()));
-    tokio::select! {
-        biased;
-        () = shutdown.cancelled() => {}
-        () = serve(&mut rx, open, &transfers) => {}
-    }
-    lock(&transfers).cancel_all();
+    let transfers = Transfers::default();
+    let serving = serve(&mut rx, open, &transfers);
+    transfers.serve_until(&shutdown, serving).await;
 }
 
 async fn serve<Open, Fut>(
     rx: &mut mpsc::Receiver<SftpCommand>,
     mut open: Open,
-    transfers: &Arc<Mutex<TransferRegistry>>,
+    transfers: &Transfers,
 ) where
     Open: FnMut() -> Fut,
     Fut: Future<Output = Result<SftpSession, String>>,
 {
     let mut sftp: Option<Arc<SftpSession>> = None;
-    // Set by a transfer that failed in the background.
-    let session_dead = Arc::new(AtomicBool::new(false));
+    // Any failure may mean a dead session, and reopening one is cheap: the
+    // command after a failed one, or a failed transfer, opens a new one.
+    let failed = Arc::new(AtomicBool::new(false));
 
     while let Some(cmd) = rx.recv().await {
-        if session_dead.swap(false, Ordering::SeqCst) {
+        if failed.swap(false, Ordering::SeqCst) {
             sftp = None;
         }
         if let SftpCommand::Cancel { transfer_id } = cmd {
-            lock(transfers).cancel(transfer_id);
+            transfers.cancel(transfer_id);
             continue;
         }
         let session = match &sftp {
@@ -152,42 +150,40 @@ async fn serve<Open, Fut>(
                 }
             },
         };
-        // Any failure may mean a dead session; reopening one is cheap.
-        if dispatch(session, cmd, transfers, &session_dead).await {
-            sftp = None;
-        }
+        dispatch(session, cmd, transfers, &failed).await;
     }
 }
 
-pub(super) fn lock(
-    registry: &Mutex<TransferRegistry>,
-) -> std::sync::MutexGuard<'_, TransferRegistry> {
-    registry.lock().unwrap_or_else(|e| e.into_inner())
+/// Note a failure in `failed` on its way to whoever asked.
+fn noted<T>(failed: &AtomicBool, result: Result<T, String>) -> Result<T, String> {
+    if result.is_err() {
+        failed.store(true, Ordering::SeqCst);
+    }
+    result
 }
 
-/// Send `result` and report whether it was a failure.
-fn answer<T>(reply: oneshot::Sender<Result<T, String>>, result: Result<T, String>) -> bool {
-    let failed = result.is_err();
-    let _ = reply.send(result);
-    failed
-}
-
-/// Run one command; `true` when it failed (drop the cached session).
+/// Run one command. A transfer runs on, answering when it ends; a
+/// cancelled one is dropped mid-flight, and so notes no failure.
 async fn dispatch(
     session: Arc<SftpSession>,
     cmd: SftpCommand,
-    transfers: &Arc<Mutex<TransferRegistry>>,
-    session_dead: &Arc<AtomicBool>,
-) -> bool {
-    let err = |e: russh_sftp::client::error::Error| e.to_string();
+    transfers: &Transfers,
+    failed: &Arc<AtomicBool>,
+) {
     match cmd {
-        SftpCommand::Cd { path, reply } => answer(reply, list_dir(&session, &path).await),
-        SftpCommand::Delete { path, reply } => answer(reply, delete(&session, &path).await),
+        SftpCommand::Cd { path, reply } => {
+            let _ = reply.send(noted(failed, list_dir(&session, &path).await));
+        }
+        SftpCommand::Delete { path, reply } => {
+            let _ = reply.send(noted(failed, delete(&session, &path).await));
+        }
         SftpCommand::Rename { from, to, reply } => {
-            answer(reply, session.rename(&from, &to).await.map_err(err))
+            let renamed = session.rename(&from, &to).await.map_err(text);
+            let _ = reply.send(noted(failed, renamed));
         }
         SftpCommand::Mkdir { path, reply } => {
-            answer(reply, session.create_dir(&path).await.map_err(err))
+            let made = session.create_dir(&path).await.map_err(text);
+            let _ = reply.send(noted(failed, made));
         }
         SftpCommand::Download {
             transfer_id,
@@ -196,15 +192,11 @@ async fn dispatch(
             progress,
             reply,
         } => {
-            spawn_transfer(
-                session,
-                transfers,
-                session_dead,
-                transfer_id,
-                reply,
-                |sftp| async move { download_file(&sftp, &remote_path, &local_path, &progress).await },
-            );
-            false
+            let failed = Arc::clone(failed);
+            transfers.spawn(transfer_id, reply, async move {
+                let done = download_file(&session, &remote_path, &local_path, &progress).await;
+                noted(&failed, done)
+            });
         }
         SftpCommand::Upload {
             transfer_id,
@@ -213,90 +205,29 @@ async fn dispatch(
             progress,
             reply,
         } => {
-            spawn_transfer(
-                session,
-                transfers,
-                session_dead,
-                transfer_id,
-                reply,
-                |sftp| async move { upload_file(&sftp, &local_path, &remote_path, &progress).await },
-            );
-            false
+            let failed = Arc::clone(failed);
+            transfers.spawn(transfer_id, reply, async move {
+                let done = upload_file(&session, &local_path, &remote_path, &progress).await;
+                noted(&failed, done)
+            });
         }
-        SftpCommand::Cancel { .. } => false,
-    }
-}
-
-/// Run a transfer on its own task, registered for `Cancel`, which drops it
-/// at whatever it awaits. A failure that was not a cancel marks the
-/// session dead for the next command.
-fn spawn_transfer<F, Fut>(
-    session: Arc<SftpSession>,
-    transfers: &Arc<Mutex<TransferRegistry>>,
-    session_dead: &Arc<AtomicBool>,
-    transfer_id: u64,
-    reply: oneshot::Sender<Result<u64, String>>,
-    op: F,
-) where
-    F: FnOnce(Arc<SftpSession>) -> Fut + Send + 'static,
-    Fut: Future<Output = Result<u64, String>> + Send + 'static,
-{
-    let cancel = lock(transfers).register(transfer_id);
-    let transfers = Arc::clone(transfers);
-    let session_dead = Arc::clone(session_dead);
-    tokio::spawn(async move {
-        let result = until_cancelled(&cancel, op(session)).await;
-        lock(&transfers).finish(transfer_id);
-        if result.is_err() && !cancel.is_cancelled() {
-            session_dead.store(true, Ordering::SeqCst);
-        }
-        let _ = reply.send(result);
-    });
-}
-
-/// Cancellation tokens of the running transfers, by id.
-#[derive(Default)]
-pub(super) struct TransferRegistry {
-    active: HashMap<u64, CancellationToken>,
-}
-
-impl TransferRegistry {
-    pub(super) fn register(&mut self, transfer_id: u64) -> CancellationToken {
-        let token = CancellationToken::new();
-        self.active.insert(transfer_id, token.clone());
-        token
-    }
-
-    /// `false` when the id is unknown (finished or never started).
-    pub(super) fn cancel(&self, transfer_id: u64) -> bool {
-        self.active
-            .get(&transfer_id)
-            .map(CancellationToken::cancel)
-            .is_some()
-    }
-
-    pub(super) fn finish(&mut self, transfer_id: u64) {
-        self.active.remove(&transfer_id);
-    }
-
-    pub(super) fn cancel_all(&mut self) {
-        self.active.drain().for_each(|(_, token)| token.cancel());
+        SftpCommand::Cancel { .. } => {}
     }
 }
 
 /// List `path`: directories first, then case-insensitive by name.
 async fn list_dir(sftp: &SftpSession, path: &str) -> Result<Vec<DirEntry>, String> {
-    let entries = sftp.read_dir(path).await.map_err(|e| e.to_string())?;
+    let entries = sftp.read_dir(path).await.map_err(text)?;
     let mut result: Vec<DirEntry> = entries
         .map(|entry| {
             let attrs = entry.metadata();
-            DirEntry {
-                name: entry.file_name(),
-                size: attrs.size.unwrap_or(0),
-                modified: attrs.mtime.map(format_timestamp).unwrap_or_default(),
-                permissions: attrs.permissions.map(format_perms).unwrap_or_default(),
-                is_dir: attrs.is_dir(),
-            }
+            DirEntry::new(
+                entry.file_name(),
+                attrs.size.unwrap_or(0),
+                attrs.mtime,
+                attrs.permissions,
+                attrs.is_dir(),
+            )
         })
         .collect();
     sort_entries(&mut result);
@@ -305,39 +236,13 @@ async fn list_dir(sftp: &SftpSession, path: &str) -> Result<Vec<DirEntry>, Strin
 
 /// russh-sftp 3 splits removal into file/dir calls, so stat first.
 async fn delete(sftp: &SftpSession, path: &str) -> Result<(), String> {
-    let attrs = sftp
-        .symlink_metadata(path)
-        .await
-        .map_err(|e| e.to_string())?;
+    let attrs = sftp.symlink_metadata(path).await.map_err(text)?;
     if attrs.is_dir() {
         sftp.remove_dir(path).await
     } else {
         sftp.remove_file(path).await
     }
-    .map_err(|e| e.to_string())
-}
-
-/// Copy `src` to `dst` in 32 KiB chunks, reporting progress, until EOF.
-/// Returns the byte count.
-pub(super) async fn copy_with_progress(
-    mut src: impl tokio::io::AsyncRead + Unpin,
-    dst: &mut (impl tokio::io::AsyncWrite + Unpin),
-    total: u64,
-    progress: &mpsc::Sender<Progress>,
-) -> Result<u64, String> {
-    let mut buf = vec![0u8; TRANSFER_BUF_SIZE];
-    let mut transferred = 0u64;
-    loop {
-        let read = src.read(&mut buf).await.map_err(|e| e.to_string())?;
-        if read == 0 {
-            return Ok(transferred);
-        }
-        dst.write_all(&buf[..read])
-            .await
-            .map_err(|e| e.to_string())?;
-        transferred += read as u64;
-        let _ = progress.try_send(Progress { transferred, total });
-    }
+    .map_err(text)
 }
 
 async fn download_file(
@@ -346,20 +251,14 @@ async fn download_file(
     local_path: &str,
     progress: &mpsc::Sender<Progress>,
 ) -> Result<u64, String> {
-    let mut remote = sftp.open(remote_path).await.map_err(|e| e.to_string())?;
-    let total = remote
-        .metadata()
-        .await
-        .ok()
-        .and_then(|attrs| attrs.size)
-        .unwrap_or(0);
-    let mut local = tokio::fs::File::create(local_path)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut remote = sftp.open(remote_path).await.map_err(text)?;
+    let attrs = remote.metadata().await.ok();
+    let total = attrs.and_then(|attrs| attrs.size).unwrap_or(0);
+    let mut local = tokio::fs::File::create(local_path).await.map_err(text)?;
     let transferred = copy_with_progress(&mut remote, &mut local, total, progress).await?;
     // tokio writes in the background: only the flush reports a failed last
     // write (a full disk), which would leave the local file short.
-    local.flush().await.map_err(|e| e.to_string())?;
+    local.flush().await.map_err(text)?;
     Ok(transferred)
 }
 
@@ -371,80 +270,13 @@ async fn upload_file(
     remote_path: &str,
     progress: &mpsc::Sender<Progress>,
 ) -> Result<u64, String> {
-    let local = tokio::fs::File::open(local_path)
-        .await
-        .map_err(|e| e.to_string())?;
+    let local = tokio::fs::File::open(local_path).await.map_err(text)?;
     let total = local.metadata().await.map(|m| m.len()).unwrap_or_default();
-    let mut remote = sftp.create(remote_path).await.map_err(|e| e.to_string())?;
+    let mut remote = sftp.create(remote_path).await.map_err(text)?;
     let transferred = copy_with_progress(local, &mut remote, total, progress).await?;
-    remote.flush().await.map_err(|e| e.to_string())?;
-    remote.close().await.map_err(|e| e.to_string())?;
+    remote.flush().await.map_err(text)?;
+    remote.close().await.map_err(text)?;
     Ok(transferred)
-}
-
-/// `op`, unless `cancel` fires first: a stalled server must not hold a
-/// cancelled transfer, whatever step it is on.
-pub(super) async fn until_cancelled<T>(
-    cancel: &CancellationToken,
-    op: impl Future<Output = Result<T, String>>,
-) -> Result<T, String> {
-    tokio::select! {
-        biased;
-        () = cancel.cancelled() => Err("transfer cancelled".into()),
-        result = op => result,
-    }
-}
-
-/// Directories first, then case-insensitive alphabetical (doc 07).
-pub(super) fn sort_entries(entries: &mut [DirEntry]) {
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
-}
-
-/// `rwxr-xr-x` from a mode word, ignoring file-type and setuid/sticky bits.
-pub(super) fn format_perms(mode: u32) -> String {
-    let mode = mode & 0o777;
-    let mut out = String::with_capacity(9);
-    for group in [mode >> 6, mode >> 3, mode] {
-        for (bit, ch) in [(0o4, 'r'), (0o2, 'w'), (0o1, 'x')] {
-            out.push(if group & bit != 0 { ch } else { '-' });
-        }
-    }
-    out
-}
-
-/// `YYYY-MM-DD HH:MM` in UTC (no timezone database dependency).
-pub(super) fn format_timestamp(secs: u32) -> String {
-    let days = i64::from(secs) / 86_400;
-    let rem = secs % 86_400;
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        year,
-        month,
-        day,
-        rem / 3600,
-        (rem % 3600) / 60
-    )
-}
-
-/// Days since 1970-01-01 → (year, month, day): Howard Hinnant's
-/// `civil_from_days`, exact for every `u32` timestamp.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = if month <= 2 { year + 1 } else { year };
-    (year, month, day)
 }
 
 #[cfg(test)]
