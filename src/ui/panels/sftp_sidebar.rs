@@ -81,8 +81,8 @@ struct SidebarInner {
     /// The files opened in an editor since attaching.
     edits: RefCell<Vec<OpenFile>>,
     next_edit: Cell<u64>,
-    /// Where their local copies go.
-    edit_root: RefCell<PathBuf>,
+    /// Where their local copies go, if anywhere ([`edit_root`]).
+    edit_root: RefCell<Option<PathBuf>>,
     /// What [`launch`](Self::launch) was asked to open, instead of opening it.
     #[cfg(test)]
     launched: RefCell<Vec<(PathBuf, bool)>>,
@@ -129,7 +129,9 @@ impl Drop for OpenFile {
 /// Remove every local copy of an opened file, whichever sidebar made it:
 /// for startup, when they are a killed run's leftovers, and shutdown.
 pub fn discard_edit_copies() {
-    let _ = std::fs::remove_dir_all(edit_root());
+    if let Some(root) = edit_root() {
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 /// One attached SFTP task: its client, and the never-blocking sender its
@@ -1175,10 +1177,15 @@ impl SidebarInner {
             }
             Some((id, _, staged, Reopen::Fetch)) => (id, staged),
             None => {
-                let dir = match create_edit_dir(&self.edit_root.borrow()) {
-                    Ok(dir) => dir,
-                    Err(err) => {
+                let root = self.edit_root.borrow().clone();
+                let dir = match root.as_deref().map(create_edit_dir) {
+                    Some(Ok(dir)) => dir,
+                    Some(Err(err)) => {
                         self.set_error(&format!("Cannot open '{name}': {err}"));
+                        return;
+                    }
+                    None => {
+                        self.set_error(&format!("Cannot open '{name}': no cache directory"));
                         return;
                     }
                 };
@@ -1673,7 +1680,7 @@ pub(in crate::ui) mod gtk_tests {
         let sidebar = SftpSidebar::new();
         let client = SftpClient::from_parts(tx, tokio_util::sync::CancellationToken::new());
         sidebar.attach_client(client);
-        *sidebar.inner.edit_root.borrow_mut() = root.join("sftp-edit");
+        *sidebar.inner.edit_root.borrow_mut() = Some(root.join("sftp-edit"));
         (sidebar, rx)
     }
 

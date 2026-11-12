@@ -105,7 +105,10 @@ the status line), so saving in the editor saves to the server:
 
 Copies live in `$XDG_CACHE_HOME/wayterm/sftp-edit/<pid>-<n>/<name>` (the
 staging file is `<pid>-<n>.part` beside the directory), one directory per
-opened file, readable by the user only. The copies are removed when the tab closes, or its session turns out to
+opened file. `sftp-edit` must be the user's own directory with no access
+for anyone else, or nothing is opened; without `XDG_CACHE_HOME` or `HOME`
+there is no such place, and a shared temporary directory is never used.
+The copies are removed when the tab closes, or its session turns out to
 be a jumped one: a later save has nowhere to go, and fails in the editor
 rather than landing in a file nobody uploads. Whatever is left is removed
 when Wayterm starts and when it quits.

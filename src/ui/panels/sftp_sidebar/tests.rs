@@ -159,6 +159,24 @@ fn a_file_stamp_needs_a_regular_file() {
 }
 
 #[test]
+fn a_root_that_is_not_the_users_private_directory_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let shared = tmp.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(create_edit_dir(&shared).is_err(), "others can look inside");
+
+    let target = tmp.path().join("elsewhere");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let link = tmp.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert!(create_edit_dir(&link).is_err(), "a link to somewhere else");
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+}
+
+#[test]
 fn a_download_is_moved_over_the_copy_whole() {
     let tmp = tempfile::tempdir().unwrap();
     let (staged, local) = (tmp.path().join("f.part"), tmp.path().join("f"));

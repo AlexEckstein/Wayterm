@@ -450,23 +450,34 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 /// Where the local copies of files opened in an editor live:
-/// `$XDG_CACHE_HOME/wayterm/sftp-edit` (doc 07 §Opening files).
-pub fn edit_root() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
+/// `$XDG_CACHE_HOME/wayterm/sftp-edit` (doc 07 §Opening files). `None`
+/// without a cache directory of the user's own: a shared temporary
+/// directory is no place for a remote file's contents.
+pub fn edit_root() -> Option<PathBuf> {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("wayterm")
-        .join("sftp-edit")
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
+    Some(cache.join("wayterm").join("sftp-edit"))
 }
 
 /// A new directory under `root`, private to its owner, for one opened
 /// file. Each file gets its own, so it keeps its name and whatever an
 /// editor writes beside it is never mistaken for another opened file.
+/// A `root` that is not this user's own private directory is refused,
+/// whoever made it.
 pub fn create_edit_dir(root: &Path) -> std::io::Result<PathBuf> {
-    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let mut private = std::fs::DirBuilder::new();
     private.mode(0o700).recursive(true).create(root)?;
+    let meta = std::fs::symlink_metadata(root)?;
+    // SAFETY: `geteuid` only reads the process's credentials.
+    let own = meta.uid() == unsafe { libc::geteuid() };
+    if !meta.is_dir() || !own || meta.mode() & 0o077 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} is not a private directory of yours", root.display()),
+        ));
+    }
     private.recursive(false);
     let pid = std::process::id();
     for n in 0u32.. {
