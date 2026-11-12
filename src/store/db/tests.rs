@@ -691,7 +691,9 @@ fn open_adds_session_host_keys_to_an_older_database() {
     assert_eq!(old.name, "old");
     assert_eq!(old.host_keys, None);
     let key = host_key("ssh-ed25519", "AAAAC3Nza");
-    store.add_session_host_keys(old.id, &[key.clone()]).unwrap();
+    store
+        .add_session_host_keys(old.id, std::slice::from_ref(&key))
+        .unwrap();
     assert_eq!(
         store.get_session(old.id).unwrap().host_keys,
         Some(vec![key])
