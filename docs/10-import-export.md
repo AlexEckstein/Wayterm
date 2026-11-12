@@ -101,6 +101,10 @@ passphrase is never copied.
   `sessions` array appears only when sessions live outside any folder.
 - Sessions are full `SessionConfig` rows without ids; a jump host is named
   by `jump_session`, not numbered.
+- The host keys a session trusts (`host_keys`, doc 09 §Wire formats;
+  doc 04 §Host key verification) travel with it, exactly as stored: they
+  are public keys, not secrets. A session without any has no `host_keys`
+  field, and an import stores them as the document lists them.
 - Icons travel as names, folders and sessions alike; custom SVG files do
   not, so on a machine without the same SVG the item draws its default
   icon (doc 09 §Icons).
@@ -108,8 +112,8 @@ passphrase is never copied.
   import roundtrip is tested.
 
 The JSON import is also how fields the session dialog does not edit
-(`ssh_options`, `host_key_policy`, `font_family`, …, doc 09 §Limitations)
-get set. A document is someone else's word about how to connect, so a
+(`ssh_options`, `host_key_policy`, `host_keys`, `font_family`, …, doc 09
+§Limitations) get set. A document is someone else's word about how to connect, so a
 session arriving with `host_key_policy` `off` (doc 04 §Policy) is a
 warning, listed before any other so the confirmation shows it.
 
@@ -119,5 +123,7 @@ warning, listed before any other so the confirmation shows it.
   merges.
 - MobaXterm and Remmina field semantics are checked against hand-written
   fixtures only, not real exports.
+- A document's `host_keys` are trusted as imported, without a warning:
+  whoever wrote it vouches for those keys, as for the host names.
 - Macros (doc 12) and hotkey layouts (doc 11 §Persistence, exported
   separately) are not part of the session export.

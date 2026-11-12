@@ -47,19 +47,37 @@ Highlights:
 
 - **Store:** schema, seed, pragmas, the idempotent schema steps on old
   databases, CRUD and foreign-key behavior; the serde spellings of every
-  enum column (doc 09 §Wire formats).
+  enum column (doc 09 §Wire formats); `host_keys` written on insert and
+  merged by `add_session_host_keys`, never wiped by `update_session`.
 - **Host keys:** temp `known_hosts` files — unknown, matching, mismatched,
   `accept-new`, `off`, hashed entries; a key of another type, a revoked
-  key, an unreadable file and host names with known_hosts syntax, all
-  rejected; the reader's own cases (tabs, patterns, negation, markers).
+  key, an unreadable file and host names with known_hosts syntax; the
+  reader's own cases (tabs, patterns, negation, markers). Every row of the
+  decision table with a session key set: a session-trusted key accepted
+  without a question, a changed key accepted for the session (known_hosts
+  byte-identical) or denied, a session's own keys making an unrecorded
+  host changed, `@revoked` and failing closed outranking the set, `off`
+  never asking, and session key types offered first.
+- **Pool keys:** sessions trusting different keys never share a
+  connection, the same keys do, verified and unverified stay apart, and a
+  dial that accepted a key is pooled under the grown set
+  (`src/transport/supervisor/tests.rs`).
+- **Host-key dialogs:** the copy of both questions and each question's
+  answers mapped to its own decision (`src/ui/dialogs/hostkey/tests.rs`);
+  the connect flow seeding each hop from its row and saving what each hop
+  accepted to its own row (`src/ui/tabs/ssh.rs`).
 - **Wiring:** `FakeBackend` drives the pump, bridge and drain
   (`src/ui/tabs/terminal_tab/tests.rs`, `tests/local_serial_flow.rs`).
 - **Reconnect:** the policy and driver against tokio's paused clock, so the
   backoff curve is asserted in virtual time (`tests/reconnect.rs`).
 - **Host-key types:** an in-process russh server holding two host keys is
-  asked for the type known_hosts records, and one showing only a key of
-  another type is rejected under `strict` and `accept-new`
-  (`tests/host_key_types.rs`; skips without `ssh-keygen`).
+  asked for the type known_hosts records, or the session trusts, and one
+  showing only a key of another type is asked about as a changed key under
+  `strict` and `accept-new`. A changed key accepted for the session
+  connects and joins its set, a denied one is `HostKeyRejected`, a redial
+  with the saved set is not asked again, and another session is never
+  handed that connection (`tests/host_key_types.rs`; the two ECDSA cases
+  skip without `ssh-keygen`).
 - **Keepalives:** an in-process russh server behind a proxy that goes
   silent: keepalives close the connection, and the pool dials fresh while
   the dead one is still held (`tests/keepalive.rs`).
