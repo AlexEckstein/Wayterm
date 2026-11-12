@@ -87,7 +87,8 @@ pub fn unknown_cert_text(host: &str, port: u16, fingerprint: &str) -> String {
 }
 
 /// The changed-certificate warning body: host:port, both fingerprints, and
-/// the MITM caution (wording mirrors the SSH changed-key notice).
+/// the MITM caution (wording mirrors the SSH changed-key warning's, doc 04
+/// §Host key verification).
 pub fn changed_cert_text(stored: &str, seen: &str, host: &str, port: u16) -> String {
     format!(
         "The server certificate for '{host}:{port}' has changed.\n\
