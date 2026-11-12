@@ -112,7 +112,7 @@ src/terminal/    ← TerminalBackend, VteBackend, GhosttyBackend, FakeBackend (d
 src/transport/   ← Transport, SSHTransport, SshConnection, supervisor, auth,
                    host keys, jump, forward, credentials, local, serial,
                    reconnect, transport factory (docs 03, 04, 05, 06)
-src/sftp/        ← SFTP task + commands (doc 07)
+src/sftp/        ← SFTP task + commands, local file task (doc 07)
 src/vnc/          ← VNC client + framebuffer, engine task (doc 08)
 src/rdp/          ← RDP process wrapper + cert policy (doc 08)
 src/store/       ← SQLite session store and model (doc 09)

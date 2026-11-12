@@ -97,6 +97,10 @@ Highlights:
   format (`src/transfer/tests.rs`).
 - **SFTP sidebar, Tunnels dialog, session dialog, host picker, tab state,
   status bar, tray:** their display-free models.
+- **Local file task:** listing (links, order), mkdir, rename, delete and
+  both copies against a temporary directory, the refusals that keep a
+  file from being replaced or emptied, and shutdown
+  (`src/sftp/local/tests.rs`).
 - **RDP:** the argv builder (order, toggles, never `/cert:ignore` or
   `/p:`, no password), the certificate decisions and fingerprint parsing,
   the version gate (`src/rdp/*/tests.rs`, `tests/rdp_tab_flow.rs`).
@@ -121,11 +125,13 @@ in the library runs from one ignored test, `ui::gtk_tests::widgets`, under
 xvfb, with GLib warnings and criticals made fatal for each check. It
 covers the session dialog, Tunnels dialog, session tree (menu, nesting,
 drag moves, folder cycles), SFTP sidebar (the header's column menu, a
-file opened and its save uploaded through a fake task), side dock, host
+file opened and its save uploaded through a fake task, a local tab's
+sidebar over the real file task), side dock, host
 picker, macro editor and panel (record and play through a real VTE),
 icons, folder dialog, Settings window, tab focus and close behavior, what
 an SSH tab lets go of when its session ends (forwards, transport, SFTP
-task), a local-shell tab that connects and closes, color schemes and the
+task), a local-shell tab that connects and closes and whose sidebar
+follows its shell, color schemes and the
 system theme, the user stylesheet reload, terminal opacity (the rendered
 alpha of a VTE terminal and of the window under it, across tab switches),
 the VNC view, RDP embedding, the tab bar's "+", and that every shortcut

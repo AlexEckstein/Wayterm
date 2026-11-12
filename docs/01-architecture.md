@@ -119,7 +119,7 @@ These are module boundaries; changing one is an orchestration decision
 | `terminal` | `TerminalBackend`, `VteBackend`, `GhosttyBackend`, `FakeBackend`, color schemes | 02 |
 | `backpressure` | the GTK-side never-blocking sender | 02 |
 | `transport` | `Transport`, SSH (connection, supervisor, host keys, auth, jump, forward), local, serial, reconnect, credentials, factory | 03, 04, 05, 06 |
-| `sftp` | the SFTP task, its commands, the shell-directory probe | 07 |
+| `sftp` | the SFTP task, its commands, the shell-directory probe, the local file task | 07 |
 | `rdp` | the xfreerdp process and certificate trust | 08 |
 | `vnc` | the RFB engine and framebuffer | 08 |
 | `store` | the SQLite store and session model | 09 |
