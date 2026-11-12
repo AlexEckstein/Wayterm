@@ -732,6 +732,12 @@ clippy and `cargo test` with `--features backend-ghostty`, the widget
 under xvfb, and the benchmark. CI runs all but the benchmark, building
 the library the same way and caching it per pin (doc 15 §CI).
 
+Zig builds for the CPU of the machine it runs on, so a library built as
+above may not run on an older CPU (it dies with SIGILL). One that will
+run on another machine needs `-Dcpu=baseline` added to `zig build`, as
+upstream's `PACKAGING-LIBGHOSTTY.md` has it; CI's build passes it,
+because its cache is restored on runners with other CPUs.
+
 ## Widget choice
 
 Embeddable terminals for a Rust + GTK 4 app:
