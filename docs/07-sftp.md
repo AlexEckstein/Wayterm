@@ -276,10 +276,12 @@ session to open or lose. What differs:
   read in one pass on the blocking pool.
 - **Upload and Download both copy a file.** Upload copies the chosen or
   dropped files into the listed directory; Download copies the selected
-  file to where the file chooser says. A copy keeps the file's mode and
-  replaces a file already there, as a transfer does. A file is never
-  copied onto itself, under its own name or through a link: creating
-  the target would empty it.
+  file to where the file chooser says. Like `cp`, a copy gives a new
+  file the source's mode (less the umask), and replaces a file already
+  there in place, which keeps its own mode. Only regular files are
+  copied, to a regular file or a new one. A file is never copied onto
+  itself, under its own name or through a link: creating the target
+  would empty it.
 - **Rename** refuses a name that is taken, as an SFTP server does;
   `rename(2)` alone would replace the other file.
 - **Delete** removes a link, never what it points to; directories must be
@@ -288,9 +290,9 @@ session to open or lose. What differs:
   watching, nothing to upload (§Opening files does not apply).
 - **Following the shell** uses OSC 7 only; nothing is probed. The
   follower takes reports from this machine alone: a URI with no host,
-  with `localhost`, or with this machine's host name, with or without
-  its domain. A nested `ssh` reports another host and is ignored, even
-  when the local shell itself never reports.
+  with `localhost`, or with this machine's host name; a name without a
+  domain matches the same name with one. A nested `ssh` reports another
+  host and is ignored, even when the local shell itself never reports.
 
 ## Availability
 
@@ -332,7 +334,9 @@ system to browse. On their tabs the SFTP panel shows its placeholder and
 - Local tabs (§Local tabs): the sidebar follows only a shell that sends
   OSC 7. One that sends none (bash without a prompt hook, any shell
   inside tmux) leaves the listing where it is; there is no local probe.
-  The toolbar still says Upload and Download where both copy. Rename's
+  The toolbar still says Upload and Download where both copy. A copy
+  over an existing file writes it in place, so a failed or cancelled one
+  leaves that file partial, its old contents gone. Rename's
   check for a taken name and the rename are two steps, so a file created
   between them is replaced. A name that is not valid UTF-8 lists with
   replacement characters and cannot be opened or changed. In the Flatpak

@@ -99,7 +99,8 @@ Highlights:
   status bar, tray:** their display-free models.
 - **Local file task:** listing (links, order), mkdir, rename, delete and
   both copies against a temporary directory, the refusals that keep a
-  file from being replaced or emptied, and shutdown
+  file from being replaced or emptied and a FIFO from being waited on,
+  and shutdown
   (`src/sftp/local/tests.rs`).
 - **RDP:** the argv builder (order, toggles, never `/cert:ignore` or
   `/p:`, no password), the certificate decisions and fingerprint parsing,
