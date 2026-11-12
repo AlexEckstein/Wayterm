@@ -95,7 +95,27 @@ builds the AppImage from it with a pkg2appimage pinned by checksum, and
 attaches both to the GitHub Release for that tag. A manual run
 (`workflow_dispatch`) builds the artifacts without releasing. The
 workflow's token is read-only; only the job that publishes, which runs no
-build, gets one that can write.
+build, gets one that can write. The `deb` job fails before building
+unless the tag matches `Cargo.toml`'s `version`, and the Release's notes
+are generated from the merged PRs, then edited to lead with what the
+release is, how to install it, and its limitations.
+
+A release goes out like this:
+
+1. main is green on CI for the commit being released.
+2. The release commit sets `version` in `Cargo.toml` (SemVer: minor for
+   features, patch for fixes) and adds a `<release>` entry to the
+   metainfo with the day's date and a short description.
+3. A `workflow_dispatch` run builds the artifacts without releasing, and
+   they are smoke-tested before anything is published: the `.deb` is
+   checked with `dpkg-deb`, installed into a clean Debian container,
+   and its binary launched under Xvfb; the AppImage is extracted and its
+   contents inspected, not run — it needs a newer glibc than the smoke
+   host (§Limitations).
+4. The annotated tag `v<version>` is pushed; a published tag is never
+   moved.
+5. The workflow publishes the Release, the notes get their lead
+   paragraph, and the assets are verified from the published release.
 
 ## Limitations
 
