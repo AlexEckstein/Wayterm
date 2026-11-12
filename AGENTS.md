@@ -88,8 +88,8 @@ with a **Limitations** section listing that feature's known gaps.
   vars, doc 15 §CI).
 - **ghostty** — clippy and `cargo test` with `--features
   backend-ghostty`, then the Ghostty widget test under xvfb, against
-  libghostty-vt built at the pin and cached per pin (doc 02
-  §libghostty-vt pin).
+  libghostty-vt built at the pin for a baseline CPU and cached per pin
+  (doc 02 §libghostty-vt pin).
 - **audit** — weekly cargo advisory sweep once `Cargo.lock` exists.
 
 Do not disable or bypass checks to get green. Do not push with

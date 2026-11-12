@@ -31,10 +31,12 @@ on any machine.
   GTK test binaries fit the runner's disk.
 - **ghostty:** clippy, `cargo test` and the Ghostty widget test under
   xvfb, all with `--features backend-ghostty` (§Ghostty backend). It
-  builds libghostty-vt at the pin as doc 02 §libghostty-vt pin does and
-  caches it per pin, so Zig and upstream's dependencies are downloaded
+  builds libghostty-vt at the pin as doc 02 §libghostty-vt pin does,
+  with `-Dcpu=baseline` because runners differ in CPU, and caches it per
+  pin and target CPU, so Zig and upstream's dependencies are downloaded
   only after a bump. It fails first if its source checksum differs from
-  `build.rs` or doc 02.
+  `build.rs` or doc 02, and a failed run ends by printing the runner's
+  CPU model and flags.
 - **audit:** a weekly `cargo audit` sweep.
 - **dependabot:** opens weekly update PRs for `cargo` (minor/patch
   grouped into one PR, majors separate) and for the `github-actions`
