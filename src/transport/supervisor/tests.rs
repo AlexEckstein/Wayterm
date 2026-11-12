@@ -33,6 +33,35 @@ fn key(host: &str) -> PoolKey {
     PoolKey {
         params: params(host),
         verified: true,
+        session_keys: BTreeSet::new(),
+    }
+}
+
+fn host_key(key: &str) -> SessionHostKey {
+    SessionHostKey {
+        key_type: "ssh-ed25519".to_string(),
+        key: key.to_string(),
+    }
+}
+
+/// `key("a")` for a session trusting `keys`.
+fn trusting(keys: &[&str]) -> PoolKey {
+    PoolKey {
+        session_keys: keys.iter().map(|key| host_key(key)).collect(),
+        ..key("a")
+    }
+}
+
+/// A hop under `policy` whose session trusts `keys`.
+fn hop(policy: crate::store::model::HostKeyPolicy, keys: &[&str]) -> HopAuth {
+    use crate::transport::hostkey::{HostKeyDecision, SessionKeySet};
+    HopAuth {
+        method: AuthMethod::None,
+        creds: CredentialManager::new(Vec::new()),
+        verifier: HostKeyVerifier::new(policy, Arc::new(|_| HostKeyDecision::Reject), None)
+            .with_session_keys(SessionKeySet::new(keys.iter().map(|key| host_key(key)))),
+        responder: None,
+        keepalive: Keepalive::default(),
     }
 }
 
@@ -102,6 +131,74 @@ async fn an_unverified_connection_is_not_shared_with_a_verifying_dial() {
         .unwrap();
     assert!(Arc::ptr_eq(&lab, &lab_again));
     assert_eq!(dials.load(Ordering::SeqCst), 2);
+}
+
+/// The pool key of a hop names its session's trusted keys as a set: two
+/// sessions trusting different keys get different keys, the same keys in
+/// any order the same one, and verification on or off still counts.
+#[test]
+fn the_pool_key_tells_session_key_sets_apart() {
+    use crate::store::model::HostKeyPolicy::{Off, Strict};
+    let of = |policy, keys: &[&str]| PoolKey::for_hop(&params("a"), &hop(policy, keys));
+    assert_eq!(of(Strict, &[]), key("a"), "no keys of its own: as before");
+    assert_eq!(of(Strict, &[]), of(Strict, &[]));
+    assert_eq!(of(Strict, &["K1", "K2"]), of(Strict, &["K2", "K1"]));
+    assert_eq!(of(Strict, &["K1"]), of(Strict, &["K1="]), "padding aside");
+    assert_ne!(of(Strict, &["K1"]), of(Strict, &[]));
+    assert_ne!(of(Strict, &["K1"]), of(Strict, &["K2"]));
+    assert_ne!(of(Strict, &["K1"]), of(Strict, &["K1", "K2"]));
+    assert_ne!(of(Strict, &["K1"]), of(Off, &["K1"]));
+    assert_ne!(of(Strict, &[]), of(Off, &[]));
+}
+
+/// Sessions that trust different keys for one host never share its
+/// connection; sessions that trust the same ones do.
+#[tokio::test]
+async fn sessions_trusting_different_keys_never_share_a_connection() {
+    let sup = ConnectionSupervisor::<FakeConn>::new();
+    let dials = AtomicUsize::new(0);
+    let flags = Mutex::new(Vec::new());
+    let dial = |pool_key: PoolKey| {
+        let (sup, dials, flags) = (&sup, &dials, &flags);
+        async move {
+            sup.get_or_connect_with(pool_key, || fake_dial(dials, flags))
+                .await
+                .unwrap()
+        }
+    };
+
+    let plain = dial(key("a")).await;
+    let trusting_k1 = dial(trusting(&["K1"])).await;
+    let trusting_k2 = dial(trusting(&["K2"])).await;
+    assert!(!Arc::ptr_eq(&plain, &trusting_k1));
+    assert!(!Arc::ptr_eq(&trusting_k1, &trusting_k2));
+    assert_eq!(dials.load(Ordering::SeqCst), 3);
+
+    assert!(Arc::ptr_eq(&trusting_k1, &dial(trusting(&["K1"])).await));
+    assert!(Arc::ptr_eq(&plain, &dial(key("a")).await));
+    assert_eq!(dials.load(Ordering::SeqCst), 3);
+}
+
+/// A dial whose session accepted a changed key is pooled under the grown
+/// set: only a session trusting that key too is handed it, never one
+/// still trusting what the dial started with.
+#[tokio::test]
+async fn a_dial_that_trusts_a_new_key_is_pooled_under_its_grown_set() {
+    let sup = ConnectionSupervisor::<FakeConn>::new();
+    let dials = AtomicUsize::new(0);
+    let flags = Mutex::new(Vec::new());
+
+    let conn = sup
+        .get_or_connect_settled(
+            key("a"),
+            || fake_dial(&dials, &flags),
+            |_| trusting(&["K1"]),
+        )
+        .await
+        .unwrap();
+    assert!(sup.lookup(&key("a")).is_none(), "not under the old set");
+    let pooled = sup.lookup(&trusting(&["K1"])).expect("under the grown set");
+    assert!(Arc::ptr_eq(&conn, &pooled));
 }
 
 #[tokio::test]

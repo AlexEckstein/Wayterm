@@ -1,10 +1,10 @@
 //! [`ConnectionSupervisor`]: one authenticated SSH session per
-//! (host, port, username) and host-key verification on or off, shared by
-//! every consumer and disconnected after the last one releases it (doc 04
-//! §Connection supervisor).
+//! (host, port, username), host-key verification on or off, and set of
+//! session-trusted host keys, shared by every consumer and disconnected
+//! after the last one releases it (doc 04 §Connection supervisor).
 
 use std::collections::hash_map::Entry as MapEntry;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use russh::client::{self, Config, Handle};
 use russh::Preferred;
 
-use crate::store::model::SshOptions;
+use crate::store::model::{SessionHostKey, SshOptions};
 use crate::transport::auth::ChallengeResponder;
 use crate::transport::connection::{AppClientHandler, AuthMethod, HandlerError, SshConnection};
 use crate::transport::credentials::CredentialManager;
@@ -35,13 +35,28 @@ pub struct ConnectParams {
     pub username: String,
 }
 
-/// What a pooled connection is shared under: its identity, and whether
-/// its host key was checked. A session that verifies host keys is never
-/// handed a connection dialed with verification off.
+/// What a pooled connection is shared under: its identity, whether its
+/// host key was checked, and the host keys its session trusts beside
+/// known_hosts. A session that verifies host keys is never handed a
+/// connection dialed with verification off, nor one whose key only another
+/// session's set trusts.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PoolKey {
     pub params: ConnectParams,
     pub verified: bool,
+    pub session_keys: BTreeSet<SessionHostKey>,
+}
+
+impl PoolKey {
+    /// The key a dial to `params` with `auth` is shared under, as its
+    /// session's key set stands now.
+    pub(crate) fn for_hop(params: &ConnectParams, auth: &HopAuth) -> Self {
+        Self {
+            params: params.clone(),
+            verified: auth.verifier.verifies(),
+            session_keys: auth.verifier.session_keys().identity(),
+        }
+    }
 }
 
 /// What the pool holds: anything it can disconnect once released, and
@@ -106,6 +121,7 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
     /// Reuse the pooled connection for `key`, else `dial` one. No lock is
     /// held across the dial, so two dials for one key may race; the loser
     /// disconnects its own connection and adopts the winner's.
+    #[cfg(test)]
     async fn get_or_connect_with<F, Fut>(
         &self,
         key: PoolKey,
@@ -115,10 +131,29 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Arc<T>, TransportError>>,
     {
+        self.get_or_connect_settled(key, dial, PoolKey::clone).await
+    }
+
+    /// [`Self::get_or_connect_with`], pooling the new connection under
+    /// `settle(&key)`: a dial whose session accepted a changed key trusts
+    /// one more key than it was looked up with, and only sessions that
+    /// trust it too may share the connection.
+    async fn get_or_connect_settled<F, Fut, S>(
+        &self,
+        key: PoolKey,
+        dial: F,
+        settle: S,
+    ) -> Result<Arc<T>, TransportError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Arc<T>, TransportError>>,
+        S: FnOnce(&PoolKey) -> PoolKey,
+    {
         if let Some(conn) = self.lookup(&key) {
             return Ok(conn);
         }
         let conn = dial().await?;
+        let key = settle(&key);
         let winner = {
             let mut pool = lock_pool(&self.pool);
             match pool.entry(key.clone()) {
@@ -218,11 +253,8 @@ impl ConnectionSupervisor<SshConnection> {
         params: &ConnectParams,
         auth: &HopAuth,
     ) -> Result<Arc<SshConnection>, TransportError> {
-        let key = PoolKey {
-            params: params.clone(),
-            verified: auth.verifier.verifies(),
-        };
-        self.get_or_connect_with(key, || async {
+        let key = PoolKey::for_hop(params, auth);
+        let dial = || async {
             let handler =
                 AppClientHandler::new(params.host.clone(), params.port, auth.verifier.clone());
             let handle = client::connect(
@@ -233,8 +265,9 @@ impl ConnectionSupervisor<SshConnection> {
             .await
             .map_err(|err| connect_error(&params.host, err))?;
             Ok(Arc::new(authenticated(handle, params, auth).await?))
-        })
-        .await
+        };
+        self.get_or_connect_settled(key, dial, |_| PoolKey::for_hop(params, auth))
+            .await
     }
 }
 
