@@ -1,12 +1,20 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use russh::keys::{load_public_key, Algorithm, EcdsaCurve, PublicKey};
 use russh::Preferred;
 
-use crate::store::model::HostKeyPolicy;
-use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
+use crate::store::model::{HostKeyPolicy, SessionHostKey};
+use crate::transport::hostkey::{
+    HostKeyDecision, HostKeyFacts, HostKeyQuestion, HostKeyVerifier, SessionKeySet,
+};
+
+const POLICIES: [HostKeyPolicy; 3] = [
+    HostKeyPolicy::Strict,
+    HostKeyPolicy::AcceptNew,
+    HostKeyPolicy::Off,
+];
 
 const ED25519_KEY_A: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
 const ED25519_KEY_B: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X";
@@ -127,8 +135,10 @@ fn matching_key_accepted() {
     );
 }
 
+/// [`HostKeyVerifier::new`]'s prompt answers only the unknown-host
+/// question: a changed key is denied without calling it.
 #[test]
-fn mismatched_key_fails_without_prompt() {
+fn an_unknown_host_prompt_is_never_asked_about_a_changed_key() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("known_hosts");
     let recorded = make_key(ED25519_KEY_A);
@@ -195,31 +205,31 @@ fn strict_unknown_prompt_reject_is_respected() {
 }
 
 /// A known host showing a key of a type its entries do not hold has
-/// changed its key, under every policy: no prompt, and nothing recorded.
+/// changed its key: `strict` and `accept-new` ask the changed-key
+/// question, never the unknown-host one, and a denial records nothing;
+/// `off` rejects without asking.
 #[test]
-fn a_key_of_another_type_is_rejected_for_a_known_host() {
-    for policy in [
-        HostKeyPolicy::Strict,
-        HostKeyPolicy::AcceptNew,
-        HostKeyPolicy::Off,
-    ] {
+fn a_key_of_another_type_is_a_changed_key_for_a_known_host() {
+    for policy in POLICIES {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("known_hosts");
         let recorded = format!("[localhost]:13265 ecdsa-sha2-nistp256 {ECDSA_KEY}\n");
         std::fs::write(&path, &recorded).unwrap();
 
-        let (v, called) = verifier_with_prompt(policy.clone(), Some(path.clone()));
+        let (v, asked) = asking(policy.clone(), &path, HostKeyDecision::Reject);
         let presented = make_key(ED25519_KEY_A);
         assert_eq!(
             v.verify(&make_facts(), &presented),
             HostKeyDecision::Reject,
             "{policy:?}"
         );
-        assert!(
-            !called.load(Ordering::Relaxed),
-            "{policy:?} must not prompt"
-        );
+        let expected: &[HostKeyQuestion] = match policy {
+            HostKeyPolicy::Off => &[],
+            _ => &[HostKeyQuestion::Changed],
+        };
+        assert_eq!(*asked.lock().unwrap(), expected, "{policy:?}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), recorded);
+        assert!(v.session_keys().keys().is_empty());
     }
 }
 
@@ -352,4 +362,364 @@ fn the_types_of_recorded_keys_are_offered_first() {
         .iter()
         .all(|algorithm| matches!(algorithm, Algorithm::Rsa { .. })));
     assert_eq!(order[3], Algorithm::Ed25519);
+}
+
+// ---------------------------------------------------------------------------
+// The session's own key set (doc 04 §Host key verification)
+// ---------------------------------------------------------------------------
+
+/// The session key set entry for a key blob, as the verifier adds it.
+fn trusted(blob: &str) -> SessionHostKey {
+    SessionHostKey {
+        key_type: "ssh-ed25519".into(),
+        key: blob.trim_end_matches('=').into(),
+    }
+}
+
+/// A verifier that asks both questions, records each one asked, and
+/// answers `answer`; its session trusts nothing yet.
+fn asking(
+    policy: HostKeyPolicy,
+    path: &Path,
+    answer: HostKeyDecision,
+) -> (HostKeyVerifier, Arc<Mutex<Vec<HostKeyQuestion>>>) {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&asked);
+    let v = HostKeyVerifier::asking(
+        policy,
+        Arc::new(move |question, _facts| {
+            log.lock().unwrap().push(question);
+            answer
+        }),
+        Some(Arc::from(path)),
+    );
+    (v, asked)
+}
+
+/// [`asking`], for a session trusting `keys`.
+fn asking_trusting(
+    policy: HostKeyPolicy,
+    path: &Path,
+    answer: HostKeyDecision,
+    keys: &[&str],
+) -> (HostKeyVerifier, Arc<Mutex<Vec<HostKeyQuestion>>>) {
+    let (v, asked) = asking(policy, path, answer);
+    let set = SessionKeySet::new(keys.iter().map(|key| trusted(key)));
+    (v.with_session_keys(set), asked)
+}
+
+/// A key in the session's set is accepted without a question under every
+/// policy, whether known_hosts names the host with another key or not at
+/// all, and known_hosts is left as it was.
+#[test]
+fn a_key_the_session_trusts_is_accepted_without_a_prompt() {
+    for policy in POLICIES {
+        for global in [None, Some(ED25519_KEY_A)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("known_hosts");
+            if let Some(global) = global {
+                write_known_hosts(&path, "localhost", 13265, &make_key(global));
+            }
+            let before = std::fs::read(&path).ok();
+            let (v, asked) = asking_trusting(
+                policy.clone(),
+                &path,
+                HostKeyDecision::Reject,
+                &[ED25519_KEY_B],
+            );
+            assert_eq!(
+                v.verify(&make_facts(), &make_key(ED25519_KEY_B)),
+                HostKeyDecision::Accept,
+                "{policy:?}, known_hosts holding {global:?}"
+            );
+            assert!(asked.lock().unwrap().is_empty(), "{policy:?}");
+            assert_eq!(std::fs::read(&path).ok(), before);
+            assert!(v.session_keys().added().is_empty());
+        }
+    }
+}
+
+/// A changed key the user accepts for the session joins the session's set
+/// — and only it: known_hosts stays byte for byte as it was. The same
+/// verifier then accepts the key without asking again.
+#[test]
+fn a_changed_key_accepted_for_the_session_never_touches_known_hosts() {
+    for policy in [HostKeyPolicy::Strict, HostKeyPolicy::AcceptNew] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        write_known_hosts(&path, "localhost", 13265, &make_key(ED25519_KEY_A));
+        let before = std::fs::read(&path).unwrap();
+
+        let (v, asked) = asking(policy.clone(), &path, HostKeyDecision::AcceptAndSaveSession);
+        let presented = make_key(ED25519_KEY_B);
+        assert_eq!(
+            v.verify(&make_facts(), &presented),
+            HostKeyDecision::AcceptAndSaveSession,
+            "{policy:?}"
+        );
+        assert_eq!(*asked.lock().unwrap(), [HostKeyQuestion::Changed]);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "{policy:?}");
+        assert_eq!(v.session_keys().added(), [trusted(ED25519_KEY_B)]);
+
+        assert_eq!(v.verify(&make_facts(), &presented), HostKeyDecision::Accept);
+        assert_eq!(asked.lock().unwrap().len(), 1, "asked again");
+        assert_eq!(v.session_keys().added().len(), 1);
+    }
+}
+
+/// Denying a changed key rejects it and trusts nothing; so does any answer
+/// but the session one — `AcceptAndSave` included, which must never write
+/// a changed key into known_hosts.
+#[test]
+fn a_changed_key_is_rejected_unless_accepted_for_the_session() {
+    for answer in [
+        HostKeyDecision::Reject,
+        HostKeyDecision::Accept,
+        HostKeyDecision::AcceptAndSave,
+    ] {
+        for policy in [HostKeyPolicy::Strict, HostKeyPolicy::AcceptNew] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("known_hosts");
+            write_known_hosts(&path, "localhost", 13265, &make_key(ED25519_KEY_A));
+            let before = std::fs::read(&path).unwrap();
+
+            let (v, asked) = asking(policy.clone(), &path, answer);
+            assert_eq!(
+                v.verify(&make_facts(), &make_key(ED25519_KEY_B)),
+                HostKeyDecision::Reject,
+                "{policy:?} answered {answer:?}"
+            );
+            assert_eq!(*asked.lock().unwrap(), [HostKeyQuestion::Changed]);
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert!(v.session_keys().keys().is_empty());
+        }
+    }
+}
+
+/// Keys of the session's own make the host known to it: another key is a
+/// changed key even where known_hosts has no entry — asked about as one,
+/// and never recorded silently under `accept-new`.
+#[test]
+fn a_key_other_than_the_sessions_is_a_changed_key_without_known_hosts_entries() {
+    for policy in [HostKeyPolicy::Strict, HostKeyPolicy::AcceptNew] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        let (v, asked) = asking_trusting(
+            policy.clone(),
+            &path,
+            HostKeyDecision::Reject,
+            &[ED25519_KEY_A],
+        );
+        assert_eq!(
+            v.verify(&make_facts(), &make_key(ED25519_KEY_B)),
+            HostKeyDecision::Reject,
+            "{policy:?}"
+        );
+        assert_eq!(*asked.lock().unwrap(), [HostKeyQuestion::Changed]);
+        assert!(!path.exists(), "{policy:?} recorded a changed key");
+
+        let (v, _) = asking_trusting(
+            policy.clone(),
+            &path,
+            HostKeyDecision::AcceptAndSaveSession,
+            &[ED25519_KEY_A],
+        );
+        assert_eq!(
+            v.verify(&make_facts(), &make_key(ED25519_KEY_B)),
+            HostKeyDecision::AcceptAndSaveSession
+        );
+        assert_eq!(
+            v.session_keys().keys(),
+            [trusted(ED25519_KEY_A), trusted(ED25519_KEY_B)]
+        );
+        assert!(!path.exists());
+    }
+}
+
+/// `off` never asks: a changed key, whether known_hosts or the session
+/// holds the other key, is rejected as before; a host nothing records is
+/// accepted.
+#[test]
+fn off_rejects_a_changed_key_without_asking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known_hosts");
+    let presented = make_key(ED25519_KEY_B);
+
+    let (v, asked) = asking_trusting(
+        HostKeyPolicy::Off,
+        &path,
+        HostKeyDecision::AcceptAndSaveSession,
+        &[ED25519_KEY_A],
+    );
+    assert_eq!(v.verify(&make_facts(), &presented), HostKeyDecision::Reject);
+
+    write_known_hosts(&path, "localhost", 13265, &make_key(ED25519_KEY_A));
+    let (v, asked_too) = asking(
+        HostKeyPolicy::Off,
+        &path,
+        HostKeyDecision::AcceptAndSaveSession,
+    );
+    assert_eq!(v.verify(&make_facts(), &presented), HostKeyDecision::Reject);
+    assert!(asked.lock().unwrap().is_empty() && asked_too.lock().unwrap().is_empty());
+    assert!(v.session_keys().keys().is_empty());
+
+    let (v, _) = asking(
+        HostKeyPolicy::Off,
+        &dir.path().join("none"),
+        HostKeyDecision::Reject,
+    );
+    assert_eq!(v.verify(&make_facts(), &presented), HostKeyDecision::Accept);
+}
+
+/// An `@revoked` entry in known_hosts outranks the session's set under
+/// every policy: no prompt, no connection.
+#[test]
+fn a_revoked_key_is_rejected_even_where_the_session_trusts_it() {
+    for policy in POLICIES {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        std::fs::write(&path, format!("@revoked * ssh-ed25519 {ED25519_KEY_A}\n")).unwrap();
+        let (v, asked) = asking_trusting(
+            policy.clone(),
+            &path,
+            HostKeyDecision::AcceptAndSaveSession,
+            &[ED25519_KEY_A],
+        );
+        assert_eq!(
+            v.verify(&make_facts(), &make_key(ED25519_KEY_A)),
+            HostKeyDecision::Reject,
+            "{policy:?}"
+        );
+        assert!(asked.lock().unwrap().is_empty(), "{policy:?} asked");
+    }
+}
+
+/// The unknown-host question is still the one asked where nothing records
+/// the host; its accept records known_hosts, never the session's set, and
+/// the changed-key answer is no answer to it.
+#[test]
+fn an_unknown_host_is_still_asked_about_and_recorded_globally() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known_hosts");
+    let key = make_key(ED25519_KEY_A);
+
+    let (v, asked) = asking(
+        HostKeyPolicy::Strict,
+        &path,
+        HostKeyDecision::AcceptAndSaveSession,
+    );
+    assert_eq!(v.verify(&make_facts(), &key), HostKeyDecision::Reject);
+    assert_eq!(*asked.lock().unwrap(), [HostKeyQuestion::Unknown]);
+    assert!(!path.exists());
+    assert!(v.session_keys().keys().is_empty());
+
+    let (v, asked) = asking(HostKeyPolicy::Strict, &path, HostKeyDecision::AcceptAndSave);
+    assert_eq!(
+        v.verify(&make_facts(), &key),
+        HostKeyDecision::AcceptAndSave
+    );
+    assert_eq!(*asked.lock().unwrap(), [HostKeyQuestion::Unknown]);
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains(ED25519_KEY_A));
+    assert!(v.session_keys().keys().is_empty());
+}
+
+/// Whatever keeps known_hosts from answering still rejects when the
+/// session trusts the key: the file could revoke it. Only `off` connects.
+#[test]
+fn failing_closed_outranks_the_sessions_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let not_a_file = dir.path().to_path_buf();
+    let key = make_key(ED25519_KEY_A);
+    for (policy, expected) in [
+        (HostKeyPolicy::Strict, HostKeyDecision::Reject),
+        (HostKeyPolicy::AcceptNew, HostKeyDecision::Reject),
+        (HostKeyPolicy::Off, HostKeyDecision::Accept),
+    ] {
+        let (v, asked) = asking_trusting(
+            policy.clone(),
+            &not_a_file,
+            HostKeyDecision::AcceptAndSaveSession,
+            &[ED25519_KEY_A],
+        );
+        assert_eq!(v.verify(&make_facts(), &key), expected, "{policy:?}");
+        assert!(asked.lock().unwrap().is_empty());
+    }
+
+    let facts = HostKeyFacts {
+        host: "*".into(),
+        ..make_facts()
+    };
+    let path = dir.path().join("known_hosts");
+    let (v, asked) = asking_trusting(
+        HostKeyPolicy::Strict,
+        &path,
+        HostKeyDecision::AcceptAndSaveSession,
+        &[ED25519_KEY_A],
+    );
+    assert_eq!(v.verify(&facts, &key), HostKeyDecision::Reject);
+    assert!(asked.lock().unwrap().is_empty());
+}
+
+/// The types of the keys the session trusts count as recorded: asked for
+/// first, beside those known_hosts records.
+#[test]
+fn the_types_of_session_trusted_keys_are_offered_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known_hosts");
+    let ecdsa = SessionHostKey {
+        key_type: "ecdsa-sha2-nistp256".into(),
+        key: ECDSA_KEY.into(),
+    };
+    let v = verifier(
+        HostKeyPolicy::Strict,
+        HostKeyDecision::Reject,
+        Some(path.clone()),
+    )
+    .with_session_keys(SessionKeySet::new([ecdsa]));
+    let p256 = Algorithm::Ecdsa {
+        curve: EcdsaCurve::NistP256,
+    };
+    let order = v.key_preference("localhost", 13265);
+    assert_eq!(order[0], p256, "no known_hosts entry");
+    assert_eq!(order[1], Algorithm::Ed25519, "the rest keep their order");
+    assert_eq!(order.len(), Preferred::DEFAULT.key.len());
+
+    // Beside known_hosts' types, in the default order.
+    std::fs::write(&path, "[localhost]:13265 ssh-rsa AAAAB3NzaC1yc2E\n").unwrap();
+    let order = v.key_preference("localhost", 13265);
+    let first: Vec<_> = order.iter().take(4).cloned().collect();
+    assert!(first.contains(&p256), "{first:?}");
+    assert!(
+        first[..]
+            .iter()
+            .filter(|algorithm| matches!(algorithm, Algorithm::Rsa { .. }))
+            .count()
+            == 3
+    );
+    assert!(!first.contains(&Algorithm::Ed25519));
+    assert_eq!(order[4], Algorithm::Ed25519);
+}
+
+#[test]
+fn a_session_key_set_is_seeded_unpadded_and_reports_only_what_it_gained() {
+    let padded = SessionHostKey {
+        key_type: "ssh-ed25519".into(),
+        key: format!("{ED25519_KEY_A}=="),
+    };
+    let set = SessionKeySet::new([padded.clone(), trusted(ED25519_KEY_A)]);
+    assert_eq!(
+        set.keys(),
+        [trusted(ED25519_KEY_A)],
+        "deduplicated, unpadded"
+    );
+    assert!(set.added().is_empty());
+
+    let clone = set.clone();
+    clone.add(trusted(ED25519_KEY_B));
+    clone.add(padded);
+    assert_eq!(set.added(), [trusted(ED25519_KEY_B)], "shared, never twice");
+    assert_eq!(set.keys().len(), 2);
+    assert!(SessionKeySet::default().keys().is_empty());
 }

@@ -22,13 +22,13 @@ use super::{
     SessionTab, TabType, NO_HOST, NO_USERNAME,
 };
 use crate::sftp::ShellCwdProbe;
-use crate::store::model::{ForwardRule, HostKeyPolicy, SessionConfig};
+use crate::store::model::{ForwardRule, HostKeyPolicy, SessionConfig, SessionHostKey};
 use crate::store::SessionStore;
 #[cfg(feature = "backend-ghostty")]
 use crate::terminal::ghostty::view::GhosttyView;
 use crate::transport::connection::SshConnection;
 use crate::transport::forward::{ForwardEngine, ForwardEvent};
-use crate::transport::hostkey::HostKeyVerifier;
+use crate::transport::hostkey::{HostKeyVerifier, SessionKeySet};
 use crate::transport::jump;
 use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor, HopAuth, Keepalive};
 use crate::transport::types::{TransportError, TransportState};
@@ -125,6 +125,10 @@ pub(super) fn start(
 
     let store = page_store(page);
     let auth = hop_auth(session, store.as_deref());
+    // Each hop's session key set and whose row it is: what the user
+    // accepts at a changed-key prompt is saved back after the dial,
+    // whatever its outcome (doc 04 §Host key verification).
+    let mut trusted = vec![(session.id, auth.verifier.session_keys().clone())];
     let params = ConnectParams {
         host: host.clone(),
         port,
@@ -143,6 +147,7 @@ pub(super) fn start(
         };
         // Each hop authenticates as its own session (doc 04).
         let jump_auth = hop_auth(&jump_cfg, store.as_deref());
+        trusted.push((jump_cfg.id, jump_auth.verifier.session_keys().clone()));
         // Plain data: the blocking pool owns this copy (`Rc` is not `Send`).
         let target: SessionConfig = (**session).clone();
         tokio::task::spawn_blocking(move || {
@@ -163,6 +168,10 @@ pub(super) fn start(
     let (notebook, page, session) = (notebook.clone(), page.clone(), session.clone());
     glib::MainContext::default().spawn_local(async move {
         let result = dial.await;
+        // Before anything else: a key accepted for a session stays
+        // accepted even when the dial then failed, was cancelled or was
+        // superseded.
+        save_accepted_keys(page_store(&page).as_deref(), &trusted);
         // Superseded or cancelled: a late connection is just dropped, which
         // releases it to the supervisor.
         if current_gen(&page) != gen {
@@ -185,19 +194,50 @@ pub(super) fn start(
 /// How the hop `session` describes authenticates (doc 04): its stored
 /// method, its own credential chain, a prompt-backed host-key check under
 /// its own policy — else the global one, or strict when the page has no
-/// store to read that from — the challenge dialog, and its stored
-/// keepalives.
+/// store to read that from — trusting its own host keys, the challenge
+/// dialog, and its stored keepalives.
 fn hop_auth(session: &SessionConfig, store: Option<&SessionStore>) -> HopAuth {
     let policy = session
         .host_key_policy
         .clone()
         .unwrap_or_else(|| store.map_or(HostKeyPolicy::Strict, SessionStore::host_key_policy));
+    let verifier = HostKeyVerifier::asking(policy, hostkey::host_key_prompt(), None)
+        .with_session_keys(session_key_set(session, store));
     HopAuth {
         method: jump::hop_auth_method(session),
         creds: credential_manager(session.id, &session.name, store),
-        verifier: HostKeyVerifier::new(policy, hostkey::host_key_prompt(), None),
+        verifier,
         responder: Some(auth::challenge_responder(session.name.clone())),
         keepalive: Keepalive::from_options(session.ssh_options.as_ref()),
+    }
+}
+
+/// The host keys `session` trusts, read fresh from its row so a redial
+/// after an acceptance never asks again; the tab's copy of the row only
+/// when there is no store or no row to read.
+fn session_key_set(session: &SessionConfig, store: Option<&SessionStore>) -> SessionKeySet {
+    let stored: Option<Vec<SessionHostKey>> = match store.map(|s| s.get_session(session.id)) {
+        Some(Ok(row)) => row.host_keys,
+        _ => session.host_keys.clone(),
+    };
+    SessionKeySet::new(stored.unwrap_or_default())
+}
+
+/// Save to each hop's row the keys its session was told to trust during
+/// the dial (doc 04 §Host key verification). Main thread only, like the
+/// store.
+fn save_accepted_keys(store: Option<&SessionStore>, trusted: &[(i64, SessionKeySet)]) {
+    for (session_id, keys) in trusted {
+        let added = keys.added();
+        if added.is_empty() {
+            continue;
+        }
+        let why = match store.map(|store| store.add_session_host_keys(*session_id, &added)) {
+            Some(Ok(_)) => continue,
+            Some(Err(err)) => err.to_string(),
+            None => "no session store".to_string(),
+        };
+        eprintln!("Wayterm: the host key accepted for session {session_id} was not saved: {why}");
     }
 }
 
@@ -594,6 +634,89 @@ mod tests {
         drop(bridge);
         tokio::task::yield_now().await;
         assert!(probe.upgrade().is_none(), "the engine outlived its bridge");
+    }
+
+    fn host_key(key: &str) -> SessionHostKey {
+        SessionHostKey {
+            key_type: "ssh-ed25519".to_string(),
+            key: key.to_string(),
+        }
+    }
+
+    /// A hop's verifier trusts the keys its row holds now, not those of the
+    /// tab's older copy of the row, so a redial after an acceptance does
+    /// not ask again; without a store or a row, the copy is all there is.
+    #[test]
+    fn a_hop_trusts_the_keys_its_row_holds_now() {
+        let store = SessionStore::in_memory().expect("in-memory store");
+        let stale = SessionConfig {
+            name: "web".to_string(),
+            host_keys: Some(vec![host_key("OLD")]),
+            ..Default::default()
+        };
+        let id = store.insert_session(&stale).expect("insert");
+        store
+            .add_session_host_keys(id, &[host_key("NEW")])
+            .expect("accept a key");
+        let stale = SessionConfig { id, ..stale };
+
+        assert_eq!(
+            session_key_set(&stale, Some(&store)).keys(),
+            [host_key("OLD"), host_key("NEW")]
+        );
+        assert_eq!(session_key_set(&stale, None).keys(), [host_key("OLD")]);
+        let unsaved = SessionConfig {
+            id: id + 1,
+            ..stale.clone()
+        };
+        assert_eq!(
+            session_key_set(&unsaved, Some(&store)).keys(),
+            [host_key("OLD")]
+        );
+    }
+
+    /// What each hop's session gained during the dial goes to that hop's
+    /// own row — the jump host's to the jump host's — and a hop that
+    /// gained nothing leaves its row alone.
+    #[test]
+    fn accepted_keys_are_saved_to_each_hops_own_row() {
+        let store = SessionStore::in_memory().expect("in-memory store");
+        let target = store
+            .insert_session(&SessionConfig::default())
+            .expect("insert target");
+        let jump = store
+            .insert_session(&SessionConfig::default())
+            .expect("insert jump");
+        let untouched = store
+            .insert_session(&SessionConfig {
+                host_keys: Some(vec![host_key("KEPT")]),
+                ..Default::default()
+            })
+            .expect("insert");
+
+        let target_keys = SessionKeySet::new([host_key("SEEDED")]);
+        let jump_keys = SessionKeySet::default();
+        target_keys.add(host_key("T"));
+        jump_keys.add(host_key("J"));
+        let quiet = SessionKeySet::new([host_key("KEPT")]);
+        save_accepted_keys(
+            Some(&store),
+            &[(target, target_keys), (jump, jump_keys), (untouched, quiet)],
+        );
+
+        let keys = |id| store.get_session(id).expect("row").host_keys;
+        assert_eq!(
+            keys(target),
+            Some(vec![host_key("T")]),
+            "only what it gained"
+        );
+        assert_eq!(keys(jump), Some(vec![host_key("J")]));
+        assert_eq!(keys(untouched), Some(vec![host_key("KEPT")]));
+        // No store, or a deleted row: nothing to write to, no panic.
+        let gained = SessionKeySet::default();
+        gained.add(host_key("X"));
+        save_accepted_keys(None, &[(target, gained.clone())]);
+        save_accepted_keys(Some(&store), &[(target + 99, gained)]);
     }
 
     #[test]
