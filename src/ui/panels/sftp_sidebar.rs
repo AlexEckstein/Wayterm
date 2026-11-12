@@ -17,6 +17,10 @@
 //! A file opens in the desktop's application for it from a local copy
 //! ([`OpenFile`]); each version the application saves is uploaded over
 //! the remote file (doc 07 §Opening files).
+//!
+//! A local-shell tab's sidebar ([`SftpSidebar::local`]) browses this
+//! machine's files through the same commands (doc 07 §Local tabs): paths
+//! are absolute, a file opens where it is, and nothing is probed.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -53,6 +57,8 @@ struct Buttons {
 
 /// Widgets plus state, shared by the callbacks and reply futures.
 struct SidebarInner {
+    /// A local-shell tab's: it browses this machine's files.
+    local: bool,
     container: gtk4::Box,
     path_entry: gtk4::Entry,
     column_view: gtk4::ColumnView,
@@ -71,8 +77,9 @@ struct SidebarInner {
     state: RefCell<SftpView>,
     /// The live SFTP task, once [`SftpSidebar::attach`] has been called.
     attached: RefCell<Option<Attached>>,
-    /// A connection waiting for the first show (`sftp_on_connect` off).
-    deferred: RefCell<Option<Arc<SshConnection>>>,
+    /// What to attach to on the first show (`sftp_on_connect` off, or a
+    /// local tab).
+    deferred: RefCell<Option<Files>>,
     /// Asks the remote where the current shell is.
     probe: RefCell<Option<ShellCwdProbe>>,
     /// A probe is running; another request waits for it (`probe_again`).
@@ -142,9 +149,18 @@ struct Attached {
     commands: IdleSender<SftpCommand>,
 }
 
+/// What a sidebar's task serves.
+enum Files {
+    Remote(Arc<SshConnection>),
+    Local,
+}
+
 impl Attached {
-    fn new(connection: Arc<SshConnection>) -> Self {
-        Self::with_client(SftpClient::new(connection))
+    fn new(files: Files) -> Self {
+        Self::with_client(match files {
+            Files::Remote(connection) => SftpClient::new(connection),
+            Files::Local => SftpClient::local(),
+        })
     }
 
     fn with_client(client: SftpClient) -> Self {
@@ -206,20 +222,41 @@ impl SftpSidebar {
     /// [`attach`](Self::attach).
     pub fn new() -> Self {
         Self {
-            inner: build_sidebar(),
+            inner: build_sidebar(false),
         }
+    }
+
+    /// A local-shell tab's sidebar, browsing this machine's files once
+    /// [`attach_local_on_connect`](Self::attach_local_on_connect) has run.
+    /// Not `shown`, it stays hidden, and reads no directory, until its
+    /// first [`show`](Self::show).
+    pub fn local(shown: bool) -> Self {
+        let sidebar = Self {
+            inner: build_sidebar(true),
+        };
+        sidebar.inner.state.borrow_mut().shown = shown;
+        sidebar.inner.render();
+        sidebar
+    }
+
+    pub fn is_local(&self) -> bool {
+        self.inner.local
     }
 
     /// Start an SFTP task over the shared connection and list the start
     /// path ([`START_PATH`] or the shell's directory). Re-attaching
     /// replaces (and ends) the previous task.
     pub fn attach(&self, connection: Arc<SshConnection>) {
+        self.attach_to(Files::Remote(connection));
+    }
+
+    fn attach_to(&self, files: Files) {
         self.inner.deferred.borrow_mut().take();
         let previous = self
             .inner
             .attached
             .borrow_mut()
-            .replace(Attached::new(connection));
+            .replace(Attached::new(files));
         if previous.is_some() {
             // Its transfers still answer, about files this task never saw.
             self.inner.edits.borrow_mut().clear();
@@ -245,7 +282,23 @@ impl SftpSidebar {
         if attach_on_connect(open_on_connect(), self.is_shown()) {
             self.attach(connection);
         } else {
-            *self.inner.deferred.borrow_mut() = Some(connection);
+            *self.inner.deferred.borrow_mut() = Some(Files::Remote(connection));
+        }
+    }
+
+    /// A local-shell tab's shell started in `start`: browse from there,
+    /// now if the sidebar has been shown, else on its first show.
+    pub fn attach_local_on_connect(&self, start: &str) {
+        {
+            let mut state = self.inner.state.borrow_mut();
+            state.new_shell();
+            state.start_at(start);
+        }
+        self.inner.sync_path_entry();
+        if self.is_shown() {
+            self.attach_to(Files::Local);
+        } else {
+            *self.inner.deferred.borrow_mut() = Some(Files::Local);
         }
     }
 
@@ -366,8 +419,8 @@ impl SftpSidebar {
         }
         self.inner.render();
         let deferred = self.inner.deferred.borrow_mut().take();
-        if let Some(connection) = deferred {
-            self.attach(connection);
+        if let Some(files) = deferred {
+            self.attach_to(files);
         }
     }
 }
@@ -510,11 +563,11 @@ fn chooser_paths(model: &gio::ListModel) -> Vec<String> {
 }
 
 /// Build and wire the widgets.
-fn build_sidebar() -> Rc<SidebarInner> {
+fn build_sidebar(local: bool) -> Rc<SidebarInner> {
     // 1. Path bar (doc 07 §Layout): Enter navigates.
     let path_entry = gtk4::Entry::new();
     path_entry.set_text(START_PATH);
-    path_entry.set_placeholder_text(Some("remote path"));
+    path_entry.set_placeholder_text(Some(if local { "path" } else { "remote path" }));
     path_entry.set_hexpand(true);
 
     // 2. Toolbar — exactly doc 07's six buttons, their icons bundled with
@@ -630,6 +683,7 @@ fn build_sidebar() -> Rc<SidebarInner> {
     container.append(&follow_check);
 
     let inner = Rc::new(SidebarInner {
+        local,
         container,
         path_entry,
         column_view,
@@ -941,12 +995,21 @@ impl SidebarInner {
         self.render();
     }
 
+    /// The inline error for a sidebar with no task behind it.
+    fn not_connected(&self) -> &'static str {
+        if self.local {
+            SHELL_NOT_RUNNING
+        } else {
+            NOT_CONNECTED
+        }
+    }
+
     /// Send a command behind any parked ones; `false` when it cannot be
     /// delivered at all.
     fn send(self: &Rc<Self>, cmd: SftpCommand) -> bool {
         let commands = self.attached.borrow().as_ref().map(|a| a.commands.clone());
         let Some(commands) = commands else {
-            self.set_error(NOT_CONNECTED);
+            self.set_error(self.not_connected());
             return false;
         };
         if !commands.send(cmd) {
@@ -1024,9 +1087,19 @@ impl SidebarInner {
     /// Queue a `Cd` and apply the listing (or the error) when it answers.
     fn cd(self: &Rc<Self>, path: String) {
         if self.client().is_none() {
-            self.set_error(NOT_CONNECTED);
+            self.set_error(self.not_connected());
             return;
         }
+        let path = if self.local {
+            let home = glib::home_dir();
+            local_target(
+                self.state.borrow().current_path(),
+                &path,
+                &home.to_string_lossy(),
+            )
+        } else {
+            path
+        };
         let (reply, reply_rx) = oneshot::channel();
         if !self.send(SftpCommand::Cd {
             path: path.clone(),
@@ -1051,7 +1124,7 @@ impl SidebarInner {
     /// Upload local files into the current directory (toolbar or drag-drop).
     fn queue_uploads(self: &Rc<Self>, local_paths: Vec<String>) {
         if self.client().is_none() {
-            self.set_error(NOT_CONNECTED);
+            self.set_error(self.not_connected());
             return;
         }
         for local_path in local_paths {
@@ -1100,7 +1173,7 @@ impl SidebarInner {
         on_done: impl FnOnce(&Rc<Self>, bool) + 'static,
     ) {
         let Some(client) = self.client() else {
-            self.set_error(NOT_CONNECTED);
+            self.set_error(self.not_connected());
             on_done(self, false);
             return;
         };
@@ -1148,15 +1221,19 @@ impl SidebarInner {
     /// Open the remote file in its application, or one the user picks
     /// (`ask`), from a local copy. A file opened before is downloaded
     /// again into the copy it has, unless that holds a version the server
-    /// lacks: then that version is sent, and shown.
+    /// lacks: then that version is sent, and shown. A local tab's file
+    /// opens where it is.
     fn open_file(self: &Rc<Self>, remote: String, ask: bool) {
+        if self.client().is_none() {
+            self.set_error(self.not_connected());
+            return;
+        }
+        if self.local {
+            return self.launch(Path::new(&remote), ask);
+        }
         let name = file_name(&remote);
         if !is_plain_file_name(&name) {
             self.set_error(&format!("Cannot open '{name}': not a usable file name"));
-            return;
-        }
-        if self.client().is_none() {
-            self.set_error(NOT_CONNECTED);
             return;
         }
         let known = self
@@ -1879,6 +1956,62 @@ pub(in crate::ui) mod gtk_tests {
         assert_eq!(sidebar.path_text(), "/var/log", "ticked: catches up");
     }
 
+    /// A local tab's sidebar reads nothing until it is shown. Then it
+    /// lists the shell's directory from the real file task, takes a typed
+    /// path from where it is, opens a file where that is, follows the
+    /// shell, and says so once no shell is behind it.
+    pub(in crate::ui) fn a_local_sidebar_browses_this_machines_files() {
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _entered = runtime.enter();
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("docs")).unwrap();
+        std::fs::write(tmp.path().join("docs/notes.txt"), b"here").unwrap();
+        let start = tmp.path().to_string_lossy().into_owned();
+        let docs = format!("{start}/docs");
+
+        let sidebar = SftpSidebar::local(false);
+        let inner = &sidebar.inner;
+        sidebar.attach_local_on_connect(&start);
+        assert!(inner.attached.borrow().is_none(), "browsing unseen");
+        assert_eq!(sidebar.path_text(), start);
+
+        let names = || -> Vec<String> {
+            let state = inner.state.borrow();
+            state.rows.iter().map(|row| row.name.clone()).collect()
+        };
+        let listed = |path: &str| inner.state.borrow().path == path;
+        sidebar.show();
+        spin(|| listed(&start));
+        assert_eq!(names(), [PARENT_ROW, "docs"]);
+
+        inner.cd("./docs/".into());
+        spin(|| listed(&docs));
+        assert_eq!(sidebar.path_text(), docs);
+        assert_eq!(names(), [PARENT_ROW, "notes.txt"]);
+
+        inner.column_view.emit_by_name::<()>("activate", &[&1u32]);
+        assert_eq!(
+            *inner.launched.borrow(),
+            [(tmp.path().join("docs/notes.txt"), false)]
+        );
+        assert!(inner.edits.borrow().is_empty(), "a copy of a local file");
+
+        inner.column_view.emit_by_name::<()>("activate", &[&0u32]);
+        spin(|| listed(&start));
+        assert_eq!(sidebar.path_text(), start);
+        sidebar.follow_shell(docs.clone());
+        spin(|| listed(&docs));
+        assert_eq!(sidebar.path_text(), docs);
+
+        sidebar.detach();
+        inner.cd(start);
+        assert_eq!(
+            inner.state.borrow().error.as_deref(),
+            Some(SHELL_NOT_RUNNING)
+        );
+        settle();
+    }
+
     /// A sidebar detached mid-transfer shuts its task down and closes its
     /// command channel, though the transfer's futures still hold the
     /// sidebar.
@@ -1908,7 +2041,9 @@ pub(in crate::ui) mod gtk_tests {
     /// Dropping the last handle frees the sidebar, and with it the SFTP
     /// task's command sender, so the task ends (doc 07 §Connection model).
     pub(in crate::ui) fn a_dropped_sidebar_is_freed() {
-        for sidebar in [SftpSidebar::new(), SftpSidebar::hidden()] {
+        let local = SftpSidebar::local(false);
+        local.attach_local_on_connect("/");
+        for sidebar in [SftpSidebar::new(), SftpSidebar::hidden(), local] {
             let inner = Rc::downgrade(&sidebar.inner);
             drop(sidebar);
             assert!(

@@ -69,6 +69,7 @@ mod gtk_tests {
         super::panels::sftp_sidebar::gtk_tests::opened_files_survive_a_reconnect();
         super::panels::sftp_sidebar::gtk_tests::a_failed_open_leaves_no_copy();
         super::panels::sftp_sidebar::gtk_tests::follow_checkbox_toggles_following();
+        super::panels::sftp_sidebar::gtk_tests::a_local_sidebar_browses_this_machines_files();
         super::panels::sftp_sidebar::gtk_tests::detaching_mid_transfer_ends_the_task();
         super::panels::sftp_sidebar::gtk_tests::a_dropped_sidebar_is_freed();
         super::panels::side_dock::gtk_tests::icon_tabs_switch_the_panel();
@@ -94,6 +95,7 @@ mod gtk_tests {
         super::tabs::gtk_tests::a_failed_transport_ends_the_connection();
         super::tabs::gtk_tests::closing_a_tab_ends_its_forwards_and_sftp();
         super::tabs::gtk_tests::a_local_shell_tab_connects_and_closes();
+        super::tabs::gtk_tests::a_local_shell_tabs_sidebar_follows_its_shell();
         super::tabs::gtk_tests::terminals_follow_the_color_scheme_and_system_theme();
         super::tabs::gtk_tests::terminals_follow_the_font_opacity_and_scrollback_rows();
         super::tabs::gtk_tests::a_scheme_change_keeps_the_selection_color();

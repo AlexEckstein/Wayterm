@@ -141,6 +141,6 @@ fn blit_tolerates_short_buffers() {
 
 #[test]
 fn vnc_tabs_get_no_sftp_sidebar() {
-    assert!(!SessionType::VNC.supports_sftp());
-    assert!(SessionType::SSH.supports_sftp());
+    assert!(!SessionType::VNC.has_file_sidebar());
+    assert!(SessionType::SSH.has_file_sidebar());
 }

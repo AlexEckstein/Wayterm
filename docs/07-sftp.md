@@ -3,18 +3,21 @@
 A remote file browser for each SSH tab, shown in the side dock's SFTP
 panel (doc 01 §Side dock): navigate, upload, download, delete, rename,
 create folders, drag files in, open files in a local application, and
-follow the shell's working directory.
+follow the shell's working directory. A local-shell tab gets the same
+sidebar over this machine's own files (§Local tabs).
 
-Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe),
+Code: `src/sftp/` (the tokio half: task, commands, shell-directory probe,
+and the local file task),
 `src/ui/panels/sftp_sidebar.rs` (the GTK half), `src/ui/panels/sftp_sidebar/model.rs`
 (its display-free model: rows, columns, toolbar rules, opened files).
 
 ## Layout
 
-Each SSH tab owns its sidebar, but the tab's page holds only the
-terminal: the side dock's SFTP panel hosts the current tab's sidebar and
-swaps it as the notebook switches tabs. Tabs without one (local, serial,
-RDP, VNC, Home) get a placeholder. Whenever the tab lets go of its
+Each SSH tab owns its sidebar, and each local-shell tab its own (§Local
+tabs), but the tab's page holds only the terminal: the side dock's SFTP
+panel hosts the current tab's sidebar and swaps it as the notebook
+switches tabs. Tabs without one (serial, RDP, VNC, Home) get a
+placeholder. Whenever the tab lets go of its
 connection (a redial, Disconnect, a lost connection, the shell's exit or
 a transport that fails to connect, doc 03 §Reconnect), the old sidebar
 detaches, ending its SFTP task and cancelling any running transfer
@@ -207,7 +210,7 @@ It learns that two ways:
   reports naming another host come from a nested `ssh` inside the
   session, whose paths are not on this connection. This is a heuristic:
   if the session's own shell never reports, the first nested host that
-  does is pinned.
+  does is pinned. A local tab knows its host instead (§Local tabs).
 - **Probing.** Many shells send nothing over SSH: bash by default,
   oh-my-zsh (it turns OSC 7 off when `$SSH_TTY` is set), and any shell
   inside tmux, which keeps OSC 7 for itself. So after each command (Enter,
@@ -247,11 +250,55 @@ Uploads accept both `GdkFileList` (GTK 4 file managers) and
 host, percent-decoded). gtk4-rs does not bind the one-target multi-type
 API, so the listing carries two drop targets.
 
+## Local tabs
+
+A local-shell tab (doc 06 §Local shell) has no connection, and its
+sidebar browses the machine Wayterm runs on. It is the same sidebar
+sending the same `SftpCommand`s: `SftpClient::local()` spawns a task
+(`src/sftp/local.rs`) that answers them from the file system, with no
+session to open or lose. What differs:
+
+- **When it reads.** The task starts the first time the SFTP panel has
+  the tab's sidebar in view, whatever `sftp_on_connect` says, and opening
+  a local tab never brings the panel forward: a tab nobody browses reads
+  no directory. The sidebar browses while the tab's shell runs. When the
+  shell exits or the tab disconnects an empty sidebar replaces it, as on
+  an SSH tab (§Layout); until the tab connects again its path bar
+  answers "Browsing files needs the tab's shell running".
+- **Paths** are absolute. The first listing is the directory the shell
+  starts in: the session's `local_working_dir`, else Wayterm's own
+  (doc 06 §Local shell), unless the shell reported another by then. In
+  the path bar `~` and `~/…` mean the home directory, a relative path
+  starts at the listed directory, and `.` and `..` steps are taken by
+  name, as a shell's `cd` takes them (`local_target`).
+- **Listing.** A symbolic link shows as what it points to, so a linked
+  directory opens; a dangling one shows as itself. The whole directory is
+  read in one pass on the blocking pool.
+- **Upload and Download both copy a file.** Upload copies the chosen or
+  dropped files into the listed directory; Download copies the selected
+  file to where the file chooser says. Like `cp`, a copy gives a new
+  file the source's mode (less the umask), and replaces a file already
+  there in place, which keeps its own mode. Only regular files are
+  copied, to a regular file or a new one. A file is never copied onto
+  itself, under its own name or through a link: creating the target
+  would empty it.
+- **Rename** refuses a name that is taken, as an SFTP server does;
+  `rename(2)` alone would replace the other file.
+- **Delete** removes a link, never what it points to; directories must be
+  empty. Nothing goes to the trash.
+- **Opening a file** hands the file itself to the desktop: no copy, no
+  watching, nothing to upload (§Opening files does not apply).
+- **Following the shell** uses OSC 7 only; nothing is probed. The
+  follower takes reports from this machine alone: a URI with no host,
+  with `localhost`, or with this machine's host name; a name without a
+  domain matches the same name with one. A nested `ssh` reports another
+  host and is ignored, even when the local shell itself never reports.
+
 ## Availability
 
-SSH sessions only: RDP, VNC, serial and local tabs have no SSH connection.
-On their tabs the SFTP panel shows its placeholder and `toggle_sftp` is
-disabled.
+SSH and local-shell sessions: RDP, VNC and serial tabs have no file
+system to browse. On their tabs the SFTP panel shows its placeholder and
+`toggle_sftp` is disabled.
 
 ## Limitations
 
@@ -284,6 +331,16 @@ disabled.
   shows after the next command. Probes see physical paths where OSC 7
   reports `$PWD`, so a symlinked directory may show under its target's
   name.
-- No file browser for local-shell tabs.
+- Local tabs (§Local tabs): the sidebar follows only a shell that sends
+  OSC 7. One that sends none (bash without a prompt hook, any shell
+  inside tmux) leaves the listing where it is; there is no local probe.
+  The toolbar still says Upload and Download where both copy. A copy
+  over an existing file writes it in place, so a failed or cancelled one
+  leaves that file partial, its old contents gone. Rename's
+  check for a taken name and the rename are two steps, so a file created
+  between them is replaced. A name that is not valid UTF-8 lists with
+  replacement characters and cannot be opened or changed. In the Flatpak
+  the sidebar sees what the sandbox does: the home directory, and the
+  runtime's files elsewhere (doc 14 §Flatpak).
 - Dragged narrower than the sidebar needs, the SFTP panel is cut off on
   the left (doc 01 §Side dock).

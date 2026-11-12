@@ -21,7 +21,7 @@ live; there is no Apply button.
 |---|---|---|
 | Confirm before closing a connected tab | `confirm_close` | at the next close, open tabs included (doc 03 §Closing a tab) |
 | Reconnect automatically | `reconnect_on_drop` | at the next drop, open tabs included (doc 03 §Reconnect) |
-| Open SFTP on connect | `sftp_on_connect` | to tabs connected afterwards (doc 07 §Connection model) |
+| Open SFTP on connect | `sftp_on_connect` | to SSH tabs connected afterwards (doc 07 §Connection model); local tabs never open it (doc 07 §Local tabs) |
 | Minimize to tray on close | `minimize_to_tray` | at each window close (doc 03 §Tray) |
 | Experimental Ghostty terminal | `default_backend` (`ghostty`/`vte`) | to tabs opened afterwards, for sessions without their own; disabled with a "rebuild with the backend-ghostty feature to enable" tooltip in a default build (doc 02 §Backend selection) |
 | Clear all reminders | writes `1` to `duplicate_tmux_notice` and `confirm_close_notice` | every "Do not show me again" notice shows again; greyed out while none is silenced |

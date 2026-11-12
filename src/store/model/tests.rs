@@ -52,10 +52,12 @@ const NOT_SSH: [SessionType; 4] = [
 ];
 
 #[test]
-fn only_ssh_sessions_get_a_sidebar() {
-    assert!(SessionType::SSH.supports_sftp(), "doc 07 §Availability");
-    for other in NOT_SSH {
-        assert!(!other.supports_sftp(), "{other:?} must not get a sidebar");
+fn ssh_and_local_shell_sessions_get_a_sidebar() {
+    for with in [SessionType::SSH, SessionType::LocalShell] {
+        assert!(with.has_file_sidebar(), "{with:?}: doc 07 §Availability");
+    }
+    for without in [SessionType::RDP, SessionType::VNC, SessionType::Serial] {
+        assert!(!without.has_file_sidebar(), "{without:?} must not get one");
     }
 }
 

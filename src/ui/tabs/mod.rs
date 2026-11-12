@@ -5,7 +5,8 @@
 //! serial (`terminal`), the remote desktop for VNC and RDP (`vnc`,
 //! `rdp`). An SSH page also owns an SFTP sidebar (doc 07) — per tab,
 //! since each browses its own connection — which the side dock's SFTP panel
-//! shows while the tab is current (`side_dock`). State a type needs beyond
+//! shows while the tab is current (`side_dock`); a local-shell page owns
+//! one browsing this machine's files. State a type needs beyond
 //! the core lives in that type's own struct on the page (`ssh`, `terminal`).
 //!
 //! Connecting: `start_connect` bumps a per-page generation, so a
@@ -425,8 +426,9 @@ pub(crate) fn current_gen(page: &gtk4::Widget) -> u64 {
 }
 
 /// The page for `session`: a box holding the session's area, and its
-/// [`PageState`]. SSH pages carry their SFTP sidebar for the side dock
-/// (hidden while `sftp_on_connect` is off).
+/// [`PageState`]. SSH and local-shell pages carry their sidebar for the
+/// side dock (an SSH page's hidden while `sftp_on_connect` is off, a local
+/// page's until it is first looked at).
 fn page_content(session: &Rc<SessionConfig>) -> gtk4::Widget {
     let page = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     page.set_vexpand(true);
@@ -441,8 +443,8 @@ fn page_content(session: &Rc<SessionConfig>) -> gtk4::Widget {
     state
         .tab_id
         .set(NEXT_TAB_ID.fetch_add(1, Ordering::Relaxed));
-    if session.session_type.supports_sftp() {
-        ssh::install_sidebar(&page);
+    if session.session_type.has_file_sidebar() {
+        ssh::install_sidebar(&page, session.session_type == SessionType::LocalShell);
     }
     page
 }

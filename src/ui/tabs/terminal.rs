@@ -18,7 +18,7 @@ use vte4::prelude::*;
 
 use super::views::{set_terminal_area, show_error_view};
 use super::{
-    bump_gen, close_tab, current_gen, current_page, publish_page_state, publish_status,
+    bump_gen, close_tab, current_gen, current_page, local, publish_page_state, publish_status,
     settle_redial, ssh, start_connect, state, RedialReply, SessionTab, TabType,
 };
 use crate::macros::InputTap;
@@ -110,7 +110,8 @@ pub(super) fn existing_terminal_state(page: &gtk4::Widget) -> Option<Rc<Terminal
 }
 
 /// Embed the terminal, measure its real grid, wire the transport, and hand
-/// an SSH connection to the page's SSH half (local and serial pass none).
+/// an SSH connection to the page's SSH half (local and serial pass none;
+/// a local shell's sidebar starts in `local`).
 pub(super) async fn finish_connect(
     notebook: &gtk4::Notebook,
     session: &Rc<SessionConfig>,
@@ -177,9 +178,10 @@ pub(super) async fn finish_connect(
     });
 
     // Only the SSH dial passes a connection: its forward engine and
-    // sidebar.
-    if let Some(conn) = conn {
-        ssh::on_connect(notebook, page, session, conn, &widget);
+    // sidebar. A local shell's sidebar needs none.
+    match conn {
+        Some(conn) => ssh::on_connect(notebook, page, session, conn, &widget),
+        None => local::on_connect(page, session, &widget),
     }
     keep_shell_directory(page, &widget);
     focus_after_connect(notebook, page);

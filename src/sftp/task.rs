@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::sftp::commands::{DirEntry, Progress, SftpCommand};
+use crate::sftp::local::local_task;
 use crate::transport::connection::SshConnection;
 
 const TRANSFER_BUF_SIZE: usize = 32 * 1024;
@@ -33,16 +34,20 @@ impl SftpClient {
         let (tx, rx) = mpsc::channel(COMMAND_QUEUE);
         let shutdown = CancellationToken::new();
         tokio::spawn(sftp_task(rx, connection, shutdown.clone()));
-        Self {
-            tx,
-            next_transfer_id: Arc::new(AtomicU64::new(1)),
-            shutdown,
-        }
+        Self::from_parts(tx, shutdown)
+    }
+
+    /// Spawn a task that answers from this machine's own files instead: a
+    /// local-shell tab's sidebar (doc 07 §Local tabs).
+    pub fn local() -> Self {
+        let (tx, rx) = mpsc::channel(COMMAND_QUEUE);
+        let shutdown = CancellationToken::new();
+        tokio::spawn(local_task(rx, shutdown.clone()));
+        Self::from_parts(tx, shutdown)
     }
 
     /// A client whose commands go to `tx` and whose shutdown fires
-    /// `shutdown`, instead of a task.
-    #[cfg(test)]
+    /// `shutdown`, whatever serves them.
     pub(crate) fn from_parts(tx: mpsc::Sender<SftpCommand>, shutdown: CancellationToken) -> Self {
         Self {
             tx,
@@ -154,7 +159,9 @@ async fn serve<Open, Fut>(
     }
 }
 
-fn lock(registry: &Mutex<TransferRegistry>) -> std::sync::MutexGuard<'_, TransferRegistry> {
+pub(super) fn lock(
+    registry: &Mutex<TransferRegistry>,
+) -> std::sync::MutexGuard<'_, TransferRegistry> {
     registry.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -249,30 +256,30 @@ fn spawn_transfer<F, Fut>(
 
 /// Cancellation tokens of the running transfers, by id.
 #[derive(Default)]
-struct TransferRegistry {
+pub(super) struct TransferRegistry {
     active: HashMap<u64, CancellationToken>,
 }
 
 impl TransferRegistry {
-    fn register(&mut self, transfer_id: u64) -> CancellationToken {
+    pub(super) fn register(&mut self, transfer_id: u64) -> CancellationToken {
         let token = CancellationToken::new();
         self.active.insert(transfer_id, token.clone());
         token
     }
 
     /// `false` when the id is unknown (finished or never started).
-    fn cancel(&self, transfer_id: u64) -> bool {
+    pub(super) fn cancel(&self, transfer_id: u64) -> bool {
         self.active
             .get(&transfer_id)
             .map(CancellationToken::cancel)
             .is_some()
     }
 
-    fn finish(&mut self, transfer_id: u64) {
+    pub(super) fn finish(&mut self, transfer_id: u64) {
         self.active.remove(&transfer_id);
     }
 
-    fn cancel_all(&mut self) {
+    pub(super) fn cancel_all(&mut self) {
         self.active.drain().for_each(|(_, token)| token.cancel());
     }
 }
@@ -312,7 +319,7 @@ async fn delete(sftp: &SftpSession, path: &str) -> Result<(), String> {
 
 /// Copy `src` to `dst` in 32 KiB chunks, reporting progress, until EOF.
 /// Returns the byte count.
-async fn copy_with_progress(
+pub(super) async fn copy_with_progress(
     mut src: impl tokio::io::AsyncRead + Unpin,
     dst: &mut (impl tokio::io::AsyncWrite + Unpin),
     total: u64,
@@ -377,7 +384,7 @@ async fn upload_file(
 
 /// `op`, unless `cancel` fires first: a stalled server must not hold a
 /// cancelled transfer, whatever step it is on.
-async fn until_cancelled<T>(
+pub(super) async fn until_cancelled<T>(
     cancel: &CancellationToken,
     op: impl Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
@@ -389,7 +396,7 @@ async fn until_cancelled<T>(
 }
 
 /// Directories first, then case-insensitive alphabetical (doc 07).
-fn sort_entries(entries: &mut [DirEntry]) {
+pub(super) fn sort_entries(entries: &mut [DirEntry]) {
     entries.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
@@ -398,7 +405,7 @@ fn sort_entries(entries: &mut [DirEntry]) {
 }
 
 /// `rwxr-xr-x` from a mode word, ignoring file-type and setuid/sticky bits.
-fn format_perms(mode: u32) -> String {
+pub(super) fn format_perms(mode: u32) -> String {
     let mode = mode & 0o777;
     let mut out = String::with_capacity(9);
     for group in [mode >> 6, mode >> 3, mode] {
@@ -410,7 +417,7 @@ fn format_perms(mode: u32) -> String {
 }
 
 /// `YYYY-MM-DD HH:MM` in UTC (no timezone database dependency).
-fn format_timestamp(secs: u32) -> String {
+pub(super) fn format_timestamp(secs: u32) -> String {
     let days = i64::from(secs) / 86_400;
     let rem = secs % 86_400;
     let (year, month, day) = civil_from_days(days);

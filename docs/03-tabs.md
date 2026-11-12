@@ -21,7 +21,8 @@ area:
 | Session type | Page | Connect flow |
 |---|---|---|
 | SSH | terminal + SFTP sidebar (shown in the side dock, doc 07) | `ui::tabs::ssh`: dial through the supervisor, then the terminal |
-| Local shell, serial | terminal | `ui::tabs::local`: nothing to dial |
+| Local shell | terminal + file sidebar over this machine's files (doc 07 §Local tabs) | `ui::tabs::local`: nothing to dial |
+| Serial | terminal | `ui::tabs::local`: nothing to dial |
 | VNC | framebuffer view | `ui::tabs::vnc` (doc 08 §VNC) |
 | RDP | embedded xfreerdp window | `ui::tabs::rdp` (doc 08 §RDP) |
 
@@ -181,8 +182,9 @@ through the supervisor, so a tmux session reattaches.
 Disconnect, a lost connection (whether or not a run starts), the shell's
 exit (§Session end) and a transport that fails to connect (§Wiring) all
 release the tab's hold on its connection: the forward engine stops
-(doc 04 §Port forwarding), the terminal's transport closes and the SFTP
-sidebar ends its SFTP task (doc 07 §Layout). Once no other tab shares the
+(doc 04 §Port forwarding), the terminal's transport closes and the
+sidebar ends its SFTP task, or a local tab's its file task (doc 07
+§Layout). Once no other tab shares the
 connection, the supervisor disconnects it (doc 04 §Connection
 supervisor), and the next attempt dials fresh.
 

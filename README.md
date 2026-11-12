@@ -19,7 +19,8 @@ App id `com.alex-eckstein.wayterm` · [github.com/AlexEckstein/Wayterm](https://
   tmux persistence, jump hosts and local port forwards.
 - An SFTP sidebar over the same SSH connection that follows the shell's
   working directory.
-- Local shell and serial tabs; embedded RDP (xfreerdp) and VNC tabs.
+- Local shell tabs, with the same sidebar over this machine's files, and
+  serial tabs; embedded RDP (xfreerdp) and VNC tabs.
 - Automatic reconnect, restored tabs, a tray icon, rebindable hotkeys,
   and keystroke macros.
 

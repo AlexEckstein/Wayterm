@@ -48,11 +48,12 @@ const FWD_EVENT_BUF: usize = 64;
 /// sidebar asks where the shell is (doc 07 §Following the shell).
 const PROBE_QUIET: Duration = Duration::from_millis(300);
 
-/// What an SSH page keeps beside its [`PageState`](super::PageState).
-/// Main thread only.
+/// What an SSH page keeps beside its [`PageState`](super::PageState); a
+/// local-shell page keeps its sidebar here too. Main thread only.
 #[derive(Default)]
 struct SshPageState {
-    /// The page's sidebar, and whether it holds the connection.
+    /// The page's sidebar, and whether it holds the connection (or, on a
+    /// local page, browses for a running shell).
     sidebar: RefCell<Option<SftpSidebar>>,
     sidebar_attached: Cell<bool>,
     /// The live forward status source, while the engine is armed.
@@ -69,7 +70,7 @@ fn existing_ssh_state(page: &gtk4::Widget) -> Option<Rc<SshPageState>> {
     data(page, SSH_PAGE_KEY)
 }
 
-/// `page`'s SFTP sidebar, if it is an SSH page.
+/// `page`'s sidebar, if it is an SSH or local-shell page.
 pub(super) fn sidebar_of(page: &gtk4::Widget) -> Option<SftpSidebar> {
     existing_ssh_state(page)?.sidebar.borrow().clone()
 }
@@ -84,9 +85,12 @@ pub(super) fn forward_source(page: &gtk4::Widget) -> Option<Arc<EngineStatusBrid
     existing_ssh_state(page)?.forward.borrow().clone()
 }
 
-/// A new page's sidebar, hidden while `sftp_on_connect` is off.
-pub(super) fn install_sidebar(page: &gtk4::Widget) {
-    let sidebar = if sftp_sidebar::open_on_connect() {
+/// A new page's sidebar: an SSH page's hidden while `sftp_on_connect` is
+/// off, a `local` page's until the SFTP panel first shows it.
+pub(super) fn install_sidebar(page: &gtk4::Widget, local: bool) {
+    let sidebar = if local {
+        SftpSidebar::local(false)
+    } else if sftp_sidebar::open_on_connect() {
         SftpSidebar::new()
     } else {
         SftpSidebar::hidden()
@@ -302,7 +306,7 @@ pub(super) fn on_connect(
     } else {
         sidebar.follow_new_shell(ShellCwdProbe::new(&conn, session.tmux_remote_name()));
         sidebar.attach_on_connect(conn);
-        ssh_state(page).sidebar_attached.set(true);
+        mark_sidebar_attached(page);
         follow_terminal_directory(page, terminal);
         // Like the terminal's focus: only a connect the user started
         // brings the SFTP panel forward, never a reconnect.
@@ -376,7 +380,9 @@ pub(super) fn release_sidebar(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     let Some(old) = sidebar_of(page) else {
         return;
     };
-    let sidebar = if old.is_shown() {
+    let sidebar = if old.is_local() {
+        SftpSidebar::local(old.is_shown())
+    } else if old.is_shown() {
         SftpSidebar::new()
     } else {
         SftpSidebar::hidden()
@@ -396,9 +402,8 @@ pub(super) fn detach_sidebar(page: &gtk4::Widget) {
     }
 }
 
-/// Mark `page`'s sidebar attached, as [`on_connect`] does, without a
-/// connection.
-#[cfg(test)]
+/// `page`'s sidebar now browses for the connected session, until
+/// [`release_sidebar`] lets it go.
 pub(super) fn mark_sidebar_attached(page: &gtk4::Widget) {
     ssh_state(page).sidebar_attached.set(true);
 }
@@ -420,11 +425,17 @@ pub(super) fn arm_fake_forwards(page: &gtk4::Widget) {
 /// command — Enter, then [`PROBE_QUIET`] without output — a probe. The tab
 /// connects to the widget directly: VTE's signals, or the Ghostty view's
 /// matching hooks. The sidebar is looked up each time, since a redial
-/// replaces it.
+/// replaces it. A local page takes reports from this machine only.
 pub(super) fn follow_terminal_directory(page: &gtk4::Widget, terminal: &gtk4::Widget) {
     let (for_report, for_command) = (page.downgrade(), page.downgrade());
+    let follower = if sidebar_of(page).is_some_and(|sidebar| sidebar.is_local()) {
+        DirectoryFollower::local(&glib::host_name())
+    } else {
+        DirectoryFollower::default()
+    };
     let shell = Rc::new(ShellWatch::new(
         PROBE_QUIET,
+        follower,
         move |path| {
             if let Some(sidebar) = for_report.upgrade().and_then(|page| sidebar_of(&page)) {
                 sidebar.follow_shell(path);
@@ -471,12 +482,13 @@ struct ShellWatch {
 impl ShellWatch {
     fn new(
         quiet: Duration,
+        follower: DirectoryFollower,
         report: impl Fn(String) + 'static,
         command: impl Fn() + 'static,
     ) -> Self {
         Self {
             quiet,
-            follower: RefCell::default(),
+            follower: RefCell::new(follower),
             report: Box::new(report),
             command: Box::new(command),
             armed: Cell::new(false),
@@ -542,6 +554,7 @@ mod tests {
         let count = Rc::clone(&probes);
         let shell = Rc::new(ShellWatch::new(
             quiet,
+            DirectoryFollower::default(),
             |_| {},
             move || count.set(count.get() + 1),
         ));

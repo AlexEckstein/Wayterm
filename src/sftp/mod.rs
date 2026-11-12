@@ -8,10 +8,14 @@
 //! the subsystem shows up as an error reply and recovers. Transfers run as
 //! their own tasks so `Cancel` and browsing stay responsive.
 //!
+//! A local-shell tab's sidebar gets the same commands answered from this
+//! machine's files (`local`, doc 07 §Local tabs).
+//!
 //! [`ShellCwdProbe`] is not SFTP: it asks the remote where the tab's shell
 //! is, so the sidebar can follow it (doc 07 §Following the shell).
 
 pub mod commands;
+pub mod local;
 pub mod shell_cwd;
 pub mod task;
 

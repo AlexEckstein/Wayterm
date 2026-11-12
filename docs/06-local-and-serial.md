@@ -3,9 +3,10 @@
 Two byte-stream transports with nothing to dial or authenticate: no
 supervisor, host key or credential machinery. Both open as terminal tabs
 through the transport factory (doc 03 §Transport factory); the connect
-flow (`src/ui/tabs/local.rs`) starts the terminal directly. They have no
-SFTP sidebar, and the status bar shows the transport's description
-instead of a host.
+flow (`src/ui/tabs/local.rs`) starts the terminal directly. A local-shell
+tab's sidebar browses this machine's files (doc 07 §Local tabs); a serial
+tab has none. The status bar shows the transport's description instead
+of a host.
 
 ## Local shell
 
@@ -66,4 +67,3 @@ is off).
 - Reconnecting to a device that vanished and came back is untested; the
   hardware test (`SERIAL_TEST_PEER`, two cabled USB-serial ports) has not
   run against real hardware (doc 15 §Serial).
-- No file browser for local tabs.
