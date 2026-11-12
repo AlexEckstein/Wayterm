@@ -5,7 +5,7 @@
 use std::fs::{OpenOptions, Permissions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::Value;
 use rusqlite::{
@@ -31,10 +31,30 @@ impl SessionStore {
     /// and the first-run seed. Idempotent on an existing database. The
     /// file is readable by its owner only.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
+        let started = Instant::now();
         keep_private(path);
-        let mut conn = Connection::open(path)?;
-        initialize(&mut conn)?;
-        Ok(Self { conn })
+        let opened = Connection::open(path).and_then(|mut conn| {
+            initialize(&mut conn)?;
+            Ok(conn)
+        });
+        match opened {
+            Ok(conn) => {
+                tracing::info!(
+                    path = %path.display(),
+                    elapsed_ms = elapsed_ms(started),
+                    "session store opened"
+                );
+                Ok(Self { conn })
+            }
+            Err(err) => {
+                tracing::error!(
+                    path = %path.display(),
+                    error = %err,
+                    "session store failed to open"
+                );
+                Err(err)
+            }
+        }
     }
 
     /// An in-memory store with the same schema and seed (tests).
@@ -294,7 +314,7 @@ impl SessionStore {
     /// the readers whose default covers both.
     pub fn setting(&self, key: &str) -> Option<String> {
         self.get_setting(key).unwrap_or_else(|err| {
-            eprintln!("Wayterm: failed to read setting '{key}': {err}");
+            tracing::warn!(key = %key, error = %err, "failed to read setting");
             None
         })
     }
@@ -425,7 +445,15 @@ pub fn flag_enabled(raw: Option<&str>) -> bool {
 /// `(action, key_sequence, enabled)` of one `is_default = 0` hotkey row.
 pub type CustomHotkeyRow = (String, String, bool);
 
+/// Milliseconds since `started`, for a log line.
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The schema steps of doc 09 §Database, then the seed on a fresh
+/// database; logs how long they took (doc 16).
 fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
+    let started = Instant::now();
     // `foreign_keys` is per connection; WAL persists in the file.
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     conn.execute_batch(MIGRATION_001)?;
@@ -437,14 +465,21 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     // `hotkeys` has no UNIQUE constraint, so re-running the seed would
     // duplicate rows: seed exactly once, atomically, keyed on an empty
     // `settings` table.
-    let seeded: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |row| {
-        row.get(0)
-    })?;
-    if !seeded {
+    let already_seeded: bool =
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |row| {
+            row.get(0)
+        })?;
+    if !already_seeded {
         let tx = conn.transaction()?;
         tx.execute_batch(SEED_DEFAULTS)?;
         tx.commit()?;
     }
+    tracing::info!(
+        steps = 6,
+        seeded = !already_seeded,
+        elapsed_ms = elapsed_ms(started),
+        "schema steps complete"
+    );
     Ok(())
 }
 

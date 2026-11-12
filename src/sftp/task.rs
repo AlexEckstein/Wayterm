@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::sftp::commands::{DirEntry, Progress, SftpCommand};
 use crate::sftp::listing::sort_entries;
 use crate::sftp::local::local_task;
-use crate::sftp::transfer::{copy_with_progress, open_source, text, Transfers};
+use crate::sftp::transfer::{copy_with_progress, open_source, text, TransferRecord, Transfers};
 use crate::transport::connection::SshConnection;
 
 const COMMAND_QUEUE: usize = 32;
@@ -101,7 +101,15 @@ pub async fn sftp_task(
 /// rather than in the connection seam.
 async fn open_session(connection: &SshConnection) -> Result<SftpSession, String> {
     let channel = connection.open_sftp_channel().await.map_err(text)?;
-    SftpSession::new(channel.into_stream()).await.map_err(text)
+    let session = SftpSession::new(channel.into_stream())
+        .await
+        .map_err(text)?;
+    tracing::info!(
+        host = %connection.host(),
+        port = connection.port(),
+        "SFTP session opened"
+    );
+    Ok(session)
 }
 
 /// The command loop; `open` is the session opener (stubbed in tests).
@@ -117,6 +125,7 @@ async fn run_sftp_task<Open, Fut>(
     let transfers = Transfers::default();
     let serving = serve(&mut rx, open, &transfers);
     transfers.serve_until(&shutdown, serving).await;
+    tracing::debug!("SFTP task ended");
 }
 
 async fn serve<Open, Fut>(
@@ -145,6 +154,7 @@ async fn serve<Open, Fut>(
             None => match open().await {
                 Ok(session) => Arc::clone(sftp.insert(Arc::new(session))),
                 Err(err) => {
+                    tracing::warn!(error = %err, "SFTP session failed to open");
                     cmd.fail(&err);
                     continue;
                 }
@@ -194,7 +204,10 @@ async fn dispatch(
         } => {
             let failed = Arc::clone(failed);
             transfers.spawn(transfer_id, reply, async move {
+                let record =
+                    TransferRecord::start("download", transfer_id, &local_path, &remote_path);
                 let done = download_file(&session, &remote_path, &local_path, &progress).await;
+                record.finish(&done);
                 noted(&failed, done)
             });
         }
@@ -207,7 +220,10 @@ async fn dispatch(
         } => {
             let failed = Arc::clone(failed);
             transfers.spawn(transfer_id, reply, async move {
+                let record =
+                    TransferRecord::start("upload", transfer_id, &local_path, &remote_path);
                 let done = upload_file(&session, &local_path, &remote_path, &progress).await;
+                record.finish(&done);
                 noted(&failed, done)
             });
         }

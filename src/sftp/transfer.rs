@@ -74,6 +74,85 @@ impl Transfers {
     }
 }
 
+/// One transfer's log record (doc 16): its start, and how it ended. A
+/// record dropped unfinished was cancelled mid-flight, by Cancel or by the
+/// task shutting down, which drop the transfer at whatever it awaits.
+pub(super) struct TransferRecord {
+    direction: &'static str,
+    id: u64,
+    local: String,
+    remote: String,
+    started: std::time::Instant,
+    finished: bool,
+}
+
+impl TransferRecord {
+    /// Log the start of transfer `id`.
+    pub(super) fn start(direction: &'static str, id: u64, local: &str, remote: &str) -> Self {
+        tracing::info!(
+            transfer_id = id,
+            direction = %direction,
+            local = %local,
+            remote = %remote,
+            "transfer started"
+        );
+        Self {
+            direction,
+            id,
+            local: local.to_owned(),
+            remote: remote.to_owned(),
+            started: std::time::Instant::now(),
+            finished: false,
+        }
+    }
+
+    /// Log the result: the byte count of a finished transfer, or a failed
+    /// one's error.
+    pub(super) fn finish(mut self, result: &Result<u64, String>) {
+        self.finished = true;
+        let elapsed_ms = self.elapsed_ms();
+        match result {
+            Ok(bytes) => tracing::info!(
+                transfer_id = self.id,
+                direction = %self.direction,
+                local = %self.local,
+                remote = %self.remote,
+                bytes,
+                elapsed_ms,
+                "transfer finished"
+            ),
+            Err(err) => tracing::warn!(
+                transfer_id = self.id,
+                direction = %self.direction,
+                local = %self.local,
+                remote = %self.remote,
+                error = %err,
+                elapsed_ms,
+                "transfer failed"
+            ),
+        }
+    }
+
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+}
+
+impl Drop for TransferRecord {
+    fn drop(&mut self) {
+        if !self.finished {
+            tracing::info!(
+                transfer_id = self.id,
+                direction = %self.direction,
+                local = %self.local,
+                remote = %self.remote,
+                elapsed_ms = self.elapsed_ms(),
+                "transfer cancelled"
+            );
+        }
+    }
+}
+
 /// Open the regular file at `path` to send it. Nothing else is one: a
 /// directory would fail at its first read, after the target was created.
 /// Non-blocking, since opening a FIFO would otherwise wait for its writer
@@ -219,6 +298,91 @@ mod tests {
         tokio::task::yield_now().await;
         transfers.cancel(1);
         assert_eq!(result_of(answer).await, Err("transfer cancelled".into()));
+    }
+
+    /// The captured line holding `message`, if any.
+    fn line<'a>(output: &'a str, message: &str) -> Option<&'a str> {
+        output.lines().find(|line| line.contains(message))
+    }
+
+    #[test]
+    fn a_finished_transfer_logs_its_start_and_its_byte_count() {
+        let (buffer, guard) = crate::logging::tests::capture(None);
+        TransferRecord::start("download", 7, "/local/a.txt", "/remote/a.txt").finish(&Ok(42));
+        drop(guard);
+        let output = buffer.contents();
+
+        let started = line(&output, "transfer started").expect("no start line");
+        let finished = line(&output, "transfer finished").expect("no finish line");
+        for line in [started, finished] {
+            assert!(line.contains("INFO"), "{line}");
+            assert!(line.contains("transfer_id=7"), "{line}");
+            assert!(line.contains("direction=download"), "{line}");
+            assert!(line.contains("local=/local/a.txt"), "{line}");
+            assert!(line.contains("remote=/remote/a.txt"), "{line}");
+        }
+        assert!(finished.contains("bytes=42"), "{finished}");
+        assert!(finished.contains("elapsed_ms="), "{finished}");
+        assert!(line(&output, "transfer cancelled").is_none(), "{output}");
+    }
+
+    #[test]
+    fn a_failed_transfer_logs_its_error_as_a_warning() {
+        let (buffer, guard) = crate::logging::tests::capture(None);
+        TransferRecord::start("upload", 8, "/local/b.txt", "/remote/b.txt")
+            .finish(&Err("disk full".into()));
+        drop(guard);
+        let output = buffer.contents();
+
+        let failed = line(&output, "transfer failed").expect("no failure line");
+        assert!(failed.contains("WARN"), "{failed}");
+        assert!(failed.contains("disk full"), "{failed}");
+        assert!(failed.contains("transfer_id=8"), "{failed}");
+        assert!(line(&output, "transfer cancelled").is_none(), "{output}");
+    }
+
+    #[test]
+    fn a_record_dropped_unfinished_logs_a_cancel() {
+        let (buffer, guard) = crate::logging::tests::capture(None);
+        drop(TransferRecord::start(
+            "download",
+            9,
+            "/local/c.txt",
+            "/remote/c.txt",
+        ));
+        drop(guard);
+        let output = buffer.contents();
+
+        let cancelled = line(&output, "transfer cancelled").expect("no cancel line");
+        assert!(cancelled.contains("transfer_id=9"), "{cancelled}");
+        assert!(cancelled.contains("local=/local/c.txt"), "{cancelled}");
+        assert!(cancelled.contains("remote=/remote/c.txt"), "{cancelled}");
+        assert!(cancelled.contains("elapsed_ms="), "{cancelled}");
+    }
+
+    /// A Cancel drops the spawned transfer, and with it the record.
+    #[tokio::test]
+    async fn a_cancelled_transfer_logs_its_start_and_its_cancel() {
+        let (buffer, guard) = crate::logging::tests::capture(None);
+        let transfers = Transfers::default();
+        let (reply, answer) = oneshot::channel();
+        transfers.spawn(3, reply, async {
+            let _record = TransferRecord::start("upload", 3, "/local/d.txt", "/remote/d.txt");
+            std::future::pending::<Result<u64, String>>().await
+        });
+        while !buffer.contents().contains("transfer started") {
+            tokio::task::yield_now().await;
+        }
+        transfers.cancel(3);
+        assert_eq!(result_of(answer).await, Err("transfer cancelled".into()));
+        drop(guard);
+        let output = buffer.contents();
+
+        let started = output.find("transfer started").expect("no start line");
+        let cancelled = output.find("transfer cancelled").expect("no cancel line");
+        assert!(started < cancelled, "{output}");
+        let cancelled = line(&output, "transfer cancelled").unwrap();
+        assert!(cancelled.contains("transfer_id=3"), "{cancelled}");
     }
 
     #[tokio::test]

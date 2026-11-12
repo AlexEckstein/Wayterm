@@ -194,6 +194,7 @@ impl ReconnectDriver {
             }
         };
         let cancelled = || {
+            tracing::info!("reconnect: cancelled");
             emit(ReconnectEvent::Cancelled);
             ReconnectOutcome::Cancelled
         };
@@ -206,6 +207,7 @@ impl ReconnectDriver {
             }
             if !self.policy.allows_attempt(attempt) {
                 let attempts = attempt - 1;
+                tracing::warn!(attempts, error = %last_error, "reconnect: out of attempts");
                 emit(ReconnectEvent::Exhausted {
                     attempts,
                     error: last_error.clone(),
@@ -218,6 +220,11 @@ impl ReconnectDriver {
             }
 
             let delay = next_delay(attempt);
+            tracing::info!(
+                attempt,
+                delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                "reconnect: backing off"
+            );
             emit(ReconnectEvent::BackingOff { attempt, delay });
             tokio::select! {
                 biased;
@@ -235,16 +242,19 @@ impl ReconnectDriver {
                     return cancelled();
                 }
                 if !confirmed {
+                    tracing::info!(attempt, "reconnect: declined at the prompt");
                     emit(ReconnectEvent::Declined { attempt });
                     set_state(TransportState::Disconnected);
                     return ReconnectOutcome::Declined { attempt };
                 }
             }
 
+            tracing::info!(attempt, "reconnect: attempting");
             emit(ReconnectEvent::Attempting { attempt });
             set_state(TransportState::Reconnecting { attempt });
             match connect().await {
                 Ok(()) => {
+                    tracing::info!(attempts = attempt, "reconnect: connected");
                     emit(ReconnectEvent::Connected { attempts: attempt });
                     set_state(TransportState::Connected);
                     return ReconnectOutcome::Connected { attempts: attempt };
@@ -255,6 +265,7 @@ impl ReconnectDriver {
                 }
                 Err(err) => {
                     last_error = err.to_string();
+                    tracing::warn!(attempt, error = %last_error, "reconnect: attempt failed");
                     emit(ReconnectEvent::AttemptFailed {
                         attempt,
                         error: last_error.clone(),

@@ -130,12 +130,22 @@ impl SshConnection {
     }
 
     pub async fn disconnect(&self) -> Result<(), TransportError> {
+        tracing::info!(host = %self.host, port = self.port, "disconnecting");
         self.handle
             .lock()
             .await
             .disconnect(Disconnect::ByApplication, "", "English")
             .await
-            .map_err(TransportError::from_russh)
+            .map_err(|err| {
+                // A session that is already closed errors routinely.
+                tracing::debug!(
+                    host = %self.host,
+                    port = self.port,
+                    error = %err,
+                    "disconnect reported an error"
+                );
+                TransportError::from_russh(err)
+            })
     }
 
     /// Run the auth chain on this session (doc 04 §Authentication).
@@ -145,12 +155,46 @@ impl SshConnection {
         creds: &CredentialManager,
         responder: Option<ChallengeResponder>,
     ) -> Result<(), TransportError> {
-        let config = auth_config(method, creds.session_id(), creds, responder)?;
+        let (host, port, session) = (&self.host, self.port, creds.session_id());
+        let config = auth_config(method, session, creds, responder).inspect_err(|_| {
+            tracing::info!(
+                host = %host,
+                port,
+                session = %session,
+                "authentication cancelled at a credential prompt"
+            );
+        })?;
         let mut handle = self.handle.lock().await;
-        match authenticate_chain(&mut handle, &self.username, &config).await? {
-            AuthOutcome::Success => Ok(()),
-            AuthOutcome::Cancelled => Err(TransportError::Cancelled),
-            AuthOutcome::Failed { reason, .. } => Err(TransportError::AuthFailed(reason)),
+        let outcome = authenticate_chain(&mut handle, &self.username, &config)
+            .await
+            .inspect_err(|err| {
+                tracing::warn!(
+                    host = %host,
+                    port,
+                    session = %session,
+                    error = %err,
+                    "authentication failed"
+                );
+            })?;
+        match outcome {
+            AuthOutcome::Success => {
+                tracing::info!(host = %host, port, session = %session, "authenticated");
+                Ok(())
+            }
+            AuthOutcome::Cancelled => {
+                tracing::info!(host = %host, port, session = %session, "authentication cancelled");
+                Err(TransportError::Cancelled)
+            }
+            AuthOutcome::Failed { reason, .. } => {
+                tracing::warn!(
+                    host = %host,
+                    port,
+                    session = %session,
+                    reason = %reason,
+                    "authentication failed"
+                );
+                Err(TransportError::AuthFailed(reason))
+            }
         }
     }
 }
@@ -263,7 +307,14 @@ impl client::Handler for AppClientHandler {
     ) -> Result<bool, Self::Error> {
         let key = match server_public_key {
             PublicKeyOrCertificate::PublicKey { key, .. } => key,
-            PublicKeyOrCertificate::Certificate(_) => return Err(HandlerError::HostCertificate),
+            PublicKeyOrCertificate::Certificate(_) => {
+                tracing::warn!(
+                    host = %self.host,
+                    port = self.port,
+                    "host certificate presented; certificates are not supported"
+                );
+                return Err(HandlerError::HostCertificate);
+            }
         };
         let facts = HostKeyFacts {
             host: self.host.clone(),
@@ -275,7 +326,15 @@ impl client::Handler for AppClientHandler {
             HostKeyDecision::Accept
             | HostKeyDecision::AcceptAndSave
             | HostKeyDecision::AcceptAndSaveSession => Ok(true),
-            HostKeyDecision::Reject => Err(HandlerError::HostKeyRejected(self.host.clone())),
+            HostKeyDecision::Reject => {
+                tracing::warn!(
+                    host = %self.host,
+                    port = self.port,
+                    key_type = %facts.key_type,
+                    "host key rejected"
+                );
+                Err(HandlerError::HostKeyRejected(self.host.clone()))
+            }
         }
     }
 

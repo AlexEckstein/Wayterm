@@ -994,3 +994,70 @@ fn the_database_files_are_readable_by_their_owner_only() {
         "{reopened:?}"
     );
 }
+
+/// The captured line holding `message`.
+fn log_line<'a>(output: &'a str, message: &str) -> &'a str {
+    output
+        .lines()
+        .find(|line| line.contains(message))
+        .unwrap_or_else(|| panic!("no '{message}' line in: {output}"))
+}
+
+/// Opening logs the store's path and time, and the schema steps with
+/// whether the seed ran: on a fresh database only (doc 16).
+#[test]
+fn opening_logs_the_store_and_whether_it_was_seeded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wayterm.db");
+
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    drop(SessionStore::open(&path).unwrap());
+    drop(guard);
+    let output = buffer.contents();
+    let opened = log_line(&output, "session store opened");
+    assert!(opened.contains("INFO"), "{opened}");
+    assert!(opened.contains(&path.display().to_string()), "{opened}");
+    assert!(opened.contains("elapsed_ms="), "{opened}");
+    let steps = log_line(&output, "schema steps complete");
+    assert!(steps.contains("steps=6"), "{steps}");
+    assert!(steps.contains("seeded=true"), "{steps}");
+
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    drop(SessionStore::open(&path).unwrap());
+    drop(guard);
+    let output = buffer.contents();
+    let steps = log_line(&output, "schema steps complete");
+    assert!(steps.contains("seeded=false"), "{steps}");
+}
+
+/// A store that cannot be opened is an error, logged with its path.
+#[test]
+fn a_store_that_cannot_open_is_logged_as_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("plain-file");
+    std::fs::write(&file, b"").unwrap();
+    let path = file.join("wayterm.db");
+
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    assert!(SessionStore::open(&path).is_err(), "opened under a file");
+    drop(guard);
+    let output = buffer.contents();
+    let failed = log_line(&output, "session store failed to open");
+    assert!(failed.contains("ERROR"), "{failed}");
+    assert!(failed.contains(&path.display().to_string()), "{failed}");
+}
+
+/// A settings row that cannot be read is logged, and reads as missing.
+#[test]
+fn an_unreadable_setting_is_logged_and_reads_as_missing() {
+    let store = SessionStore::in_memory().unwrap();
+    store.conn.execute_batch("DROP TABLE settings;").unwrap();
+
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    assert_eq!(store.setting("host_key_policy"), None);
+    drop(guard);
+    let output = buffer.contents();
+    let failed = log_line(&output, "failed to read setting");
+    assert!(failed.contains("WARN"), "{failed}");
+    assert!(failed.contains("key=host_key_policy"), "{failed}");
+}

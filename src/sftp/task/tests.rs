@@ -113,6 +113,39 @@ async fn failed_session_open_replies_error_and_reopens_on_every_command() {
     );
 }
 
+/// A session that fails to open is logged with the opener's error.
+#[tokio::test]
+async fn a_failed_session_open_is_logged_as_a_warning() {
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    let (tx, rx) = mpsc::channel::<SftpCommand>(4);
+    let task = tokio::spawn(run_sftp_task(rx, CancellationToken::new(), || async {
+        Err::<SftpSession, String>("subsystem unavailable".to_string())
+    }));
+
+    let (reply, reply_rx) = oneshot::channel();
+    tx.send(SftpCommand::Cd {
+        path: ".".into(),
+        reply,
+    })
+    .await
+    .unwrap();
+    expect_err(reply_rx).await;
+    drop(tx);
+    timeout(Duration::from_secs(5), task)
+        .await
+        .expect("task must exit when all senders drop")
+        .expect("task panicked");
+    drop(guard);
+
+    let output = buffer.contents();
+    let line = output
+        .lines()
+        .find(|line| line.contains("SFTP session failed to open"))
+        .unwrap_or_else(|| panic!("no failure line in: {output}"));
+    assert!(line.contains("WARN"), "{line}");
+    assert!(line.contains("subsystem unavailable"), "{line}");
+}
+
 #[tokio::test]
 async fn task_exits_only_when_the_last_sender_drops() {
     let (tx, rx) = mpsc::channel::<SftpCommand>(4);
