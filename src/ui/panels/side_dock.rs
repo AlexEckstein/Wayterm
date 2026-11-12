@@ -317,7 +317,7 @@ impl SftpPanel {
         stack.add_named(
             &empty_state(
                 DockPage::Sftp.icon(),
-                "Select an SSH tab to browse its files",
+                "Select an SSH or local tab to browse its files",
             ),
             Some(SFTP_PLACEHOLDER),
         );
@@ -537,11 +537,11 @@ pub(in crate::ui) mod gtk_tests {
         let window = gtk4::Window::new();
         window.set_child(Some(&root));
 
-        let local = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        let serial = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         let ssh = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         let first = SftpSidebar::hidden();
         SessionTab::set_sidebar_for_page(ssh.upcast_ref(), first.clone());
-        notebook.append_page(&local, None::<&gtk4::Widget>);
+        notebook.append_page(&serial, None::<&gtk4::Widget>);
         notebook.append_page(&ssh, None::<&gtk4::Widget>);
         window.present();
         spin();
@@ -554,7 +554,7 @@ pub(in crate::ui) mod gtk_tests {
                 .map(|n| n.to_string())
         };
         let hosted = |sidebar: &SftpSidebar| sidebar.widget().is_ancestor(dock.panel());
-        assert_eq!(face().as_deref(), Some(SFTP_PLACEHOLDER), "a local tab");
+        assert_eq!(face().as_deref(), Some(SFTP_PLACEHOLDER), "a serial tab");
 
         notebook.set_current_page(Some(1));
         assert!(hosted(&first));
@@ -578,7 +578,7 @@ pub(in crate::ui) mod gtk_tests {
         // `sftp_on_connect` brings the panel forward for the current tab
         // only, and never un-hides a panel the user hid.
         dock.select(DockPage::Sessions);
-        reveal_sftp(&notebook, local.upcast_ref());
+        reveal_sftp(&notebook, serial.upcast_ref());
         assert_eq!(dock.current(), DockPage::Sessions, "a background tab");
         dock.inner.hide_panel();
         reveal_sftp(&notebook, ssh.upcast_ref());

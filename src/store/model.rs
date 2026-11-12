@@ -33,11 +33,13 @@ impl SessionType {
         }
     }
 
-    /// Only SSH sessions get an SFTP sidebar (doc 07 §Availability).
-    pub fn supports_sftp(&self) -> bool {
+    /// Whether the session's tab gets a file sidebar (doc 07
+    /// §Availability): an SSH session's browses the remote over SFTP, a
+    /// local shell's this machine's files.
+    pub fn has_file_sidebar(&self) -> bool {
         match self {
-            Self::SSH => true,
-            Self::RDP | Self::VNC | Self::Serial | Self::LocalShell => false,
+            Self::SSH | Self::LocalShell => true,
+            Self::RDP | Self::VNC | Self::Serial => false,
         }
     }
 

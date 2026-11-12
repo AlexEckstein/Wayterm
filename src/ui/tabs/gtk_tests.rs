@@ -513,6 +513,82 @@ pub(in crate::ui) fn closing_a_tab_ends_its_forwards_and_sftp() {
     assert!(ssh.sftp.is_cancelled(), "the SFTP task runs on");
 }
 
+/// Run the main loop until `page` reports Connected.
+fn wait_connected(page: &gtk4::Widget) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while SessionTab::page_status(page).map(|status| status.state)
+        != Some(TransportState::Connected)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the local shell never connected"
+        );
+        glib::MainContext::default().iteration(false);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A local-shell tab's sidebar browses this machine's files: unseen until
+/// the SFTP panel shows it, it starts where the shell does, follows this
+/// machine's OSC 7 reports and no nested host's, and an empty local one
+/// takes its place when the shell ends. A serial tab has none.
+pub(in crate::ui) fn a_local_shell_tabs_sidebar_follows_its_shell() {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let _entered = runtime.enter();
+    let notebook = gtk4::Notebook::new();
+    let window = gtk4::Window::new();
+    window.set_child(Some(&notebook));
+    window.present();
+    let start = tempfile::tempdir().unwrap();
+    let start_dir = start.path().to_string_lossy().into_owned();
+    let session = SessionConfig {
+        id: 7_010,
+        name: "local".into(),
+        session_type: SessionType::LocalShell,
+        local_shell: Some("/bin/sh".into()),
+        local_working_dir: Some(start_dir.clone()),
+        ..Default::default()
+    };
+    let store = Rc::new(SessionStore::in_memory().expect("in-memory store"));
+
+    let page = SessionTab::open(&notebook, &session, &store);
+    wait_connected(&page);
+    let sidebar = SessionTab::sidebar_for_page(&page).expect("a local page's sidebar");
+    assert!(sidebar.is_local());
+    assert!(!sidebar.is_shown(), "shown before the SFTP panel asked");
+    assert_eq!(sidebar.path_text(), start_dir);
+
+    let backend = SessionTab::active_terminal(&notebook).expect("a terminal");
+    let report = |uri: &str| {
+        backend.write(format!("\x1b]7;{uri}\x07").as_bytes());
+        for _ in 0..100 {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    report("file://elsewhere/srv");
+    assert_eq!(sidebar.path_text(), start_dir, "a nested ssh's report");
+    report("file:///var/log");
+    assert_eq!(sidebar.path_text(), "/var/log");
+
+    let old = sidebar.widget().downgrade();
+    drop(sidebar);
+    show_session_ended(&notebook, &page);
+    settle();
+    assert!(old.upgrade().is_none(), "the old sidebar lives on");
+    let new = SessionTab::sidebar_for_page(&page).expect("a sidebar after the end");
+    assert!(new.is_local() && !new.is_shown());
+    close_tab(&notebook, &page);
+
+    let serial = SessionConfig {
+        session_type: SessionType::Serial,
+        ..session
+    };
+    let page = page_content(&Rc::new(serial));
+    assert!(SessionTab::sidebar_for_page(&page).is_none());
+    window.destroy();
+}
+
 /// The connect flow end to end on a local shell: opening the tab wires
 /// a terminal and its input tap, the page reports Connected, and
 /// closing the tab lets the page go. The terminal opens in its session's
@@ -538,16 +614,7 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
 
     let page = SessionTab::open(&notebook, &session, &store);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while SessionTab::page_status(&page).map(|status| status.state)
-        != Some(TransportState::Connected)
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the local shell never connected"
-        );
-        glib::MainContext::default().iteration(false);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_connected(&page);
     assert_eq!(current_session_id(&notebook), Some(7_001));
     assert!(SessionTab::active_terminal(&notebook).is_some());
     assert!(SessionTab::active_input_tap(&notebook).is_some());
@@ -562,10 +629,6 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
         background(&terminal),
         rgb(LIGHT.background),
         "the session's override, applied on open"
-    );
-    assert!(
-        SessionTab::sidebar_for_page(&page).is_none(),
-        "only SSH pages carry a sidebar"
     );
     let duplicate = SessionTab::open(&notebook, &session, &store);
     assert_ne!(duplicate, page, "a second open adds a tab");

@@ -819,3 +819,41 @@ fn jumped_sessions_show_the_limitation_instead_of_attaching() {
     assert_eq!(view.error.as_deref(), Some(JUMPED_UNAVAILABLE));
     assert_eq!(view.toolbar(), ToolbarState::DISABLED);
 }
+
+#[test]
+fn a_local_shells_follower_takes_only_this_machines_reports() {
+    let mut follower = DirectoryFollower::local("box.lan");
+    assert_eq!(follower.report("file://remote/srv"), None, "a nested ssh");
+    assert_eq!(follower.report("file:///tmp").as_deref(), Some("/tmp"));
+    assert_eq!(follower.report("file://localhost/a").as_deref(), Some("/a"));
+    assert_eq!(
+        follower.report("file://BOX/home/u").as_deref(),
+        Some("/home/u")
+    );
+    assert_eq!(
+        follower.report("file://box.lan/var").as_deref(),
+        Some("/var")
+    );
+    assert_eq!(follower.report("file://boxer/var"), None);
+    assert_eq!(
+        follower.report("file://remote/srv"),
+        None,
+        "still not pinned"
+    );
+}
+
+#[test]
+fn a_local_target_is_absolute_with_its_dot_steps_taken() {
+    let go = |current, typed| local_target(current, typed, "/home/u");
+    assert_eq!(go("/srv", "/var/log"), "/var/log");
+    assert_eq!(go("/srv", "www"), "/srv/www");
+    assert_eq!(go("/srv/www", ".."), "/srv");
+    assert_eq!(go("/srv", "../../.."), "/");
+    assert_eq!(go("/", ".."), "/");
+    assert_eq!(go("/srv", "./a//b/"), "/srv/a/b");
+    assert_eq!(go("/srv", ""), "/srv");
+    assert_eq!(go("/srv", "~"), "/home/u");
+    assert_eq!(go("/srv", "~/docs/../.config"), "/home/u/.config");
+    assert_eq!(go("/srv", "~docs"), "/srv/~docs", "a name, not a home");
+    assert_eq!(go(START_PATH, "docs"), "/home/u/docs", "no listing yet");
+}

@@ -25,6 +25,8 @@ pub const PARENT_ICON: &str = "wayterm-folder-up-symbolic";
 
 /// Inline error shown while no SSH connection backs the sidebar.
 pub const NOT_CONNECTED: &str = "SFTP needs a live SSH connection";
+/// The same, on a local-shell tab: its file task runs while the shell does.
+pub const SHELL_NOT_RUNNING: &str = "Browsing files needs the tab's shell running";
 /// No SFTP task runs over a jumped connection (doc 04 §Limitations), so the sidebar
 /// shows this instead of attaching.
 pub const JUMPED_UNAVAILABLE: &str = "SFTP is not available for jumped sessions yet";
@@ -256,6 +258,31 @@ pub fn parent_path(path: &str) -> Option<String> {
     }
 }
 
+/// Where a local-shell tab's sidebar goes for `typed` (doc 07 §Local
+/// tabs): `~` is `home`, a relative path starts at `current`, and `.` and
+/// `..` steps are taken by name, as a shell's `cd` takes them.
+pub fn local_target(current: &str, typed: &str, home: &str) -> String {
+    let base = if current.starts_with('/') {
+        current
+    } else {
+        home
+    };
+    let joined = match typed.strip_prefix('~') {
+        Some("") => home.to_string(),
+        Some(rest) if rest.starts_with('/') => format!("{home}{rest}"),
+        _ => join_path(base, typed),
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for part in joined.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => _ = parts.pop(),
+            name => parts.push(name),
+        }
+    }
+    format!("/{}", parts.join("/"))
+}
+
 /// The last path component.
 pub fn file_name(path: &str) -> String {
     path.trim_end_matches('/')
@@ -400,18 +427,35 @@ fn split_file_uri(uri: &str) -> Option<(&str, String)> {
 ///
 /// The first report pins the host: a nested `ssh` inside the session
 /// reports another one, and its paths mean nothing to this session's SFTP
-/// channel. Whether the directory changed is [`SftpView::shell_moved`]'s
-/// call, since probes find it too.
+/// channel. A local shell's follower knows its host from the start
+/// ([`local`](Self::local)): its own shell may never report, and a nested
+/// `ssh` must not be taken for it. Whether the directory changed is
+/// [`SftpView::shell_moved`]'s call, since probes find it too.
 #[derive(Clone, Debug, Default)]
 pub struct DirectoryFollower {
     host: Option<String>,
+    /// This machine's name, for a local shell.
+    local: Option<String>,
 }
 
 impl DirectoryFollower {
+    /// For a shell on this machine, named `hostname`: only its own reports
+    /// count — no host, `localhost`, or `hostname` with or without its
+    /// domain.
+    pub fn local(hostname: &str) -> Self {
+        Self {
+            host: None,
+            local: Some(hostname.to_string()),
+        }
+    }
+
     /// The reported directory, or `None` when the report is not a
     /// `file://` URI for this session's host.
     pub fn report(&mut self, uri: &str) -> Option<String> {
         let (host, path) = split_file_uri(uri)?;
+        if let Some(own) = &self.local {
+            return is_this_machine(host, own).then_some(path);
+        }
         match &self.host {
             Some(pinned) if !pinned.eq_ignore_ascii_case(host) => return None,
             Some(_) => {}
@@ -419,6 +463,16 @@ impl DirectoryFollower {
         }
         Some(path)
     }
+}
+
+fn is_this_machine(host: &str, own: &str) -> bool {
+    let short = |name: &str| {
+        name.split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    host.is_empty() || host.eq_ignore_ascii_case("localhost") || short(host) == short(own)
 }
 
 /// Decode `%XX` escapes in a URI path; invalid escapes stay verbatim.
