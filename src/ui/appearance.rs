@@ -288,7 +288,7 @@ fn watch_portal() {
         let bus = match gio::bus_get_future(gio::BusType::Session).await {
             Ok(bus) => bus,
             Err(err) => {
-                eprintln!("Wayterm: no session bus ({err}); following the GTK theme settings");
+                tracing::info!(error = %err, "no session bus; following the GTK theme settings");
                 return;
             }
         };
@@ -326,8 +326,9 @@ fn watch_portal() {
         };
         match reply {
             Ok(reply) => set_desktop_preference(portal_preference(&reply.child_value(0))),
-            Err(err) => eprintln!(
-                "Wayterm: desktop portal unavailable ({err}); following the GTK theme settings"
+            Err(err) => tracing::info!(
+                error = %err,
+                "desktop portal unavailable; following the GTK theme settings"
             ),
         }
     });
@@ -408,9 +409,10 @@ impl UserCss {
         let monitor = gio::File::for_path(dir)
             .monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
             .map_err(|err| {
-                eprintln!(
-                    "Wayterm: not watching {} for theme changes ({err})",
-                    dir.display()
+                tracing::warn!(
+                    path = %dir.display(),
+                    error = %err,
+                    "not watching the directory for theme changes"
                 );
             })
             .ok()?;

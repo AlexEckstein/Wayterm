@@ -65,7 +65,7 @@ pub fn show_tmux_notice(parent: Option<&gtk4::Window>, store: &Rc<SessionStore>)
     window.connect_close_request(move |_| {
         if opt_out.is_active() {
             if let Err(err) = store.set_setting(TMUX_NOTICE_SETTING, "0") {
-                eprintln!("Wayterm: failed to save '{TMUX_NOTICE_SETTING}': {err}");
+                tracing::warn!(key = %TMUX_NOTICE_SETTING, error = %err, "failed to save setting");
             }
         }
         gtk4::glib::Propagation::Proceed

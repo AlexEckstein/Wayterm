@@ -117,12 +117,12 @@ pub fn take_first_run_offer(store: &SessionStore) -> bool {
         Ok(true) => {
             // Offered = shown, whatever the user does next: never nag.
             if let Err(err) = store.set_setting(IMPORT_OFFERED_KEY, "1") {
-                eprintln!("Wayterm: failed to record the import offer: {err}");
+                tracing::warn!(key = %IMPORT_OFFERED_KEY, error = %err, "failed to save setting");
             }
             true
         }
         Err(err) => {
-            eprintln!("Wayterm: failed to check for a first run: {err}");
+            tracing::warn!(error = %err, "failed to check for a first run");
             false
         }
     }
@@ -298,7 +298,7 @@ fn picked_path(file: Result<gio::File, glib::Error>) -> Option<PathBuf> {
         Ok(file) => file.path(),
         Err(err) if err.matches(gtk4::DialogError::Dismissed) => None,
         Err(err) => {
-            eprintln!("Wayterm: file dialog failed: {err}");
+            tracing::warn!(error = %err, "file dialog failed");
             None
         }
     }

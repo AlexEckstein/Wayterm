@@ -38,7 +38,7 @@ pub(super) fn save_and_apply(
     save: impl FnOnce(&SessionStore) -> rusqlite::Result<()>,
 ) {
     if let Err(err) = save(store) {
-        eprintln!("Wayterm: failed to save setting '{key}': {err}");
+        tracing::warn!(key = %key, error = %err, "failed to save setting");
         return;
     }
     apply(store);
@@ -260,4 +260,29 @@ pub(super) fn color_row(
         reset.set_sensitive(false);
     });
     row(&[text.upcast_ref(), button.upcast_ref(), reset.upcast_ref()])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A save that fails is logged with its key, and nothing is applied:
+    /// the function returns before it would need a display.
+    #[test]
+    fn a_failed_save_is_logged_with_its_key() {
+        let store = SessionStore::in_memory().unwrap();
+
+        let (buffer, guard) = crate::logging::tests::capture(None);
+        save_and_apply(&store, "default_font_size", |_| {
+            Err(rusqlite::Error::InvalidQuery)
+        });
+        drop(guard);
+        let output = buffer.contents();
+        let failed = output
+            .lines()
+            .find(|line| line.contains("failed to save setting"))
+            .unwrap_or_else(|| panic!("no save failure logged: {output}"));
+        assert!(failed.contains("WARN"), "{failed}");
+        assert!(failed.contains("key=default_font_size"), "{failed}");
+    }
 }

@@ -224,7 +224,7 @@ impl SessionTree {
         let rows = match collect_rows(&self.store) {
             Ok(rows) => rows,
             Err(err) => {
-                eprintln!("Wayterm: failed to load the session tree: {err}");
+                tracing::warn!(error = %err, "failed to load the session tree");
                 self.root.remove_all();
                 return;
             }
@@ -326,7 +326,7 @@ impl SessionTree {
             Ok(true) => {}
             Ok(false) => return false,
             Err(err) => {
-                eprintln!("Wayterm: failed to move {dragged:?}: {err}");
+                tracing::warn!(item = ?dragged, error = %err, "failed to move a tree item");
                 return false;
             }
         }
@@ -370,7 +370,7 @@ impl SessionTree {
     fn finish<T>(&self, what: &str, result: rusqlite::Result<T>) {
         match result {
             Ok(_) => self.refresh(),
-            Err(err) => eprintln!("Wayterm: failed to {what}: {err}"),
+            Err(err) => tracing::warn!(error = %err, "failed to {what}"),
         }
     }
 
@@ -594,7 +594,7 @@ impl SessionTree {
     fn edit_folder(&self, id: i64) {
         let folder = match self.store.get_folder(id) {
             Ok(folder) => folder,
-            Err(err) => return eprintln!("Wayterm: failed to load folder {id}: {err}"),
+            Err(err) => return tracing::warn!(folder = id, error = %err, "failed to load folder"),
         };
         if let Some(edit) = FolderDialog::new(self.parent().as_ref(), &folder).run() {
             self.finish(
@@ -612,14 +612,16 @@ impl SessionTree {
         };
         let folders = match collect_folders(&self.store) {
             Ok(folders) => folders,
-            Err(err) => return eprintln!("Wayterm: failed to list folders: {err}"),
+            Err(err) => return tracing::warn!(error = %err, "failed to list folders"),
         };
         let peers = collect_peer_sessions(&self.store);
         let dialog = match id {
             None => SessionDialog::new_session(&parent, &folders, &peers),
             Some(id) => match self.store.get_session(id) {
                 Ok(config) => SessionDialog::edit(&parent, &config, &folders, &peers),
-                Err(err) => return eprintln!("Wayterm: failed to load session {id}: {err}"),
+                Err(err) => {
+                    return tracing::warn!(session = id, error = %err, "failed to load session")
+                }
             },
         };
         let tree = self.clone();
@@ -679,9 +681,11 @@ fn delete_keyring_entries(
         .filter(|secret_type| match delete(&session_id, secret_type) {
             Ok(()) => false,
             Err(err) => {
-                eprintln!(
-                    "Wayterm: failed to delete the {secret_type} keyring entry of session \
-                     {session_id}: {err}"
+                tracing::warn!(
+                    session = %session_id,
+                    secret_type = %secret_type,
+                    error = %err,
+                    "failed to delete a keyring entry"
                 );
                 true
             }
@@ -876,6 +880,26 @@ mod keyring_cleanup_tests {
         });
         assert_eq!(failed, 2);
         assert_eq!(calls.into_inner(), SECRET_TYPES.len());
+    }
+
+    #[test]
+    fn a_failed_keyring_delete_is_logged() {
+        let (buffer, guard) = crate::logging::tests::capture(None);
+        let failed = delete_keyring_entries(31, &|_, secret_type| match secret_type {
+            "key_passphrase" => Err(CredentialError::StoreError("locked".into())),
+            _ => Ok(()),
+        });
+        drop(guard);
+        assert_eq!(failed, 1);
+        let output = buffer.contents();
+        let line = output
+            .lines()
+            .find(|line| line.contains("failed to delete a keyring entry"))
+            .unwrap_or_else(|| panic!("no keyring delete line in: {output}"));
+        assert!(line.contains("WARN"), "{line}");
+        assert!(line.contains("session=31"), "{line}");
+        assert!(line.contains("secret_type=key_passphrase"), "{line}");
+        assert!(line.contains("credential store error: locked"), "{line}");
     }
 
     #[test]

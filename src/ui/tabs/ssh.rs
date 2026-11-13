@@ -241,7 +241,11 @@ fn save_accepted_keys(store: Option<&SessionStore>, trusted: &[(i64, SessionKeyS
             Some(Err(err)) => err.to_string(),
             None => "no session store".to_string(),
         };
-        eprintln!("Wayterm: the host key accepted for session {session_id} was not saved: {why}");
+        tracing::warn!(
+            session = *session_id,
+            reason = %why,
+            "the host key accepted for the session was not saved"
+        );
     }
 }
 

@@ -197,7 +197,7 @@ impl PanelInner {
 
     fn refresh(&self, select: Option<i64>) {
         let macros = self.store.list_macros().unwrap_or_else(|err| {
-            eprintln!("Wayterm: failed to load macros: {err}");
+            tracing::warn!(error = %err, "failed to load macros");
             Vec::new()
         });
         self.list.remove_all();

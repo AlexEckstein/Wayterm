@@ -57,7 +57,10 @@ impl TabPersistence {
         let saved = match self.store.load_open_tabs() {
             Ok(tabs) => tabs,
             Err(err) => {
-                eprintln!("Wayterm: could not read the saved tab list ({err}); starting with none");
+                tracing::warn!(
+                    error = %err,
+                    "could not read the saved tab list; starting with none"
+                );
                 return 0;
             }
         };
@@ -132,7 +135,7 @@ impl TabPersistence {
 
     fn save_now(&self) {
         if let Err(err) = self.store.save_open_tabs(&self.current_states()) {
-            eprintln!("Wayterm: failed to save the open tab list: {err}");
+            tracing::warn!(error = %err, "failed to save the open tab list");
         }
     }
 
@@ -167,9 +170,10 @@ impl TabPersistence {
         let content = match config {
             Some((_, Ok(config))) => SessionTab::restore(&self.notebook, &config, &self.store),
             Some((id, Err(err))) => {
-                eprintln!(
-                    "Wayterm: tab '{}' points at session {id}, which no longer exists ({err}); restoring it unconnected",
-                    tab.label
+                tracing::warn!(
+                    session = id,
+                    error = %err,
+                    "a saved tab's session no longer exists; restoring it unconnected"
                 );
                 self.open_detached(&tab.label)
             }
