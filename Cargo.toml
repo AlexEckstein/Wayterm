@@ -21,7 +21,9 @@ gtk4 = { version = "0.11", features = ["v4_14"] }
 # package only exists from Debian bookworm / Ubuntu 23.04 on, both ≥ 0.72.
 vte4 = { version = "0.10", features = ["v0_70", "v0_72"] }
 tokio = { version = "1", features = ["full"] }
-rusqlite = { version = "0.41", features = ["bundled"] }
+# No default features: the statement cache (hashlink) is unused and the
+# wasm FFI only adds lockfile entries.
+rusqlite = { version = "0.42", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 russh = "0.65"
