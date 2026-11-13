@@ -124,7 +124,9 @@ table has one.
 - `close_tab`: closes the current tab as its close button does, asking
   first per `confirm_close` (doc 03 §Closing a tab). Home is never closed.
 - `next_tab`, `prev_tab`: the next or previous tab, wrapping round;
-  `goto_tab_N`: the Nth tab, if there is one. Home is not counted.
+  `goto_tab_N`: the Nth tab, if there is one. Home is not counted. The
+  tab's terminal takes keyboard focus, wherever it was (doc 03 §Connect
+  flow).
 - `rename_tab`: the current tab's rename prompt (doc 03 §Tab labels).
 - `toggle_sftp`: the side dock's SFTP panel, or back to the panel it came
   from (doc 07 §Layout).

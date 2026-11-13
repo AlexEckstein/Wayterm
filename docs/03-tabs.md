@@ -130,7 +130,10 @@ the forward engine and the SFTP sidebar, and take focus.
 
 Focus: a connect the user started takes focus; a reconnect only takes it
 back if nothing else holds it, so it never pulls focus out of the SFTP
-sidebar or the session tree.
+sidebar or the session tree. Moving to a tab with `next_tab`,
+`prev_tab` or `goto_tab_N` (doc 11 §Handlers) puts focus in its terminal
+too, since the user asked for that tab; left alone, GTK parks it on the
+tab bar.
 
 Every page shows one of the shared status views (`src/ui/tabs/views.rs`):
 connecting (with Cancel), disconnected, or an error with Retry and Close

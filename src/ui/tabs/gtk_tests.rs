@@ -219,6 +219,80 @@ pub(in crate::ui) fn closing_a_tab_focuses_the_next_terminal() {
     window.destroy();
 }
 
+/// `next_tab`, `prev_tab` and `goto_tab_N` put the keyboard in the
+/// terminal of the tab they show, on each backend: from the terminal of
+/// the tab left, from the session tree, and from the tab bar when the tab
+/// was current already. With no tab to show, focus stays put.
+pub(in crate::ui) fn the_tab_actions_focus_the_terminal() {
+    tab_actions_focus_the_terminal("vte");
+    #[cfg(feature = "backend-ghostty")]
+    {
+        use crate::terminal::{install_backend_preference, BackendKind};
+        install_backend_preference(BackendKind::Ghostty);
+        tab_actions_focus_the_terminal("ghostty");
+        install_backend_preference(BackendKind::Vte);
+    }
+}
+
+fn tab_actions_focus_the_terminal(backend_name: &str) {
+    let notebook = gtk4::Notebook::new();
+    let tree = gtk4::Entry::new();
+    let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    root.append(&tree);
+    root.append(&notebook);
+    let window = gtk4::ApplicationWindow::builder().build();
+    window.set_child(Some(&root));
+
+    let home: gtk4::Widget = gtk4::Label::new(Some("Home")).upcast();
+    notebook.append_page(&home, None::<&gtk4::Widget>);
+    let terminals: Vec<_> = (1..=2)
+        .map(|id| {
+            let session = SessionConfig {
+                id,
+                name: format!("local-{id}"),
+                session_type: SessionType::LocalShell,
+                ..Default::default()
+            };
+            let page = page_content(&Rc::new(session));
+            let backend = create_terminal().backend;
+            assert_eq!(backend.name(), backend_name);
+            set_terminal_area(&page, &backend.widget());
+            terminal_state(&page)
+                .terminal
+                .replace(Some(backend.clone()));
+            notebook.append_page(&page, None::<&gtk4::Widget>);
+            backend.widget()
+        })
+        .collect();
+    let store = Rc::new(SessionStore::in_memory().expect("in-memory store"));
+    actions::install(&window, &notebook, &home, &store);
+    window.present();
+    for _ in 0..10 {
+        glib::MainContext::default().iteration(false);
+    }
+    let act = |id: &str| gtk4::gio::prelude::ActionGroupExt::activate_action(&window, id, None);
+
+    notebook.set_current_page(Some(1));
+    terminals[0].grab_focus();
+    act("next_tab");
+    assert_eq!(notebook.current_page(), Some(2));
+    assert!(focus_within(&terminals[1]), "from the tab left");
+
+    tree.grab_focus();
+    act("prev_tab");
+    assert_eq!(notebook.current_page(), Some(1));
+    assert!(focus_within(&terminals[0]), "from the session tree");
+
+    notebook.grab_focus();
+    act("goto_tab_1");
+    assert!(focus_within(&terminals[0]), "the tab was current already");
+
+    tree.grab_focus();
+    act("goto_tab_3");
+    assert!(focus_within(&tree), "there is no third tab");
+    window.destroy();
+}
+
 /// The shell's OSC 7 report moves the page's sidebar — through the real
 /// VTE signal, and the Ghostty view's hook when built — while a report
 /// from another host (a nested ssh) does not.

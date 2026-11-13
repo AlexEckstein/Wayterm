@@ -87,6 +87,7 @@ mod gtk_tests {
         super::tabs::gtk_tests::focusing_a_tab_moves_focus_to_its_terminal();
         super::tabs::gtk_tests::reconnect_does_not_steal_focus();
         super::tabs::gtk_tests::closing_a_tab_focuses_the_next_terminal();
+        super::tabs::gtk_tests::the_tab_actions_focus_the_terminal();
         super::tabs::gtk_tests::sftp_sidebar_follows_the_shell_directory();
         super::tabs::gtk_tests::a_terminal_tab_keeps_the_shell_directory();
         super::tabs::gtk_tests::a_replaced_terminal_no_longer_reports_to_the_tab();
