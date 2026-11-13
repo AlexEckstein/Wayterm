@@ -299,7 +299,12 @@ impl CredentialSource for KeyringSource {
                 Ok(Some(secret)) => return Some(secret),
                 Ok(None) => {}
                 Err(reason) => {
-                    eprintln!("Wayterm: keyring: unavailable ({reason}); prompting instead");
+                    tracing::warn!(
+                        provider = "keyring",
+                        session = %session_id,
+                        error = %reason,
+                        "credential lookup failed; the next source answers"
+                    );
                     return None;
                 }
             }
@@ -386,24 +391,32 @@ impl BitwardenSource {
 impl CredentialSource for BitwardenSource {
     /// The item's password answers whatever secret the session's method
     /// asks for (a session has one method, so one secret).
-    fn lookup(&self, _session_id: &str, _secret_type: &str) -> Option<Zeroizing<Vec<u8>>> {
+    fn lookup(&self, session_id: &str, _secret_type: &str) -> Option<Zeroizing<Vec<u8>>> {
         let mut cmd = Command::new(&self.bin);
         cmd.args(["get", "password", "--raw", &self.item, "--nointeraction"]);
         match &self.session_key {
             Some(key) => cmd.env("BW_SESSION", key.as_str()),
             None => cmd.env_remove("BW_SESSION"),
         };
+        // The item name is the session's name: never logged.
         let (status, stdout) = match run_with_timeout(cmd, self.timeout) {
             Ok(done) => done,
             Err(err) => {
-                eprintln!("Wayterm: bitwarden lookup for '{}': {err}", self.item);
+                tracing::warn!(
+                    provider = "bitwarden",
+                    session = %session_id,
+                    error = %err,
+                    "credential lookup failed"
+                );
                 return None;
             }
         };
         if !status.success() {
-            eprintln!(
-                "Wayterm: bitwarden lookup for '{}' failed ({status})",
-                self.item
+            tracing::warn!(
+                provider = "bitwarden",
+                session = %session_id,
+                status = %status,
+                "credential lookup failed"
             );
             return None;
         }
@@ -411,7 +424,11 @@ impl CredentialSource for BitwardenSource {
         drop(stdout);
         let secret = text.trim();
         if secret.is_empty() {
-            eprintln!("Wayterm: bitwarden item '{}' has no password", self.item);
+            tracing::warn!(
+                provider = "bitwarden",
+                session = %session_id,
+                "credential lookup returned no password"
+            );
             return None;
         }
         Some(Zeroizing::new(secret.as_bytes().to_vec()))

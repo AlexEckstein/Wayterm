@@ -326,6 +326,31 @@ fn an_unreachable_keyring_is_a_miss_not_a_secret() {
     assert_eq!(&*mgr.lookup("42", "password").unwrap(), b"prompted");
 }
 
+/// The captured line holding `message`, or a panic showing all of them.
+fn logged_line<'a>(output: &'a str, message: &str) -> &'a str {
+    output
+        .lines()
+        .find(|line| line.contains(message))
+        .unwrap_or_else(|| panic!("no {message:?} line in:\n{output}"))
+}
+
+#[test]
+fn an_unreachable_keyring_is_logged_with_its_reason() {
+    let fake = FakeKeyring::broken("no Secret Service on the bus");
+    let source = keyring(&fake);
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    assert!(source.lookup("42", "password").is_none());
+    drop(guard);
+
+    let output = buffer.contents();
+    let line = logged_line(&output, "credential lookup failed");
+    assert!(line.contains("WARN"), "{line}");
+    assert!(line.contains("keyring"), "{line}");
+    assert!(line.contains("session=42"), "{line}");
+    assert!(line.contains("no Secret Service on the bus"), "{line}");
+    assert!(!output.contains("prod-db"), "{output}");
+}
+
 #[test]
 fn the_placeholder_session_id_never_reaches_the_keyring() {
     let fake = Arc::new(FakeKeyring::default());
@@ -514,6 +539,27 @@ fn bitwarden_missing_binary_is_a_miss() {
         Some(Zeroizing::new("fake-session-key".into())),
     );
     assert!(source.lookup("1", "password").is_none());
+}
+
+#[test]
+fn a_failed_bitwarden_lookup_is_logged_without_the_item_name() {
+    let source = BitwardenSource::with_session_key(
+        "/nonexistent/wayterm-test/bw",
+        "prod-db",
+        Some(Zeroizing::new("fake-session-key".into())),
+    );
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    assert!(source.lookup("7", "password").is_none());
+    drop(guard);
+
+    let output = buffer.contents();
+    let line = logged_line(&output, "credential lookup failed");
+    assert!(line.contains("WARN"), "{line}");
+    assert!(line.contains("bitwarden"), "{line}");
+    assert!(line.contains("session=7"), "{line}");
+    assert!(!output.contains("wayterm/"), "{output}");
+    assert!(!output.contains("prod-db"), "{output}");
+    assert!(!output.contains("fake-session-key"), "{output}");
 }
 
 #[test]
