@@ -117,7 +117,7 @@ pub struct TerminalHandle {
 /// (doc 13 §Settings rows).
 pub const DEFAULT_BACKEND_SETTING: &str = "default_backend";
 
-/// Whether this build has the experimental Ghostty backend
+/// Whether this build has the Ghostty backend
 /// (`backend-ghostty` feature).
 pub const GHOSTTY_COMPILED: bool = cfg!(feature = "backend-ghostty");
 

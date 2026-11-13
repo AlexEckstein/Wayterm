@@ -1,4 +1,4 @@
-//! The experimental libghostty-vt backend (doc 02 §GhosttyBackend), built
+//! The libghostty-vt backend (doc 02 §GhosttyBackend), built
 //! only with the `backend-ghostty` feature.
 //!
 //! - [`ffi`] declares `shim.c`, a narrow C layer over the pinned
@@ -264,7 +264,7 @@ impl TerminalBackend for GhosttyBackend {
     }
 
     fn description(&self) -> &str {
-        "libghostty-vt engine with a GTK4 render widget (experimental)"
+        "libghostty-vt engine with a GTK4 render widget"
     }
 }
 

@@ -32,7 +32,7 @@ cargo build --release
 
 | Feature | Default | What |
 |---|---|---|
-| `backend-ghostty` | off | the experimental libghostty-vt terminal backend (doc 02 §GhosttyBackend); needs the library built locally; enables the `terminal_parse` benchmark |
+| `backend-ghostty` | off | the libghostty-vt terminal backend (doc 02 §GhosttyBackend); needs the library built locally; enables the `terminal_parse` benchmark |
 
 The default build has no optional native dependencies beyond GTK 4 and
 VTE.

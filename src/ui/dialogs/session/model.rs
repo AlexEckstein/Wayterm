@@ -319,7 +319,7 @@ impl OverridePicker {
 /// (doc 02 §Backend selection).
 fn ghostty_label() -> &'static str {
     if GHOSTTY_COMPILED {
-        "Ghostty (experimental)"
+        "Ghostty"
     } else {
         "Ghostty (not in this build; uses VTE)"
     }

@@ -341,7 +341,7 @@ display. Clones share the recordings.
 
 ## GhosttyBackend
 
-An engine backend, experimental and opt-in: built only with the
+An opt-in engine backend: built only with the
 `backend-ghostty` Cargo feature, against libghostty-vt from one pinned
 upstream release (§libghostty-vt pin). The default build has none of it.
 `src/terminal/ghostty/`:

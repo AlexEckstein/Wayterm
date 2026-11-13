@@ -62,7 +62,7 @@ tracing-appender = "0.2"
 cc = { version = "1", optional = true }
 
 [features]
-# Experimental second terminal backend over libghostty-vt (doc 02).
+# Second terminal backend over libghostty-vt (doc 02).
 # Off by default; needs the pinned library built locally
 # (doc 02 §libghostty-vt pin).
 backend-ghostty = ["dep:cc"]
