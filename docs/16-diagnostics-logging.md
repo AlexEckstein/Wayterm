@@ -182,6 +182,9 @@ display and no process-global state except where noted:
   panic has flushed, nothing further reaches the file.
 - Under sustained load the non-blocking writer drops events rather than
   block the thread that logs.
+- Stderr is written on the thread that logs, as `eprintln!` was: a stderr
+  that stalls — a full pipe nobody reads — stalls that thread, the GTK
+  main thread included.
 - The file's modes are set when it is created; an existing file or
   directory keeps the modes it has.
 - The Flatpak's log location is not verified (doc 14).

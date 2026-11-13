@@ -81,8 +81,9 @@ output      reader task ─► bridge task ─► drain (main context) ─► ba
   runs the dial on tokio's blocking pool and hops each prompt to the main
   thread (doc 04 §Connection supervisor).
 - Diagnostics logging is set up first, on the main thread, before the
-  runtime exists; after that any thread logs without blocking, through a
-  writer thread of its own (doc 16 §Lifecycle).
+  runtime exists; after that any thread logs: the line goes to stderr on
+  the calling thread and to the file through a writer thread of its own,
+  so no call site waits on the disk (doc 16 §Lifecycle).
 
 ## Principles
 
