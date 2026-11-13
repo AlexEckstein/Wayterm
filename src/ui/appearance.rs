@@ -35,9 +35,8 @@ use gtk4::{gdk, gio, glib};
 
 use crate::store::model::SessionConfig;
 use crate::terminal::color_scheme::{
-    self, backend_row, classify_system_theme, Brightness, SchemeChoice,
-    DEFAULT_COLOR_SCHEME_SETTING, GHOSTTY_COLOR_SCHEME_SETTING, UNKNOWN_THEME,
-    VTE_COLOR_SCHEME_SETTING,
+    self, Brightness, DEFAULT_COLOR_SCHEME_SETTING, GHOSTTY_COLOR_SCHEME_SETTING, SchemeChoice,
+    UNKNOWN_THEME, VTE_COLOR_SCHEME_SETTING, backend_row, classify_system_theme,
 };
 use crate::terminal::{TerminalBackend, TerminalDefaults};
 use crate::ui::tabs::SessionTab;
@@ -280,10 +279,10 @@ pub(in crate::ui) fn set_desktop_preference(preference: Option<Brightness>) {
             None => "none",
         };
         tracing::info!(preference = %stated, "desktop light/dark preference changed");
-        if gtk4::is_initialized_main_thread() {
-            if let Some(settings) = gtk4::Settings::default() {
-                apply_chrome(&settings, preference);
-            }
+        if gtk4::is_initialized_main_thread()
+            && let Some(settings) = gtk4::Settings::default()
+        {
+            apply_chrome(&settings, preference);
         }
     }
     refresh();
@@ -527,8 +526,8 @@ impl Drop for Stylesheet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terminal::fake::Interaction;
     use crate::terminal::FakeBackend;
+    use crate::terminal::fake::Interaction;
 
     fn pushed(backend: &FakeBackend) -> Vec<String> {
         backend

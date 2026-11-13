@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use russh::client::{self, Config, Handle};
 use russh::Preferred;
+use russh::client::{self, Config, Handle};
 
 use crate::store::model::{SessionHostKey, SshOptions};
 use crate::transport::auth::ChallengeResponder;

@@ -20,7 +20,7 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 
 use crate::ui::panels::sftp_sidebar::SftpSidebar;
-use crate::ui::tabs::{current_page, SessionTab};
+use crate::ui::tabs::{SessionTab, current_page};
 use crate::ui::widgets::{data, set_data, set_margins};
 
 /// Notebook data key: the window's dock, for the tab code's notifications.
@@ -401,10 +401,10 @@ pub(crate) fn reveal_sftp(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     if current_page(notebook).as_ref() != Some(page) {
         return;
     }
-    if let Some(dock) = data::<SideDock>(notebook, DOCK_KEY) {
-        if dock.inner.stack.is_visible() {
-            dock.select(DockPage::Sftp);
-        }
+    if let Some(dock) = data::<SideDock>(notebook, DOCK_KEY)
+        && dock.inner.stack.is_visible()
+    {
+        dock.select(DockPage::Sftp);
     }
 }
 
@@ -458,9 +458,11 @@ pub(in crate::ui) mod gtk_tests {
             assert_eq!(button.tooltip_text().as_deref(), Some(page.label()));
             assert_eq!(button.icon_name().as_deref(), Some(page.icon()));
             assert_eq!(button.label(), None, "{page:?}: no text on the tab");
-            assert!(button
-                .child()
-                .is_some_and(|child| child.is::<gtk4::Image>()));
+            assert!(
+                button
+                    .child()
+                    .is_some_and(|child| child.is::<gtk4::Image>())
+            );
         }
         assert_eq!(dock.current(), DockPage::Sessions);
         assert_eq!(visible().as_deref(), Some("sessions"));

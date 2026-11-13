@@ -5,7 +5,7 @@ use std::ops::Range;
 use gtk4::prelude::*;
 use gtk4::{gdk, graphene, gsk, pango};
 
-use super::{pixels, GhosttyView};
+use super::{GhosttyView, pixels};
 use crate::terminal::ghostty::ffi;
 
 /// Lit and dark lengths of the patterned underlines, in line thicknesses.

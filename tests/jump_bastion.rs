@@ -4,12 +4,12 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session};
 use russh::Channel;
+use russh::server::{self, Auth, ChannelOpenHandle, Msg, Session};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 

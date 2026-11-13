@@ -24,9 +24,9 @@ use gtk4::subclass::prelude::*;
 use gtk4::{gdk, glib};
 
 use super::links::link_at;
-use super::{px, GhosttyView};
+use super::{GhosttyView, px};
 use crate::terminal::ghostty::engine::{MouseEvent, MouseModes, Scroll};
-use crate::terminal::ghostty::{ffi, Shared};
+use crate::terminal::ghostty::{Shared, ffi};
 
 /// The arrow keysyms alternate scroll sends.
 const ARROW_UP: u32 = 0xff52;
@@ -318,11 +318,11 @@ impl GhosttyView {
             let Ok(Some(text)) = clipboard.read_text_future().await else {
                 return;
             };
-            if let Some(view) = view.upgrade() {
-                if let Some(shared) = view.shared() {
-                    shared.input(shared.engine.encode_paste(&text));
-                    view.queue_draw();
-                }
+            if let Some(view) = view.upgrade()
+                && let Some(shared) = view.shared()
+            {
+                shared.input(shared.engine.encode_paste(&text));
+                view.queue_draw();
             }
         });
     }

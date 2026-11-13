@@ -1,20 +1,20 @@
 //! The dialog's display-free mapping: [`config_from_fields`] and the
 //! per-type helpers.
 
-use crate::store::model::{
-    AuthMethod, Folder, SessionConfig, SessionType, RDP_COLOR_DEPTHS, SERIAL_DATA_BITS,
-    SERIAL_FLOW_CONTROLS, SERIAL_PARITIES, SERIAL_STOP_BITS,
-};
 use crate::store::SessionStore;
+use crate::store::model::{
+    AuthMethod, Folder, RDP_COLOR_DEPTHS, SERIAL_DATA_BITS, SERIAL_FLOW_CONTROLS, SERIAL_PARITIES,
+    SERIAL_STOP_BITS, SessionConfig, SessionType,
+};
 use crate::ui::dialogs::tunnels::model::ForwardRuleDraft;
 
 use super::{
-    backend_picker, collect_folders, collect_peer_sessions, config_from_fields,
-    default_tmux_session_name, folder_labels, format_resolution, jump_candidates, jump_error,
-    jump_missing_label, jump_picker_model, parse_resolution, resolve_jump, scheme_picker,
-    session_type_from_index, type_index_for, DialogFields, DEFAULT_SERIAL_BAUD, JUMP_NONE_LABEL,
-    OVERRIDE_DEFAULT_LABEL, TYPE_INDEX_LOCAL, TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_SSH,
-    TYPE_INDEX_VNC,
+    DEFAULT_SERIAL_BAUD, DialogFields, JUMP_NONE_LABEL, OVERRIDE_DEFAULT_LABEL, TYPE_INDEX_LOCAL,
+    TYPE_INDEX_RDP, TYPE_INDEX_SERIAL, TYPE_INDEX_SSH, TYPE_INDEX_VNC, backend_picker,
+    collect_folders, collect_peer_sessions, config_from_fields, default_tmux_session_name,
+    folder_labels, format_resolution, jump_candidates, jump_error, jump_missing_label,
+    jump_picker_model, parse_resolution, resolve_jump, scheme_picker, session_type_from_index,
+    type_index_for,
 };
 
 fn sample_folders() -> Vec<Folder> {
@@ -1223,8 +1223,8 @@ fn nested_folders_are_pickable_and_marked_by_depth() {
 mod save_password {
     use crate::transport::credentials::CredentialError;
     use crate::ui::dialogs::session::{
-        password_rows_visible, save_password_state, should_store_password, store_error_message,
         SAVE_PASSWORD_LABEL, SAVE_PASSWORD_LABEL_EMPTY, TYPE_INDEX_RDP, TYPE_INDEX_SSH,
+        password_rows_visible, save_password_state, should_store_password, store_error_message,
     };
 
     // AUTH_LABELS order: password, key, agent, keyboard-interactive, none.

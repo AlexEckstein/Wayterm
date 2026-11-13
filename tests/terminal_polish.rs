@@ -6,8 +6,8 @@ use wayterm::hotkeys::{ActionContext, DEFAULT_ACTIONS};
 use wayterm::terminal::fake::{FakeBackend, Interaction};
 use wayterm::terminal::{TerminalBackend, VteBackend};
 use wayterm::ui::tabs::terminal_actions::{
-    initial_search_reverse, route_terminal_action, TerminalAction, TerminalActionInputs,
-    TERMINAL_ACTIONS,
+    TERMINAL_ACTIONS, TerminalAction, TerminalActionInputs, initial_search_reverse,
+    route_terminal_action,
 };
 
 /// Every window action is a terminal-context default the engine binds.

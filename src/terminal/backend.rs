@@ -1,8 +1,8 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gtk4::prelude::*;
-use gtk4::{pango, Widget};
+use gtk4::{Widget, pango};
 use tokio::sync::mpsc;
 
 /// Capabilities a backend supports — the UI hides what is unsupported.
@@ -177,11 +177,7 @@ impl BackendKind {
     /// The backend actually built: Ghostty falls back to VTE in a build
     /// without `backend-ghostty`.
     pub fn effective(self) -> Self {
-        if GHOSTTY_COMPILED {
-            self
-        } else {
-            Self::Vte
-        }
+        if GHOSTTY_COMPILED { self } else { Self::Vte }
     }
 }
 

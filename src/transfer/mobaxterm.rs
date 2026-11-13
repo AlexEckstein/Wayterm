@@ -131,9 +131,11 @@ mod tests {
 
     #[test]
     fn bookmark_rejects_unsupported_and_malformed() {
-        assert!(bookmark("t", "#98#0%host%23%%", None)
-            .unwrap_err()
-            .contains("98"));
+        assert!(
+            bookmark("t", "#98#0%host%23%%", None)
+                .unwrap_err()
+                .contains("98")
+        );
         assert!(bookmark("t", "plain", None).is_err());
         assert!(bookmark("t", "#109#0%%22%", None).is_err());
         assert!(bookmark("t", "#109#0%h%notaport%", None).is_err());

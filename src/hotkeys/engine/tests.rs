@@ -147,9 +147,11 @@ fn conflicts_for_delegates_to_the_registry() {
             .collect::<Vec<_>>(),
         vec!["copy".to_string()]
     );
-    assert!(engine
-        .conflicts_for("duplicate_session", "Ctrl+D")
-        .is_empty());
+    assert!(
+        engine
+            .conflicts_for("duplicate_session", "Ctrl+D")
+            .is_empty()
+    );
 }
 
 /// A fresh database is full of `is_default = 1` seed rows, and loading
@@ -607,9 +609,11 @@ fn precedence_runs_panels_then_terminal_then_global() {
     assert_eq!(precedence(SessionTree), precedence(Sftp));
     assert!(precedence(Sftp) < precedence(Terminal));
     assert!(precedence(Terminal) < precedence(Global));
-    assert!(DEFAULT_ACTIONS
-        .iter()
-        .all(|d| !matches!(d.context, RdpTab | VncTab)));
+    assert!(
+        DEFAULT_ACTIONS
+            .iter()
+            .all(|d| !matches!(d.context, RdpTab | VncTab))
+    );
 }
 
 #[test]

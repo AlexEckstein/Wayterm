@@ -6,8 +6,8 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -193,10 +193,10 @@ fn spawn_shell(
                 libc::signal(signal, libc::SIG_DFL);
             }
             close_inherited_fds(close_limit);
-            if let Some(dir) = &cwd_c {
-                if libc::chdir(dir.as_ptr()) != 0 {
-                    libc::_exit(126);
-                }
+            if let Some(dir) = &cwd_c
+                && libc::chdir(dir.as_ptr()) != 0
+            {
+                libc::_exit(126);
             }
             libc::execve(shell_c.as_ptr(), argv.as_ptr(), envp.as_ptr());
             libc::_exit(127);

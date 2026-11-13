@@ -2,15 +2,15 @@
 //! mapping to and from [`SessionConfig`], plus the jump-host and terminal
 //! override picker rules.
 
-use crate::store::model::{
-    strip_tmux_prefix, vocab_index, vocab_value, AuthMethod, Folder, SessionConfig, SessionType,
-    DEFAULT_SERIAL_BAUD, RDP_COLOR_DEPTHS, RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS,
-    SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES,
-    SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT, TMUX_NAME_PREFIX,
-};
 use crate::store::SessionStore;
-use crate::terminal::{BackendKind, SchemeChoice, GHOSTTY_COMPILED};
-use crate::ui::dialogs::tunnels::model::{rules_from_drafts, ForwardRuleDraft};
+use crate::store::model::{
+    AuthMethod, DEFAULT_SERIAL_BAUD, Folder, RDP_COLOR_DEPTH_DEFAULT, RDP_COLOR_DEPTHS,
+    SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_FLOW_CONTROLS,
+    SERIAL_PARITIES, SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT,
+    SessionConfig, SessionType, TMUX_NAME_PREFIX, strip_tmux_prefix, vocab_index, vocab_value,
+};
+use crate::terminal::{BackendKind, GHOSTTY_COMPILED, SchemeChoice};
+use crate::ui::dialogs::tunnels::model::{ForwardRuleDraft, rules_from_drafts};
 
 // Type DropDown indices, in doc 09 order.
 /// Type dropdown position of SSH.

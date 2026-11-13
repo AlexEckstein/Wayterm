@@ -1,6 +1,6 @@
 use super::*;
 use crate::store::model::{
-    SessionType, SERIAL_DATA_BITS, SERIAL_FLOW_CONTROLS, SERIAL_PARITIES, SERIAL_STOP_BITS,
+    SERIAL_DATA_BITS, SERIAL_FLOW_CONTROLS, SERIAL_PARITIES, SERIAL_STOP_BITS, SessionType,
 };
 
 fn serial_config(device: &str) -> SessionConfig {

@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use russh::keys::{load_public_key, Algorithm, EcdsaCurve, PublicKey};
 use russh::Preferred;
+use russh::keys::{Algorithm, EcdsaCurve, PublicKey, load_public_key};
 
 use crate::store::model::{HostKeyPolicy, SessionHostKey};
 use crate::transport::hostkey::{
@@ -358,9 +358,11 @@ fn the_types_of_recorded_keys_are_offered_first() {
     // Every RSA signature algorithm uses an `ssh-rsa` key.
     std::fs::write(&path, "[localhost]:13265 ssh-rsa AAAAB3NzaC1yc2E\n").unwrap();
     let order = v.key_preference("localhost", 13265);
-    assert!(order[..3]
-        .iter()
-        .all(|algorithm| matches!(algorithm, Algorithm::Rsa { .. })));
+    assert!(
+        order[..3]
+            .iter()
+            .all(|algorithm| matches!(algorithm, Algorithm::Rsa { .. }))
+    );
     assert_eq!(order[3], Algorithm::Ed25519);
 }
 
@@ -649,9 +651,11 @@ fn an_unknown_host_is_still_asked_about_and_recorded_globally() {
         HostKeyDecision::AcceptAndSave
     );
     assert_eq!(*asked.lock().unwrap(), [HostKeyQuestion::Unknown]);
-    assert!(std::fs::read_to_string(&path)
-        .unwrap()
-        .contains(ED25519_KEY_A));
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains(ED25519_KEY_A)
+    );
     assert!(v.session_keys().keys().is_empty());
 }
 

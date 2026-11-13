@@ -22,7 +22,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use crate::store::model::{AuthMethod as StoredMethod, SessionConfig};
 use crate::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
 use crate::transport::supervisor::{
-    authenticated, client_config, connect_error, ConnectParams, ConnectionSupervisor, HopAuth,
+    ConnectParams, ConnectionSupervisor, HopAuth, authenticated, client_config, connect_error,
 };
 use crate::transport::types::TransportError;
 

@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use russh::keys::{load_secret_key, PrivateKey};
+use russh::keys::{PrivateKey, load_secret_key};
 use russh::server::{self, Auth};
 use tokio::net::TcpListener;
 

@@ -5,7 +5,7 @@
 
 use crate::transport::types::TransportState;
 
-use super::{format_elapsed, status_view_from, ColorKind, StatusView};
+use super::{ColorKind, StatusView, format_elapsed, status_view_from};
 
 #[test]
 fn disconnected_is_red_without_host() {

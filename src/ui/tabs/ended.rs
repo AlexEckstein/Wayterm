@@ -8,8 +8,7 @@ use gtk4::prelude::*;
 use gtk4::{gdk, glib};
 
 /// Written into the terminal: attributes reset, on a line of its own.
-pub const NOTICE: &str =
-    "\r\n\x1b[0m\x1b[1mSession disconnected.\x1b[0m Press r to reconnect or q to close this tab.\r\n";
+pub const NOTICE: &str = "\r\n\x1b[0m\x1b[1mSession disconnected.\x1b[0m Press r to reconnect or q to close this tab.\r\n";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndedChoice {

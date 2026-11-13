@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::{FolderSpec, ImportError, ImportReport, Parsed};
-use crate::store::model::{HostKeyPolicy, SessionConfig};
 use crate::store::SessionStore;
+use crate::store::model::{HostKeyPolicy, SessionConfig};
 
 /// Export document schema version.
 pub const EXPORT_VERSION: u32 = 1;

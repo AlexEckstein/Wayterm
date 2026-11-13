@@ -10,14 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use data_encoding::BASE64;
+use russh::Preferred;
 use russh::keys::known_hosts::learn_known_hosts_path;
 use russh::keys::{Algorithm, PublicKey};
-use russh::Preferred;
 
 use crate::store::model::{HostKeyPolicy, SessionHostKey};
 
 mod known_hosts;
-use known_hosts::{unpadded, HostEntries, Standing};
+use known_hosts::{HostEntries, Standing, unpadded};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostKeyDecision {
@@ -320,15 +320,15 @@ impl HostKeyVerifier {
             HostKeyPolicy::Strict => match (self.prompt)(HostKeyQuestion::Unknown, facts) {
                 // Not an answer to this question.
                 HostKeyDecision::AcceptAndSaveSession => {
-                    return rejected(&"the unknown-host prompt answered another question")
+                    return rejected(&"the unknown-host prompt answered another question");
                 }
                 decision => decision,
             },
         };
-        if decision == HostKeyDecision::AcceptAndSave {
-            if let Err(err) = self.record(facts, key) {
-                return rejected(&format_args!("cannot record it in known_hosts: {err}"));
-            }
+        if decision == HostKeyDecision::AcceptAndSave
+            && let Err(err) = self.record(facts, key)
+        {
+            return rejected(&format_args!("cannot record it in known_hosts: {err}"));
         }
         decision
     }

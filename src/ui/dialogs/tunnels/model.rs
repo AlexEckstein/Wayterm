@@ -142,11 +142,7 @@ pub fn drafts_from_rules(rules: Option<&Vec<ForwardRule>>) -> Vec<ForwardRuleDra
 fn parse_port(text: &str, what: &str) -> Result<u16, String> {
     let err = || format!("{what} must be a port 1-65535");
     let port: u16 = text.trim().parse().map_err(|_| err())?;
-    if port == 0 {
-        Err(err())
-    } else {
-        Ok(port)
-    }
+    if port == 0 { Err(err()) } else { Ok(port) }
 }
 
 /// The stored rule a draft describes. Only Local converts: Remote/Dynamic
@@ -191,11 +187,7 @@ pub fn rules_from_drafts(
             }
         }
     }
-    if failed {
-        Err(errors)
-    } else {
-        Ok(rules)
-    }
+    if failed { Err(errors) } else { Ok(rules) }
 }
 
 /// The state of one rule by id; missing means the engine never reported

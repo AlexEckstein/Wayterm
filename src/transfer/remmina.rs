@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::{split_server, FolderSet, ImportReport, Parsed};
+use super::{FolderSet, ImportReport, Parsed, split_server};
 use crate::store::model::{AuthMethod, SessionConfig, SessionType};
 
 /// Remmina keys that hold a secret (encrypted or not).

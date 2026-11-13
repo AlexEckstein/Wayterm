@@ -15,10 +15,10 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::store::SessionStore;
-use crate::ui::dialogs::host_picker::{local_shell_session, LOCAL_SHELL_ID};
+use crate::ui::dialogs::host_picker::{LOCAL_SHELL_ID, local_shell_session};
 use crate::ui::tabs::label::build_tab_label;
 use crate::ui::tabs::state::{self, PageInfo, TabState};
-use crate::ui::tabs::{session_id_of, SessionTab};
+use crate::ui::tabs::{SessionTab, session_id_of};
 use crate::ui::widgets::{centered_label, data, set_data};
 
 /// A page's creation time (unix millis), so restored tabs keep their age.

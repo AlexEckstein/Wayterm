@@ -4,11 +4,11 @@
 use wayterm::store::model::{SessionConfig, SessionType, VncOptions};
 use wayterm::transport::types::TransportState;
 use wayterm::ui::tabs::vnc::{
-    apply_button, blit_rows, button_bit, effective_options, placement, state_for, to_framebuffer,
-    wheel_bit, Placement,
+    Placement, apply_button, blit_rows, button_bit, effective_options, placement, state_for,
+    to_framebuffer, wheel_bit,
 };
-use wayterm::vnc::client::CANCELLED;
 use wayterm::vnc::VncUiEvent;
+use wayterm::vnc::client::CANCELLED;
 
 #[test]
 fn scaled_placement_fits_and_centers() {

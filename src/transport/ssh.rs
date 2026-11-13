@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use russh::{client::Msg, Channel, ChannelMsg, ChannelWriteHalf};
+use russh::{Channel, ChannelMsg, ChannelWriteHalf, client::Msg};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;

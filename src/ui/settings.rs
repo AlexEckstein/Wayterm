@@ -450,8 +450,8 @@ pub(super) mod gtk_tests {
     /// shows, and the color reads as unset again.
     fn backend_sections() {
         use crate::terminal::options::{
-            VteCursor, VTE_AUDIBLE_BELL_SETTING, VTE_BACKGROUND_SETTING, VTE_CURSOR_SHAPE_SETTING,
-            VTE_LINE_HEIGHT_SETTING, VTE_SELECTION_BG_SETTING,
+            VTE_AUDIBLE_BELL_SETTING, VTE_BACKGROUND_SETTING, VTE_CURSOR_SHAPE_SETTING,
+            VTE_LINE_HEIGHT_SETTING, VTE_SELECTION_BG_SETTING, VteCursor,
         };
 
         let store = Rc::new(SessionStore::in_memory().unwrap());

@@ -1,7 +1,7 @@
 [package]
 name = "wayterm"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "An open source, multi-protocol connection manager and terminal for Linux"
 license = "MIT"
 repository = "https://github.com/AlexEckstein/Wayterm"
@@ -21,7 +21,9 @@ gtk4 = { version = "0.11", features = ["v4_14"] }
 # package only exists from Debian bookworm / Ubuntu 23.04 on, both ≥ 0.72.
 vte4 = { version = "0.10", features = ["v0_70", "v0_72"] }
 tokio = { version = "1", features = ["full"] }
-rusqlite = { version = "0.41", features = ["bundled"] }
+# No default features: the statement cache (hashlink) is unused and the
+# wasm FFI only adds lockfile entries.
+rusqlite = { version = "0.42", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 russh = "0.65"
@@ -38,16 +40,20 @@ russh-sftp = "3.0"
 ksni = "0.3"
 libc = "0.2"
 serialport = { version = "4.10.1", default-features = false }
-vnc-rs = "0.6"
+# Held at 0.6.0: 0.6.1 adds Apple Remote Desktop auth and
+# ExtendedDesktopSize handling, neither used here (doc 08), at the cost of
+# 11 more packages (the previous RustCrypto generation: aes 0.8, md-5 0.10).
+vnc-rs = "=0.6.0"
 x11rb = "0.14"
 gdk4-x11 = "0.11"
 serde_yaml_ng = "0.10"
 # Secret Service / Flatpak portal keyring (doc 05).
 oo7 = "0.7"
 pollster = "1.0"
-# Diagnostics logging (doc 16).
+# Diagnostics logging (doc 16). No `ansi` or `tracing-log`: lines carry no
+# color codes and the `log` bridge is not installed.
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "smallvec"] }
 tracing-appender = "0.2"
 
 [build-dependencies]

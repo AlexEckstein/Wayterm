@@ -40,10 +40,10 @@ impl InputTap {
         let recording = Rc::clone(&tap.recording);
         main_ctx.spawn_local(async move {
             while let Some(event) = upstream.recv().await {
-                if let TerminalEvent::DataOut(data) = &event {
-                    if let Some(recorder) = recording.borrow_mut().as_mut() {
-                        recorder.record(data, Instant::now());
-                    }
+                if let TerminalEvent::DataOut(data) = &event
+                    && let Some(recorder) = recording.borrow_mut().as_mut()
+                {
+                    recorder.record(data, Instant::now());
                 }
                 if downstream.send(event).await.is_err() {
                     break;

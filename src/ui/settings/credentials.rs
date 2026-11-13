@@ -14,7 +14,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::store::SessionStore;
-use crate::transport::credentials::{bitwarden_status, BitwardenStatus, KeyringSource};
+use crate::transport::credentials::{BitwardenStatus, KeyringSource, bitwarden_status};
 
 // ---------------------------------------------------------------------------
 // Display-free data layer

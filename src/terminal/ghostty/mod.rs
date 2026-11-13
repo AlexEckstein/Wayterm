@@ -19,17 +19,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
-use gtk4::{pango, Widget};
+use gtk4::{Widget, pango};
 use tokio::sync::mpsc;
 
 use super::backend::{
-    clamp_opacity, mark_translucent, TerminalBackend, TerminalEvent, TerminalFeatures,
+    TerminalBackend, TerminalEvent, TerminalFeatures, clamp_opacity, mark_translucent,
 };
 use super::color_scheme;
 use super::vte::EventSender;
 use engine::{ClipboardDestination, Effect, Engine, Scroll};
-pub use view::install_options;
 use view::GhosttyView;
+pub use view::install_options;
 
 /// The grid a backend starts with, before its widget is allocated.
 const INITIAL_GRID: (u16, u16) = (80, 24);

@@ -15,9 +15,9 @@ use super::terminal_tab::TerminalTab;
 use super::*;
 use crate::hotkeys::engine::focus_within;
 use crate::sftp::SftpClient;
-use crate::terminal::color_scheme::{Brightness, Rgb, DARK, LIGHT};
+use crate::terminal::color_scheme::{Brightness, DARK, LIGHT, Rgb};
 use crate::terminal::options::{DefaultColors, SelectionColors, VteBlink, VteCursor, VteOptions};
-use crate::terminal::{create_terminal, TerminalDefaults};
+use crate::terminal::{TerminalDefaults, create_terminal};
 use crate::transport::types::TransportEvent;
 use crate::ui::translucency::gtk_tests::pixel_at;
 use vte4::prelude::*;
@@ -227,7 +227,7 @@ pub(in crate::ui) fn the_tab_actions_focus_the_terminal() {
     tab_actions_focus_the_terminal("vte");
     #[cfg(feature = "backend-ghostty")]
     {
-        use crate::terminal::{install_backend_preference, BackendKind};
+        use crate::terminal::{BackendKind, install_backend_preference};
         install_backend_preference(BackendKind::Ghostty);
         tab_actions_focus_the_terminal("ghostty");
         install_backend_preference(BackendKind::Vte);
@@ -300,7 +300,7 @@ pub(in crate::ui) fn sftp_sidebar_follows_the_shell_directory() {
     sidebar_follows_the_shell_directory("vte");
     #[cfg(feature = "backend-ghostty")]
     {
-        use crate::terminal::{install_backend_preference, BackendKind};
+        use crate::terminal::{BackendKind, install_backend_preference};
         install_backend_preference(BackendKind::Ghostty);
         sidebar_follows_the_shell_directory("ghostty");
         install_backend_preference(BackendKind::Vte);
@@ -344,7 +344,7 @@ pub(in crate::ui) fn a_terminal_tab_keeps_the_shell_directory() {
     tab_keeps_the_shell_directory("vte");
     #[cfg(feature = "backend-ghostty")]
     {
-        use crate::terminal::{install_backend_preference, BackendKind};
+        use crate::terminal::{BackendKind, install_backend_preference};
         install_backend_preference(BackendKind::Ghostty);
         tab_keeps_the_shell_directory("ghostty");
         install_backend_preference(BackendKind::Vte);
@@ -772,7 +772,7 @@ pub(in crate::ui) fn a_local_shell_tab_connects_and_closes() {
 /// unknown value follows the installed row. Ghostty is VTE in a build
 /// without it, so only a `backend-ghostty` run tells the two apart.
 fn tabs_honor_the_session_backend(notebook: &gtk4::Notebook, store: &Rc<SessionStore>) {
-    use crate::terminal::{install_backend_preference, BackendKind};
+    use crate::terminal::{BackendKind, install_backend_preference};
     use BackendKind::{Ghostty, Vte};
 
     let ghostty = Ghostty.effective().as_setting();
@@ -943,9 +943,11 @@ pub(in crate::ui) fn a_scheme_change_keeps_the_selection_color() {
     settle();
     backend.select_all();
     settle();
-    assert!(backend
-        .selected_text()
-        .is_some_and(|text| text.contains('x')));
+    assert!(
+        backend
+            .selected_text()
+            .is_some_and(|text| text.contains('x'))
+    );
     let lit = [30, 200, 10, 255];
     assert_eq!(pixel_at(&widget, 2, 2), lit);
 

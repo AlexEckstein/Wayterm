@@ -247,9 +247,11 @@ fn rule5_tree_and_sftp_do_not_conflict() {
         vec!["duplicate_session".to_string(), "sftp_download".to_string()]
     );
     // An action never conflicts with the chord it already holds.
-    assert!(registry
-        .conflicts_for("duplicate_session", "Ctrl+D")
-        .is_empty());
+    assert!(
+        registry
+            .conflicts_for("duplicate_session", "Ctrl+D")
+            .is_empty()
+    );
 }
 
 #[test]

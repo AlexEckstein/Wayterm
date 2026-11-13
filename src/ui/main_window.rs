@@ -10,7 +10,7 @@ use std::sync::Arc;
 use gtk4::gio;
 use gtk4::prelude::*;
 
-use crate::hotkeys::engine::{focus_owns_keys, ContextHost};
+use crate::hotkeys::engine::{ContextHost, focus_owns_keys};
 use crate::hotkeys::{ActionContext, HotkeyEngine};
 use crate::store::SessionStore;
 use crate::transport::connection::SshConnection;
@@ -24,7 +24,7 @@ use crate::ui::panels::side_dock::SideDock;
 use crate::ui::status_bar::StatusBar;
 use crate::ui::tabs::restore::TabPersistence;
 use crate::ui::tabs::{self, terminal_actions};
-use crate::ui::tabs::{current_page, SessionTab};
+use crate::ui::tabs::{SessionTab, current_page};
 use crate::ui::translucency::{self, CHROME_CLASS};
 use crate::ui::widgets::{data, set_data};
 use crate::ui::{appearance, settings};

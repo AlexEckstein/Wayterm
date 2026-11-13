@@ -7,12 +7,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use russh::client::{self, Handle, Msg};
-use russh::keys::{load_secret_key, HashAlg, PublicKeyOrCertificate};
+use russh::keys::{HashAlg, PublicKeyOrCertificate, load_secret_key};
 use russh::{Channel, Disconnect};
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
-use crate::transport::auth::{authenticate_chain, AuthConfig, AuthOutcome, ChallengeResponder};
+use crate::transport::auth::{AuthConfig, AuthOutcome, ChallengeResponder, authenticate_chain};
 use crate::transport::credentials::CredentialManager;
 use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
 use crate::transport::types::TransportError;

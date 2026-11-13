@@ -34,18 +34,18 @@ use tokio::sync::mpsc;
 use x11rb::rust_connection::RustConnection;
 use zeroize::Zeroizing;
 
-use crate::rdp::cert::{parse_seen_fingerprint, PROBE_FINGERPRINT};
+use crate::rdp::cert::{PROBE_FINGERPRINT, parse_seen_fingerprint};
 use crate::rdp::{
-    cert_arg, decide, CertDecision, RdpProcess, RdpProcessEvent, RdpSpec, CERT_ARG_PREFIX,
+    CERT_ARG_PREFIX, CertDecision, RdpProcess, RdpProcessEvent, RdpSpec, cert_arg, decide,
 };
 use crate::store::model::SessionConfig;
 use crate::transport::credentials::CredentialManager;
 use crate::transport::types::TransportState;
 use crate::ui::dialogs::auth::run_on_gtk_main_thread;
 use crate::ui::tabs::{
-    connecting_view, credential_manager, current_gen, filled, notice_view, page_store,
-    publish_status, set_terminal_area, show_disconnected, show_error_view, show_failure, NO_HOST,
-    NO_USERNAME,
+    NO_HOST, NO_USERNAME, connecting_view, credential_manager, current_gen, filled, notice_view,
+    page_store, publish_status, set_terminal_area, show_disconnected, show_error_view,
+    show_failure,
 };
 use crate::ui::widgets::{centered_label, data_or_default, set_data};
 
@@ -64,7 +64,7 @@ const ENGINE_KEY: &str = "wayterm-rdp-engine";
 /// Page data key for our own attempt generation (the tab-level generation
 /// cannot be bumped from here, and the overlay Cancel button must still
 /// invalidate a dial in flight).
-const RDP_GEN_KEY: &str = "wayterm-rdp-gen";
+const RDP_GEN_KEY: &str = "wayterm-rdp-generation";
 /// How long the acquisition probe may run before it is terminated.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// XID poll interval while waiting for the area to map.
@@ -337,13 +337,13 @@ struct Embed {
     baseline: Vec<u32>,
 }
 
-/// Start (or retry) the RDP connect for `page`; `gen` is the attempt
+/// Start (or retry) the RDP connect for `page`; `generation` is the attempt
 /// generation `start_connect` just bumped.
 pub(crate) fn start(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
     session: &Rc<SessionConfig>,
-    gen: u64,
+    generation: u64,
 ) {
     retire_slot(page);
     let our_gen = bump_rdp_gen(page);
@@ -363,7 +363,7 @@ pub(crate) fn start(
         session: session.clone(),
         host: host.into(),
         port: session.port.unwrap_or(DEFAULT_PORT),
-        tab_gen: gen,
+        tab_gen: generation,
         our_gen,
     };
     // The FreeRDP version notice lives in the connecting overlay and

@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 
-use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
+use crate::store::model::SessionConfig;
 use crate::ui::widgets::{button_row, set_margins, wrapped_label};
 
 /// Settings row (doc 13 §Settings rows): the notice shows unless this is off.
@@ -63,10 +63,10 @@ pub fn show_tmux_notice(parent: Option<&gtk4::Window>, store: &Rc<SessionStore>)
     ok.connect_clicked(move |_| for_ok.close());
     let store = store.clone();
     window.connect_close_request(move |_| {
-        if opt_out.is_active() {
-            if let Err(err) = store.set_setting(TMUX_NOTICE_SETTING, "0") {
-                tracing::warn!(key = %TMUX_NOTICE_SETTING, error = %err, "failed to save setting");
-            }
+        if opt_out.is_active()
+            && let Err(err) = store.set_setting(TMUX_NOTICE_SETTING, "0")
+        {
+            tracing::warn!(key = %TMUX_NOTICE_SETTING, error = %err, "failed to save setting");
         }
         gtk4::glib::Propagation::Proceed
     });

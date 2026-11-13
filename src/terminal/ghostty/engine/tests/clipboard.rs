@@ -1,4 +1,4 @@
-use super::super::effects::{clipboard_effect, CLIPBOARD_MAX_BYTES};
+use super::super::effects::{CLIPBOARD_MAX_BYTES, clipboard_effect};
 use super::*;
 
 fn clipboard(destination: ClipboardDestination, text: &str) -> Effect {

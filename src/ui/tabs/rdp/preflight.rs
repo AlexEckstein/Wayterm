@@ -10,11 +10,11 @@ use gtk4::prelude::*;
 
 use super::DEFAULT_PORT;
 use crate::app::default_db_path;
-use crate::rdp::{is_supported_version, probe_binary, RdpSpec, MIN_FREERDP_MAJOR};
-use crate::store::model::SessionConfig;
+use crate::rdp::{MIN_FREERDP_MAJOR, RdpSpec, is_supported_version, probe_binary};
 use crate::store::SessionStore;
+use crate::store::model::SessionConfig;
 use crate::ui::dialogs::auth::top_level_parent;
-use crate::ui::widgets::{button_row, set_margins, wrapped_label, Modal};
+use crate::ui::widgets::{Modal, button_row, set_margins, wrapped_label};
 
 /// `RdpSpec` for the session row with `cert_arg` attached (the resolved
 /// `/cert:fingerprint:…` token, if any).

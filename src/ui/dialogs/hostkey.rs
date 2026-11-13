@@ -10,7 +10,7 @@ use gtk4::prelude::*;
 pub use crate::transport::hostkey::HostKeyQuestion;
 use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyPrompt};
 use crate::ui::dialogs::auth::{run_on_gtk_main_thread, top_level_parent};
-use crate::ui::widgets::{button_row, set_margins, wrapped_label, Modal};
+use crate::ui::widgets::{Modal, button_row, set_margins, wrapped_label};
 
 /// Unknown-host buttons: cancel first, then the affirmative one, which is
 /// the default.

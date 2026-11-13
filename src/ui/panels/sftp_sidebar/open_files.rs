@@ -13,8 +13,8 @@ use gtk4::{gio, glib};
 
 use super::transfers::Transfer;
 use super::{
-    create_edit_dir, edit_root, file_name, is_plain_file_name, place_download, EditSync, FileStamp,
-    Reopen, SidebarInner,
+    EditSync, FileStamp, Reopen, SidebarInner, create_edit_dir, edit_root, file_name,
+    is_plain_file_name, place_download,
 };
 
 /// How long a local copy must stay untouched before it is looked at: an

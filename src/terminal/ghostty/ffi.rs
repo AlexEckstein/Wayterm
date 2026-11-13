@@ -221,7 +221,7 @@ pub type NotificationFn = unsafe extern "C" fn(*mut c_void, *const u8, usize, *c
 /// Decodes a PNG into the buffer `wt_ghostty_png_pixels` gives for `sink`.
 pub type PngFn = unsafe extern "C" fn(data: *const u8, len: usize, sink: *mut c_void) -> bool;
 
-extern "C" {
+unsafe extern "C" {
     pub fn wt_ghostty_new(cols: u16, rows: u16) -> *mut WtGhostty;
     pub fn wt_ghostty_free(g: *mut WtGhostty);
     pub fn wt_ghostty_set_effect(
@@ -361,7 +361,7 @@ extern "C" {
 
 // ABI checks for the mirrors above (engine tests).
 #[cfg(test)]
-extern "C" {
+unsafe extern "C" {
     pub fn wt_ghostty_cell_size() -> usize;
     pub fn wt_ghostty_frame_size() -> usize;
     pub fn wt_ghostty_span_size() -> usize;

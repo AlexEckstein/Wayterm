@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::{read_source, ImportReport, Parsed};
+use super::{ImportReport, Parsed, read_source};
 use crate::store::model::{AuthMethod, SessionConfig, SshOptions};
 
 /// `Include` nesting limit.

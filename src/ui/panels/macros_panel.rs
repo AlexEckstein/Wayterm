@@ -11,7 +11,7 @@ use gtk4::prelude::*;
 
 use crate::macros::{InputTap, Macro, MacroStep, Playback, PlaybackEnd};
 use crate::store::SessionStore;
-use crate::ui::panels::macro_editor::{default_name, MacroEditor};
+use crate::ui::panels::macro_editor::{MacroEditor, default_name};
 use crate::ui::panels::side_dock::empty_state;
 use crate::ui::tabs::SessionTab;
 use crate::ui::widgets::{confirm, set_data, set_margins, window_of, wrapped_label};
@@ -187,10 +187,10 @@ impl PanelInner {
         // Double-click or Enter on a macro plays it.
         let weak = Rc::downgrade(self);
         self.list.connect_row_activated(move |_, _| {
-            if let Some(inner) = weak.upgrade() {
-                if inner.playing.borrow().is_none() {
-                    inner.toggle_play();
-                }
+            if let Some(inner) = weak.upgrade()
+                && inner.playing.borrow().is_none()
+            {
+                inner.toggle_play();
             }
         });
     }
@@ -427,7 +427,7 @@ pub(in crate::ui) mod gtk_tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::terminal::{create_terminal, TerminalBackend, TerminalEvent, TerminalHandle};
+    use crate::terminal::{TerminalBackend, TerminalEvent, TerminalHandle, create_terminal};
 
     fn spin_until(mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(2);

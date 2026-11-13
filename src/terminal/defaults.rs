@@ -5,7 +5,7 @@
 
 use gtk4::pango;
 
-use super::options::{parsed, GhosttyOptions, VteOptions};
+use super::options::{GhosttyOptions, VteOptions, parsed};
 
 pub const DEFAULT_FONT_FAMILY_SETTING: &str = "default_font_family";
 pub const DEFAULT_FONT_SIZE_SETTING: &str = "default_font_size";

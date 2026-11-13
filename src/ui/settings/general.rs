@@ -228,10 +228,8 @@ fn backend_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
         apply(&store);
     });
     let row = super::row(&[check.upcast_ref(), text.upcast_ref()]);
-    if !GHOSTTY_COMPILED {
-        if let Some(line) = row.child() {
-            line.set_tooltip_text(Some(GHOSTTY_UNAVAILABLE));
-        }
+    if !GHOSTTY_COMPILED && let Some(line) = row.child() {
+        line.set_tooltip_text(Some(GHOSTTY_UNAVAILABLE));
     }
     row
 }

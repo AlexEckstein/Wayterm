@@ -8,13 +8,13 @@ use super::links::LINK_CURSOR;
 use super::paint::{painted_row, run_text};
 use super::*;
 use crate::macros::recorder::is_pointer_or_focus_report;
-use crate::terminal::color_scheme::{Rgb, DARK, LIGHT};
+use crate::terminal::color_scheme::{DARK, LIGHT, Rgb};
 use crate::terminal::ghostty::engine::Scroll;
 use crate::terminal::ghostty::ffi;
 use crate::terminal::options::{DefaultColors, GhosttyCursor, GhosttyOptions, SearchColors};
 use crate::terminal::{
-    create_terminal, install_backend_preference, BackendKind, GhosttyBackend, TerminalBackend,
-    TerminalDefaults, TRANSLUCENT_CLASS,
+    BackendKind, GhosttyBackend, TRANSLUCENT_CLASS, TerminalBackend, TerminalDefaults,
+    create_terminal, install_backend_preference,
 };
 use crate::ui::appearance::install_terminal_defaults;
 use crate::ui::translucency::gtk_tests::alpha_at;
@@ -284,11 +284,13 @@ fn other_buttons(
     ] {
         assert!(drags.contains(&button), "{button} in {drags:?}");
     }
-    assert!(controllers()
-        .filter_map(|c| c.downcast::<gtk4::EventControllerScroll>().ok())
-        .any(|wheel| wheel
-            .flags()
-            .contains(gtk4::EventControllerScrollFlags::BOTH_AXES)));
+    assert!(
+        controllers()
+            .filter_map(|c| c.downcast::<gtk4::EventControllerScroll>().ok())
+            .any(|wheel| wheel
+                .flags()
+                .contains(gtk4::EventControllerScrollFlags::BOTH_AXES))
+    );
 
     // No tracking: nothing is sent, and the selection stays.
     view.press(none, 40_000, at(0, 0));
@@ -749,9 +751,11 @@ fn underline_styles(backend: &GhosttyBackend, view: &GhosttyView) {
     let dashed = line_of(&format!("4:5;{red}"));
     let dashes = stretches(&dashed[0]);
     assert!(dashes.len() > 1);
-    assert!(dashes[..dashes.len() - 1]
-        .iter()
-        .all(|&len| len > 2 * thickness));
+    assert!(
+        dashes[..dashes.len() - 1]
+            .iter()
+            .all(|&len| len > 2 * thickness)
+    );
     assert!(dashed[0].iter().all(|&p| p == RED || p == [0; 4]));
 
     // With no underline color each style is in the text color, and
@@ -1023,13 +1027,17 @@ fn search_highlight(backend: &GhosttyBackend, view: &GhosttyView) {
     // On the engine: a press through the view would end the search.
     let shared = view.shared().unwrap();
     shared.engine.selection_cancel();
-    assert!(shared
-        .engine
-        .selection_press((0, 0), (1.0, 1.0), 0, 400, 1.0));
+    assert!(
+        shared
+            .engine
+            .selection_press((0, 0), (1.0, 1.0), 0, 400, 1.0)
+    );
     let end = (f64::from(3 * cw - 1), 1.0);
-    assert!(shared
-        .engine
-        .selection_drag((2, 0), end, cw as u32, view.height() as u32));
+    assert!(
+        shared
+            .engine
+            .selection_drag((2, 0), end, cw as u32, view.height() as u32)
+    );
     assert_ne!(color(0), opaque(search.bg), "the selection is on top");
     assert_eq!(engine().as_deref(), Some("one"));
     view.shared().unwrap().engine.clear_selection();
@@ -1659,7 +1667,7 @@ fn notifications(backend: &GhosttyBackend, rx: &mut mpsc::Receiver<TerminalEvent
 
 /// Paint the view now; the result tells whether any pixel in a box
 /// differs from the background.
-fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool {
+fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool + use<> {
     let (width, height) = (view.width() as usize, view.height() as usize);
     let at = pixels(view);
     let background = at(width - 1, height - 1);
@@ -1671,7 +1679,7 @@ fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool {
 
 /// Paint the view now; the result reads one pixel, as GDK stores it:
 /// blue, green, red, alpha.
-fn pixels(view: &GhosttyView) -> impl Fn(usize, usize) -> [u8; 4] {
+fn pixels(view: &GhosttyView) -> impl Fn(usize, usize) -> [u8; 4] + use<> {
     let (width, height) = (view.width(), view.height());
     let snapshot = gtk4::Snapshot::new();
     view.paint(&snapshot);

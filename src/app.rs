@@ -10,7 +10,7 @@ use gtk4::prelude::*;
 
 use crate::hotkeys::HotkeyEngine;
 use crate::store::SessionStore;
-use crate::ui::{tray, MainWindow};
+use crate::ui::{MainWindow, tray};
 
 pub const APP_ID: &str = "com.alex-eckstein.wayterm";
 

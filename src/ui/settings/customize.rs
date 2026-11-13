@@ -24,7 +24,7 @@ use crate::terminal::defaults::{
     SCROLLBACK_LIMIT_SETTING,
 };
 use crate::terminal::{
-    SchemeChoice, TerminalDefaults, DEFAULT_COLOR_SCHEME_SETTING, GHOSTTY_COMPILED,
+    DEFAULT_COLOR_SCHEME_SETTING, GHOSTTY_COMPILED, SchemeChoice, TerminalDefaults,
 };
 
 // ---------------------------------------------------------------------------

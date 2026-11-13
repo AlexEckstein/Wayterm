@@ -29,10 +29,10 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 use crate::store::model::{ForwardRule, SessionConfig};
-use crate::ui::widgets::{button_row, dim_label, error_label, set_margins, Modal};
+use crate::ui::widgets::{Modal, button_row, dim_label, error_label, set_margins};
 
 use editor::{Live, RuleEditor};
-use model::{drafts_from_rules, lookup_status, ForwardRuleDraft, HELP_ENTRIES, V2_NOTE};
+use model::{ForwardRuleDraft, HELP_ENTRIES, V2_NOTE, drafts_from_rules, lookup_status};
 
 /// The window action id, registered in `main_window.rs` like the other
 /// `win.*` actions.

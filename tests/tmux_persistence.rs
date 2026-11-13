@@ -33,7 +33,7 @@ mod common;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 
 use common::*;

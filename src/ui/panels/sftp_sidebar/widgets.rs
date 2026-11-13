@@ -4,7 +4,7 @@
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib, pango};
 
-use super::{columns, Column, RowView, START_PATH};
+use super::{Column, RowView, START_PATH, columns};
 use crate::ui::widgets::{data, set_data, set_margins};
 
 /// Key under which each cell keeps a weak ref to its `ListItem`, so a

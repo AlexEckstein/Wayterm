@@ -14,10 +14,10 @@ use std::sync::{Mutex, Once, OnceLock};
 use std::thread::ThreadId;
 
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
+use tracing_subscriber::Layer;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter, Targets};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::Layer;
 
 /// The env var holding the filter directives.
 pub(crate) const LOG_ENV: &str = "WAYTERM_LOG";

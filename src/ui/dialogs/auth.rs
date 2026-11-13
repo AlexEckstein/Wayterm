@@ -9,7 +9,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 
 pub use crate::transport::auth::{ChallengePrompt, ChallengeResponder};
-use crate::ui::widgets::{ok_cancel_row, set_margins, wrapped_label, Modal};
+use crate::ui::widgets::{Modal, ok_cancel_row, set_margins, wrapped_label};
 
 /// One dialog row: its label and whether the entry echoes.
 #[derive(Clone, Debug, Eq, PartialEq)]

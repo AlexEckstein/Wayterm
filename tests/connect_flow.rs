@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use common::*;
-use wayterm::sftp::{commands::DirEntry, SftpClient, SftpCommand};
+use wayterm::sftp::{SftpClient, SftpCommand, commands::DirEntry};
 use wayterm::store::model::{HostKeyPolicy, SessionConfig, SessionType};
 use wayterm::transport::connection::SshConnection;
 use wayterm::transport::factory::create_transport;

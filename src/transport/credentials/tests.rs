@@ -374,9 +374,11 @@ fn the_placeholder_session_id_never_reaches_the_keyring() {
         b"shared",
     );
     assert!(source.lookup(LIVE_CONNECT_SESSION_ID, "password").is_none());
-    assert!(source
-        .delete_entry(LIVE_CONNECT_SESSION_ID, "password")
-        .is_ok());
+    assert!(
+        source
+            .delete_entry(LIVE_CONNECT_SESSION_ID, "password")
+            .is_ok()
+    );
     assert_eq!(fake.len(), 1, "placeholder entries are left alone");
 }
 
@@ -526,9 +528,11 @@ fn bitwarden_passes_the_session_key_through_the_environment() {
         &*with_key.lookup("1", "password").unwrap(),
         b"test-secret-XYZ"
     );
-    assert!(bitwarden("needs-session", None)
-        .lookup("1", "password")
-        .is_none());
+    assert!(
+        bitwarden("needs-session", None)
+            .lookup("1", "password")
+            .is_none()
+    );
 }
 
 #[test]
@@ -564,9 +568,11 @@ fn a_failed_bitwarden_lookup_is_logged_without_the_item_name() {
 
 #[test]
 fn bitwarden_non_zero_exit_and_empty_output_are_misses() {
-    assert!(bitwarden("missing-item", None)
-        .lookup("1", "password")
-        .is_none());
+    assert!(
+        bitwarden("missing-item", None)
+            .lookup("1", "password")
+            .is_none()
+    );
     assert!(bitwarden("empty", None).lookup("1", "password").is_none());
 }
 

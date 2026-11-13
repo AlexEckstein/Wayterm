@@ -1,8 +1,8 @@
 //! The per-sidebar SFTP task and its client handle.
 
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use russh_sftp::client::SftpSession;
 use tokio::io::AsyncWriteExt;
@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::sftp::commands::{DirEntry, Progress, SftpCommand};
 use crate::sftp::listing::sort_entries;
 use crate::sftp::local::local_task;
-use crate::sftp::transfer::{copy_with_progress, open_source, text, TransferRecord, Transfers};
+use crate::sftp::transfer::{TransferRecord, Transfers, copy_with_progress, open_source, text};
 use crate::transport::connection::SshConnection;
 
 const COMMAND_QUEUE: usize = 32;
