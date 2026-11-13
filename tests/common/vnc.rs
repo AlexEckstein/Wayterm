@@ -17,8 +17,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use des::cipher::{Array, BlockCipherEncrypt, KeyInit};
 use des::Des;
+use des::cipher::{Array, BlockCipherEncrypt, KeyInit};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::{TcpListener, TcpStream};
@@ -417,7 +417,7 @@ async fn read_client_msg(s: &mut OwnedReadHalf) -> std::io::Result<ClientMsg> {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unknown client message type {other}"),
-            ))
+            ));
         }
     })
 }

@@ -10,7 +10,7 @@ use crate::terminal::options::{
     VTE_HIDE_MOUSE_SETTING, VTE_LINE_HEIGHT_SETTING, VTE_SELECTION_BG_SETTING,
     VTE_SELECTION_FG_SETTING,
 };
-use crate::terminal::{options, VTE_COLOR_SCHEME_SETTING};
+use crate::terminal::{VTE_COLOR_SCHEME_SETTING, options};
 
 pub(super) fn section(store: &Rc<SessionStore>) -> gtk4::ListBox {
     let current = terminal_defaults(store).vte;

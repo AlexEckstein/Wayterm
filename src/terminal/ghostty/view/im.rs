@@ -14,7 +14,7 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{gdk, glib, graphene, pango};
 
-use super::{pixels, rgba, GhosttyView, Metrics};
+use super::{GhosttyView, Metrics, pixels, rgba};
 use crate::terminal::ghostty::engine::{FrameInfo, Scroll};
 
 #[derive(Default)]

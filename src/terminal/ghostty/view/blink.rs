@@ -4,8 +4,8 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 
-use super::cursor::needs_blink_timer;
 use super::GhosttyView;
+use super::cursor::needs_blink_timer;
 use crate::terminal::ghostty::engine::FrameInfo;
 
 impl GhosttyView {

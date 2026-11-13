@@ -9,10 +9,10 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 
+use crate::macros::Macro;
 use crate::macros::model::{self, MacroStep};
 use crate::macros::notation::{self, NotationError};
-use crate::macros::Macro;
-use crate::ui::widgets::{button_row, set_margins, wrapped_label, Modal};
+use crate::ui::widgets::{Modal, button_row, set_margins, wrapped_label};
 
 /// One step being edited: the pause, and the keys as notation text.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

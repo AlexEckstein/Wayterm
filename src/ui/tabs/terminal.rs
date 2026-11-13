@@ -18,14 +18,14 @@ use vte4::prelude::*;
 
 use super::views::{set_terminal_area, show_error_view};
 use super::{
-    bump_gen, close_tab, current_gen, current_page, local, publish_page_state, publish_status,
-    settle_redial, ssh, start_connect, state, RedialReply, SessionTab, TabType,
+    RedialReply, SessionTab, TabType, bump_gen, close_tab, current_gen, current_page, local,
+    publish_page_state, publish_status, settle_redial, ssh, start_connect, state,
 };
 use crate::macros::InputTap;
 use crate::store::model::SessionConfig;
 #[cfg(feature = "backend-ghostty")]
 use crate::terminal::ghostty::view::GhosttyView;
-use crate::terminal::{backend_preference, create_terminal_for, BackendKind, TerminalBackend};
+use crate::terminal::{BackendKind, TerminalBackend, backend_preference, create_terminal_for};
 use crate::transport::connection::SshConnection;
 use crate::transport::reconnect::{ConnectFn, ConnectFuture};
 use crate::transport::types::{TransportError, TransportEvent, TransportState};

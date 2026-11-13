@@ -42,8 +42,8 @@ use crate::store::model::{SessionConfig, VncOptions};
 use crate::transport::credentials::CredentialManager;
 use crate::transport::types::TransportState;
 use crate::ui::tabs::{
-    credential_manager, current_gen, filled, page_store, publish_status, set_terminal_area,
-    show_connecting_view, show_disconnected, show_error_view, show_failure, NO_HOST,
+    NO_HOST, credential_manager, current_gen, filled, page_store, publish_status,
+    set_terminal_area, show_connecting_view, show_disconnected, show_error_view, show_failure,
 };
 use crate::ui::widgets::set_data;
 use crate::vnc::{
@@ -126,11 +126,7 @@ pub fn wheel_bit(dy: f64) -> Option<u8> {
 
 /// `mask` with `bit` set or cleared.
 pub fn apply_button(mask: u8, bit: u8, down: bool) -> u8 {
-    if down {
-        mask | bit
-    } else {
-        mask & !bit
-    }
+    if down { mask | bit } else { mask & !bit }
 }
 
 /// Scaling and view-only from the row; no options means scaled and
@@ -476,7 +472,7 @@ pub(crate) fn start(
         }
         let error = match result {
             Ok(Dial::Ready(engine)) => {
-                return attach(&notebook, &page, &session, engine, generation)
+                return attach(&notebook, &page, &session, engine, generation);
             }
             Ok(Dial::Cancelled) => return show_disconnected(&page, &host, port),
             Ok(Dial::Failed(error)) => error,

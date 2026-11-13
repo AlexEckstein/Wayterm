@@ -10,8 +10,8 @@ use std::sync::Arc;
 use gtk4::prelude::*;
 
 use super::model::{
-    rules_from_drafts, status_text, ForwardRuleDraft, FORWARD_KIND_LABELS, KIND_INDEX_LOCAL,
-    V2_NOTE,
+    FORWARD_KIND_LABELS, ForwardRuleDraft, KIND_INDEX_LOCAL, V2_NOTE, rules_from_drafts,
+    status_text,
 };
 use super::status_source::{ForwardState, ForwardStatusSource, RuleId};
 use crate::store::model::ForwardRule;

@@ -11,7 +11,7 @@ use gtk4::prelude::*;
 use gtk4::{gdk, glib};
 
 use crate::store::SessionStore;
-use crate::terminal::options::{color_row as stored_color, RowChoice};
+use crate::terminal::options::{RowChoice, color_row as stored_color};
 use crate::ui::settings::general::apply;
 use crate::ui::settings::{described, row};
 use crate::ui::widgets::release_wheel;

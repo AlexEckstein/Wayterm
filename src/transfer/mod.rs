@@ -23,8 +23,8 @@ use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
+use crate::store::model::SessionConfig;
 
 pub use json::export_json;
 

@@ -11,7 +11,7 @@ use gtk4::prelude::*;
 
 use crate::macros::{InputTap, Macro, MacroStep, Playback, PlaybackEnd};
 use crate::store::SessionStore;
-use crate::ui::panels::macro_editor::{default_name, MacroEditor};
+use crate::ui::panels::macro_editor::{MacroEditor, default_name};
 use crate::ui::panels::side_dock::empty_state;
 use crate::ui::tabs::SessionTab;
 use crate::ui::widgets::{confirm, set_data, set_margins, window_of, wrapped_label};
@@ -427,7 +427,7 @@ pub(in crate::ui) mod gtk_tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::terminal::{create_terminal, TerminalBackend, TerminalEvent, TerminalHandle};
+    use crate::terminal::{TerminalBackend, TerminalEvent, TerminalHandle, create_terminal};
 
     fn spin_until(mut ready: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(2);

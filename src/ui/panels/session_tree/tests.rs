@@ -1,9 +1,9 @@
 //! The display-free half of the session tree: row collection and icons.
 
-use crate::store::model::{SessionConfig, SessionType};
 use crate::store::SessionStore;
+use crate::store::model::{SessionConfig, SessionType};
 
-use super::{cloned_session, collect_rows, SessionRow};
+use super::{SessionRow, cloned_session, collect_rows};
 
 #[test]
 fn collect_rows_empty_store() {

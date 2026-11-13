@@ -9,8 +9,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::store::model::{
-    SessionConfig, DEFAULT_SERIAL_BAUD, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROL_DEFAULT,
-    SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS_DEFAULT,
+    DEFAULT_SERIAL_BAUD, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROL_DEFAULT,
+    SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS_DEFAULT, SessionConfig,
 };
 use crate::transport::types::{
     SharedState, Transport, TransportError, TransportEvent, TransportState, TransportType,

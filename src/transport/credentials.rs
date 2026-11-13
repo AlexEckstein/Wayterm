@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 
 mod chain;
 pub use chain::{
-    credential_sources, prompt_instructions, prompt_label, prompt_source, KEYRING_UNAVAILABLE_HINT,
+    KEYRING_UNAVAILABLE_HINT, credential_sources, prompt_instructions, prompt_label, prompt_source,
 };
 
 /// One place credentials can come from, consulted in priority order.

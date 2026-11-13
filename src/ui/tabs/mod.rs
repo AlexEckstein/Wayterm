@@ -23,15 +23,15 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use gtk4::prelude::*;
 use tokio::sync::oneshot;
 
 use crate::macros::InputTap;
-use crate::store::model::{SessionConfig, SessionType};
 use crate::store::SessionStore;
+use crate::store::model::{SessionConfig, SessionType};
 use crate::terminal::TerminalBackend;
 use crate::transport::types::{TransportError, TransportState};
 use crate::ui::dialogs::tunnels::ForwardStatusSource;

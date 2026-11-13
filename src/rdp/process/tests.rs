@@ -91,16 +91,22 @@ fn legacy_rdp_security_is_always_refused() {
 #[test]
 fn parent_window_present_iff_embedded() {
     let spec = full_spec();
-    assert!(build_args(&spec, Some(99))
-        .iter()
-        .any(|a| a == "/parent-window:99"));
-    assert!(build_args(&spec, None)
-        .iter()
-        .all(|a| !a.starts_with("/parent-window")));
+    assert!(
+        build_args(&spec, Some(99))
+            .iter()
+            .any(|a| a == "/parent-window:99")
+    );
+    assert!(
+        build_args(&spec, None)
+            .iter()
+            .all(|a| !a.starts_with("/parent-window"))
+    );
     // The verified flag name is /parent-window:, never -id suffixed.
-    assert!(build_args(&spec, Some(99))
-        .iter()
-        .all(|a| !a.contains("parent-window-id")));
+    assert!(
+        build_args(&spec, Some(99))
+            .iter()
+            .all(|a| !a.contains("parent-window-id"))
+    );
 }
 
 #[test]
@@ -366,10 +372,11 @@ async fn run_against_failing_child_ends_without_connected() {
         Some(RdpProcessEvent::Ended { code: Some(1), .. })
     ));
     assert_eq!(rx.recv().await, None, "Ended is always last");
-    assert!(proc
-        .error_digest()
-        .iter()
-        .any(|l| l.contains("ERRCONNECT_LOGON_FAILURE")));
+    assert!(
+        proc.error_digest()
+            .iter()
+            .any(|l| l.contains("ERRCONNECT_LOGON_FAILURE"))
+    );
 }
 
 #[tokio::test]

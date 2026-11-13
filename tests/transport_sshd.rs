@@ -11,8 +11,8 @@ use tokio::time::timeout;
 use zeroize::Zeroizing;
 
 use common::*;
-use wayterm::sftp::{commands::DirEntry, SftpClient, SftpCommand, ShellCwdProbe};
-use wayterm::transport::auth::{authenticate_chain, AuthConfig, AuthMethodKind, AuthOutcome};
+use wayterm::sftp::{SftpClient, SftpCommand, ShellCwdProbe, commands::DirEntry};
+use wayterm::transport::auth::{AuthConfig, AuthMethodKind, AuthOutcome, authenticate_chain};
 use wayterm::transport::connection::{AuthMethod, SshConnection};
 use wayterm::transport::credentials::CredentialManager;
 use wayterm::transport::ssh::SSHTransport;

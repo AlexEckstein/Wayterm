@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 
-use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
+use crate::store::model::SessionConfig;
 use crate::ui::widgets::{button_row, set_margins, wrapped_label};
 
 /// Settings row (doc 13 §Settings rows): the notice shows unless this is off.

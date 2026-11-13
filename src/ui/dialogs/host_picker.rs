@@ -10,10 +10,10 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{gdk, glib};
 
-use crate::store::model::{SessionConfig, SessionType};
 use crate::store::SessionStore;
-use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
-use crate::ui::panels::session_tree::{collect_rows, SessionRow};
+use crate::store::model::{SessionConfig, SessionType};
+use crate::ui::icons::{FOLDER_ICON, resolve_icon, session_type_icon};
+use crate::ui::panels::session_tree::{SessionRow, collect_rows};
 use crate::ui::tabs::SessionTab;
 use crate::ui::widgets::{set_margins, window_of};
 

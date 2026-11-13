@@ -8,7 +8,7 @@ use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
 use tokio::sync::{mpsc, oneshot};
 
-use super::{file_name, join_path, parse_uri_list, SidebarInner, COMMAND_FAILED};
+use super::{COMMAND_FAILED, SidebarInner, file_name, join_path, parse_uri_list};
 use crate::sftp::{Progress, SftpCommand};
 
 /// How long a finished transfer's line stays; a failure's stays until the

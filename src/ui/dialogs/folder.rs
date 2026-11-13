@@ -3,8 +3,8 @@
 use gtk4::prelude::*;
 
 use crate::store::model::Folder;
-use crate::ui::icons::{IconPicker, FOLDER_ICON};
-use crate::ui::widgets::{ok_cancel_row, set_margins, Modal};
+use crate::ui::icons::{FOLDER_ICON, IconPicker};
+use crate::ui::widgets::{Modal, ok_cancel_row, set_margins};
 
 /// What the dialog saves: the name, and the icon (`None` = the default).
 #[derive(Clone, Debug, Eq, PartialEq)]

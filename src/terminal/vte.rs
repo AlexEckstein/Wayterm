@@ -2,14 +2,14 @@ mod options;
 
 use std::cell::Cell;
 
-use gtk4::{gdk, pango, Widget};
+use gtk4::{Widget, gdk, pango};
 use tokio::sync::mpsc;
-use vte4::prelude::*;
 use vte4::Terminal as VteTerminal;
+use vte4::prelude::*;
 
 use super::backend::{
-    clamp_opacity, mark_translucent, TerminalBackend, TerminalEvent, TerminalFeatures,
-    TRANSLUCENT_CLASS,
+    TRANSLUCENT_CLASS, TerminalBackend, TerminalEvent, TerminalFeatures, clamp_opacity,
+    mark_translucent,
 };
 use super::color_scheme::{self, Rgb};
 use crate::backpressure::IdleSender;

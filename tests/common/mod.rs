@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use russh::client::{self, Config, Handle};
-use russh::keys::ssh_key::private::Ed25519Keypair;
 use russh::keys::PrivateKey;
+use russh::keys::ssh_key::private::Ed25519Keypair;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use zeroize::Zeroizing;

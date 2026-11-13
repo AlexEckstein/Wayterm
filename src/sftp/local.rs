@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::sftp::commands::{DirEntry, Progress, SftpCommand};
 use crate::sftp::listing::sort_entries;
-use crate::sftp::transfer::{copy_with_progress, open_source, text, Transfers};
+use crate::sftp::transfer::{Transfers, copy_with_progress, open_source, text};
 
 /// Serve commands until every sender is gone or `shutdown` fires.
 pub async fn local_task(mut rx: mpsc::Receiver<SftpCommand>, shutdown: CancellationToken) {

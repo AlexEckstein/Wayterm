@@ -14,8 +14,8 @@ use gtk4::{gio, glib};
 use super::{boxed_list, described, heading, row, scrolling_page};
 use crate::store::SessionStore;
 use crate::transfer::{
-    apply_import, export_json, parse_source, read_source, ImportError, ImportReport, ImportSource,
-    Parsed,
+    ImportError, ImportReport, ImportSource, Parsed, apply_import, export_json, parse_source,
+    read_source,
 };
 use crate::ui::widgets::confirm;
 

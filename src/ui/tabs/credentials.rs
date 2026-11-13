@@ -4,8 +4,8 @@
 
 use crate::store::SessionStore;
 use crate::transport::credentials::{
-    credential_sources, prompt_instructions, prompt_source, CredentialManager, KeyringSource,
-    PromptSource,
+    CredentialManager, KeyringSource, PromptSource, credential_sources, prompt_instructions,
+    prompt_source,
 };
 use crate::ui::dialogs::auth::{self, ChallengePrompt};
 use crate::ui::settings::credentials::CredentialSettings;
@@ -62,11 +62,15 @@ mod tests {
     fn the_manager_reads_the_store_and_ends_with_the_prompt() {
         let store = SessionStore::in_memory().unwrap();
         let debug = |mgr: CredentialManager| format!("{mgr:?}");
-        assert!(debug(credential_manager(42, "prod", Some(&store)))
-            .contains(r#"["keyring", "prompt"]"#));
+        assert!(
+            debug(credential_manager(42, "prod", Some(&store)))
+                .contains(r#"["keyring", "prompt"]"#)
+        );
         crate::ui::settings::credentials::save_enabled(&store, true).unwrap();
-        assert!(debug(credential_manager(42, "prod", Some(&store)))
-            .contains(r#"["keyring", "bitwarden", "prompt"]"#));
+        assert!(
+            debug(credential_manager(42, "prod", Some(&store)))
+                .contains(r#"["keyring", "bitwarden", "prompt"]"#)
+        );
         assert!(debug(credential_manager(42, "prod", None)).contains(r#"["keyring", "prompt"]"#));
     }
 }

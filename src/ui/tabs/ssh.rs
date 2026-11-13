@@ -18,12 +18,12 @@ use vte4::prelude::*;
 use super::terminal::finish_connect;
 use super::views::{show_connecting_view, show_disconnected, show_error_view, show_failure};
 use super::{
-    credential_manager, current_gen, filled, page_store, publish_status, settle_redial, state,
-    SessionTab, TabType, NO_HOST, NO_USERNAME,
+    NO_HOST, NO_USERNAME, SessionTab, TabType, credential_manager, current_gen, filled, page_store,
+    publish_status, settle_redial, state,
 };
 use crate::sftp::ShellCwdProbe;
-use crate::store::model::{ForwardRule, HostKeyPolicy, SessionConfig, SessionHostKey};
 use crate::store::SessionStore;
+use crate::store::model::{ForwardRule, HostKeyPolicy, SessionConfig, SessionHostKey};
 #[cfg(feature = "backend-ghostty")]
 use crate::terminal::ghostty::view::GhosttyView;
 use crate::transport::connection::SshConnection;

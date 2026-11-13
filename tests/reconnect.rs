@@ -358,9 +358,11 @@ async fn auto_mode_bounded_policy_reports_exhausted_with_the_last_error() {
         }
         other => panic!("expected Exhausted, got {other:?}"),
     }
-    assert!(drain_events(&mut rx)
-        .iter()
-        .any(|ev| matches!(ev, ReconnectEvent::Exhausted { attempts: 3, .. })));
+    assert!(
+        drain_events(&mut rx)
+            .iter()
+            .any(|ev| matches!(ev, ReconnectEvent::Exhausted { attempts: 3, .. }))
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -375,9 +377,11 @@ async fn transport_error_cancelled_stops_the_loop_immediately() {
 
     assert_eq!(outcome, ReconnectOutcome::Cancelled);
     assert_eq!(mock.calls(), 1, "Cancelled must not be retried");
-    assert!(drain_events(&mut rx)
-        .iter()
-        .any(|ev| matches!(ev, ReconnectEvent::Cancelled)));
+    assert!(
+        drain_events(&mut rx)
+            .iter()
+            .any(|ev| matches!(ev, ReconnectEvent::Cancelled))
+    );
 }
 
 // ── Cancellation ────────────────────────────────────────────────────────────
@@ -495,9 +499,11 @@ async fn prompt_mode_declined_stops_without_connecting() {
 
     assert_eq!(outcome, ReconnectOutcome::Declined { attempt: 1 });
     assert_eq!(mock.calls(), 0);
-    assert!(drain_events(&mut rx)
-        .iter()
-        .any(|ev| matches!(ev, ReconnectEvent::Declined { attempt: 1 })));
+    assert!(
+        drain_events(&mut rx)
+            .iter()
+            .any(|ev| matches!(ev, ReconnectEvent::Declined { attempt: 1 }))
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -526,9 +532,11 @@ async fn prompt_mode_reprompts_for_every_attempt_until_the_user_gives_up() {
     assert_eq!(outcome, ReconnectOutcome::Declined { attempt: 3 });
     assert_eq!(mock.calls(), 2, "declined on the third prompt");
     assert_eq!(confirmer.asked_for(), vec![1, 2, 3]);
-    assert!(drain_events(&mut rx)
-        .iter()
-        .any(|ev| matches!(ev, ReconnectEvent::Prompting { attempt: 3 })));
+    assert!(
+        drain_events(&mut rx)
+            .iter()
+            .any(|ev| matches!(ev, ReconnectEvent::Prompting { attempt: 3 }))
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -690,9 +698,11 @@ fn outcome_is_connected_only_on_success() {
     assert!(ReconnectOutcome::Connected { attempts: 1 }.is_connected());
     assert!(!ReconnectOutcome::Cancelled.is_connected());
     assert!(!ReconnectOutcome::Declined { attempt: 1 }.is_connected());
-    assert!(!ReconnectOutcome::Exhausted {
-        attempts: 1,
-        error: "x".into()
-    }
-    .is_connected());
+    assert!(
+        !ReconnectOutcome::Exhausted {
+            attempts: 1,
+            error: "x".into()
+        }
+        .is_connected()
+    );
 }

@@ -23,16 +23,16 @@ use gtk4::prelude::*;
 use zeroize::Zeroizing;
 
 use crate::store::model::{
-    vocab_index, AuthMethod, Folder, SessionConfig, SessionType, DEFAULT_SERIAL_BAUD,
-    RDP_COLOR_DEPTHS, RDP_COLOR_DEPTH_DEFAULT, SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT,
-    SERIAL_FLOW_CONTROLS, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_PARITIES, SERIAL_PARITY_DEFAULT,
-    SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT,
+    AuthMethod, DEFAULT_SERIAL_BAUD, Folder, RDP_COLOR_DEPTH_DEFAULT, RDP_COLOR_DEPTHS,
+    SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_FLOW_CONTROLS,
+    SERIAL_PARITIES, SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT,
+    SessionConfig, SessionType, vocab_index,
 };
 use crate::transport::credentials::CredentialError;
 use crate::ui::dialogs::tunnels::editor::RuleEditor;
-use crate::ui::dialogs::tunnels::model::{drafts_from_rules, ForwardRuleDraft, V2_NOTE};
-use crate::ui::icons::{session_type_icon, IconPicker};
-use crate::ui::widgets::{button_row, dim_label, error_label, release_wheel, set_margins, Modal};
+use crate::ui::dialogs::tunnels::model::{ForwardRuleDraft, V2_NOTE, drafts_from_rules};
+use crate::ui::icons::{IconPicker, session_type_icon};
+use crate::ui::widgets::{Modal, button_row, dim_label, error_label, release_wheel, set_margins};
 
 mod model;
 pub use model::*;

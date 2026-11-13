@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use super::*;
 use crate::hotkeys::registry::{can_co_fire, conflicting_actions};
 use crate::hotkeys::trigger::{
-    accel_to_ui_key, canonical_ui_key, ui_key_is_bindable, ui_key_to_accel, KeyChord,
+    KeyChord, accel_to_ui_key, canonical_ui_key, ui_key_is_bindable, ui_key_to_accel,
 };
 use crate::store::SessionStore;
 

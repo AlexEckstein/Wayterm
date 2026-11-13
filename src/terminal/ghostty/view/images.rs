@@ -8,7 +8,7 @@ use gtk4::{gdk, glib, graphene};
 
 use super::GhosttyView;
 use crate::terminal::ghostty::engine::{Frame, Pixels, Placement};
-use crate::terminal::ghostty::{ffi, Shared};
+use crate::terminal::ghostty::{Shared, ffi};
 
 /// The shortest wait for an animation's next frame, in milliseconds.
 const MIN_ANIMATION_DELAY: u64 = 8;

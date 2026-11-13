@@ -15,9 +15,9 @@
 //! No GTK and no display: nothing here constructs a widget.
 
 use rusqlite::Connection;
-use wayterm::store::model::{SessionConfig, SessionType};
 use wayterm::store::SessionStore;
-use wayterm::ui::tabs::state::{sorted_for_restore, TabState};
+use wayterm::store::model::{SessionConfig, SessionType};
+use wayterm::ui::tabs::state::{TabState, sorted_for_restore};
 
 /// A store on a real file, plus the path it lives at (for the tests that
 /// need a second, non-`SessionStore` connection onto the same database).

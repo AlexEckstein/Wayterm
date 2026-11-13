@@ -102,7 +102,7 @@ fn install_dispatches_by_context_and_rebuilds_one_binding() {
 
     use gtk4::prelude::*;
     use gtk4::{gio, glib};
-    use wayterm::hotkeys::engine::{focus_owns_keys, precedence, ContextHost, DISPATCHER_NAME};
+    use wayterm::hotkeys::engine::{ContextHost, DISPATCHER_NAME, focus_owns_keys, precedence};
     use wayterm::hotkeys::{ActionContext, DEFAULT_ACTIONS};
 
     gtk4::init().expect("GTK must initialize under xvfb");

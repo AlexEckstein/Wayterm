@@ -22,8 +22,8 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -243,9 +243,10 @@ async fn driver_retries_a_failed_attempt_then_connects_for_real() {
     assert_eq!(supervisor.connects(), 1);
 
     let log = drain_events(&mut event_rx);
-    assert!(log
-        .iter()
-        .any(|ev| matches!(ev, ReconnectEvent::AttemptFailed { attempt: 1, .. })));
+    assert!(
+        log.iter()
+            .any(|ev| matches!(ev, ReconnectEvent::AttemptFailed { attempt: 1, .. }))
+    );
     assert!(matches!(
         log.last(),
         Some(ReconnectEvent::Connected { attempts: 2 })
@@ -390,10 +391,12 @@ async fn reconnected_transport_keeps_its_pty_size() {
     let driver = ReconnectDriver::new(ReconnectPolicy::auto());
     let (events, _rx) = mpsc::unbounded_channel();
     let mut rx = supervisor.next_event_rx().await;
-    assert!(driver
-        .run(connect.clone(), &events, None, None)
-        .await
-        .is_connected());
+    assert!(
+        driver
+            .run(connect.clone(), &events, None, None)
+            .await
+            .is_connected()
+    );
 
     supervisor
         .write(b"stty size\n")

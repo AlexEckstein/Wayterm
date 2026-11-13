@@ -34,18 +34,18 @@ use tokio::sync::mpsc;
 use x11rb::rust_connection::RustConnection;
 use zeroize::Zeroizing;
 
-use crate::rdp::cert::{parse_seen_fingerprint, PROBE_FINGERPRINT};
+use crate::rdp::cert::{PROBE_FINGERPRINT, parse_seen_fingerprint};
 use crate::rdp::{
-    cert_arg, decide, CertDecision, RdpProcess, RdpProcessEvent, RdpSpec, CERT_ARG_PREFIX,
+    CERT_ARG_PREFIX, CertDecision, RdpProcess, RdpProcessEvent, RdpSpec, cert_arg, decide,
 };
 use crate::store::model::SessionConfig;
 use crate::transport::credentials::CredentialManager;
 use crate::transport::types::TransportState;
 use crate::ui::dialogs::auth::run_on_gtk_main_thread;
 use crate::ui::tabs::{
-    connecting_view, credential_manager, current_gen, filled, notice_view, page_store,
-    publish_status, set_terminal_area, show_disconnected, show_error_view, show_failure, NO_HOST,
-    NO_USERNAME,
+    NO_HOST, NO_USERNAME, connecting_view, credential_manager, current_gen, filled, notice_view,
+    page_store, publish_status, set_terminal_area, show_disconnected, show_error_view,
+    show_failure,
 };
 use crate::ui::widgets::{centered_label, data_or_default, set_data};
 

@@ -12,13 +12,13 @@
 use gtk4::gdk;
 
 use wayterm::hotkeys::{
-    ActionContext, ActionRegistry, ConflictPolicy, HotkeyEngine, KeyChord, RebindError,
-    DEFAULT_ACTIONS,
+    ActionContext, ActionRegistry, ConflictPolicy, DEFAULT_ACTIONS, HotkeyEngine, KeyChord,
+    RebindError,
 };
 use wayterm::store::db::SessionStore;
 use wayterm::ui::panels::sftp_sidebar;
 use wayterm::ui::settings::general;
-use wayterm::ui::settings::hotkeys::{context_label, SettingsError, SettingsRow, SettingsView};
+use wayterm::ui::settings::hotkeys::{SettingsError, SettingsRow, SettingsView, context_label};
 use wayterm::ui::tabs::resilience;
 use wayterm::ui::tray;
 

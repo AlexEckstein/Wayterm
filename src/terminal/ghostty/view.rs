@@ -24,12 +24,12 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{gdk, glib, pango};
 
-use super::engine::{ClipboardDestination, Frame};
 use super::Shared;
-use crate::terminal::options::GhosttyOptions;
+use super::engine::{ClipboardDestination, Frame};
 use crate::terminal::TerminalEvent;
+use crate::terminal::options::GhosttyOptions;
 use input::Route;
-use links::{launch_uri, Launcher, Link};
+use links::{Launcher, Link, launch_uri};
 pub use options::install_options;
 
 /// The font a view starts with, until `set_font`.

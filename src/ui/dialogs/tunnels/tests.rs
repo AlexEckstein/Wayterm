@@ -3,9 +3,9 @@
 //! source that stands in for [`super::status_source::EngineStatusBridge`].
 
 use super::model::{
-    draft_from_rule, drafts_from_rules, kind_from_index, kind_index_for, lookup_status,
-    rules_from_drafts, status_text, validate_draft, ForwardRuleDraft, KIND_INDEX_DYNAMIC,
-    KIND_INDEX_LOCAL, KIND_INDEX_REMOTE, OFFLINE_STATUS, V2_NOTE,
+    ForwardRuleDraft, KIND_INDEX_DYNAMIC, KIND_INDEX_LOCAL, KIND_INDEX_REMOTE, OFFLINE_STATUS,
+    V2_NOTE, draft_from_rule, drafts_from_rules, kind_from_index, kind_index_for, lookup_status,
+    rules_from_drafts, status_text, validate_draft,
 };
 use super::status_source::{
     EngineStatusBridge, FakeStatusSource, ForwardEvent, ForwardState, ForwardStatusSource,

@@ -45,8 +45,8 @@ use zeroize::Zeroizing;
 
 use common::connect_raw_to;
 use wayterm::transport::auth::{
-    authenticate_chain, AuthConfig, AuthMethodKind, AuthOutcome, ChallengePrompt,
-    ChallengeResponder,
+    AuthConfig, AuthMethodKind, AuthOutcome, ChallengePrompt, ChallengeResponder,
+    authenticate_chain,
 };
 
 const MODE_PASSWORD: &str = "password-only";

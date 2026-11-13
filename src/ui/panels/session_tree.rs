@@ -10,12 +10,12 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib, pango};
 
-use crate::store::model::SessionConfig;
 use crate::store::SessionStore;
+use crate::store::model::SessionConfig;
 use crate::transport::credentials::{CredentialError, KeyringSource};
 use crate::ui::dialogs::folder::FolderDialog;
-use crate::ui::dialogs::session::{collect_folders, collect_peer_sessions, SessionDialog};
-use crate::ui::icons::{resolve_icon, session_type_icon, FOLDER_ICON};
+use crate::ui::dialogs::session::{SessionDialog, collect_folders, collect_peer_sessions};
+use crate::ui::icons::{FOLDER_ICON, resolve_icon, session_type_icon};
 use crate::ui::tabs::credential_manager;
 use crate::ui::widgets::{confirm, data, prompt_text, set_data, window_of};
 
@@ -620,7 +620,7 @@ impl SessionTree {
             Some(id) => match self.store.get_session(id) {
                 Ok(config) => SessionDialog::edit(&parent, &config, &folders, &peers),
                 Err(err) => {
-                    return tracing::warn!(session = id, error = %err, "failed to load session")
+                    return tracing::warn!(session = id, error = %err, "failed to load session");
                 }
             },
         };
@@ -912,8 +912,8 @@ mod keyring_cleanup_tests {
 #[cfg(test)]
 pub(in crate::ui) mod gtk_tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Repeated right-clicks reuse one menu, and parenting it raises no GTK
     /// criticals.

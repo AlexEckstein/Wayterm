@@ -20,9 +20,9 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{gdk, glib, graphene, pango};
 
-use super::cursor::{cursor_color, cursor_rects, cursor_shape, is_cursor, CursorShape};
-use super::{rgba, GhosttyView, Metrics};
-use crate::terminal::ghostty::engine::{push_cluster, Cell as GridCell, Frame, FrameInfo, Span};
+use super::cursor::{CursorShape, cursor_color, cursor_rects, cursor_shape, is_cursor};
+use super::{GhosttyView, Metrics, rgba};
+use crate::terminal::ghostty::engine::{Cell as GridCell, Frame, FrameInfo, Span, push_cluster};
 use crate::terminal::ghostty::ffi;
 use crate::terminal::options::{GhosttyOptions, SearchColors, SelectionColors};
 

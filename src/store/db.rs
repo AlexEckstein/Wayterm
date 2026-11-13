@@ -9,13 +9,13 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::types::Value;
 use rusqlite::{
-    params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
+    Connection, OptionalExtension, Transaction, TransactionBehavior, params, params_from_iter,
 };
 use serde::Serialize;
 
-use crate::macros::model::{steps_from_json, steps_to_json, Macro};
+use crate::macros::model::{Macro, steps_from_json, steps_to_json};
 use crate::store::model::{Folder, HostKeyPolicy, SessionConfig, SessionHostKey};
-use crate::ui::tabs::state::{tabs_from_json, tabs_to_json, TabState, OPEN_TABS_SETTING_KEY};
+use crate::ui::tabs::state::{OPEN_TABS_SETTING_KEY, TabState, tabs_from_json, tabs_to_json};
 
 /// The settings row holding the global host-key policy (doc 09).
 pub const HOST_KEY_POLICY_SETTING: &str = "host_key_policy";

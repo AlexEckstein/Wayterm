@@ -23,4 +23,4 @@ mod transfer;
 
 pub use commands::{DirEntry, Progress, SftpCommand};
 pub use shell_cwd::ShellCwdProbe;
-pub use task::{sftp_task, SftpClient};
+pub use task::{SftpClient, sftp_task};

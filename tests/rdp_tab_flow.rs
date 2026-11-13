@@ -5,11 +5,11 @@
 
 use std::time::Duration;
 
-use wayterm::rdp::{build_args, CERT_ARG_PREFIX};
+use wayterm::rdp::{CERT_ARG_PREFIX, build_args};
 use wayterm::store::model::{RdpOptions, SessionConfig, SessionType};
 use wayterm::ui::tabs::rdp::{
-    changed_cert_text, freerdp_too_old_text, spec_from_session, unknown_cert_text, warn_below,
-    DEFAULT_PORT,
+    DEFAULT_PORT, changed_cert_text, freerdp_too_old_text, spec_from_session, unknown_cert_text,
+    warn_below,
 };
 
 fn session() -> SessionConfig {
@@ -169,7 +169,7 @@ fn spec_ties_into_the_argv_contract() {
 #[tokio::test]
 #[ignore = "needs the RDP rig; set RDP_TEST_* to run it"]
 async fn rdp_view_live_against_rig() {
-    use wayterm::rdp::{decide, CertDecision, RdpProcess, RdpProcessEvent};
+    use wayterm::rdp::{CertDecision, RdpProcess, RdpProcessEvent, decide};
     use zeroize::Zeroizing;
 
     let read = |name: &str| std::env::var(name).ok();

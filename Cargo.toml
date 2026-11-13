@@ -1,7 +1,7 @@
 [package]
 name = "wayterm"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "An open source, multi-protocol connection manager and terminal for Linux"
 license = "MIT"
 repository = "https://github.com/AlexEckstein/Wayterm"

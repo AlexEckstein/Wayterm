@@ -1,11 +1,11 @@
 //! The display-free half of the host picker: which hosts it offers, in
 //! which order, under which folder headings.
 
-use crate::store::model::{SessionConfig, SessionType};
 use crate::store::SessionStore;
+use crate::store::model::{SessionConfig, SessionType};
 use crate::ui::panels::session_tree::collect_rows;
 
-use super::{local_shell_session, picker_entries, PickerEntry, LOCAL_SHELL_ID};
+use super::{LOCAL_SHELL_ID, PickerEntry, local_shell_session, picker_entries};
 
 fn session(store: &SessionStore, name: &str, folder: Option<i64>) -> i64 {
     store

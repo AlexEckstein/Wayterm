@@ -9,11 +9,11 @@ pub mod registry;
 pub mod transfer;
 pub mod trigger;
 
-pub use defaults::{default_registry, DefaultAction, DEFAULT_ACTIONS};
+pub use defaults::{DEFAULT_ACTIONS, DefaultAction, default_registry};
 pub use engine::{HotkeyEngine, HotkeyLoadReport};
 pub use registry::{
-    can_co_fire, conflicting_actions, Action, ActionContext, ActionRegistry, ConflictPolicy,
-    RebindError,
+    Action, ActionContext, ActionRegistry, ConflictPolicy, RebindError, can_co_fire,
+    conflicting_actions,
 };
 pub use transfer::{ExportedBinding, HotkeyExport, HotkeyImportReport};
-pub use trigger::{accel_to_ui_key, parse_trigger, ui_key_is_bindable, ui_key_to_accel, KeyChord};
+pub use trigger::{KeyChord, accel_to_ui_key, parse_trigger, ui_key_is_bindable, ui_key_to_accel};

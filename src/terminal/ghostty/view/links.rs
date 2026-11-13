@@ -12,11 +12,11 @@ use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{gio, glib};
 
-use super::input::{route, Route};
-use super::paint::Painted;
 use super::GhosttyView;
+use super::input::{Route, route};
+use super::paint::Painted;
 use crate::terminal::ghostty::engine::Frame;
-use crate::terminal::ghostty::{ffi, Shared};
+use crate::terminal::ghostty::{Shared, ffi};
 
 /// The mail scheme, whose target is an address, not an authority.
 const MAILTO: &str = "mailto:";
