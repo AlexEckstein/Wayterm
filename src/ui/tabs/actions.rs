@@ -1,8 +1,9 @@
 //! The tab window actions (doc 11 §Handlers): `new_tab` (the host
 //! picker), `close_tab`, `next_tab` / `prev_tab`, `goto_tab_1` …
 //! `goto_tab_9`, and `rename_tab`. The Home page never counts as a tab:
-//! it is hidden beside open sessions and is not closed or renamed. The
-//! index arithmetic ([`step_tab`], [`nth_tab`]) is display-free.
+//! it is hidden beside open sessions and is not closed or renamed. Moving
+//! to a tab puts keyboard focus in its terminal. The index arithmetic
+//! ([`step_tab`], [`nth_tab`]) is display-free.
 
 use std::rc::Rc;
 
@@ -12,6 +13,7 @@ use gtk4::prelude::*;
 use crate::store::SessionStore;
 use crate::ui::dialogs::host_picker;
 use crate::ui::tabs::label;
+use crate::ui::tabs::terminal::focus_terminal;
 use crate::ui::tabs::{current_page, request_close_page};
 
 /// How many `goto_tab_N` actions there are.
@@ -116,9 +118,16 @@ impl Tabs {
         self.show(step_tab(&tabs, self.notebook.current_page(), forward));
     }
 
+    /// Show the tab and hand its terminal the keyboard, wherever focus
+    /// was: GTK leaves it on the tab bar after a switch, where typing goes
+    /// nowhere.
     fn show(&self, page_num: Option<u32>) {
-        if let Some(page_num) = page_num {
-            self.notebook.set_current_page(Some(page_num));
+        let Some(page_num) = page_num else {
+            return;
+        };
+        self.notebook.set_current_page(Some(page_num));
+        if let Some(page) = self.notebook.nth_page(Some(page_num)) {
+            focus_terminal(&self.notebook, &page);
         }
     }
 }
