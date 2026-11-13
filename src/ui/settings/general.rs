@@ -1,5 +1,5 @@
 //! The General settings page (doc 13 §General): on/off switches for the
-//! settings rows the app acts on, and the experimental terminal backend choice. Every
+//! settings rows the app acts on, and the terminal backend choice. Every
 //! flip is saved at once and applied live.
 //!
 //! [`TOGGLES`] and the functions over it are display-free; [`page`] only
@@ -10,7 +10,7 @@
 //! "Clear all reminders" turns back on every notice the user silenced with
 //! "Do not show me again" ([`REMINDERS`]).
 //!
-//! The "Experimental Ghostty terminal" check box writes `default_backend`
+//! The "Ghostty terminal" check box writes `default_backend`
 //! (`ghostty`/`vte`) for tabs opened afterwards. In a build without
 //! the `backend-ghostty` feature it is shown disabled, and VTE is used
 //! whatever the row says.
@@ -103,7 +103,7 @@ pub fn clear_reminders(store: &SessionStore) -> rusqlite::Result<()> {
 }
 
 /// The check box's text.
-pub const GHOSTTY_TITLE: &str = "Experimental Ghostty terminal";
+pub const GHOSTTY_TITLE: &str = "Ghostty terminal";
 pub const GHOSTTY_SUBTITLE: &str = "Draw new tabs with libghostty-vt instead of VTE. \
                                     Open tabs keep their terminal.";
 /// The tooltip of the disabled check box in a build without the backend.
