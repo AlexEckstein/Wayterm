@@ -117,10 +117,10 @@ pub fn build_args(spec: &RdpSpec, parent_xid: Option<u32>) -> Vec<String> {
     // Last gate before spawn: only a fingerprint token is ever passed.
     // Anything else (notably `/cert:ignore`, which the trust model forbids)
     // is dropped, never forwarded.
-    if let Some(cert_arg) = &spec.cert_arg {
-        if cert_arg.starts_with(crate::rdp::cert::CERT_ARG_PREFIX) {
-            args.push(cert_arg.clone());
-        }
+    if let Some(cert_arg) = &spec.cert_arg
+        && cert_arg.starts_with(crate::rdp::cert::CERT_ARG_PREFIX)
+    {
+        args.push(cert_arg.clone());
     }
     args
 }
@@ -191,10 +191,9 @@ fn parse_bare_version(output: &str) -> Option<String> {
             // The token comes from the lowercased copy, but version digits
             // are case-invariant so the value is exact.
             .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.'))
+            && is_dotted_version(token)
         {
-            if is_dotted_version(token) {
-                return Some(token.to_string());
-            }
+            return Some(token.to_string());
         }
         search = after;
     }

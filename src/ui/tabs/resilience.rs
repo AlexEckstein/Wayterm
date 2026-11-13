@@ -265,14 +265,14 @@ pub fn request_close(
             CONFIRM_CLOSE_DETAIL,
             "Close",
             move |silence| {
-                if let Some(store) = store.filter(|_| silence) {
-                    if let Err(err) = store.set_setting(CONFIRM_CLOSE_NOTICE_SETTING, "0") {
-                        tracing::warn!(
-                            key = %CONFIRM_CLOSE_NOTICE_SETTING,
-                            error = %err,
-                            "failed to save setting"
-                        );
-                    }
+                if let Some(store) = store.filter(|_| silence)
+                    && let Err(err) = store.set_setting(CONFIRM_CLOSE_NOTICE_SETTING, "0")
+                {
+                    tracing::warn!(
+                        key = %CONFIRM_CLOSE_NOTICE_SETTING,
+                        error = %err,
+                        "failed to save setting"
+                    );
                 }
                 close();
             },

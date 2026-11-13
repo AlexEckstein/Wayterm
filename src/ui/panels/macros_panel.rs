@@ -187,10 +187,10 @@ impl PanelInner {
         // Double-click or Enter on a macro plays it.
         let weak = Rc::downgrade(self);
         self.list.connect_row_activated(move |_, _| {
-            if let Some(inner) = weak.upgrade() {
-                if inner.playing.borrow().is_none() {
-                    inner.toggle_play();
-                }
+            if let Some(inner) = weak.upgrade()
+                && inner.playing.borrow().is_none()
+            {
+                inner.toggle_play();
             }
         });
     }

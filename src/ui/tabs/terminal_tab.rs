@@ -210,14 +210,13 @@ impl TerminalTab {
     /// `CLOSE_JOIN_TIMEOUT` to disconnect before it is aborted. Idempotent.
     pub async fn close(&mut self) {
         self.cancel.cancel();
-        if let Some(mut pump) = self.pump_task.take() {
-            if tokio::time::timeout(CLOSE_JOIN_TIMEOUT, &mut pump)
+        if let Some(mut pump) = self.pump_task.take()
+            && tokio::time::timeout(CLOSE_JOIN_TIMEOUT, &mut pump)
                 .await
                 .is_err()
-            {
-                pump.abort();
-                let _ = pump.await;
-            }
+        {
+            pump.abort();
+            let _ = pump.await;
         }
         if let Some(bridge) = self.bridge_task.take() {
             let _ = bridge.await;

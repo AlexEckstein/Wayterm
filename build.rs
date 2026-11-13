@@ -33,10 +33,10 @@ fn git_commit() {
     let mut refs = vec!["HEAD".to_string(), "packed-refs".to_string()];
     refs.extend(git(&["symbolic-ref", "-q", "HEAD"]));
     for name in refs {
-        if let Some(path) = git(&["rev-parse", "--git-path", &name]) {
-            if PathBuf::from(&path).exists() {
-                println!("cargo:rerun-if-changed={path}");
-            }
+        if let Some(path) = git(&["rev-parse", "--git-path", &name])
+            && PathBuf::from(&path).exists()
+        {
+            println!("cargo:rerun-if-changed={path}");
         }
     }
 }

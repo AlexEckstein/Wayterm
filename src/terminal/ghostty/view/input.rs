@@ -318,11 +318,11 @@ impl GhosttyView {
             let Ok(Some(text)) = clipboard.read_text_future().await else {
                 return;
             };
-            if let Some(view) = view.upgrade() {
-                if let Some(shared) = view.shared() {
-                    shared.input(shared.engine.encode_paste(&text));
-                    view.queue_draw();
-                }
+            if let Some(view) = view.upgrade()
+                && let Some(shared) = view.shared()
+            {
+                shared.input(shared.engine.encode_paste(&text));
+                view.queue_draw();
             }
         });
     }

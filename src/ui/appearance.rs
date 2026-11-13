@@ -279,10 +279,10 @@ pub(in crate::ui) fn set_desktop_preference(preference: Option<Brightness>) {
             None => "none",
         };
         tracing::info!(preference = %stated, "desktop light/dark preference changed");
-        if gtk4::is_initialized_main_thread() {
-            if let Some(settings) = gtk4::Settings::default() {
-                apply_chrome(&settings, preference);
-            }
+        if gtk4::is_initialized_main_thread()
+            && let Some(settings) = gtk4::Settings::default()
+        {
+            apply_chrome(&settings, preference);
         }
     }
     refresh();

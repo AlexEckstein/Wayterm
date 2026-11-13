@@ -206,8 +206,8 @@ impl MacroEditor {
             let save = modal.button("Save", move || {
                 let inner = weak.upgrade()?;
                 inner.commit_pauses();
-                let saved = inner.draft.borrow().to_macro().ok();
-                saved
+
+                inner.draft.borrow().to_macro().ok()
             });
             EditorInner {
                 modal,
@@ -269,10 +269,10 @@ impl EditorInner {
         self.commit_pauses();
         self.draft.borrow_mut().apply(op);
         self.render();
-        if let StepOp::Insert(index) = op {
-            if let Some(row) = self.rows.borrow().get(index) {
-                row.keys.grab_focus();
-            }
+        if let StepOp::Insert(index) = op
+            && let Some(row) = self.rows.borrow().get(index)
+        {
+            row.keys.grab_focus();
         }
     }
 

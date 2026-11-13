@@ -152,13 +152,13 @@ pub fn page(store: Rc<SessionStore>, on_import: Rc<dyn Fn()>) -> gtk4::Widget {
         choose.connect_clicked(move |_| for_choose.choose_and_import(source, label));
         let text = described(label, None, &choose);
         let mut children: Vec<gtk4::Widget> = vec![text.upcast()];
-        if source == ImportSource::SshConfig {
-            if let Some(path) = ssh_dir().map(|dir| dir.join("config")) {
-                let default = gtk4::Button::with_label("Use ~/.ssh/config");
-                let ctx = ctx.clone();
-                default.connect_clicked(move |_| ctx.import(source, &path));
-                children.push(default.upcast());
-            }
+        if source == ImportSource::SshConfig
+            && let Some(path) = ssh_dir().map(|dir| dir.join("config"))
+        {
+            let default = gtk4::Button::with_label("Use ~/.ssh/config");
+            let ctx = ctx.clone();
+            default.connect_clicked(move |_| ctx.import(source, &path));
+            children.push(default.upcast());
         }
         children.push(choose.upcast());
         let children: Vec<&gtk4::Widget> = children.iter().collect();
@@ -216,10 +216,10 @@ impl Ctx {
             .title(format!("Import from {label}"))
             .modal(true)
             .build();
-        if source == ImportSource::SshConfig {
-            if let Some(dir) = ssh_dir() {
-                dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
-            }
+        if source == ImportSource::SshConfig
+            && let Some(dir) = ssh_dir()
+        {
+            dialog.set_initial_folder(Some(&gio::File::for_path(dir)));
         }
         let ctx = self.clone();
         dialog.open(

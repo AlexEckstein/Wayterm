@@ -115,10 +115,10 @@ fn gate(name: &str, mode: &str) -> Option<Fixture> {
 fn password_responder(answer: &str, seen: Option<Arc<Mutex<Vec<String>>>>) -> ChallengeResponder {
     let answer = answer.to_string();
     Arc::new(move |prompts: &[ChallengePrompt]| {
-        if let Some(seen) = &seen {
-            if let Ok(mut log) = seen.lock() {
-                log.extend(prompts.iter().map(|p| p.prompt.clone()));
-            }
+        if let Some(seen) = &seen
+            && let Ok(mut log) = seen.lock()
+        {
+            log.extend(prompts.iter().map(|p| p.prompt.clone()));
         }
         Some(
             prompts

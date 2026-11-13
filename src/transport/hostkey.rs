@@ -325,10 +325,10 @@ impl HostKeyVerifier {
                 decision => decision,
             },
         };
-        if decision == HostKeyDecision::AcceptAndSave {
-            if let Err(err) = self.record(facts, key) {
-                return rejected(&format_args!("cannot record it in known_hosts: {err}"));
-            }
+        if decision == HostKeyDecision::AcceptAndSave
+            && let Err(err) = self.record(facts, key)
+        {
+            return rejected(&format_args!("cannot record it in known_hosts: {err}"));
         }
         decision
     }

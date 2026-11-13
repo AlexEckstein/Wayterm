@@ -214,10 +214,9 @@ async fn try_agent_auth(
         if let Ok(result) = handle
             .authenticate_publickey_with(username, key, hash_alg, &mut agent)
             .await
+            && result.success()
         {
-            if result.success() {
-                return Ok(true);
-            }
+            return Ok(true);
         }
     }
     Ok(false)

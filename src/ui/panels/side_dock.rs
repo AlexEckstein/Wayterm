@@ -401,10 +401,10 @@ pub(crate) fn reveal_sftp(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
     if current_page(notebook).as_ref() != Some(page) {
         return;
     }
-    if let Some(dock) = data::<SideDock>(notebook, DOCK_KEY) {
-        if dock.inner.stack.is_visible() {
-            dock.select(DockPage::Sftp);
-        }
+    if let Some(dock) = data::<SideDock>(notebook, DOCK_KEY)
+        && dock.inner.stack.is_visible()
+    {
+        dock.select(DockPage::Sftp);
     }
 }
 
