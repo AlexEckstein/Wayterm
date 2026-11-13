@@ -76,7 +76,7 @@ installed preference.
 
 - VTE is the default and the fallback.
 - With the `backend-ghostty` Cargo feature, Settings' General page shows
-  an "Experimental Ghostty terminal" check box that writes `ghostty` or
+  a "Ghostty terminal" check box that writes `ghostty` or
   `vte` to the `default_backend` row (doc 13 §Settings rows). Without the
   feature the box is disabled, with a tooltip saying to rebuild with it.
 - The row is installed at startup and on change
