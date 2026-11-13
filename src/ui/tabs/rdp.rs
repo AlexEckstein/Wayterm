@@ -290,7 +290,12 @@ fn first_contact(binary: &str, base: &RdpSpec, parent_xid: Option<u32>) -> Resul
         .flatten()
         .ok_or(Dial::Cancelled)?;
     if let Err(err) = rdp_trust_record(&accepted.host, accepted.port, &accepted.fingerprint) {
-        eprintln!("Wayterm: RDP trust record failed: {err}");
+        tracing::warn!(
+            host = %accepted.host,
+            port = accepted.port,
+            error = %err,
+            "failed to record the RDP certificate's trust"
+        );
     }
     Ok(accepted.fingerprint)
 }
@@ -576,7 +581,12 @@ fn changed_cert(attempt: &Attempt, stored: &str, seen: &str) {
     match choice {
         ChangeChoice::UpdateAndRetry => {
             if let Err(err) = rdp_trust_record(&attempt.host, attempt.port, seen) {
-                eprintln!("Wayterm: RDP trust record failed: {err}");
+                tracing::warn!(
+                    host = %attempt.host,
+                    port = attempt.port,
+                    error = %err,
+                    "failed to record the RDP certificate's trust"
+                );
             }
             start(&attempt.notebook, &page, &attempt.session, attempt.tab_gen);
         }
@@ -619,7 +629,7 @@ fn start_maintenance(
     baseline: Vec<u32>,
 ) {
     let Some(conn) = conn else {
-        eprintln!("Wayterm: RDP x11rb connect failed; the child window will not be resized");
+        tracing::warn!("RDP x11rb connect failed; the child window will not be resized");
         return;
     };
     let maintainer = Rc::new(Maintainer {

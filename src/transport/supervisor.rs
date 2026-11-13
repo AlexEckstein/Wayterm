@@ -110,10 +110,13 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
     fn lookup(&self, key: &PoolKey) -> Option<Arc<T>> {
         let mut pool = lock_pool(&self.pool);
         let conn = pool.get(key)?;
+        let (host, port) = (&key.params.host, key.params.port);
         if conn.is_closed() {
             pool.remove(key);
+            tracing::info!(host = %host, port, "pooled connection found closed; evicting it");
             None
         } else {
+            tracing::debug!(host = %host, port, "reusing the pooled connection");
             Some(Arc::clone(conn))
         }
     }
@@ -166,6 +169,11 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
         };
         match winner {
             Some(theirs) => {
+                tracing::debug!(
+                    host = %key.params.host,
+                    port = key.params.port,
+                    "lost a dial race; adopting the pooled connection"
+                );
                 conn.disconnect_now().await;
                 Ok(theirs)
             }
@@ -176,6 +184,14 @@ impl<T: PooledConnection> ConnectionSupervisor<T> {
                 Ok(conn)
             }
         }
+    }
+}
+
+/// Only logs: pooled connections stay with their release monitors.
+impl<T: PooledConnection> Drop for ConnectionSupervisor<T> {
+    fn drop(&mut self) {
+        let pooled = lock_pool(&self.pool).len();
+        tracing::info!(pooled, "connection supervisor shut down");
     }
 }
 
@@ -255,16 +271,30 @@ impl ConnectionSupervisor<SshConnection> {
     ) -> Result<Arc<SshConnection>, TransportError> {
         let key = PoolKey::for_hop(params, auth);
         let dial = || async {
+            let session = auth.creds.session_id();
             let handler =
                 AppClientHandler::new(params.host.clone(), params.port, auth.verifier.clone());
+            tracing::info!(host = %params.host, port = params.port, session = %session, "connecting");
             let handle = client::connect(
                 client_config(params, auth),
                 (params.host.as_str(), params.port),
                 handler,
             )
             .await
-            .map_err(|err| connect_error(&params.host, err))?;
-            Ok(Arc::new(authenticated(handle, params, auth).await?))
+            .map_err(|err| {
+                let err = connect_error(&params.host, err);
+                tracing::warn!(
+                    host = %params.host,
+                    port = params.port,
+                    session = %session,
+                    error = %err,
+                    "connect failed"
+                );
+                err
+            })?;
+            let conn = authenticated(handle, params, auth).await?;
+            tracing::info!(host = %params.host, port = params.port, session = %session, "connected");
+            Ok(Arc::new(conn))
         };
         self.get_or_connect_settled(key, dial, |_| PoolKey::for_hop(params, auth))
             .await
@@ -326,6 +356,11 @@ async fn monitored_release<T: PooledConnection>(key: PoolKey, weak: Weak<T>, poo
             }
         };
         if let Some(conn) = released {
+            tracing::info!(
+                host = %key.params.host,
+                port = key.params.port,
+                "last consumer released; disconnecting"
+            );
             conn.disconnect_now().await;
             return;
         }

@@ -157,7 +157,7 @@ pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
         switch.connect_active_notify(move |switch| {
             let on = switch.is_active();
             if let Err(err) = save_enabled(&store, on) {
-                eprintln!("Wayterm: failed to save setting '{BITWARDEN_ENABLED_KEY}': {err}");
+                tracing::warn!(key = %BITWARDEN_ENABLED_KEY, error = %err, "failed to save setting");
             }
             row.set_visible(on);
             if on {
@@ -169,7 +169,7 @@ pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
         let store = store.clone();
         bin.connect_changed(move |entry| {
             if let Err(err) = save_bin(&store, &entry.text()) {
-                eprintln!("Wayterm: failed to save setting '{BITWARDEN_BIN_KEY}': {err}");
+                tracing::warn!(key = %BITWARDEN_BIN_KEY, error = %err, "failed to save setting");
             }
         });
     }

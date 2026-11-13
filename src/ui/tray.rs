@@ -268,7 +268,7 @@ pub fn init_tray(app: &gtk4::Application) -> Result<TrayHandle, TrayInitError> {
     let pixmap = match tray_icon_pixmap() {
         Ok(icon) => vec![icon],
         Err(err) => {
-            eprintln!("Wayterm: tray icon pixmap unavailable ({err})");
+            tracing::info!(error = %err, "tray icon pixmap unavailable");
             Vec::new()
         }
     };

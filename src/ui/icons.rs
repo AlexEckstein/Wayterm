@@ -254,10 +254,10 @@ pub(in crate::ui) fn register_builtin_icons(display: &gdk::Display) {
     static REGISTER: std::sync::Once = std::sync::Once::new();
     REGISTER.call_once(|| {
         if let Err(err) = gio::resources_register_include!("tree-icons.gresource") {
-            eprintln!("Wayterm: failed to load the built-in icons: {err}");
+            tracing::warn!(error = %err, "failed to load the built-in icons");
         }
         if let Err(err) = gio::resources_register_include!("app-icon.gresource") {
-            eprintln!("Wayterm: failed to load the app icon: {err}");
+            tracing::warn!(error = %err, "failed to load the app icon");
         }
     });
     gtk4::IconTheme::for_display(display).add_resource_path(BUILTIN_RESOURCE_PATH);

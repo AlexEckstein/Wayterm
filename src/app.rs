@@ -15,6 +15,8 @@ use crate::ui::{tray, MainWindow};
 pub const APP_ID: &str = "com.alex-eckstein.wayterm";
 
 pub fn run() -> glib::ExitCode {
+    crate::logging::init();
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "Wayterm starting");
     install_tokio_runtime();
     let app = gtk4::Application::builder().application_id(APP_ID).build();
     // Local copies of files opened from an SFTP sidebar (doc 07 §Opening
@@ -22,7 +24,12 @@ pub fn run() -> glib::ExitCode {
     app.connect_startup(|_| crate::ui::panels::sftp_sidebar::discard_edit_copies());
     app.connect_shutdown(|_| crate::ui::panels::sftp_sidebar::discard_edit_copies());
     app.connect_activate(build_ui);
-    app.run()
+    let code = app.run();
+    tracing::info!("Wayterm shutting down");
+    // Last, so the shutdown line and anything still buffered reach the
+    // log file before the process exits.
+    crate::logging::flush();
+    code
 }
 
 /// Enter a process-wide multi-threaded tokio runtime on the GTK main
@@ -76,21 +83,16 @@ fn build_ui(app: &gtk4::Application) {
     // Compiled-in defaults first, then the user's customized rows (doc 11).
     let mut hotkeys = HotkeyEngine::new();
     match hotkeys.load_from_db(&store) {
-        Ok(report) if !report.applied.is_empty() || !report.skipped.is_empty() => eprintln!(
-            "Wayterm: loaded {} custom hotkey(s), skipped {}{}",
-            report.applied.len(),
-            report.skipped.len(),
-            if report.displaced.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "; unbound by a colliding chord: {}",
-                    report.displaced.join(", ")
-                )
-            }
-        ),
+        Ok(report) if !report.applied.is_empty() || !report.skipped.is_empty() => {
+            tracing::info!(
+                applied = report.applied.len(),
+                skipped = report.skipped.len(),
+                displaced = %report.displaced.join(", "),
+                "loaded custom hotkeys"
+            )
+        }
         Ok(_) => {}
-        Err(err) => eprintln!("Wayterm: failed to load custom hotkeys: {err}"),
+        Err(err) => tracing::warn!(error = %err, "failed to load custom hotkeys"),
     }
 
     let main_window = MainWindow::new(app, store.clone(), Rc::new(RefCell::new(hotkeys)));
@@ -103,7 +105,7 @@ fn build_ui(app: &gtk4::Application) {
         }
         Err(err) => {
             // Headless or no tray host: closing the window quits.
-            eprintln!("Wayterm: tray unavailable ({err}); close will quit");
+            tracing::info!(error = %err, "tray unavailable; close will quit");
             false
         }
     };

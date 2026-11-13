@@ -51,7 +51,7 @@ impl GhosttyView {
             return;
         }
         if !may_open(&link.uri, &glib::host_name()) {
-            eprintln!("Wayterm: refused a link that is not for this machine");
+            tracing::warn!("refused a link that is not for this machine");
             return;
         }
         let launcher = imp.launcher.borrow().clone();
@@ -311,7 +311,7 @@ pub(super) fn launch_uri(view: &GhosttyView, uri: &str) {
     let parent = view.root().and_downcast::<gtk4::Window>();
     gtk4::UriLauncher::new(uri).launch(parent.as_ref(), gio::Cancellable::NONE, |result| {
         if result.is_err() {
-            eprintln!("Wayterm: could not open a link");
+            tracing::warn!("could not open a link");
         }
     });
 }

@@ -180,7 +180,9 @@ impl TerminalBackend for GhosttyBackend {
             return;
         };
         let scheme = scheme.with_colors(self.view.default_colors());
-        self.engine().set_color_scheme(&scheme);
+        if !self.engine().set_color_scheme(&scheme) {
+            tracing::warn!(scheme = %name, "the terminal refused the color scheme");
+        }
         self.view.queue_draw();
     }
 

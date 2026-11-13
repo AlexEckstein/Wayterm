@@ -9,6 +9,7 @@
 //! - [`sftp`], [`vnc`], [`rdp`]: the protocol engines behind their tabs.
 //! - [`store`]: the SQLite session store; [`transfer`]: import and export.
 //! - [`hotkeys`]: the action registry and hotkey engine.
+//! - [`logging`]: diagnostics logging to stderr and a log file (doc 16).
 //! - [`macros`]: recording, editing data and playback of keystroke macros.
 //! - [`app`]: application startup and data paths; [`backpressure`]: the
 //!   GTK-side queue for bounded channels (doc 02 §Backpressure).
@@ -16,6 +17,7 @@
 pub mod app;
 pub mod backpressure;
 pub mod hotkeys;
+pub mod logging;
 pub mod macros;
 pub mod rdp;
 pub mod sftp;

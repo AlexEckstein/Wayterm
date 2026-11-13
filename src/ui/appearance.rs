@@ -35,7 +35,9 @@ use gtk4::{gdk, gio, glib};
 
 use crate::store::model::SessionConfig;
 use crate::terminal::color_scheme::{
-    self, backend_row, classify_system_theme, Brightness, UNKNOWN_THEME,
+    self, backend_row, classify_system_theme, Brightness, SchemeChoice,
+    DEFAULT_COLOR_SCHEME_SETTING, GHOSTTY_COLOR_SCHEME_SETTING, UNKNOWN_THEME,
+    VTE_COLOR_SCHEME_SETTING,
 };
 use crate::terminal::{TerminalBackend, TerminalDefaults};
 use crate::ui::tabs::SessionTab;
@@ -97,6 +99,15 @@ impl Appearance {
 
 /// Record the stored scheme rows and re-apply them to every open terminal.
 pub fn install_schemes(default: Option<String>, vte: Option<String>, ghostty: Option<String>) {
+    for (key, raw) in [
+        (DEFAULT_COLOR_SCHEME_SETTING, &default),
+        (VTE_COLOR_SCHEME_SETTING, &vte),
+        (GHOSTTY_COLOR_SCHEME_SETTING, &ghostty),
+    ] {
+        if let Some(raw) = raw.as_deref().filter(|raw| unknown_scheme(raw)) {
+            tracing::warn!(key = %key, value = %raw, "unknown color scheme setting; ignoring it");
+        }
+    }
     APPEARANCE.with(|state| {
         let mut state = state.borrow_mut();
         state.default_scheme = default;
@@ -104,6 +115,12 @@ pub fn install_schemes(default: Option<String>, vte: Option<String>, ghostty: Op
         state.ghostty_scheme = ghostty;
     });
     refresh();
+}
+
+/// A stored scheme that is neither blank nor a known choice: resolution
+/// passes over it.
+fn unknown_scheme(raw: &str) -> bool {
+    !raw.trim().is_empty() && SchemeChoice::from_setting(raw).is_none()
 }
 
 /// [`install_schemes`] with no backend's own row.
@@ -188,17 +205,32 @@ pub(in crate::ui) fn chrome_preference() -> Option<Brightness> {
 /// Give `backend` the scheme, font, opacity and scrollback `session`
 /// resolves to.
 pub fn apply_to(backend: &dyn TerminalBackend, session: &SessionConfig) {
-    apply_with(
-        backend,
-        session.color_scheme.as_deref(),
-        system_brightness(),
-    );
+    if let Some(raw) = session
+        .color_scheme
+        .as_deref()
+        .filter(|raw| unknown_scheme(raw))
+    {
+        tracing::warn!(
+            session = session.id,
+            value = %raw,
+            "unknown color scheme on the session; using the settings' scheme"
+        );
+    }
+    apply_with(backend, session, system_brightness());
     apply_settings(backend, session);
 }
 
-fn apply_with(backend: &dyn TerminalBackend, session_override: Option<&str>, system: Brightness) {
+fn apply_with(backend: &dyn TerminalBackend, session: &SessionConfig, system: Brightness) {
     let global = APPEARANCE.with(|state| state.borrow().scheme_row(backend.name()));
+    let session_override = session.color_scheme.as_deref();
     let scheme = color_scheme::resolve(session_override, global.as_deref(), system);
+    tracing::debug!(
+        backend = %backend.name(),
+        session = session.id,
+        scheme = %scheme.name,
+        system = ?system,
+        "color scheme applied"
+    );
     backend.set_color_scheme(scheme.name);
 }
 
@@ -241,9 +273,17 @@ pub fn track(notebook: &gtk4::Notebook) {
 pub(in crate::ui) fn set_desktop_preference(preference: Option<Brightness>) {
     let previous =
         APPEARANCE.with(|state| std::mem::replace(&mut state.borrow_mut().desktop, preference));
-    if preference != previous && gtk4::is_initialized_main_thread() {
-        if let Some(settings) = gtk4::Settings::default() {
-            apply_chrome(&settings, preference);
+    if preference != previous {
+        let stated = match preference {
+            Some(Brightness::Dark) => "dark",
+            Some(Brightness::Light) => "light",
+            None => "none",
+        };
+        tracing::info!(preference = %stated, "desktop light/dark preference changed");
+        if gtk4::is_initialized_main_thread() {
+            if let Some(settings) = gtk4::Settings::default() {
+                apply_chrome(&settings, preference);
+            }
         }
     }
     refresh();
@@ -265,8 +305,11 @@ fn apply_chrome(settings: &gtk4::Settings, preference: Option<Brightness>) {
             };
             let value = glib::EnumClass::with_type(scheme.value_type())
                 .and_then(|class| class.to_value(number));
-            if let Some(value) = value {
-                settings.set_property_from_value(INTERFACE_COLOR_SCHEME, &value);
+            match value {
+                Some(value) => settings.set_property_from_value(INTERFACE_COLOR_SCHEME, &value),
+                None => tracing::warn!(
+                    "cannot set {INTERFACE_COLOR_SCHEME}; the window keeps its theme variant"
+                ),
             }
             settings.reset_property(PREFER_DARK);
         }
@@ -288,7 +331,7 @@ fn watch_portal() {
         let bus = match gio::bus_get_future(gio::BusType::Session).await {
             Ok(bus) => bus,
             Err(err) => {
-                eprintln!("Wayterm: no session bus ({err}); following the GTK theme settings");
+                tracing::info!(error = %err, "no session bus; following the GTK theme settings");
                 return;
             }
         };
@@ -326,8 +369,9 @@ fn watch_portal() {
         };
         match reply {
             Ok(reply) => set_desktop_preference(portal_preference(&reply.child_value(0))),
-            Err(err) => eprintln!(
-                "Wayterm: desktop portal unavailable ({err}); following the GTK theme settings"
+            Err(err) => tracing::info!(
+                error = %err,
+                "desktop portal unavailable; following the GTK theme settings"
             ),
         }
     });
@@ -355,9 +399,8 @@ fn portal_preference(value: &glib::Variant) -> Option<Brightness> {
 /// notebooks.
 pub fn refresh() {
     let system = system_brightness();
-    for_each_terminal(|terminal, session| {
-        apply_with(terminal, session.color_scheme.as_deref(), system);
-    });
+    tracing::debug!(system = ?system, "re-applying color schemes to open terminals");
+    for_each_terminal(|terminal, session| apply_with(terminal, session, system));
 }
 
 /// Every terminal in the tracked notebooks, with its session.
@@ -408,9 +451,10 @@ impl UserCss {
         let monitor = gio::File::for_path(dir)
             .monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
             .map_err(|err| {
-                eprintln!(
-                    "Wayterm: not watching {} for theme changes ({err})",
-                    dir.display()
+                tracing::warn!(
+                    path = %dir.display(),
+                    error = %err,
+                    "not watching the directory for theme changes"
                 );
             })
             .ok()?;
@@ -456,6 +500,7 @@ impl Stylesheet {
     }
 
     fn load(&self) {
+        tracing::debug!(path = %self.path.display(), "reloading the user stylesheet");
         if self.path.exists() {
             self.provider.load_from_path(&self.path);
         } else {
@@ -545,14 +590,18 @@ mod tests {
     #[test]
     fn apply_pushes_the_resolved_palette_name() {
         let backend = FakeBackend::new();
+        let session = |scheme: Option<&str>| SessionConfig {
+            color_scheme: scheme.map(str::to_string),
+            ..Default::default()
+        };
         install_default_scheme(Some("System".into()));
-        apply_with(&backend, None, Brightness::Light);
-        apply_with(&backend, None, Brightness::Dark);
-        apply_with(&backend, Some("Light"), Brightness::Dark);
+        apply_with(&backend, &session(None), Brightness::Light);
+        apply_with(&backend, &session(None), Brightness::Dark);
+        apply_with(&backend, &session(Some("Light")), Brightness::Dark);
         install_default_scheme(Some("Light".into()));
-        apply_with(&backend, None, Brightness::Dark);
+        apply_with(&backend, &session(None), Brightness::Dark);
         install_default_scheme(None);
-        apply_with(&backend, Some(""), Brightness::Light);
+        apply_with(&backend, &session(Some("")), Brightness::Light);
         assert_eq!(
             pushed(&backend),
             ["Light", "Dark", "Light", "Light", "Light"]
@@ -580,6 +629,85 @@ mod tests {
         assert_eq!(system_brightness(), Brightness::Dark);
         set_desktop_preference(None);
         assert_eq!(system_brightness(), UNKNOWN_THEME);
+    }
+
+    fn lines_with<'a>(output: &'a str, message: &str) -> Vec<&'a str> {
+        output
+            .lines()
+            .filter(|line| line.contains(message))
+            .collect()
+    }
+
+    /// A scheme row naming no scheme is a warning with its key; a blank or
+    /// known one is not.
+    #[test]
+    fn an_unknown_scheme_row_is_logged_with_its_key() {
+        let (buffer, guard) = crate::logging::tests::capture(None);
+        install_schemes(
+            Some("System".into()),
+            Some("Solarized".into()),
+            Some(" ".into()),
+        );
+        drop(guard);
+        install_schemes(None, None, None);
+        let output = buffer.contents();
+
+        let lines = lines_with(&output, "unknown color scheme setting");
+        assert_eq!(lines.len(), 1, "{output}");
+        assert!(lines[0].contains("WARN"), "{}", lines[0]);
+        assert!(lines[0].contains("key=vte.color_scheme"), "{}", lines[0]);
+        assert!(lines[0].contains("value=Solarized"), "{}", lines[0]);
+    }
+
+    /// A session override naming no scheme is a warning with the session's
+    /// id when its terminal is set up, and the debug line names the scheme
+    /// it got instead.
+    #[test]
+    fn an_unknown_session_scheme_is_logged_with_the_session() {
+        let (buffer, guard) = crate::logging::tests::capture(Some("debug"));
+        install_default_scheme(Some("Light".into()));
+        let session = SessionConfig {
+            id: 42,
+            color_scheme: Some("Nord".into()),
+            ..Default::default()
+        };
+        apply_to(&FakeBackend::new(), &session);
+        apply_to(&FakeBackend::new(), &SessionConfig::default());
+        drop(guard);
+        install_default_scheme(None);
+        let output = buffer.contents();
+
+        let warned = lines_with(&output, "unknown color scheme on the session");
+        assert_eq!(warned.len(), 1, "{output}");
+        assert!(warned[0].contains("WARN"), "{}", warned[0]);
+        assert!(warned[0].contains("session=42"), "{}", warned[0]);
+        assert!(warned[0].contains("value=Nord"), "{}", warned[0]);
+        let applied = lines_with(&output, "color scheme applied");
+        assert_eq!(applied.len(), 2, "{output}");
+        assert!(applied[0].contains("DEBUG"), "{}", applied[0]);
+        assert!(applied[0].contains("session=42"), "{}", applied[0]);
+        assert!(applied[0].contains("scheme=Light"), "{}", applied[0]);
+    }
+
+    /// A change of the desktop's preference is one info line; restating
+    /// it is none.
+    #[test]
+    fn a_desktop_preference_change_is_logged_once() {
+        if gtk4::is_initialized() {
+            return;
+        }
+        let (buffer, guard) = crate::logging::tests::capture(None);
+        set_desktop_preference(Some(Brightness::Dark));
+        set_desktop_preference(Some(Brightness::Dark));
+        set_desktop_preference(None);
+        drop(guard);
+        let output = buffer.contents();
+
+        let lines = lines_with(&output, "desktop light/dark preference changed");
+        assert_eq!(lines.len(), 2, "{output}");
+        assert!(lines[0].contains("INFO"), "{}", lines[0]);
+        assert!(lines[0].contains("preference=dark"), "{}", lines[0]);
+        assert!(lines[1].contains("preference=none"), "{}", lines[1]);
     }
 
     /// `ReadOne`'s `v`, `Read`'s `v` in `v`, and a bare value all carry

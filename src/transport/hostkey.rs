@@ -259,7 +259,8 @@ impl HostKeyVerifier {
     pub fn verify(&self, facts: &HostKeyFacts, key: &PublicKey) -> HostKeyDecision {
         let (host, port) = (facts.host.as_str(), facts.port);
         let rejected = |why: &dyn fmt::Display| {
-            eprintln!("Wayterm: host key for {host:?} port {port} rejected: {why}");
+            // Every reason is a static text or an io error: no key material.
+            tracing::warn!(host = %host, port, reason = %why, "host key rejected");
             HostKeyDecision::Reject
         };
         let unverified = |why: &dyn fmt::Display| match self.policy {

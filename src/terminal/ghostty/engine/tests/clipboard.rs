@@ -95,6 +95,24 @@ fn the_size_guard_takes_the_limit_and_refuses_past_it() {
 }
 
 #[test]
+fn a_write_that_is_not_text_is_logged_without_its_contents() {
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    assert_eq!(
+        clipboard_effect(ClipboardDestination::System, b"hunter2\0tail"),
+        None
+    );
+    drop(guard);
+    let output = buffer.contents();
+    let message = "ignored a clipboard write that is not text";
+    let line = output
+        .lines()
+        .find(|line| line.contains(message))
+        .unwrap_or_else(|| panic!("no '{message}' line in: {output}"));
+    assert!(line.contains("WARN"), "{line}");
+    assert!(!output.contains("hunter2"), "{output}");
+}
+
+#[test]
 fn a_large_write_arrives_whole_and_one_past_the_parser_drops() {
     // "QUJD" is "ABC".
     let sequence = |quads: usize| {

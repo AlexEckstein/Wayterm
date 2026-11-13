@@ -42,7 +42,7 @@ pub fn install(notebook: &gtk4::Notebook, store: &Rc<SessionStore>) {
     let Some(strip) = child_named(notebook.upcast_ref(), "header")
         .and_then(|header| child_named(&header, "tabs"))
     else {
-        eprintln!("Wayterm: no notebook tab strip; \"+\" stays at the tab bar's end");
+        tracing::warn!("no notebook tab strip; \"+\" stays at the tab bar's end");
         notebook.set_scrollable(true);
         return;
     };

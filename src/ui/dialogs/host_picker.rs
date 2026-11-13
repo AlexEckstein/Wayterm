@@ -123,7 +123,7 @@ pub fn picker_entries(rows: &[SessionRow]) -> Vec<PickerEntry> {
 /// new tab of `notebook`.
 pub fn show(notebook: &gtk4::Notebook, store: &Rc<SessionStore>) {
     let rows = collect_rows(store).unwrap_or_else(|err| {
-        eprintln!("Wayterm: failed to list sessions for the host picker: {err}");
+        tracing::warn!(error = %err, "failed to list sessions for the host picker");
         Vec::new()
     });
     let entries = Rc::new(picker_entries(&rows));
@@ -234,7 +234,7 @@ fn open(notebook: &gtk4::Notebook, store: &Rc<SessionStore>, session_id: Option<
         None => local_shell_session(),
         Some(id) => match store.get_session(id) {
             Ok(config) => config,
-            Err(err) => return eprintln!("Wayterm: failed to load session {id}: {err}"),
+            Err(err) => return tracing::warn!(session = id, error = %err, "failed to load session"),
         },
     };
     SessionTab::open(notebook, &config, store);

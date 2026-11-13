@@ -45,6 +45,10 @@ serde_yaml_ng = "0.10"
 # Secret Service / Flatpak portal keyring (doc 05).
 oo7 = "0.7"
 pollster = "1.0"
+# Diagnostics logging (doc 16).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-appender = "0.2"
 
 [build-dependencies]
 # Compiles the libghostty-vt shim (src/terminal/ghostty/shim.c); only with

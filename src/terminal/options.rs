@@ -155,8 +155,8 @@ impl VteOptions {
         let seed = Self::default();
         Self {
             colors: DefaultColors {
-                fg: color(row(VTE_FOREGROUND_SETTING)),
-                bg: color(row(VTE_BACKGROUND_SETTING)),
+                fg: color_setting(row, VTE_FOREGROUND_SETTING),
+                bg: color_setting(row, VTE_BACKGROUND_SETTING),
             },
             cursor_shape: VteCursor::from_row(row(VTE_CURSOR_SHAPE_SETTING))
                 .unwrap_or(seed.cursor_shape),
@@ -164,8 +164,8 @@ impl VteOptions {
                 .unwrap_or(seed.cursor_blink),
             audible_bell: flag(row(VTE_AUDIBLE_BELL_SETTING)).unwrap_or(seed.audible_bell),
             selection: SelectionColors {
-                fg: color(row(VTE_SELECTION_FG_SETTING)),
-                bg: color(row(VTE_SELECTION_BG_SETTING)),
+                fg: color_setting(row, VTE_SELECTION_FG_SETTING),
+                bg: color_setting(row, VTE_SELECTION_BG_SETTING),
             },
             line_height: parsed(row(VTE_LINE_HEIGHT_SETTING))
                 .filter(|height| LINE_HEIGHT.contains(height))
@@ -255,8 +255,8 @@ impl GhosttyOptions {
         let search = seed.search;
         Self {
             colors: DefaultColors {
-                fg: color(row(GHOSTTY_FOREGROUND_SETTING)),
-                bg: color(row(GHOSTTY_BACKGROUND_SETTING)),
+                fg: color_setting(row, GHOSTTY_FOREGROUND_SETTING),
+                bg: color_setting(row, GHOSTTY_BACKGROUND_SETTING),
             },
             cursor_style: GhosttyCursor::from_row(row(GHOSTTY_CURSOR_STYLE_SETTING))
                 .unwrap_or(seed.cursor_style),
@@ -270,13 +270,13 @@ impl GhosttyOptions {
             cursor_blink: period(row(GHOSTTY_CURSOR_BLINK_SETTING)).unwrap_or(seed.cursor_blink),
             text_blink: period(row(GHOSTTY_TEXT_BLINK_SETTING)).unwrap_or(seed.text_blink),
             selection: SelectionColors {
-                fg: color(row(GHOSTTY_SELECTION_FG_SETTING)),
-                bg: color(row(GHOSTTY_SELECTION_BG_SETTING)),
+                fg: color_setting(row, GHOSTTY_SELECTION_FG_SETTING),
+                bg: color_setting(row, GHOSTTY_SELECTION_BG_SETTING),
             },
             search: SearchColors {
-                fg: color(row(GHOSTTY_SEARCH_FG_SETTING)).unwrap_or(search.fg),
-                bg: color(row(GHOSTTY_SEARCH_BG_SETTING)).unwrap_or(search.bg),
-                current_bg: color(row(GHOSTTY_SEARCH_CURRENT_BG_SETTING))
+                fg: color_setting(row, GHOSTTY_SEARCH_FG_SETTING).unwrap_or(search.fg),
+                bg: color_setting(row, GHOSTTY_SEARCH_BG_SETTING).unwrap_or(search.bg),
+                current_bg: color_setting(row, GHOSTTY_SEARCH_CURRENT_BG_SETTING)
                     .unwrap_or(search.current_bg),
             },
         }
@@ -299,6 +299,17 @@ fn period(raw: Option<String>) -> Option<Duration> {
     parsed(raw)
         .filter(|ms| BLINK_PERIOD.contains(ms))
         .map(Duration::from_millis)
+}
+
+/// The color row `key`. A value that is not `#rrggbb` is logged and left
+/// unset; a blank one, which Reset writes, is just unset.
+fn color_setting(row: &impl Fn(&str) -> Option<String>, key: &str) -> Option<[u8; 3]> {
+    let raw = row(key)?;
+    let parsed = color(Some(raw.clone()));
+    if parsed.is_none() && !raw.trim().is_empty() {
+        tracing::warn!(key = %key, value = %raw, "unusable color setting; ignoring it");
+    }
+    parsed
 }
 
 fn color(raw: Option<String>) -> Option<[u8; 3]> {
@@ -481,5 +492,27 @@ mod tests {
         let stored = color_row([0x0a, 0xb0, 0xff]);
         assert_eq!(stored, "#0ab0ff");
         assert_eq!(color(Some(stored)), Some([0x0a, 0xb0, 0xff]));
+    }
+
+    #[test]
+    fn an_unusable_color_row_is_logged_with_its_key() {
+        let (buffer, guard) = crate::logging::tests::capture(None);
+        let options = vte(&[
+            (VTE_FOREGROUND_SETTING, "teal"),
+            (VTE_BACKGROUND_SETTING, ""),
+            (VTE_SELECTION_BG_SETTING, "#0a0b0c"),
+        ]);
+        drop(guard);
+        let output = buffer.contents();
+
+        assert_eq!(options.colors.fg, None);
+        let lines: Vec<&str> = output
+            .lines()
+            .filter(|line| line.contains("unusable color setting"))
+            .collect();
+        assert_eq!(lines.len(), 1, "{output}");
+        assert!(lines[0].contains("WARN"), "{}", lines[0]);
+        assert!(lines[0].contains("key=vte.foreground"), "{}", lines[0]);
+        assert!(lines[0].contains("value=teal"), "{}", lines[0]);
     }
 }

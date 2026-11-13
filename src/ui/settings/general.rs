@@ -174,7 +174,7 @@ fn toggle_row(toggle: Toggle, on: bool, store: &Rc<SessionStore>) -> gtk4::ListB
     let store = Rc::clone(store);
     switch.connect_active_notify(move |switch| {
         if let Err(err) = save(&store, toggle.key, switch.is_active()) {
-            eprintln!("Wayterm: failed to save setting '{}': {err}", toggle.key);
+            tracing::warn!(key = %toggle.key, error = %err, "failed to save setting");
             return;
         }
         apply(&store);
@@ -197,7 +197,7 @@ fn clear_reminders_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
     let store = Rc::clone(store);
     button.connect_clicked(move |button| {
         if let Err(err) = clear_reminders(&store) {
-            eprintln!("Wayterm: failed to clear reminders: {err}");
+            tracing::warn!(error = %err, "failed to clear reminders");
             return;
         }
         button.set_sensitive(false);
@@ -222,7 +222,7 @@ fn backend_row(store: &Rc<SessionStore>) -> gtk4::ListBoxRow {
             BackendKind::Vte
         };
         if let Err(err) = save_backend(&store, kind) {
-            eprintln!("Wayterm: failed to save setting '{DEFAULT_BACKEND_SETTING}': {err}");
+            tracing::warn!(key = %DEFAULT_BACKEND_SETTING, error = %err, "failed to save setting");
             return;
         }
         apply(&store);

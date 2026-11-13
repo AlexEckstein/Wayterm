@@ -264,7 +264,7 @@ fn build_row(
             if let Err(err) =
                 SettingsView::reset_action(&mut state.engine.borrow_mut(), &state.store, &action_id)
             {
-                eprintln!("Wayterm: failed to reset hotkey {action_id}: {err}");
+                tracing::warn!(action = %action_id, error = %err, "failed to reset hotkey");
                 return;
             }
             refresh_list(&list_box, &state);
@@ -329,7 +329,7 @@ fn open_capture_dialog(
             }
             let chord = KeyChord::new(key, modifier_state);
             let Some(new_key) = SettingsView::capture_label(chord) else {
-                eprintln!("Wayterm: captured a key GDK cannot name; ignoring");
+                tracing::info!("captured a key GDK cannot name; ignoring it");
                 return glib::Propagation::Stop;
             };
             dialog.close();
@@ -357,7 +357,12 @@ fn handle_captured_key(
             new_key,
             ConflictPolicy::Reject,
         ) {
-            eprintln!("Wayterm: failed to rebind hotkey {action_id} to {new_key}: {err}");
+            tracing::warn!(
+                action = %action_id,
+                chord = %new_key,
+                error = %err,
+                "failed to rebind hotkey"
+            );
             return;
         }
         refresh_list(list_box, state);
@@ -382,9 +387,12 @@ fn handle_captured_key(
             ConflictPolicy::Override,
         ) {
             Ok(_) => refresh_list(&list_box, &state),
-            Err(err) => {
-                eprintln!("Wayterm: failed to override hotkey {action_id} to {new_key}: {err}")
-            }
+            Err(err) => tracing::warn!(
+                action = %action_id,
+                chord = %new_key,
+                error = %err,
+                "failed to override hotkey"
+            ),
         },
     );
 }

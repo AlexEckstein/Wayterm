@@ -571,6 +571,36 @@ fn off_rejects_a_changed_key_without_asking() {
     assert_eq!(v.verify(&make_facts(), &presented), HostKeyDecision::Accept);
 }
 
+#[test]
+fn a_rejected_host_key_is_logged_without_key_material() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known_hosts");
+    write_known_hosts(&path, "localhost", 13265, &make_key(ED25519_KEY_A));
+    let v = verifier(HostKeyPolicy::Off, HostKeyDecision::Reject, Some(path));
+
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    let decision = v.verify(&make_facts(), &make_key(ED25519_KEY_B));
+    drop(guard);
+    assert_eq!(decision, HostKeyDecision::Reject);
+
+    let output = buffer.contents();
+    let line = output
+        .lines()
+        .find(|line| line.contains("host key rejected"))
+        .unwrap_or_else(|| panic!("no rejection line in:\n{output}"));
+    assert!(line.contains("WARN"), "{line}");
+    assert!(line.contains("host=localhost"), "{line}");
+    assert!(line.contains("port=13265"), "{line}");
+    assert!(
+        line.contains("known_hosts holds another key for this host"),
+        "{line}"
+    );
+    for key in [ED25519_KEY_A, ED25519_KEY_B] {
+        assert!(!output.contains(key), "{output}");
+    }
+    assert!(!output.contains("SHA256:"), "{output}");
+}
+
 /// An `@revoked` entry in known_hosts outranks the session's set under
 /// every policy: no prompt, no connection.
 #[test]

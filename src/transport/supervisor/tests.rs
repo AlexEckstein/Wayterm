@@ -443,3 +443,144 @@ fn connect_error_classifies_host_key_rejection() {
         matches!(certificate, TransportError::ConnectionFailed(m) if m.contains("certificate"))
     );
 }
+
+/// The captured line holding `message`, or a panic showing all of them.
+fn logged_line<'a>(output: &'a str, message: &str) -> &'a str {
+    output
+        .lines()
+        .find(|line| line.contains(message))
+        .unwrap_or_else(|| panic!("no {message:?} line in:\n{output}"))
+}
+
+/// Wait, bounded, until the fake at `i` reports disconnected.
+async fn until_disconnected(flags: &Mutex<Vec<Flag>>, i: usize) {
+    for _ in 0..40 {
+        if disconnected(flags, i) {
+            return;
+        }
+        tokio::time::sleep(MONITOR_POLL).await;
+    }
+    panic!("connection {i} was never disconnected");
+}
+
+/// The last consumer's release is logged, naming the endpoint.
+#[tokio::test]
+async fn a_release_by_the_last_consumer_is_logged() {
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    let sup = ConnectionSupervisor::<FakeConn>::new();
+    let dials = AtomicUsize::new(0);
+    let flags = Mutex::new(Vec::new());
+
+    let conn = sup
+        .get_or_connect_with(key("release.example"), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    drop(conn);
+    until_disconnected(&flags, 0).await;
+    drop(guard);
+
+    let output = buffer.contents();
+    let line = logged_line(&output, "last consumer released");
+    assert!(line.contains("INFO"), "{line}");
+    assert!(line.contains("host=release.example"), "{line}");
+    assert!(line.contains("port=22"), "{line}");
+}
+
+/// A closed pooled connection is logged as evicted; reusing a live one
+/// is logged at debug only.
+#[tokio::test]
+async fn evicting_a_closed_connection_is_logged_and_reuse_only_at_debug() {
+    let sup = ConnectionSupervisor::<FakeConn>::new();
+    let dials = AtomicUsize::new(0);
+    let flags = Mutex::new(Vec::new());
+
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    let dead = sup
+        .get_or_connect_with(key("evict.example"), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    dead.closed.store(true, Ordering::SeqCst);
+    let fresh = sup
+        .get_or_connect_with(key("evict.example"), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    let _reused = sup
+        .get_or_connect_with(key("evict.example"), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    drop(guard);
+    let output = buffer.contents();
+    let line = logged_line(&output, "pooled connection found closed");
+    assert!(line.contains("host=evict.example"), "{line}");
+    assert!(
+        !output.contains("reusing the pooled connection"),
+        "reuse is debug only:\n{output}"
+    );
+
+    let (buffer, guard) = crate::logging::tests::capture(Some("debug"));
+    let again = sup
+        .get_or_connect_with(key("evict.example"), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    drop(guard);
+    assert!(Arc::ptr_eq(&fresh, &again));
+    let output = buffer.contents();
+    let line = logged_line(&output, "reusing the pooled connection");
+    assert!(line.contains("host=evict.example"), "{line}");
+}
+
+/// Dropping the supervisor logs how many connections it still pooled.
+#[tokio::test]
+async fn dropping_the_supervisor_logs_what_it_still_pooled() {
+    let dials = AtomicUsize::new(0);
+    let flags = Mutex::new(Vec::new());
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    let sup = ConnectionSupervisor::<FakeConn>::new();
+    let conn = sup
+        .get_or_connect_with(key("a"), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    drop(sup);
+    drop(guard);
+
+    let output = buffer.contents();
+    let line = logged_line(&output, "connection supervisor shut down");
+    assert!(line.contains("pooled=1"), "{line}");
+    assert!(!disconnected(&flags, 0), "dropping it only logs");
+    drop(conn);
+}
+
+/// No supervisor event names the user a connection logs in as.
+#[tokio::test]
+async fn supervisor_events_never_name_the_user() {
+    let user_key = PoolKey {
+        params: ConnectParams {
+            host: "private.example".to_string(),
+            port: 22,
+            username: "sekrit-user".to_string(),
+        },
+        verified: true,
+        session_keys: BTreeSet::new(),
+    };
+    let dials = AtomicUsize::new(0);
+    let flags = Mutex::new(Vec::new());
+    let (buffer, guard) = crate::logging::tests::capture(Some("debug"));
+    let sup = ConnectionSupervisor::<FakeConn>::new();
+
+    let conn = sup
+        .get_or_connect_with(user_key.clone(), || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    let reused = sup
+        .get_or_connect_with(user_key, || fake_dial(&dials, &flags))
+        .await
+        .unwrap();
+    drop((conn, reused));
+    until_disconnected(&flags, 0).await;
+    drop(sup);
+    drop(guard);
+
+    let output = buffer.contents();
+    logged_line(&output, "last consumer released");
+    assert!(!output.contains("sekrit-user"), "{output}");
+}

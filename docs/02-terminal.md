@@ -86,7 +86,7 @@ installed preference.
   over the row for that session's tabs; an empty or unknown value follows
   the row. The session dialog's Terminal group edits it (doc 09 §Session
   dialog).
-- Ghostty falls back to VTE, with a note on stderr, when the feature is off
+- Ghostty falls back to VTE, logging a warning (doc 16 §What is logged), when the feature is off
   or libghostty-vt cannot allocate a terminal.
 
 A further backend would be another Cargo feature and another match arm in
@@ -179,7 +179,8 @@ its backend's own row (`vte.color_scheme`, `ghostty.color_scheme`), else
 the global `default_color_scheme` row, else `System`. Values are `System`,
 `Light` or `Dark`, case-insensitive; empty or unknown values fall through
 to the next level, so a row naming a scheme this build lacks never breaks
-a tab. New stores are seeded with `System` in the global row and neither
+a tab, and an unknown one is a warning in the log (doc 16 §What is
+logged). New stores are seeded with `System` in the global row and neither
 backend's, and Settings writes only the backend rows, so a scheme stored
 before they existed holds for both backends until one is picked.
 

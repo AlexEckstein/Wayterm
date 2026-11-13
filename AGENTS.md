@@ -14,7 +14,7 @@ VTE, russh SSH, rusqlite, libsecret keyring.
 Repo: github.com/AlexEckstein/Wayterm.
 
 **Current state:** feature-complete for its planned scope. The design
-docs `docs/01-…` through `docs/15-…`, one per feature, describe the
+docs `docs/01-…` through `docs/16-…`, one per feature, describe the
 system as built and are the source of truth for architecture; each ends
 with a **Limitations** section listing that feature's known gaps.
 `docs/01-architecture.md` is the map.
@@ -107,7 +107,7 @@ Do not disable or bypass checks to get green. Do not push with
 ## Repository layout
 
 ```
-docs/            ← design docs 01–15, one per feature (doc 01 is the map)
+docs/            ← design docs 01–16, one per feature (doc 01 is the map)
 src/terminal/    ← TerminalBackend, VteBackend, GhosttyBackend, FakeBackend (doc 02)
 src/transport/   ← Transport, SSHTransport, SshConnection, supervisor, auth,
                    host keys, jump, forward, credentials, local, serial,
@@ -118,6 +118,7 @@ src/rdp/          ← RDP process wrapper + cert policy (doc 08)
 src/store/       ← SQLite session store and model (doc 09)
 src/transfer/    ← session import/export: ssh config, Remmina, MobaXterm, Asbru, JSON (doc 10)
 src/hotkeys/     ← ActionRegistry, HotkeyEngine (doc 11)
+src/logging/     ← diagnostics logging: log file, WAYTERM_LOG filter, panic hook (doc 16)
 src/macros/      ← macro model, recorder, input tap, key notation, playback (doc 12)
 src/ui/          ← GTK window, settings, status bar, tray, appearance (docs 01, 02, 11, 13)
 src/ui/tabs/     ← tab pages and connect flows, TerminalTab wiring, lifecycle, restore, tab and terminal actions (docs 02, 03, 04, 06, 08, 11)

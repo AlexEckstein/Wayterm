@@ -80,6 +80,10 @@ output      reader task ─► bridge task ─► drain (main context) ─► ba
 - Anything that waits on the user — host-key and credential prompts —
   runs the dial on tokio's blocking pool and hops each prompt to the main
   thread (doc 04 §Connection supervisor).
+- Diagnostics logging is set up first, on the main thread, before the
+  runtime exists; after that any thread logs: the line goes to stderr on
+  the calling thread and to the file through a writer thread of its own,
+  so no call site waits on the disk (doc 16 §Lifecycle).
 
 ## Principles
 
@@ -94,7 +98,8 @@ output      reader task ─► bridge task ─► drain (main context) ─► ba
    `TerminalFeatures` and the UI hides what is unsupported. A missing tray
    host means close quits; a missing keyring means the user is prompted.
 5. **Secrets stay in the keyring.** Never in SQLite, logs, argv, or the
-   environment of a child that does not need them (doc 05).
+   environment of a child that does not need them (doc 05; what the log
+   leaves out is doc 16 §What is logged).
 6. **Logic is display-free.** Each widget has a plain-data model beside it
    (`*/model.rs`, `status_view_from`, `Draft`, …), so behavior is unit
    tested without a display (doc 15).
@@ -111,11 +116,16 @@ These are module boundaries; changing one is an orchestration decision
 | `SshConnection` (`src/transport/connection.rs`) | doc 04 §Connection supervisor |
 | `SftpCommand` (`src/sftp/commands.rs`) | doc 07 §Commands |
 
+Diagnostics logging (doc 16) is not a seam and adds nothing to one: call
+sites log through `tracing` macros inside the modules, so no trait
+signature, enum variant or channel carries a log.
+
 ## Modules
 
 | Module | Role | Doc |
 |---|---|---|
-| `app` | startup: tokio runtime, data paths, main window, tray | 01 |
+| `app` | startup: logging, tokio runtime, data paths, main window, tray | 01 |
+| `logging` | diagnostics logging: the log file and stderr, the `WAYTERM_LOG` filter, the panic hook | 16 |
 | `terminal` | `TerminalBackend`, `VteBackend`, `GhosttyBackend`, `FakeBackend`, color schemes | 02 |
 | `backpressure` | the GTK-side never-blocking sender | 02 |
 | `transport` | `Transport`, SSH (connection, supervisor, host keys, auth, jump, forward), local, serial, reconnect, credentials, factory | 03, 04, 05, 06 |
@@ -145,6 +155,7 @@ These are module boundaries; changing one is an orchestration decision
 13. [Settings](13-settings.md) — the Settings window, settings rows, window theme
 14. [Building and packaging](14-packaging.md)
 15. [Testing](15-testing.md)
+16. [Diagnostics logging](16-diagnostics-logging.md) — the log file, `WAYTERM_LOG`, the panic hook
 
 Each feature doc ends with its **Limitations**: what is not supported or
 not yet wired, in one place per feature.

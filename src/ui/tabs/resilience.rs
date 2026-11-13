@@ -267,8 +267,10 @@ pub fn request_close(
             move |silence| {
                 if let Some(store) = store.filter(|_| silence) {
                     if let Err(err) = store.set_setting(CONFIRM_CLOSE_NOTICE_SETTING, "0") {
-                        eprintln!(
-                            "Wayterm: failed to save '{CONFIRM_CLOSE_NOTICE_SETTING}': {err}"
+                        tracing::warn!(
+                            key = %CONFIRM_CLOSE_NOTICE_SETTING,
+                            error = %err,
+                            "failed to save setting"
                         );
                     }
                 }
@@ -315,7 +317,7 @@ where
     reconnect.connect_activate(move |_, _| {
         let prompt = (!reconnect_on_drop_setting()).then(|| reconnect_prompt("the session".into()));
         if let ReconnectAction::NoLiveTab { .. } = activate_reconnect(current(), None, prompt) {
-            eprintln!("Wayterm: reconnect: this tab has no live transport");
+            tracing::info!("reconnect: this tab has no live transport");
         }
     });
     window.add_action(&reconnect);
@@ -323,7 +325,7 @@ where
     let disconnect = gio::SimpleAction::new(DISCONNECT_ACTION, None);
     disconnect.connect_activate(move |_, _| {
         if let DisconnectAction::NoLiveTab { .. } = activate_disconnect(current_tab_id()) {
-            eprintln!("Wayterm: disconnect: this tab has no live transport");
+            tracing::info!("disconnect: this tab has no live transport");
         }
     });
     window.add_action(&disconnect);

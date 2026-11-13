@@ -127,7 +127,11 @@ impl MainWindow {
             move |columns| {
                 let shown = columns.to_setting();
                 if let Err(err) = store.set_setting(sftp_sidebar::SFTP_COLUMNS_SETTING, &shown) {
-                    eprintln!("Wayterm: failed to save the SFTP columns: {err}");
+                    tracing::warn!(
+                        key = %sftp_sidebar::SFTP_COLUMNS_SETTING,
+                        error = %err,
+                        "failed to save setting"
+                    );
                 }
             }
         });
@@ -138,7 +142,7 @@ impl MainWindow {
                 Ok(config) => {
                     SessionTab::open(&notebook, &config, &store);
                 }
-                Err(err) => eprintln!("Wayterm: failed to load session {id}: {err}"),
+                Err(err) => tracing::warn!(session = id, error = %err, "failed to load session"),
             })
         };
         session_tree.refresh();
@@ -236,9 +240,9 @@ impl MainWindow {
             ],
         );
         if !unhandled.is_empty() {
-            eprintln!(
-                "Wayterm: shortcuts with no action behind them: {}",
-                unhandled.join(", ")
+            tracing::warn!(
+                actions = %unhandled.join(", "),
+                "shortcuts with no action behind them"
             );
         }
 
@@ -334,7 +338,7 @@ fn install_tunnels_action(
         if let Some(rules) = dialog.run() {
             config.forward_rules = if rules.is_empty() { None } else { Some(rules) };
             if let Err(err) = store.update_session(&config) {
-                eprintln!("Wayterm: failed to save tunnel rules: {err}");
+                tracing::warn!(error = %err, "failed to save tunnel rules");
             }
         }
     });
