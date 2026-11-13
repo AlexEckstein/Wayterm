@@ -144,19 +144,53 @@ pub async fn dial_via_jump(
     auth: &HopAuth,
     ssh_w_fallback: bool,
 ) -> Result<SshConnection, TransportError> {
-    match jump_conn.open_direct_tcpip(&target.host, target.port).await {
+    let session = auth.creds.session_id();
+    tracing::info!(
+        host = %target.host,
+        port = target.port,
+        jump_host = %jump.host,
+        jump_port = jump.port,
+        session = %session,
+        "dialing through the jump host"
+    );
+    let result = match jump_conn.open_direct_tcpip(&target.host, target.port).await {
         Ok(channel) => connect_inner(channel.into_stream(), target, auth)
             .await
             .map(|conn| conn.holding_jump(Arc::clone(jump_conn))),
         Err(err @ (TransportError::ChannelError(_) | TransportError::ConnectionFailed(_)))
             if ssh_w_fallback =>
         {
-            eprintln!("Wayterm: jump: direct-tcpip rejected ({err}); falling back to ssh -W");
-            let stream = SshWStream::spawn(jump, &target.host, target.port).await?;
-            connect_inner(stream, target, auth).await
+            tracing::warn!(
+                host = %target.host,
+                port = target.port,
+                error = %err,
+                "direct-tcpip through the jump host failed; falling back to ssh -W"
+            );
+            match SshWStream::spawn(jump, &target.host, target.port).await {
+                Ok(stream) => connect_inner(stream, target, auth).await,
+                Err(err) => Err(err),
+            }
         }
         Err(err) => Err(err),
+    };
+    match &result {
+        Ok(_) => tracing::info!(
+            host = %target.host,
+            port = target.port,
+            session = %session,
+            "connected through the jump host"
+        ),
+        // The authentication chain already logged the cancel.
+        Err(TransportError::Cancelled) => {}
+        Err(err) => tracing::warn!(
+            host = %target.host,
+            port = target.port,
+            session = %session,
+            error = %err,
+            "dial through the jump host failed"
+        ),
     }
+    result
 }
 
 /// Run the target's SSH session over `stream`: full host-key verification

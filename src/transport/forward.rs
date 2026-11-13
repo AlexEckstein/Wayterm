@@ -189,9 +189,10 @@ impl ForwardEngine {
             return self.inner.emit(id, ForwardState::Stopped);
         }
         if !matches!(rule.kind, ForwardKind::Local) {
-            eprintln!(
-                "Wayterm: forward rule {id}: {:?} forwards are v2 (doc 04) — skipped",
-                rule.kind,
+            tracing::warn!(
+                rule = id,
+                kind = ?rule.kind,
+                "forward rule skipped: only local forwards are supported"
             );
             return self.inner.emit(id, ForwardState::Stopped);
         }
@@ -216,6 +217,7 @@ impl ForwardEngine {
         let tasks = lock(&self.inner.tasks).remove(&id);
         if let Some(tasks) = tasks {
             tasks.abort();
+            tracing::info!(rule = id, "forward stopped");
             if announce {
                 self.inner.emit(id, ForwardState::Stopped);
             }
@@ -246,10 +248,25 @@ async fn serve_rule(inner: Arc<EngineInner>, id: RuleId, rule: ForwardRule) {
     let listener = match TcpListener::bind((bind_addr, rule.bind_port)).await {
         Ok(listener) => listener,
         Err(err) => {
+            tracing::warn!(
+                rule = id,
+                bind_addr = %bind_addr,
+                bind_port = rule.bind_port,
+                error = %err,
+                "forward failed to bind"
+            );
             let error = format!("bind {bind_addr}:{} failed: {err}", rule.bind_port);
             return inner.emit(id, ForwardState::LastFailed { error });
         }
     };
+    tracing::info!(
+        rule = id,
+        bind_addr = %bind_addr,
+        bind_port = rule.bind_port,
+        remote_host = %rule.remote_host,
+        remote_port = rule.remote_port,
+        "forward listening"
+    );
     inner.emit(id, ForwardState::Listening);
     let active = Arc::new(AtomicU32::new(0));
     loop {
@@ -291,6 +308,13 @@ async fn handle_one(
     let mut remote = match opened {
         Ok(stream) => stream,
         Err(err) => {
+            tracing::warn!(
+                rule = id,
+                remote_host = %rule.remote_host,
+                remote_port = rule.remote_port,
+                error = %err,
+                "forward channel failed to open"
+            );
             let error = format!(
                 "channel to {}:{} failed: {err}",
                 rule.remote_host, rule.remote_port
@@ -299,9 +323,11 @@ async fn handle_one(
         }
     };
     let conns = active.fetch_add(1, Ordering::SeqCst) + 1;
+    tracing::debug!(rule = id, conns, "forward connection opened");
     inner.emit(id, ForwardState::Active { conns });
     let _ = tokio::io::copy_bidirectional(&mut socket, &mut remote).await;
     let conns = active.fetch_sub(1, Ordering::SeqCst) - 1;
+    tracing::debug!(rule = id, conns, "forward connection closed");
     inner.emit(id, ForwardState::Active { conns });
 }
 

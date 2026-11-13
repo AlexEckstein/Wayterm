@@ -278,6 +278,33 @@ async fn bind_failure_reports_last_failed() {
 }
 
 #[tokio::test]
+async fn a_bind_failure_is_logged() {
+    let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
+    let port = free_port().await;
+    let _squat = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    // The runtime is current-thread: the listener task logs on this one.
+    let (buffer, guard) = crate::logging::tests::capture(None);
+    engine.start(vec![local_rule(port, "remote.test", 80, true)]);
+    let event = next_event(&mut rx).await;
+    drop(guard);
+    assert!(
+        matches!(event.state, ForwardState::LastFailed { .. }),
+        "taken port must report LastFailed, got: {event:?}"
+    );
+
+    let output = buffer.contents();
+    let line = output
+        .lines()
+        .find(|line| line.contains("forward failed to bind"))
+        .unwrap_or_else(|| panic!("no bind failure line in:\n{output}"));
+    assert!(line.contains("WARN"), "{line}");
+    assert!(line.contains("rule=0"), "{line}");
+    assert!(line.contains(&format!("bind_port={port}")), "{line}");
+    assert!(!output.contains("forward listening"), "{output}");
+    engine.stop();
+}
+
+#[tokio::test]
 async fn empty_bind_addr_means_loopback() {
     let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
     let port = free_port().await;
