@@ -1,9 +1,9 @@
 # Diagnostics Logging
 
 What Wayterm records about its own run, where the record goes, and how to
-turn it up: a log file and stderr, fed by `tracing` events from a starter
-set of call sites. It is a diagnostics log for the person running Wayterm,
-not a session transcript: terminal contents are never part of it.
+turn it up: a log file and stderr, fed by `tracing` events from the
+modules' own call sites. It is a diagnostics log for the person running
+Wayterm, not a session transcript: terminal contents are never part of it.
 
 Code: `src/logging.rs` (the subsystem, tests in `logging/tests.rs`); the
 call sites are listed in §What is logged.
@@ -13,7 +13,8 @@ call sites are listed in §What is logged.
 Every event goes to two places, as one plain UTF-8 line each, without
 color codes:
 
-- **stderr**, as the scattered `eprintln!` notes always did;
+- **stderr**, where Wayterm's diagnostics went, as `eprintln!` lines,
+  before this log existed;
 - **the log file**, `$XDG_STATE_HOME/wayterm/logs/wayterm.log` (default
   `~/.local/state/wayterm/logs/`; an empty `XDG_STATE_HOME` counts as
   unset). The file is appended to, never truncated. Missing directories
@@ -57,19 +58,36 @@ not captured either.
 | `transport::supervisor` | a dial starting and how it ended (connected, or the connect error); a pooled connection found closed and evicted; the last consumer's release and the disconnect that follows; the supervisor going away (doc 04 §Connection supervisor) |
 | `transport::connection` | authentication succeeding, failing (with the chain's reason) or being cancelled; a rejected host key or host certificate; a disconnect |
 | `transport::reconnect` | each backoff wait and attempt of a reconnect run, and how the run ended (doc 03 §Reconnect) |
+| `transport::hostkey` | the reason a host key was rejected (doc 04 §Host key verification) |
+| `transport::credentials` | a keyring or Bitwarden lookup that failed: the provider consulted, the session's id and the failure, never the item or what a lookup returned (doc 05 §Credential sources) |
+| `transport::jump` | a dial through a jump host starting and how it ended; the fall back to `ssh -W` (doc 04 §Jump hosts) |
+| `transport::forward` | a rule's listener starting and stopping; a bind or a channel open that failed; a rule skipped for its kind (doc 04 §Port forwarding) |
 | `sftp::task`, `sftp::transfer` | an SFTP session opened or failing to open; each upload and download starting, finishing (bytes, duration), failing (error, duration) or being cancelled, with its local and remote path (doc 07 §Transfers) |
+| `terminal::backend` | Ghostty asked for and VTE built instead (doc 02 §Backend selection) |
+| `terminal::ghostty` | a program's clipboard write that was dropped, with its size and never its contents; a link refused or failing to open, without the URI (doc 02 §GhosttyBackend) |
+| `ui::main_window`, `ui::appearance`, `ui::icons`, `ui::tray` | a session that failed to load, tunnel rules or SFTP columns that failed to save; shortcuts with no action behind them (doc 11 §Handlers); no session bus, settings portal or theme directory watch to follow (doc 13 §Window theme); built-in icons or the tray pixmap that failed to load |
+| `ui::tabs` | a saved tab list that could not be read or saved, and a saved tab whose session is gone (doc 03 §Restoring tabs); reconnect or disconnect on a tab with no live transport; an accepted host key that was not saved to its session; an RDP certificate's trust that was not recorded, and an RDP window that cannot be resized (doc 08 §RDP); a notice's "don't show again" that failed to save; a tab bar without a tab strip |
+| `ui::dialogs::host_picker` | sessions that failed to list or load for New Tab |
+| `ui::panels` | the session tree or the macros failing to load; a tree change — a move, an edit, a delete — that failed; a keyring entry that was not deleted with its session (doc 05 §Saving and deleting) |
+| `ui::settings` | a settings row that failed to save, with its key; reminders that failed to clear; a hotkey that failed to reset or rebind, with its action and chord, and a captured key GDK cannot name; the first-run import check failing; a file dialog that failed |
 
 Connection events carry the host, the port and the session's id: the
 `sessions` row id its credentials are looked up under, or `_live_connect`
-without a saved session (doc 05 §Session identity). Failures are warnings or
-errors with the protocol's own message; routine steps are `info`, and
-`debug` adds pool reuse and lost dial races.
+without a saved session (doc 05 §Session identity). Forward events carry
+the rule's index in the session's list, and UI events the settings key,
+session id or hotkey action they are about. Failures are warnings or
+errors with the protocol's or the store's own message; routine steps are
+`info`, as are start-up fallbacks Wayterm carries on from (no tray, no
+settings portal); `debug` adds pool reuse, lost dial races and each
+forwarded connection.
 
 **Never logged:** passwords, passphrases, keyboard-interactive answers,
-keyring contents, private keys, host-key material, RDP stdin, or anything
-else from the credential chain (doc 05); user names; server banners;
-terminal input and output. The authentication chain's failure reasons name
-the method and never contain a credential (doc 04 §Authentication).
+keyring contents, Bitwarden item names, private keys, host-key material,
+certificate fingerprints, RDP stdin, or anything else from the credential
+chain (doc 05); user names; server banners; terminal input and output,
+which covers tab titles, link URIs and a program's clipboard writes. The
+authentication chain's failure reasons name the method and never contain a
+credential (doc 04 §Authentication).
 
 ## Lifecycle
 
@@ -130,11 +148,18 @@ display and no process-global state except where noted:
 
 - No rotation, size cap or clean-up: the file grows until the user
   removes it. No log shipping, no journald or syslog target.
-- A starter set of call sites (§What is logged). The other diagnostics
-  still go to stderr only, as `eprintln!` lines: host-key rejections'
-  reasons, the keyring and Bitwarden lookups, port forwards, jump dials,
-  the local file task's copies, and most of the UI.
-- RDP and VNC are not instrumented.
+- Six `eprintln!` calls remain in `src/`, none of them a diagnostic that
+  bypasses the log. Four are in `src/logging.rs` and run before the
+  subscriber exists: an invalid `WAYTERM_LOG` value, a logger that cannot
+  be installed, no state directory, and a log file that cannot be opened.
+  Two are test code: the skip note of a test that needs `ssh-keygen`
+  (`transport/connection.rs`) and a GTK critical echoed by a session tree
+  widget test (`ui/panels/session_tree.rs`).
+- The events are those of §What is logged, which follow what used to be
+  stderr notes plus the connection, store and SFTP paths. The RDP and VNC
+  engines (`src/rdp`, `src/vnc`) and the local file task's copies (doc 07
+  §Local tabs) log nothing; of RDP only the tab's trust-record and window
+  failures are logged.
 - Reconnect events carry the attempt number but not the host: the
   reconnect driver does not know what it redials (doc 03 §Reconnect). The
   supervisor's line for the dial that follows names it.
