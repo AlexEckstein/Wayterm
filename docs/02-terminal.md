@@ -86,7 +86,7 @@ installed preference.
   over the row for that session's tabs; an empty or unknown value follows
   the row. The session dialog's Terminal group edits it (doc 09 §Session
   dialog).
-- Ghostty falls back to VTE, with a note on stderr, when the feature is off
+- Ghostty falls back to VTE, logging a warning (doc 16 §What is logged), when the feature is off
   or libghostty-vt cannot allocate a terminal.
 
 A further backend would be another Cargo feature and another match arm in
