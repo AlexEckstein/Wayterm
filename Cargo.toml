@@ -50,9 +50,10 @@ serde_yaml_ng = "0.10"
 # Secret Service / Flatpak portal keyring (doc 05).
 oo7 = "0.7"
 pollster = "1.0"
-# Diagnostics logging (doc 16).
+# Diagnostics logging (doc 16). No `ansi` or `tracing-log`: lines carry no
+# color codes and the `log` bridge is not installed.
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter", "smallvec"] }
 tracing-appender = "0.2"
 
 [build-dependencies]
