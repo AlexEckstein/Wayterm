@@ -266,8 +266,8 @@ async fn remote_and_dynamic_kinds_are_skipped() {
 #[tokio::test]
 async fn bind_failure_reports_last_failed() {
     let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
-    let port = free_port().await;
-    let _squat = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    let squat = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = squat.local_addr().unwrap().port();
     engine.start(vec![local_rule(port, "remote.test", 80, true)]);
     let event = next_event(&mut rx).await;
     assert!(
@@ -280,8 +280,8 @@ async fn bind_failure_reports_last_failed() {
 #[tokio::test]
 async fn a_bind_failure_is_logged() {
     let (engine, mut rx) = engine_with(echo_opener(Arc::new(AtomicU32::new(0))));
-    let port = free_port().await;
-    let _squat = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    let squat = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = squat.local_addr().unwrap().port();
     // The runtime is current-thread: the listener task logs on this one.
     let (buffer, guard) = crate::logging::tests::capture(None);
     engine.start(vec![local_rule(port, "remote.test", 80, true)]);
