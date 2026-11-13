@@ -135,8 +135,8 @@ pub fn ghostty_version() -> Option<String> {
     None
 }
 
-/// The stderr note when Ghostty was asked for and VTE is built instead.
-const GHOSTTY_UNAVAILABLE: &str = "Wayterm: libghostty-vt terminal unavailable; using VTE";
+/// The logged note when Ghostty was asked for and VTE is built instead.
+const GHOSTTY_UNAVAILABLE: &str = "libghostty-vt terminal unavailable; using VTE";
 
 /// A terminal backend [`create_terminal_for`] can build.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -214,7 +214,7 @@ pub fn create_terminal() -> TerminalHandle {
 pub fn create_terminal_for(kind: BackendKind) -> TerminalHandle {
     let (tx, events) = mpsc::channel(256);
     if kind.effective() != kind {
-        eprintln!("{GHOSTTY_UNAVAILABLE}");
+        tracing::warn!("{GHOSTTY_UNAVAILABLE}");
     }
     #[cfg(feature = "backend-ghostty")]
     if kind.effective() == BackendKind::Ghostty {
@@ -228,7 +228,7 @@ pub fn create_terminal_for(kind: BackendKind) -> TerminalHandle {
                     events,
                 };
             }
-            None => eprintln!("{GHOSTTY_UNAVAILABLE}"),
+            None => tracing::warn!("{GHOSTTY_UNAVAILABLE}"),
         }
     }
     // VteBackend is !Send by design; Arc is still the right owner for the

@@ -43,9 +43,10 @@ pub(super) const CLIPBOARD_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// with a note that leaves its contents out.
 pub(super) fn clipboard_effect(destination: ClipboardDestination, bytes: &[u8]) -> Option<Effect> {
     if bytes.len() > CLIPBOARD_MAX_BYTES {
-        eprintln!(
-            "Wayterm: ignored a clipboard write of {} bytes, over the {CLIPBOARD_MAX_BYTES} limit",
-            bytes.len()
+        tracing::warn!(
+            bytes = bytes.len(),
+            limit = CLIPBOARD_MAX_BYTES,
+            "ignored a clipboard write over the size limit"
         );
         return None;
     }
@@ -53,7 +54,7 @@ pub(super) fn clipboard_effect(destination: ClipboardDestination, bytes: &[u8]) 
         .ok()
         .filter(|t| !t.contains('\0'));
     let Some(text) = text else {
-        eprintln!("Wayterm: ignored a clipboard write that is not text");
+        tracing::warn!("ignored a clipboard write that is not text");
         return None;
     };
     Some(Effect::ClipboardWrite {
