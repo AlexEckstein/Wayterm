@@ -64,8 +64,10 @@ not captured either.
 | `transport::forward` | a rule's listener starting and stopping; a bind or a channel open that failed; a rule skipped for its kind (doc 04 §Port forwarding) |
 | `sftp::task`, `sftp::transfer` | an SFTP session opened or failing to open; each upload and download starting, finishing (bytes, duration), failing (error, duration) or being cancelled, with its local and remote path (doc 07 §Transfers) |
 | `terminal::backend` | Ghostty asked for and VTE built instead (doc 02 §Backend selection) |
-| `terminal::ghostty` | a program's clipboard write that was dropped, with its size and never its contents; a link refused or failing to open, without the URI (doc 02 §GhosttyBackend) |
-| `ui::main_window`, `ui::appearance`, `ui::icons`, `ui::tray` | a session that failed to load, tunnel rules or SFTP columns that failed to save; shortcuts with no action behind them (doc 11 §Handlers); no session bus, settings portal or theme directory watch to follow (doc 13 §Window theme); built-in icons or the tray pixmap that failed to load |
+| `terminal::options` | a color row that is not `#rrggbb`, with its key and value; a blank row is unset, not logged (doc 02 §View options) |
+| `terminal::ghostty` | a program's clipboard write that was dropped, with its size and never its contents; a link refused or failing to open, without the URI; a color scheme the engine refused (doc 02 §GhosttyBackend) |
+| `ui::appearance` | a scheme row (`default_color_scheme`, `vte.color_scheme`, `ghostty.color_scheme`) naming no scheme, with its key and value, and a session's override naming none, with the session's id and value, when its terminal is set up (doc 02 §Color schemes); the desktop's light/dark preference changing; no session bus, settings portal or theme directory watch to follow, and a GTK that cannot take the window's theme variant (doc 13 §Window theme) |
+| `ui::main_window`, `ui::icons`, `ui::tray` | a session that failed to load, tunnel rules or SFTP columns that failed to save; shortcuts with no action behind them (doc 11 §Handlers); built-in icons or the tray pixmap that failed to load |
 | `ui::tabs` | a saved tab list that could not be read or saved, and a saved tab whose session is gone (doc 03 §Restoring tabs); reconnect or disconnect on a tab with no live transport; an accepted host key that was not saved to its session; an RDP certificate's trust that was not recorded, and an RDP window that cannot be resized (doc 08 §RDP); a notice's "don't show again" that failed to save; a tab bar without a tab strip |
 | `ui::dialogs::host_picker` | sessions that failed to list or load for New Tab |
 | `ui::panels` | the session tree or the macros failing to load; a tree change — a move, an edit, a delete — that failed; a keyring entry that was not deleted with its session (doc 05 §Saving and deleting) |
@@ -78,8 +80,10 @@ the rule's index in the session's list, and UI events the settings key,
 session id or hotkey action they are about. Failures are warnings or
 errors with the protocol's or the store's own message; routine steps are
 `info`, as are start-up fallbacks Wayterm carries on from (no tray, no
-settings portal); `debug` adds pool reuse, lost dial races and each
-forwarded connection.
+settings portal); `debug` adds pool reuse, lost dial races, each
+forwarded connection, the scheme each terminal is given (with the backend,
+the session's id and the system theme), each re-application of the
+schemes, and each reload of the user stylesheet.
 
 **Never logged:** passwords, passphrases, keyboard-interactive answers,
 keyring contents, Bitwarden item names, private keys, host-key material,
@@ -156,10 +160,14 @@ display and no process-global state except where noted:
   (`transport/connection.rs`) and a GTK critical echoed by a session tree
   widget test (`ui/panels/session_tree.rs`).
 - The events are those of §What is logged, which follow what used to be
-  stderr notes plus the connection, store and SFTP paths. The RDP and VNC
-  engines (`src/rdp`, `src/vnc`) and the local file task's copies (doc 07
-  §Local tabs) log nothing; of RDP only the tab's trust-record and window
-  failures are logged.
+  stderr notes plus the connection, store, SFTP and theme paths. The RDP
+  and VNC engines (`src/rdp`, `src/vnc`) and the local file task's copies
+  (doc 07 §Local tabs) log nothing; of RDP only the tab's trust-record and
+  window failures are logged.
+- A scheme or color row that cannot be used is warned about each time the
+  settings are applied, which is after any setting changes, not once per
+  run. Other unusable rows, such as a cursor shape or a line height, keep
+  their default without a log line (doc 02 §View options).
 - Reconnect events carry the attempt number but not the host: the
   reconnect driver does not know what it redials (doc 03 §Reconnect). The
   supervisor's line for the dial that follows names it.
