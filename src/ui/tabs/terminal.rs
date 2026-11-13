@@ -118,7 +118,7 @@ pub(super) async fn finish_connect(
     page: &gtk4::Widget,
     conn: Option<Arc<SshConnection>>,
 ) {
-    let gen = current_gen(page);
+    let generation = current_gen(page);
     let kind = BackendKind::for_session(session.preferred_backend.as_deref(), backend_preference());
     let handle = create_terminal_for(kind);
     let backend = handle.backend.clone();
@@ -140,7 +140,7 @@ pub(super) async fn finish_connect(
         None => (24, 80),
     };
     // The wait yields: a cancel, a retry or a close may have overtaken us.
-    if current_gen(page) != gen || notebook.page_num(page).is_none() {
+    if current_gen(page) != generation || notebook.page_num(page).is_none() {
         return;
     }
 
@@ -169,7 +169,7 @@ pub(super) async fn finish_connect(
     let tab_id = state(page).tab_id.get();
     let cancel = resilience::register_connected_tab(tab_id, redial_fn(notebook, page, tab_id));
     let events = page_events(notebook, page, session, host, port);
-    spawn_state_forward(notebook, page, gen, cancel, state_rx, events);
+    spawn_state_forward(notebook, page, generation, cancel, state_rx, events);
     let app = window_of(page).and_then(|window| window.application());
     spawn_notification_drain(notebook, page, session, notify_rx, move |alert| {
         if let Some(app) = &app {
@@ -274,7 +274,7 @@ pub(super) fn page_events(
 pub(super) fn spawn_state_forward(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
-    gen: u64,
+    generation: u64,
     cancel: CancellationToken,
     mut rx: UnboundedReceiver<TransportEvent>,
     events: UnboundedSender<TransportEvent>,
@@ -285,7 +285,7 @@ pub(super) fn spawn_state_forward(
             let event = tokio::select! {
                 biased;
                 () = cancel.cancelled() => {
-                    if current_gen(&page) == gen {
+                    if current_gen(&page) == generation {
                         bump_gen(&page);
                         release_connection(&notebook, &page);
                         publish_page_state(&page, TransportState::Disconnected);
@@ -295,7 +295,7 @@ pub(super) fn spawn_state_forward(
                 event = rx.recv() => event,
             };
             match event {
-                Some(event) if current_gen(&page) == gen => {
+                Some(event) if current_gen(&page) == generation => {
                     if events.send(event).is_err() {
                         return;
                     }
@@ -452,7 +452,7 @@ fn redial(notebook: &gtk4::Notebook, page: &gtk4::Widget, reply: RedialReply) {
     // `start_connect` takes the next generation first thing.
     state
         .redial
-        .replace(Some((state.gen.get().wrapping_add(1), reply)));
+        .replace(Some((state.generation.get().wrapping_add(1), reply)));
     start_connect(notebook, page, &session);
     state.focus_on_connect.set(false);
 }

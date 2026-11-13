@@ -98,12 +98,12 @@ pub(super) fn install_sidebar(page: &gtk4::Widget, local: bool) {
     set_sidebar(page, sidebar);
 }
 
-/// Dial `session` for attempt `gen` and finish connecting the page.
+/// Dial `session` for attempt `generation` and finish connecting the page.
 pub(super) fn start(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
     session: &Rc<SessionConfig>,
-    gen: u64,
+    generation: u64,
 ) {
     let Some(host) = filled(&session.host).map(str::to_string) else {
         return show_error_view(notebook, page, session, NO_HOST);
@@ -178,7 +178,7 @@ pub(super) fn start(
         save_accepted_keys(page_store(&page).as_deref(), &trusted);
         // Superseded or cancelled: a late connection is just dropped, which
         // releases it to the supervisor.
-        if current_gen(&page) != gen {
+        if current_gen(&page) != generation {
             return;
         }
         let error = match result {
@@ -258,7 +258,7 @@ fn uses_jump_dial(session: &SessionConfig) -> bool {
 
 /// The jump host's config at dial time, through the page's store. A
 /// deleted jump host (or a page with no store) is a connect error shown on
-/// the page — the same `gen` guard and redial verdicts apply, since the
+/// the page — the same `generation` guard and redial verdicts apply, since the
 /// caller returns before spawning the dial.
 fn resolve_jump_config(
     notebook: &gtk4::Notebook,

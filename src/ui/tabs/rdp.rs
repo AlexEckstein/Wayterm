@@ -64,7 +64,7 @@ const ENGINE_KEY: &str = "wayterm-rdp-engine";
 /// Page data key for our own attempt generation (the tab-level generation
 /// cannot be bumped from here, and the overlay Cancel button must still
 /// invalidate a dial in flight).
-const RDP_GEN_KEY: &str = "wayterm-rdp-gen";
+const RDP_GEN_KEY: &str = "wayterm-rdp-generation";
 /// How long the acquisition probe may run before it is terminated.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// XID poll interval while waiting for the area to map.
@@ -337,13 +337,13 @@ struct Embed {
     baseline: Vec<u32>,
 }
 
-/// Start (or retry) the RDP connect for `page`; `gen` is the attempt
+/// Start (or retry) the RDP connect for `page`; `generation` is the attempt
 /// generation `start_connect` just bumped.
 pub(crate) fn start(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
     session: &Rc<SessionConfig>,
-    gen: u64,
+    generation: u64,
 ) {
     retire_slot(page);
     let our_gen = bump_rdp_gen(page);
@@ -363,7 +363,7 @@ pub(crate) fn start(
         session: session.clone(),
         host: host.into(),
         port: session.port.unwrap_or(DEFAULT_PORT),
-        tab_gen: gen,
+        tab_gen: generation,
         our_gen,
     };
     // The FreeRDP version notice lives in the connecting overlay and

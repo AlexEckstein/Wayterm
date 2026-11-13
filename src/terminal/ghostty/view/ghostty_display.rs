@@ -1659,7 +1659,7 @@ fn notifications(backend: &GhosttyBackend, rx: &mut mpsc::Receiver<TerminalEvent
 
 /// Paint the view now; the result tells whether any pixel in a box
 /// differs from the background.
-fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool {
+fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool + use<> {
     let (width, height) = (view.width() as usize, view.height() as usize);
     let at = pixels(view);
     let background = at(width - 1, height - 1);
@@ -1671,7 +1671,7 @@ fn render(view: &GhosttyView) -> impl Fn(Range<usize>, Range<usize>) -> bool {
 
 /// Paint the view now; the result reads one pixel, as GDK stores it:
 /// blue, green, red, alpha.
-fn pixels(view: &GhosttyView) -> impl Fn(usize, usize) -> [u8; 4] {
+fn pixels(view: &GhosttyView) -> impl Fn(usize, usize) -> [u8; 4] + use<> {
     let (width, height) = (view.width(), view.height());
     let snapshot = gtk4::Snapshot::new();
     view.paint(&snapshot);

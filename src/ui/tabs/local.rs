@@ -11,16 +11,16 @@ use super::terminal::finish_connect;
 use super::{current_gen, ssh};
 use crate::store::model::SessionConfig;
 
-/// Connect `session` for attempt `gen`: straight to the terminal.
+/// Connect `session` for attempt `generation`: straight to the terminal.
 pub(super) fn start(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
     session: &Rc<SessionConfig>,
-    gen: u64,
+    generation: u64,
 ) {
     let (notebook, page, session) = (notebook.clone(), page.clone(), session.clone());
     glib::MainContext::default().spawn_local(async move {
-        if current_gen(&page) == gen {
+        if current_gen(&page) == generation {
             finish_connect(&notebook, &session, &page, None).await;
         }
     });

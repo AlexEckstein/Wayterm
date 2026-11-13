@@ -129,7 +129,7 @@ struct PageState {
     /// settings ([`SessionTab::open`]).
     store: OnceCell<Rc<SessionStore>>,
     /// Bumped by every attempt, so a superseded one drops its result.
-    gen: Cell<u64>,
+    generation: Cell<u64>,
     /// A driver-driven redial awaiting the verdict of the attempt tagged.
     redial: RefCell<Option<(u64, RedialReply)>>,
     /// The next connect was asked for by the user, so it takes focus.
@@ -303,7 +303,7 @@ fn tab_id_of(page: &gtk4::Widget) -> Option<i64> {
 
 /// Start (or retry) connecting `page`, invalidating any attempt in flight.
 fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<SessionConfig>) {
-    let gen = bump_gen(page);
+    let generation = bump_gen(page);
     ssh::stop_forward_engine(page);
     close_terminal(page);
     // Every caller but the reconnect driver is the user asking for this
@@ -311,13 +311,13 @@ fn start_connect(notebook: &gtk4::Notebook, page: &gtk4::Widget, session: &Rc<Se
     state(page).focus_on_connect.set(true);
 
     match TabType::of(&session.session_type) {
-        TabType::Ssh => ssh::start(notebook, page, session, gen),
-        TabType::Local => local::start(notebook, page, session, gen),
+        TabType::Ssh => ssh::start(notebook, page, session, generation),
+        TabType::Local => local::start(notebook, page, session, generation),
         // VNC has no byte stream: its own dial (with the password prompt)
         // and engine, no supervisor or terminal (doc 08 §VNC).
-        TabType::Vnc => vnc::start(notebook, page, session, gen),
+        TabType::Vnc => vnc::start(notebook, page, session, generation),
         // RDP likewise owns its subprocess dial (doc 08 §RDP).
-        TabType::Rdp => rdp::start(notebook, page, session, gen),
+        TabType::Rdp => rdp::start(notebook, page, session, generation),
     }
 }
 
@@ -401,20 +401,20 @@ fn publish_page_state(page: &gtk4::Widget, state: TransportState) {
 /// ends the driver's run.
 fn bump_gen(page: &gtk4::Widget) -> u64 {
     let state = state(page);
-    let gen = state.gen.get().wrapping_add(1);
-    state.gen.set(gen);
-    let stale = state.redial.borrow_mut().take_if(|(g, _)| *g != gen);
+    let generation = state.generation.get().wrapping_add(1);
+    state.generation.set(generation);
+    let stale = state.redial.borrow_mut().take_if(|(g, _)| *g != generation);
     if let Some((_, reply)) = stale {
         let _ = reply.send(Err(TransportError::Cancelled));
     }
-    gen
+    generation
 }
 
 /// Answer a redial waiting on the current attempt, if any.
 fn settle_redial(page: &gtk4::Widget, result: Result<(), TransportError>) {
     let state = state(page);
-    let gen = state.gen.get();
-    let pending = state.redial.borrow_mut().take_if(|(g, _)| *g == gen);
+    let generation = state.generation.get();
+    let pending = state.redial.borrow_mut().take_if(|(g, _)| *g == generation);
     if let Some((_, reply)) = pending {
         let _ = reply.send(result);
     }
@@ -422,7 +422,7 @@ fn settle_redial(page: &gtk4::Widget, result: Result<(), TransportError>) {
 
 // used by ui::tabs::vnc and ui::tabs::rdp
 pub(crate) fn current_gen(page: &gtk4::Widget) -> u64 {
-    state(page).gen.get()
+    state(page).generation.get()
 }
 
 /// The page for `session`: a box holding the session's area, and its

@@ -443,13 +443,13 @@ fn dial(creds: &CredentialManager, session_id: &str, host: &str, port: u16) -> D
     }
 }
 
-/// Start (or retry) the VNC connect for `page`; `gen` is the attempt
+/// Start (or retry) the VNC connect for `page`; `generation` is the attempt
 /// generation `start_connect` just bumped.
 pub(crate) fn start(
     notebook: &gtk4::Notebook,
     page: &gtk4::Widget,
     session: &Rc<SessionConfig>,
-    gen: u64,
+    generation: u64,
 ) {
     retire_engine(page);
     let Some(host) = filled(&session.host) else {
@@ -467,7 +467,7 @@ pub(crate) fn start(
     let (notebook, page, session) = (notebook.clone(), page.clone(), session.clone());
     glib::MainContext::default().spawn_local(async move {
         let result = task.await;
-        if current_gen(&page) != gen {
+        if current_gen(&page) != generation {
             // Superseded: a late engine must not leak its socket.
             if let Ok(Dial::Ready(engine)) = result {
                 engine.cancel();
@@ -475,7 +475,9 @@ pub(crate) fn start(
             return;
         }
         let error = match result {
-            Ok(Dial::Ready(engine)) => return attach(&notebook, &page, &session, engine, gen),
+            Ok(Dial::Ready(engine)) => {
+                return attach(&notebook, &page, &session, engine, generation)
+            }
             Ok(Dial::Cancelled) => return show_disconnected(&page, &host, port),
             Ok(Dial::Failed(error)) => error,
             Err(join_err) => format!("connect task failed: {join_err}"),
@@ -490,7 +492,7 @@ fn attach(
     page: &gtk4::Widget,
     session: &Rc<SessionConfig>,
     mut engine: VncEngine,
-    gen: u64,
+    generation: u64,
 ) {
     let host = session.host.clone().unwrap_or_default();
     let port = session.port.unwrap_or(DEFAULT_PORT);
@@ -522,7 +524,7 @@ fn attach(
             let Some(page) = weak_page.upgrade() else {
                 return;
             };
-            if current_gen(&page) != gen {
+            if current_gen(&page) != generation {
                 return;
             }
             match &event {
