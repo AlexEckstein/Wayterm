@@ -43,7 +43,7 @@ serialport = { version = "4.10.1", default-features = false }
 # Held at 0.6.0: 0.6.1 adds Apple Remote Desktop auth and
 # ExtendedDesktopSize handling, neither used here (doc 08), at the cost of
 # 11 more packages (the previous RustCrypto generation: aes 0.8, md-5 0.10).
-vnc-rs = "=0.6.0"
+vnc-rs = "=0.6.1"
 x11rb = "0.14"
 gdk4-x11 = "0.11"
 serde_yaml_ng = "0.10"
