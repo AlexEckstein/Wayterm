@@ -12,6 +12,12 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Held at 0.6.0 (see the Cargo.toml comment and doc 08): 0.6.1 adds
+      # only features Wayterm does not use and pulls in the previous
+      # RustCrypto generation. Later releases are still proposed.
+      - dependency-name: "vnc-rs"
+        versions: ["0.6.1"]
     commit-message:
       prefix: "chore"
 
