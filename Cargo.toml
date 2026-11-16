@@ -62,9 +62,10 @@ tracing-appender = "0.2"
 cc = { version = "1", optional = true }
 
 [features]
-# Second terminal backend over libghostty-vt (doc 02).
-# Off by default; needs the pinned library built locally
-# (doc 02 §libghostty-vt pin).
+default = ["backend-ghostty"]
+# Second terminal backend over libghostty-vt (doc 02). build.rs fetches
+# and builds the pinned library (doc 02 §libghostty-vt pin);
+# `--no-default-features` builds without the backend.
 backend-ghostty = ["dep:cc"]
 
 # VTE vs libghostty-vt parse throughput (doc 02 §Benchmark). A plain
