@@ -23,7 +23,7 @@ live; there is no Apply button.
 | Reconnect automatically | `reconnect_on_drop` | at the next drop, open tabs included (doc 03 §Reconnect) |
 | Open SFTP on connect | `sftp_on_connect` | to SSH tabs connected afterwards (doc 07 §Connection model); local tabs never open it (doc 07 §Local tabs) |
 | Minimize to tray on close | `minimize_to_tray` | at each window close (doc 03 §Tray) |
-| Ghostty terminal | `default_backend` (`ghostty`/`vte`) | to tabs opened afterwards, for sessions without their own; disabled with a "rebuild with the backend-ghostty feature to enable" tooltip in a default build (doc 02 §Backend selection) |
+| Ghostty terminal | `default_backend` (`ghostty`/`vte`) | to tabs opened afterwards, for sessions without their own; disabled with a "rebuild with the backend-ghostty feature to enable" tooltip in a build without the feature (doc 02 §Backend selection) |
 | Clear all reminders | writes `1` to `duplicate_tmux_notice` and `confirm_close_notice` | every "Do not show me again" notice shows again; greyed out while none is silenced |
 
 Each switch writes `1`/`0`. The stored values are pushed to the modules
@@ -106,7 +106,7 @@ app icon) in the theme's text color, with the name under it, then:
 |---|---|
 | Wayterm | the crate version |
 | Commit | the short commit hash `build.rs` recorded (doc 14 §Build); left out of a build made outside a git checkout |
-| libghostty-vt | the linked library's version (doc 02 §libghostty-vt pin), or "Not included in this build" without the `backend-ghostty` feature |
+| libghostty-vt | the linked library's version (doc 02 §libghostty-vt pin), or "Not included in this build" in a build without the `backend-ghostty` feature (doc 14 §Cargo features) |
 | VTE | the loaded library's version |
 | GTK | the loaded library's version |
 

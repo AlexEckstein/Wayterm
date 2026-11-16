@@ -11,12 +11,17 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 scripts/run-sshd-tests.sh          # sshd suites against a throwaway local sshd (needs sudo)
 scripts/auth-matrix-sshd.sh        # the auth-method matrix, one sshd per mode
 # widget tests; force X11 so a Wayland session cannot capture them
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored --skip ghostty_display
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored ghostty_display
 ```
 
 Suites that need a server or hardware skip themselves (a `println!` and an
 early return) when their environment is not set, so `cargo test` is green
 on any machine.
+
+These build with the default features, the Ghostty backend among them
+(doc 14 §Cargo features). `--no-default-features` on any of them runs the
+build without it, which CI's `minimal` job keeps passing.
 
 ## CI
 
@@ -24,19 +29,21 @@ on any machine.
 
 - **docs:** every relative Markdown link resolves.
 - **rust:** `cargo fmt --check`, `cargo clippy --all-targets -D warnings`,
-  `cargo test`, the VTE search test under xvfb, then a real sshd for
+  `cargo test`, the VTE search and Ghostty widget tests under xvfb, then
+  a real sshd for
   `tests/transport_sshd.rs`: the runner's own sshd on port 22 with a
   throwaway `wayterm-test` user (random password and a fresh ed25519
   key), exported as `SSH_TEST_*`. Debug info is line-tables-only so the
-  GTK test binaries fit the runner's disk.
-- **ghostty:** clippy, `cargo test` and the Ghostty widget test under
-  xvfb, all with `--features backend-ghostty` (§Ghostty backend). It
-  builds libghostty-vt at the pin as doc 02 §libghostty-vt pin does,
-  with `-Dcpu=baseline` because runners differ in CPU, and caches it per
-  pin and target CPU, so Zig and upstream's dependencies are downloaded
-  only after a bump. It fails first if its source checksum differs from
-  `build.rs` or doc 02, and a failed run ends by printing the runner's
-  CPU model and flags.
+  GTK test binaries fit the runner's disk. The build has the Ghostty
+  backend (§Ghostty backend): `build.rs` builds libghostty-vt as on any
+  machine (doc 02 §libghostty-vt pin), and the job caches that
+  directory under a key hashed from `build.rs`, so Zig and upstream's
+  tarballs are downloaded only after a bump or another change to the
+  script. The job fails first if a checksum in `build.rs` is missing
+  from doc 02, and a failed run ends by printing the runner's CPU model
+  and flags.
+- **minimal:** clippy and `cargo test` with `--no-default-features`, the
+  build without the Ghostty backend.
 - **audit:** a weekly `cargo audit` sweep.
 - **dependabot:** opens weekly update PRs for `cargo` (minor/patch
   grouped into one PR, majors separate) and for the `github-actions`
@@ -105,9 +112,10 @@ Highlights:
 - **RDP:** the argv builder (order, toggles, never `/cert:ignore` or
   `/p:`, no password), the certificate decisions and fingerprint parsing,
   the version gate (`src/rdp/*/tests.rs`, `tests/rdp_tab_flow.rs`).
-- **Ghostty:** with `--features backend-ghostty`, the engine suite
+- **Ghostty:** the engine suite
   (`src/terminal/ghostty/engine/tests/`) drives the FFI end to end and
-  checks the C struct layouts.
+  checks the C struct layouts; a `--no-default-features` run has none of
+  it.
 
 ### Macros
 
@@ -140,8 +148,11 @@ has a window action.
 
 Other ignored display tests: VTE scrollback extraction
 (`tests/terminal_polish.rs`), VTE search (`tests/vte_search.rs`) and the
-Ghostty widget
-(`--features backend-ghostty -- --ignored ghostty_display`).
+Ghostty widget (`-- --ignored ghostty_display`). The Ghostty widget test
+is in the library beside `ui::gtk_tests::widgets` and initializes GTK on
+its own thread, so the two cannot share a run: a plain `-- --ignored`
+fails one of them, and each runs with the other left out (§Running the
+tests).
 
 ## sshd suites
 
@@ -213,14 +224,12 @@ a two-port null-modem loopback, otherwise the device needs a loopback plug.
 
 ## Ghostty backend
 
-With libghostty-vt installed (doc 02 §libghostty-vt pin):
+The backend is in the default build, so the commands under §Running
+the tests cover its clippy, its unit tests and its display test. The
+benchmark is the rest:
 
 ```sh
-cargo clippy --all-targets --features backend-ghostty -- -D warnings
-cargo test --features backend-ghostty
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a \
-  cargo test --features backend-ghostty -- --ignored ghostty_display
-cargo bench --features backend-ghostty      # doc 02 §Benchmark
+cargo bench                                 # doc 02 §Benchmark
 ```
 
 CI runs all but the benchmark (§CI).
