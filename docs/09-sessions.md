@@ -37,6 +37,7 @@ and runs on every open.
 | 4 | drop the retired `sessions.notes` column where present |
 | 5 | `macros (id, name, steps, created_at, updated_at)` (doc 12 §Storage) |
 | 6 | `sessions.host_keys`, added where missing |
+| 7 | delete the `is_default = 1` hotkey rows earlier seeds inserted (doc 11 §Persistence) |
 
 ## Schema
 
@@ -309,5 +310,3 @@ and a reset to the default.
   `ssh_options`, `host_key_policy`, `host_keys`, `vnc_options` or
   `vnc_color_depth`; imports and JSON restores can set them (`host_keys`
   also grows at the changed-key prompt, doc 04).
-- `hotkeys` has no `UNIQUE (action, context)`, which is why the seed runs
-  only once.

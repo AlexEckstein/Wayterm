@@ -254,8 +254,7 @@ impl SessionStore {
         Ok(())
     }
 
-    /// User-customized hotkey rows (`is_default = 0`), oldest first. Seeded
-    /// `is_default = 1` rows never load over the compiled-in defaults
+    /// User-customized hotkey rows (`is_default = 0`), oldest first
     /// (doc 11 §Persistence).
     pub fn load_custom_hotkeys(&self) -> rusqlite::Result<Vec<CustomHotkeyRow>> {
         let mut stmt = self.conn.prepare(
@@ -401,18 +400,6 @@ impl SessionStore {
     }
 }
 
-#[cfg(test)]
-impl SessionStore {
-    /// The seeded `is_default = 1` hotkey rows as `(action, key, context)`.
-    pub(crate) fn seeded_hotkeys(&self) -> rusqlite::Result<Vec<(String, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT action, key_sequence, context FROM hotkeys WHERE is_default = 1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-        rows.collect()
-    }
-}
-
 /// Set the database file to mode 0600, creating it empty if it is missing:
 /// SQLite would create it by the umask, and gives its journal files the
 /// database's mode. Best effort: a path that cannot be opened is
@@ -462,9 +449,8 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     migrate_004(conn)?;
     conn.execute_batch(MIGRATION_005)?;
     migrate_006(conn)?;
-    // `hotkeys` has no UNIQUE constraint, so re-running the seed would
-    // duplicate rows: seed exactly once, atomically, keyed on an empty
-    // `settings` table.
+    conn.execute_batch(MIGRATION_007)?;
+    // Seed exactly once, atomically, keyed on an empty `settings` table.
     let already_seeded: bool =
         conn.query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |row| {
             row.get(0)
@@ -475,7 +461,7 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.commit()?;
     }
     tracing::info!(
-        steps = 6,
+        steps = 7,
         seeded = !already_seeded,
         elapsed_ms = elapsed_ms(started),
         "schema steps complete"
@@ -754,43 +740,12 @@ fn migrate_006(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// First-run seed (doc 13 §Settings rows). The hotkey rows are
-/// informational (`is_default = 1` rows never load); doc 11's table in
-/// `hotkeys::defaults` is the source of truth.
-const SEED_DEFAULTS: &str = r#"
--- Default hotkeys — MUST stay in sync with doc 11's default-actions table.
--- (These rows are the seed data for is_default=1; user rebinding writes
--- is_default=0 rows which override at load time.)
-INSERT INTO hotkeys (action, key_sequence, context, is_default) VALUES
-('new_tab',           'Ctrl+Shift+T',    'global',       1),
-('close_tab',         'Ctrl+Shift+W',    'global',       1),
-('next_tab',          'Ctrl+Tab',        'global',       1),
-('prev_tab',          'Ctrl+Shift+Tab',  'global',       1),
-('toggle_sftp',       'Ctrl+Shift+B',    'global',       1),
-('toggle_session_tree','Ctrl+Shift+S',   'global',       1),
-('toggle_fullscreen', 'F11',             'global',       1),
-('reconnect',         'Ctrl+Shift+R',    'global',       1),
-('disconnect',        'Ctrl+Shift+X',    'global',       1),
-('new_session',       'Ctrl+N',          'global',       1),
-('rename_tab',        'Ctrl+Shift+Enter','global',       1),
-('split_horizontal',  'Ctrl+Shift+D',    'terminal',     1),
-('split_vertical',    'Ctrl+Shift+E',    'terminal',     1),
-('close_split',       'Ctrl+Shift+Q',    'terminal',     1),
-('search',            'Ctrl+Shift+F',    'terminal',     1),
-('search_scrollback', 'Ctrl+Shift+K',    'terminal',     1),
-('copy',              'Ctrl+Shift+C',    'terminal',     1),
-('paste',             'Ctrl+Shift+V',    'terminal',     1),
-('select_all',        'Ctrl+Shift+A',    'terminal',     1),
-('clear',             'Ctrl+Shift+L',    'terminal',     1),
-('edit_session',      'Ctrl+E',          'session_tree', 1),
-('duplicate_session', 'Ctrl+D',         'session_tree', 1),
-('delete_session',    'Delete',          'session_tree', 1),
-('connect_session',   'Enter',          'session_tree', 1),
-('sftp_upload',       'Ctrl+U',          'sftp',         1),
-('sftp_download',     'Ctrl+D',         'sftp',         1),
-('sftp_rename',       'F2',              'sftp',         1),
-('sftp_delete',       'Delete',          'sftp',         1);
+/// Schema v7 — delete the hotkey rows earlier seeds inserted with
+/// `is_default = 1`: nothing loads them (doc 11 §Persistence).
+const MIGRATION_007: &str = "DELETE FROM hotkeys WHERE is_default = 1;";
 
+/// First-run seed (doc 13 §Settings rows).
+const SEED_DEFAULTS: &str = r#"
 -- Default settings
 INSERT INTO settings (key, value) VALUES
 ('default_backend',     'vte'),

@@ -224,11 +224,9 @@ Saving writes one `is_default = 0` row per rebound or disabled action
 (replacing any earlier row inside a `BEGIN IMMEDIATE` transaction) and
 deletes the row of every action back at its default.
 
-The seed (doc 13 §Settings rows) also inserts 28 `is_default = 1` rows.
-They are informational: they are never loaded, and the compiled-in table
-is the source of truth. They differ from it — the seed spells the Enter
-key `Enter`, lacks `goto_tab_1` … `goto_tab_9`, and holds split actions and
-`new_session` on `Ctrl+N` — and a test pins exactly those differences.
+The compiled-in table is the only source of defaults: the store holds no
+row for an action at its default. Earlier seeds inserted 28 `is_default =
+1` rows that nothing loaded; schema step 7 (doc 09 §Database) deletes them.
 
 Layouts export as JSON (`{"version": 1, "bindings": [...]}`,
 `src/hotkeys/transfer.rs`), deviations only, so an import onto a newer

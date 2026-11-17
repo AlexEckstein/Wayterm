@@ -120,7 +120,6 @@ fn open_twice_is_idempotent() {
     // CREATE ... IF NOT EXISTS keeps table count stable...
     assert_eq!(store.schema_objects("table").len(), TABLES.len());
     // ...and the seed probe keeps row counts at one generation.
-    assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM hotkeys"), 28);
     assert_eq!(
         store.scalar_i64("SELECT COUNT(*) FROM settings"),
         10,
@@ -133,19 +132,9 @@ fn seed_defaults_present() {
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::open(dir.path().join("wayterm.db").as_path()).unwrap();
 
-    // Doc 13 §Settings rows: 28 hotkeys, 10 settings.
-    assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM hotkeys"), 28);
+    // Doc 13 §Settings rows: 10 settings, no hotkey rows.
     assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM settings"), 10);
-
-    // Every seeded hotkey is a default binding, enabled.
-    assert_eq!(
-        store.scalar_i64("SELECT COUNT(*) FROM hotkeys WHERE is_default = 1"),
-        28
-    );
-    assert_eq!(
-        store.scalar_i64("SELECT COUNT(*) FROM hotkeys WHERE enabled = 1"),
-        28
-    );
+    assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM hotkeys"), 0);
 
     // Doc 09 pins the global host-key default; per-session override
     // happens via sessions.host_key_policy (doc 04).
@@ -192,7 +181,6 @@ fn in_memory_has_same_schema() {
     }
 
     // Seed data lands in memory stores too.
-    assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM hotkeys"), 28);
     assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM settings"), 10);
     assert_eq!(store.setting("host_key_policy").as_deref(), Some("strict"));
 
@@ -390,6 +378,32 @@ fn open_drops_session_notes_from_an_older_database() {
     // Opening again is a no-op.
     drop(store);
     SessionStore::open(&path).unwrap();
+}
+
+/// A database seeded with the old `is_default = 1` hotkey rows loses them
+/// on open and keeps the user's own rows.
+#[test]
+fn open_deletes_the_old_seeded_hotkey_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("old.sqlite3");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(MIGRATION_001).unwrap();
+        conn.execute_batch(
+            "INSERT INTO hotkeys (action, key_sequence, context, is_default) VALUES \
+             ('copy', 'Ctrl+Shift+C', 'terminal', 1), \
+             ('split_vertical', 'Ctrl+Shift+E', 'terminal', 1), \
+             ('paste', 'Ctrl+Y', 'terminal', 0);",
+        )
+        .unwrap();
+    }
+
+    let store = SessionStore::open(&path).unwrap();
+    assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM hotkeys"), 1);
+    assert_eq!(
+        store.load_custom_hotkeys().unwrap(),
+        [("paste".to_string(), "Ctrl+Y".to_string(), true)]
+    );
 }
 
 #[test]
@@ -1019,7 +1033,7 @@ fn opening_logs_the_store_and_whether_it_was_seeded() {
     assert!(opened.contains(&path.display().to_string()), "{opened}");
     assert!(opened.contains("elapsed_ms="), "{opened}");
     let steps = log_line(&output, "schema steps complete");
-    assert!(steps.contains("steps=6"), "{steps}");
+    assert!(steps.contains("steps=7"), "{steps}");
     assert!(steps.contains("seeded=true"), "{steps}");
 
     let (buffer, guard) = crate::logging::tests::capture(None);

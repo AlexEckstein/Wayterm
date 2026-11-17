@@ -8,7 +8,6 @@ use crate::hotkeys::registry::{can_co_fire, conflicting_actions};
 use crate::hotkeys::trigger::{
     KeyChord, accel_to_ui_key, canonical_ui_key, ui_key_is_bindable, ui_key_to_accel,
 };
-use crate::store::SessionStore;
 
 #[test]
 fn every_row_is_registered_verbatim_and_ids_are_unique() {
@@ -123,38 +122,4 @@ fn the_2026_10_revision_stays() {
         assert!(!registry.contains(gone), "{gone}");
     }
     assert_eq!(registry.current_key("new_session"), Some("Ctrl+Shift+N"));
-}
-
-/// Doc 09's seed rows are informational (never loaded); this pins their
-/// known differences from the table: no `goto_tab_N` rows; `Enter`, which
-/// GDK cannot resolve, where the table says `Return`; and the 2026-10
-/// revision's dropped split actions and old `Ctrl+N`.
-#[test]
-fn the_seed_rows_differ_from_the_table_only_as_documented() {
-    assert!(!ui_key_is_bindable("Enter") && ui_key_is_bindable("Return"));
-    let store = SessionStore::in_memory().unwrap();
-    let seeded: Vec<(String, String, String)> = store
-        .seeded_hotkeys()
-        .unwrap()
-        .into_iter()
-        .filter(|(action, key, context)| {
-            !DEFAULT_ACTIONS
-                .iter()
-                .any(|d| d.id == action && d.default_key == key && d.context.as_str() == context)
-        })
-        .collect();
-    assert_eq!(
-        seeded,
-        [
-            ("new_session", "Ctrl+N", "global"),
-            ("rename_tab", "Ctrl+Shift+Enter", "global"),
-            ("split_horizontal", "Ctrl+Shift+D", "terminal"),
-            ("split_vertical", "Ctrl+Shift+E", "terminal"),
-            ("close_split", "Ctrl+Shift+Q", "terminal"),
-            ("connect_session", "Enter", "session_tree"),
-        ]
-        .map(|(a, k, c)| (a.into(), k.into(), c.into()))
-    );
-    let seeded_ids = store.seeded_hotkeys().unwrap().len();
-    assert_eq!(seeded_ids, DEFAULT_ACTIONS.len() - 9 + 3);
 }
