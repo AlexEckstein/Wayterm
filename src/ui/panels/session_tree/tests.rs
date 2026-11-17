@@ -167,7 +167,6 @@ fn cloned_session_is_a_new_copy_in_the_same_folder() {
         ..Default::default()
     };
     let original_id = store.insert_session(&original).unwrap();
-    store.touch_connected(original_id).unwrap();
 
     let source = store.get_session(original_id).unwrap();
     let clone_id = store.insert_session(&cloned_session(&source)).unwrap();
@@ -179,8 +178,6 @@ fn cloned_session_is_a_new_copy_in_the_same_folder() {
     assert_eq!(clone.host.as_deref(), Some("example.test"));
     assert_eq!(clone.port, Some(2222));
     assert_eq!(clone.username.as_deref(), Some("admin"));
-    assert_eq!(clone.connect_count, 0);
-    assert_eq!(clone.last_connected, None);
     // The original is untouched.
     assert_eq!(store.get_session(original_id).unwrap().name, "web");
 }

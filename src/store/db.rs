@@ -156,11 +156,9 @@ impl SessionStore {
         rows.collect()
     }
 
-    /// Persist `config` over the row with its id. `connect_count` and
-    /// `last_connected` are left alone (see [`Self::touch_connected`]), and
-    /// so is `host_keys` ([`Self::add_session_host_keys`]): editors that
-    /// rebuild a row from their widgets never wipe the keys a session
-    /// trusts.
+    /// Persist `config` over the row with its id. `host_keys` is left
+    /// alone ([`Self::add_session_host_keys`]): editors that rebuild a row
+    /// from their widgets never wipe the keys a session trusts.
     pub fn update_session(&self, config: &SessionConfig) -> rusqlite::Result<()> {
         let sql = format!(
             "UPDATE sessions SET ({SESSION_COLUMNS}) = ({}), updated_at = datetime('now') \
@@ -206,17 +204,6 @@ impl SessionStore {
     pub fn delete_session(&self, id: i64) -> rusqlite::Result<()> {
         self.conn
             .execute("DELETE FROM sessions WHERE id = ?1", [id])?;
-        Ok(())
-    }
-
-    /// Bump `connect_count` and stamp `last_connected`. Nothing in the app
-    /// calls it (doc 09 §Limitations).
-    pub fn touch_connected(&self, id: i64) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET last_connected = datetime('now'), \
-             connect_count = connect_count + 1 WHERE id = ?1",
-            [id],
-        )?;
         Ok(())
     }
 
@@ -450,6 +437,7 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     conn.execute_batch(MIGRATION_005)?;
     migrate_006(conn)?;
     conn.execute_batch(MIGRATION_007)?;
+    migrate_008(conn)?;
     // Seed exactly once, atomically, keyed on an empty `settings` table.
     let already_seeded: bool =
         conn.query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |row| {
@@ -461,7 +449,7 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.commit()?;
     }
     tracing::info!(
-        steps = 7,
+        steps = 8,
         seeded = !already_seeded,
         elapsed_ms = elapsed_ms(started),
         "schema steps complete"
@@ -637,8 +625,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     icon             TEXT,                    -- icon name; NULL = the type's default
 
     -- Metadata
-    last_connected   TEXT,
-    connect_count    INTEGER DEFAULT 0,
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -659,24 +645,12 @@ CREATE TABLE IF NOT EXISTS settings (
     value       TEXT
 );
 
--- Connection history / recent sessions
-CREATE TABLE IF NOT EXISTS connection_history (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
-    connected_at TEXT NOT NULL DEFAULT (datetime('now')),
-    duration    INTEGER,
-    bytes_sent  INTEGER,
-    bytes_received INTEGER
-);
-
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_sessions_folder ON sessions(folder_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_type ON sessions(type);
 CREATE INDEX IF NOT EXISTS idx_sessions_host ON sessions(host);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
 CREATE INDEX IF NOT EXISTS idx_hotkeys_action ON hotkeys(action);
-CREATE INDEX IF NOT EXISTS idx_history_session ON connection_history(session_id);
-CREATE INDEX IF NOT EXISTS idx_history_recent ON connection_history(connected_at DESC);
 "#;
 
 /// Schema v2 — RDP server-certificate trust (TOFU fingerprints, one row per
@@ -743,6 +717,18 @@ fn migrate_006(conn: &Connection) -> rusqlite::Result<()> {
 /// Schema v7 — delete the hotkey rows earlier seeds inserted with
 /// `is_default = 1`: nothing loads them (doc 11 §Persistence).
 const MIGRATION_007: &str = "DELETE FROM hotkeys WHERE is_default = 1;";
+
+/// Schema v8 — drop what nothing wrote: the `connection_history` table
+/// (its indexes go with it) and `sessions.last_connected`/`connect_count`.
+fn migrate_008(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS connection_history;")?;
+    for column in ["last_connected", "connect_count"] {
+        if has_column(conn, "sessions", column)? {
+            conn.execute_batch(&format!("ALTER TABLE sessions DROP COLUMN {column};"))?;
+        }
+    }
+    Ok(())
+}
 
 /// First-run seed (doc 13 §Settings rows).
 const SEED_DEFAULTS: &str = r#"
@@ -819,8 +805,6 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
         font_size: row.get("font_size")?,
         opacity: row.get("opacity")?,
         icon: row.get("icon")?,
-        last_connected: row.get("last_connected")?,
-        connect_count: row.get("connect_count")?,
     })
 }
 

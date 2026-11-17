@@ -22,7 +22,6 @@ const TABLES: &[&str] = &[
     "sessions",
     "hotkeys",
     "settings",
-    "connection_history",
     "rdp_trust",
     "macros",
 ];
@@ -34,8 +33,6 @@ const INDEXES: &[&str] = &[
     "idx_sessions_host",
     "idx_folders_parent",
     "idx_hotkeys_action",
-    "idx_history_session",
-    "idx_history_recent",
 ];
 
 impl SessionStore {
@@ -406,6 +403,41 @@ fn open_deletes_the_old_seeded_hotkey_rows() {
     );
 }
 
+/// A database created with `connection_history` and the
+/// `last_connected`/`connect_count` columns loses them on open and keeps
+/// its rows.
+#[test]
+fn open_drops_connection_history_from_an_older_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("old.sqlite3");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(MIGRATION_001).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN last_connected TEXT; \
+             ALTER TABLE sessions ADD COLUMN connect_count INTEGER DEFAULT 0; \
+             CREATE TABLE connection_history (id INTEGER PRIMARY KEY, \
+                 session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE); \
+             CREATE INDEX idx_history_session ON connection_history(session_id); \
+             INSERT INTO sessions (name, type, connect_count) VALUES ('old', '\"ssh\"', 3);",
+        )
+        .unwrap();
+    }
+
+    let store = SessionStore::open(&path).unwrap();
+    assert_eq!(store.schema_objects("table").len(), TABLES.len());
+    assert_eq!(store.schema_objects("index").len(), INDEXES.len());
+    for column in ["last_connected", "connect_count"] {
+        assert!(!has_column(&store.conn, "sessions", column).unwrap());
+    }
+    let old = store.list_sessions(None).unwrap().remove(0);
+    assert_eq!(old.name, "old");
+    store.update_session(&old).unwrap();
+    // Opening again is a no-op.
+    drop(store);
+    SessionStore::open(&path).unwrap();
+}
+
 #[test]
 fn delete_folder_cascades_and_orphans_sessions() {
     let store = SessionStore::in_memory().unwrap();
@@ -551,8 +583,6 @@ fn sample_ssh_config(folder_id: Option<i64>) -> SessionConfig {
         font_size: Some(12.5),
         opacity: Some(0.9),
         icon: Some("network-server-symbolic".to_string()),
-        last_connected: Some("2026-10-02T12:00:00Z".to_string()),
-        connect_count: 17,
     }
 }
 
@@ -793,21 +823,6 @@ fn delete_session_removes_row() {
 }
 
 #[test]
-fn touch_connected_increments() {
-    let store = SessionStore::in_memory().unwrap();
-
-    let config = sample_ssh_config(None);
-    let id = store.insert_session(&config).unwrap();
-
-    store.touch_connected(id).unwrap();
-    store.touch_connected(id).unwrap();
-
-    let loaded = store.get_session(id).unwrap();
-    assert_eq!(loaded.connect_count, 2);
-    assert!(loaded.last_connected.is_some());
-}
-
-#[test]
 fn json_columns_survive_roundtrip() {
     let store = SessionStore::in_memory().unwrap();
 
@@ -1033,7 +1048,7 @@ fn opening_logs_the_store_and_whether_it_was_seeded() {
     assert!(opened.contains(&path.display().to_string()), "{opened}");
     assert!(opened.contains("elapsed_ms="), "{opened}");
     let steps = log_line(&output, "schema steps complete");
-    assert!(steps.contains("steps=7"), "{steps}");
+    assert!(steps.contains("steps=8"), "{steps}");
     assert!(steps.contains("seeded=true"), "{steps}");
 
     let (buffer, guard) = crate::logging::tests::capture(None);

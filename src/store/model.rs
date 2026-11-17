@@ -237,10 +237,6 @@ pub struct SessionConfig {
     /// without one is unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-
-    // Metadata.
-    pub last_connected: Option<String>,
-    pub connect_count: u32,
 }
 
 impl SessionConfig {

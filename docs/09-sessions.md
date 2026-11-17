@@ -38,6 +38,7 @@ and runs on every open.
 | 5 | `macros (id, name, steps, created_at, updated_at)` (doc 12 §Storage) |
 | 6 | `sessions.host_keys`, added where missing |
 | 7 | delete the `is_default = 1` hotkey rows earlier seeds inserted (doc 11 §Persistence) |
+| 8 | drop the never-written `connection_history` table and `sessions.last_connected`/`connect_count` where present |
 
 ## Schema
 
@@ -108,8 +109,6 @@ CREATE TABLE sessions (
     icon             TEXT,                -- NULL = the type's default icon
 
     -- Metadata
-    last_connected   TEXT,
-    connect_count    INTEGER DEFAULT 0,
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -125,22 +124,11 @@ CREATE TABLE hotkeys (
 
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
 
-CREATE TABLE connection_history (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id     INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
-    connected_at   TEXT NOT NULL DEFAULT (datetime('now')),
-    duration       INTEGER,
-    bytes_sent     INTEGER,
-    bytes_received INTEGER
-);
-
 CREATE INDEX idx_sessions_folder ON sessions(folder_id);
 CREATE INDEX idx_sessions_type   ON sessions(type);
 CREATE INDEX idx_sessions_host   ON sessions(host);
 CREATE INDEX idx_folders_parent  ON folders(parent_id);
 CREATE INDEX idx_hotkeys_action  ON hotkeys(action);
-CREATE INDEX idx_history_session ON connection_history(session_id);
-CREATE INDEX idx_history_recent  ON connection_history(connected_at DESC);
 ```
 
 Deleting a folder deletes its sub-folders (`ON DELETE CASCADE`) and moves
@@ -302,9 +290,6 @@ and a reset to the default.
 
 ## Limitations
 
-- `last_connected`, `connect_count` and the `connection_history` table
-  exist but nothing writes them (`SessionStore::touch_connected` is never
-  called).
 - `sort_order` is never edited: siblings sort by name.
 - The dialog edits none of `font_family`, `font_size`, `opacity`,
   `ssh_options`, `host_key_policy`, `host_keys`, `vnc_options` or
