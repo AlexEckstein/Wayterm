@@ -38,16 +38,28 @@ Needs GTK 4, VTE for GTK 4 (≥ 0.72), SQLite headers, and
 cargo run
 cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 scripts/run-sshd-tests.sh        # suites against a throwaway local sshd (needs sudo)
-# tests that need a display; force X11 so a Wayland session can't capture them
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored
+# tests that need a display; force X11 so a Wayland session can't capture them.
+# The Ghostty widget test takes a run of its own: GTK stays on one thread.
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored --skip ghostty_display
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test -- --ignored ghostty_display
 ```
-### Build with Ghostty
 
-Needs libghostty-vt built locally first (docs/02-terminal.md, "libghostty-vt pin").
+A build includes the Ghostty terminal backend unless told otherwise.
+The first one on a machine downloads libghostty-vt's pinned source (and
+Zig, unless the right version is installed), checks the checksums and
+builds it, which takes a minute or two and needs `curl`, `tar` and
+`sha256sum` (and `xz` to unpack Zig). Later builds, in any checkout,
+reuse it from `~/.cache/wayterm-build/` (docs/02-terminal.md,
+"libghostty-vt pin").
+
+### Build without Ghostty
+
+VTE only, with nothing downloaded:
 
 ```sh
-cargo build --release --features backend-ghostty
+cargo build --release --no-default-features
 ```
+
 ## Packages
 
 - `.deb`: `cargo deb` (metadata in `Cargo.toml`, output in `target/debian/`).
@@ -60,7 +72,7 @@ cargo build --release --features backend-ghostty
 | | Choice | Why |
 |---|---|---|
 | Language, UI | Rust, GTK 4 | memory safety for a network-facing app; native Linux toolkit |
-| Terminal | VTE behind a `TerminalBackend` trait | the standard GTK terminal widget; libghostty-vt as an opt-in second backend |
+| Terminal | VTE behind a `TerminalBackend` trait | the standard GTK terminal widget; libghostty-vt as a second backend, chosen in Settings |
 | Async | tokio | SSH, SFTP, and reconnects off the UI thread |
 | SSH, SFTP | russh, russh-sftp | pure Rust; SFTP reuses the terminal's SSH session |
 | Store | SQLite (rusqlite) | sessions, settings, hotkey overrides, macros |

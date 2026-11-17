@@ -1,9 +1,9 @@
 //! Parse throughput, VTE vs libghostty-vt, on one corpus (doc 02
-//! §Benchmark). Built only with the `backend-ghostty` feature:
+//! §Benchmark). Built only with the `backend-ghostty` feature, which is
+//! on by default:
 //!
 //! ```sh
-//! env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a \
-//!     cargo bench --features backend-ghostty
+//! env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo bench
 //! ```
 //!
 //! Each corpus (plain text, SGR-colored text, cursor-addressed redraws,

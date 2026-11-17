@@ -96,6 +96,19 @@ jobs:
 
       - uses: actions/checkout@v7
 
+      # build.rs holds the libghostty-vt pin; doc 02 §libghostty-vt pin
+      # must name the same checksums.
+      - name: Check doc 02 names every checksum build.rs pins
+        run: |
+          sums=$(grep -oE '\b[0-9a-f]{64}\b' build.rs | sort -u)
+          [ -n "$sums" ] || { echo "::error file=build.rs::no pinned checksum found"; exit 1; }
+          for sum in $sums; do
+            grep -q "$sum" docs/02-terminal.md || {
+              echo "::error file=docs/02-terminal.md::build.rs pins $sum, which doc 02 does not name"
+              exit 1
+            }
+          done
+
       - name: Install GTK4 / VTE build deps
         run: |
           sudo apt-get update
@@ -112,6 +125,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      # Where build.rs keeps the library it builds, for a baseline CPU, so
+      # any runner can run it. Zig and the release tarballs are only
+      # downloaded on a miss.
+      - name: Cache libghostty-vt
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/wayterm-build/libghostty-vt
+          key: libghostty-vt-${{ runner.os }}-${{ hashFiles('build.rs') }}
+
       - name: Format check
         run: cargo fmt --check
 
@@ -125,6 +147,9 @@ jobs:
 
       - name: VTE search test (xvfb)
         run: xvfb-run -a cargo test --test vte_search -- --ignored
+
+      - name: Ghostty widget test (xvfb)
+        run: xvfb-run -a cargo test -- --ignored ghostty_display
 
       # ── Transport integration tests against a real sshd (doc 15) ──
       - name: Provision test sshd
@@ -164,24 +189,18 @@ jobs:
       - name: Integration tests (real sshd)
         run: cargo test --test transport_sshd -- --test-threads=1
 
-  ghostty:
-    name: Ghostty backend clippy / test (+ xvfb)
+      # A SIGILL above means a libghostty-vt built for another CPU.
+      - name: Runner CPU (on failure)
+        if: failure()
+        run: grep -m2 -E '^(model name|flags)' /proc/cpuinfo
+
+  minimal:
+    name: Minimal build clippy / test (no Ghostty)
     runs-on: ubuntu-latest
     needs: [detect]
     if: needs.detect.outputs.has_rust == 'true'
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      # The libghostty-vt pin (doc 02 §libghostty-vt pin); a bump changes
-      # it here, in build.rs and in the doc together.
-      GHOSTTY_VT_VERSION: 1.0.0
-      GHOSTTY_VT_SHA256: 4a6ef758be721923e1969e7b81b443dcc92d8dd3fb5a39600c03a8817a753676
-      GHOSTTY_VT_DEPS_SHA256: 4d5ea5e448e4c7ea8fb55ccbaa8668f2a97d44f438cee831e2b7ecd162d85c29
-      ZIG_VERSION: 0.17.0
-      ZIG_SHA256: 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026
-      # Zig builds for the CPU it runs on unless told otherwise, and the
-      # cached library is restored on runners with older CPUs, where such
-      # a build dies with SIGILL. `baseline` runs on every x86_64.
-      GHOSTTY_VT_CPU: baseline
     steps:
       - name: Free runner disk space
         run: |
@@ -191,22 +210,12 @@ jobs:
 
       - uses: actions/checkout@v7
 
-      - name: Check the pin matches build.rs and doc 02
-        run: |
-          for f in build.rs docs/02-terminal.md; do
-            grep -q "$GHOSTTY_VT_SHA256" "$f" || {
-              echo "::error file=$f::does not pin libghostty-vt $GHOSTTY_VT_VERSION ($GHOSTTY_VT_SHA256) like ci.yml"
-              exit 1
-            }
-          done
-
       - name: Install GTK4 / VTE build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgtk-4-dev libvte-2.91-gtk4-dev \
-            libsqlite3-dev libsecret-1-dev \
-            xvfb
+            libsqlite3-dev libsecret-1-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -216,58 +225,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # Built once per pin and target CPU into build.rs's default
-      # location; Zig and the release tarballs are only downloaded on a
-      # cache miss.
-      - name: Cache libghostty-vt
-        id: libghostty-vt
-        uses: actions/cache@v6
-        with:
-          path: third_party/libghostty-vt
-          key: libghostty-vt-${{ runner.os }}-${{ env.GHOSTTY_VT_SHA256 }}-zig-${{ env.ZIG_VERSION }}-cpu-${{ env.GHOSTTY_VT_CPU }}
+      - name: Clippy without default features (deny warnings)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
 
-      - name: Build libghostty-vt
-        if: steps.libghostty-vt.outputs.cache-hit != 'true'
-        run: |
-          cd "$RUNNER_TEMP"
-          tarball="zig-x86_64-linux-$ZIG_VERSION.tar.xz"
-          curl -fsSLO "https://ziglang.org/download/$ZIG_VERSION/$tarball"
-          echo "$ZIG_SHA256  $tarball" | sha256sum -c -
-          tar -xJf "$tarball"
-          src="libghostty-vt-$GHOSTTY_VT_VERSION"
-          base="https://release.files.ghostty.org/libghostty-vt/$GHOSTTY_VT_VERSION"
-          curl -fsSLO "$base/$src.tar.gz"
-          curl -fsSLO "$base/$src-deps.tar.gz"
-          echo "$GHOSTTY_VT_SHA256  $src.tar.gz" | sha256sum -c -
-          echo "$GHOSTTY_VT_DEPS_SHA256  $src-deps.tar.gz" | sha256sum -c -
-          tar -xzf "$src.tar.gz"
-          tar -xzf "$src-deps.tar.gz"
-          cd "$src"
-          # Offline: packages come from the dependency tarball, into a
-          # cache that must start empty.
-          ZIG_GLOBAL_CACHE_DIR="$RUNNER_TEMP/zig-cache" \
-            "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION/zig" build \
-            --system "../$src-deps" -Doptimize=ReleaseFast \
-            -Dcpu="$GHOSTTY_VT_CPU" \
-            --prefix "$RUNNER_TEMP/ghostty-out"
-          vt="$GITHUB_WORKSPACE/third_party/libghostty-vt"
-          mkdir -p "$vt/lib"
-          cp -r "$RUNNER_TEMP/ghostty-out/include" "$vt/"
-          cp "$RUNNER_TEMP/ghostty-out/lib/libghostty-vt.a" "$vt/lib/"
-
-      - name: Clippy with backend-ghostty (deny warnings)
-        run: cargo clippy --all-targets --features backend-ghostty -- -D warnings
-
-      - name: Tests with backend-ghostty
-        run: cargo test --features backend-ghostty
-
-      - name: Ghostty widget test (xvfb)
-        run: xvfb-run -a cargo test --features backend-ghostty -- --ignored ghostty_display
-
-      # A SIGILL above means a binary built for another runner's CPU.
-      - name: Runner CPU (on failure)
-        if: failure()
-        run: grep -m2 -E '^(model name|flags)' /proc/cpuinfo
+      - name: Tests without default features
+        run: cargo test --no-default-features
 
   audit:
     name: Cargo audit (weekly advisory sweep)

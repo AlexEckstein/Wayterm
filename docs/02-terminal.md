@@ -75,10 +75,11 @@ goes to the transport pump (doc 03 §Wiring). `create_terminal()` builds the
 installed preference.
 
 - VTE is the default and the fallback.
-- With the `backend-ghostty` Cargo feature, Settings' General page shows
-  a "Ghostty terminal" check box that writes `ghostty` or
-  `vte` to the `default_backend` row (doc 13 §Settings rows). Without the
-  feature the box is disabled, with a tooltip saying to rebuild with it.
+- Settings' General page shows a "Ghostty terminal" check box that
+  writes `ghostty` or `vte` to the `default_backend` row (doc 13
+  §Settings rows). In a build without the `backend-ghostty` Cargo
+  feature (`--no-default-features`, doc 14 §Cargo features) the box is
+  disabled, with a tooltip saying to rebuild with it.
 - The row is installed at startup and on change
   (`install_backend_preference`); tabs opened afterwards use it, open tabs
   keep their backend.
@@ -86,8 +87,9 @@ installed preference.
   over the row for that session's tabs; an empty or unknown value follows
   the row. The session dialog's Terminal group edits it (doc 09 §Session
   dialog).
-- Ghostty falls back to VTE, logging a warning (doc 16 §What is logged), when the feature is off
-  or libghostty-vt cannot allocate a terminal.
+- Ghostty falls back to VTE, logging a warning (doc 16 §What is
+  logged), in a build without the feature or when libghostty-vt cannot
+  allocate a terminal.
 
 A further backend would be another Cargo feature and another match arm in
 `create_terminal_for`: type-safe, no `dlopen`. Loading backends as runtime
@@ -341,9 +343,11 @@ display. Clones share the recordings.
 
 ## GhosttyBackend
 
-An opt-in engine backend: built only with the
-`backend-ghostty` Cargo feature, against libghostty-vt from one pinned
-upstream release (§libghostty-vt pin). The default build has none of it.
+An engine backend, built with the `backend-ghostty` Cargo feature, which
+is on by default (doc 14 §Cargo features), against libghostty-vt from one
+pinned upstream release (§libghostty-vt pin). A `--no-default-features`
+build has none of it. A tab uses it only when Settings or its session
+says so (§Backend selection).
 `src/terminal/ghostty/`:
 
 - **FFI.** `shim.c` wraps the C API, whose sized structs and tagged unions
@@ -352,8 +356,8 @@ upstream release (§libghostty-vt pin). The default build has none of it.
   image placement, an image's pixels), checked against the C compiler by
   unit tests: their sizes, and where the cell's grapheme, link, wrap and
   underline fields, and the fields after any padding, sit. `build.rs`
-  compiles
-  nothing beyond libc is needed.
+  compiles the shim and links the library statically (§libghostty-vt
+  pin); nothing beyond libc is needed.
 - **`Engine`.** The safe owner of one terminal, with no display: VT
   parsing, resize with reflow, scrollback limit, viewport scrolling,
   selection, search, plain-text export, key, paste, mouse and focus
@@ -668,11 +672,11 @@ deleted, with nothing to track on Wayterm's side.
 ### libghostty-vt pin
 
 libghostty-vt is released on its own, under `vt-X.Y.Z` tags, and keeps
-its C ABI stable within a major version. The pin is one release, and it
-changes only in a deliberate bump: rebuild, rerun the checks below, and
-update this section, the comment in `build.rs` and the `ghostty` job's
-`env` in `.github/workflows/ci.yml` together; that job fails while its
-source checksum differs from the other two.
+its C ABI stable within a major version. The pin is one release, held as
+constants in `build.rs`, and it changes only in a deliberate bump: change
+the constants and this section together, then rerun the checks below.
+CI's `rust` job fails while a checksum in `build.rs` is missing from this
+section.
 
 | | |
 |---|---|
@@ -681,63 +685,76 @@ source checksum differs from the other two.
 | Source | `libghostty-vt-1.0.0.tar.gz`, sha256 `4a6ef758be721923e1969e7b81b443dcc92d8dd3fb5a39600c03a8817a753676` |
 | Dependencies | `libghostty-vt-1.0.0-deps.tar.gz`, sha256 `4d5ea5e448e4c7ea8fb55ccbaa8668f2a97d44f438cee831e2b7ecd162d85c29` |
 | Zig | 0.17.0 (`minimum_zig_version` in the source's `build.zig.zon`) |
+| Zig download | `zig-x86_64-linux-0.17.0.tar.xz` from <https://ziglang.org/download/>, sha256 `1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026` |
 
-Both checksums are from the release's `SHA256SUMS`, which upstream signs
-with minisign (the key is in its `PACKAGING-LIBGHOSTTY.md`); a bump
-checks that signature before taking them.
+The first two checksums are from the release's `SHA256SUMS`, which
+upstream signs with minisign (the key is in its
+`PACKAGING-LIBGHOSTTY.md`); a bump checks that signature before taking
+them. Zig's is from `ziglang.org/download/index.json`.
 
-Build it outside the Wayterm checkout:
+`build.rs` builds the library the first time a build needs it; there is
+nothing to fetch or build by hand first. A build with the feature:
 
-```sh
-# Zig 0.17.0, user-local (sha256 from ziglang.org/download/index.json:
-# 1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026)
-curl -LO https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
-tar -xJf zig-x86_64-linux-0.17.0.tar.xz -C ~/.local/zig
-ln -sf ~/.local/zig/zig-x86_64-linux-0.17.0/zig ~/.local/bin/zig
+1. Looks for the library in the cache (below) and, finding it, only
+   links it.
+2. Otherwise downloads the source and dependency tarballs with `curl`.
+   A file is unpacked only if its `sha256sum` is the pinned one.
+3. Takes the `zig` on `PATH` if it is exactly the pinned version. If
+   not, on x86_64 Linux it downloads the pinned Zig, checked the same
+   way, and uses it for this build alone: nothing is installed. On
+   another machine the build stops and asks for that Zig.
+4. Builds as upstream's `PACKAGING-LIBGHOSTTY.md` has it:
 
-base=https://release.files.ghostty.org/libghostty-vt/1.0.0
-curl -LO $base/libghostty-vt-1.0.0.tar.gz
-curl -LO $base/libghostty-vt-1.0.0-deps.tar.gz
-# Nothing is extracted or built unless both checksums match.
-echo "4a6ef758be721923e1969e7b81b443dcc92d8dd3fb5a39600c03a8817a753676  libghostty-vt-1.0.0.tar.gz" | sha256sum -c - &&
-  echo "4d5ea5e448e4c7ea8fb55ccbaa8668f2a97d44f438cee831e2b7ecd162d85c29  libghostty-vt-1.0.0-deps.tar.gz" | sha256sum -c - &&
-  tar -xzf libghostty-vt-1.0.0.tar.gz &&
-  tar -xzf libghostty-vt-1.0.0-deps.tar.gz &&
-  (cd libghostty-vt-1.0.0 &&
-    ZIG_GLOBAL_CACHE_DIR="$(mktemp -d)" zig build \
-      --system ../libghostty-vt-1.0.0-deps -Doptimize=ReleaseFast --prefix "$PWD/out")
-vt_out="$PWD/libghostty-vt-1.0.0/out"
-```
+   ```sh
+   ZIG_GLOBAL_CACHE_DIR=<a new directory> zig build \
+     --system ../libghostty-vt-1.0.0-deps -Doptimize=ReleaseFast \
+     -Dcpu=baseline --prefix <out>
+   ```
 
-The build is offline: with `--system` Zig takes its packages from the
-dependency tarball, and the cache directory must be a new, empty one,
-hence `mktemp -d`.
-`out/` then holds `include/ghostty/vt.h` (+ `vt/`) and
-`lib/libghostty-vt.a`, beside a shared library Wayterm does not link.
+   The build is offline: with `--system` Zig takes its packages from the
+   dependency tarball, and its cache directory must be a new, empty one.
+   Zig builds for the CPU of the machine it runs on unless told
+   otherwise, and such a library dies with SIGILL on an older CPU;
+   `-Dcpu=baseline` makes one that runs wherever the binary is taken,
+   as a package or from CI's cache.
+5. Keeps `include/ghostty/` and `lib/libghostty-vt.a` in the cache, and
+   deletes the downloads, the unpacked Zig and the build tree, which
+   were under Cargo's `OUT_DIR`.
 
-`build.rs` looks for them under `$WAYTERM_GHOSTTY_VT_DIR`, default
-`third_party/libghostty-vt/` in the checkout. From the checkout's root,
-in the same shell:
+The cache is `$XDG_CACHE_HOME/wayterm-build/libghostty-vt/` (default
+`~/.cache/…`), one directory per pin, Zig version, target CPU and
+architecture, such as `1.0.0-4a6ef758be72-zig-0.17.0-baseline-x86_64/`:
 
-```sh
-mkdir -p third_party/libghostty-vt/lib
-cp -r "$vt_out/include" third_party/libghostty-vt/
-cp "$vt_out/lib/libghostty-vt.a" third_party/libghostty-vt/lib/
-printf '*\n' > third_party/libghostty-vt/.gitignore   # never committed
-```
+- Every checkout, worktree and profile on the machine links the same
+  copy, and `cargo clean` leaves it alone, so the library is built once
+  per machine and pin. A bump builds into a new directory; the old one
+  stays until someone deletes it.
+- A directory appears whole or not at all (it is renamed into place), so
+  builds running at once each build the library and the first to finish
+  is kept.
+- Deleting a directory makes the next build rebuild it.
+- Where the cache cannot be made (no home directory, a build sandbox
+  with a read-only one) the library is kept under `OUT_DIR` instead,
+  and each profile builds its own.
 
-The library is built per machine and never committed. Without it, a build
-with the feature fails in `build.rs` with a pointer here; the default
-build never looks for it. Checks for a pin (doc 15 §Ghostty backend):
-clippy and `cargo test` with `--features backend-ghostty`, the widget
-under xvfb, and the benchmark. CI runs all but the benchmark, building
-the library the same way and caching it per pin (doc 15 §CI).
+The first build needs the network, `curl`, `tar` and `sha256sum`, and
+`xz` if Zig is downloaded (57 MB). It takes a minute or two and, while
+it runs, up to about 1 GB under `OUT_DIR`; it ends with a Cargo warning
+naming the directory it made. A failed step stops the build, naming the
+step and the two ways around it: a build without the backend
+(`--no-default-features`), or `WAYTERM_GHOSTTY_VT_DIR`.
 
-Zig builds for the CPU of the machine it runs on, so a library built as
-above may not run on an older CPU (it dies with SIGILL). One that will
-run on another machine needs `-Dcpu=baseline` added to `zig build`, as
-upstream's `PACKAGING-LIBGHOSTTY.md` has it; CI's build passes it,
-because its cache is restored on runners with other CPUs.
+`WAYTERM_GHOSTTY_VT_DIR` names a directory holding
+`include/ghostty/vt.h` and `lib/libghostty-vt.a` from a build made
+elsewhere: a distribution's package, a machine without network, a build
+for another CPU. `build.rs` then downloads and builds nothing and links
+that library as it is, whatever its version, so keeping to the pin is up
+to whoever set it. The About page shows the version linked (doc 13
+§About).
+
+Checks for a pin (doc 15 §Ghostty backend): clippy and `cargo test`, the
+widget under xvfb, and the benchmark. CI runs all but the benchmark, and
+caches the library between runs (doc 15 §CI).
 
 ## Widget choice
 
@@ -746,7 +763,7 @@ Embeddable terminals for a Rust + GTK 4 app:
 | Library | Model | Language | License | Verdict |
 |---|---|---|---|---|
 | **VTE** (`vte4`) | GTK 4 widget | C | LGPL | default — the most widely used Linux terminal widget (GNOME Terminal, Tilix, Ptyxis) |
-| libghostty-vt | engine, C API | Zig | MIT | opt-in second backend — fastest parsing (§Benchmark), Kitty graphics; C ABI stable from 1.0 |
+| libghostty-vt | engine, C API | Zig | MIT | second backend, chosen in Settings — fastest parsing (§Benchmark), Kitty graphics; C ABI stable from 1.0 |
 | alacritty_terminal | engine crate | Rust | Apache-2.0 | possible — no FFI, but an unstable internal API |
 | QTermWidget, Konsole KPart | Qt widget | C++ | GPL | wrong toolkit |
 | xterm.js | browser | JS | MIT | browser only |
@@ -754,13 +771,14 @@ Embeddable terminals for a Rust + GTK 4 app:
 
 Wayterm's value is session management, SFTP, remote desktops and
 hotkeys, not rendering, so VTE is the default. libghostty-vt sits behind
-the same trait with no change to the rest of the app. It is opt-in twice
-over: compiled only with the feature, against one pinned release, and
-used only when the user ticks the Settings box.
+the same trait with no change to the rest of the app. It is compiled
+into every build but a `--no-default-features` one, against one pinned
+release, and used only when the user ticks the Settings box or a session
+asks for it.
 
 ## Benchmark
 
-`benches/terminal_parse.rs` (`cargo bench --features backend-ghostty`,
+`benches/terminal_parse.rs` (`cargo bench`,
 under `xvfb-run -a` for the VTE half) feeds the same 8 MiB corpora to an
 80×24 terminal of each backend in 16 KiB chunks — transport-sized reads —
 and keeps the best of five runs. Neither side draws. libghostty-vt is

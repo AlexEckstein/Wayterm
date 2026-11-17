@@ -353,6 +353,6 @@ fn px(pixels: i32) -> u32 {
 /// `ui::gtk_tests`, and must not share a run with it (GTK binds to the
 /// first thread that initializes it):
 /// `env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a cargo test
-/// --features backend-ghostty -- --ignored ghostty_display`.
+/// -- --ignored ghostty_display`.
 #[cfg(test)]
 mod ghostty_display;

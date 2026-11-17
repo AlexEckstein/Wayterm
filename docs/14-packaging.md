@@ -14,7 +14,14 @@ Needs Rust (stable), GTK 4, VTE for GTK 4 (≥ 0.72 at runtime), and
 ```sh
 cargo run
 cargo build --release
+cargo build --release --no-default-features   # without the Ghostty backend
 ```
+
+The first build on a machine also downloads and builds libghostty-vt,
+which takes a minute or two and needs the network, `curl`, `tar` and
+`sha256sum`, and `xz` if it has to download Zig; later builds, in any
+checkout, link the cached copy (doc 02 §libghostty-vt pin). A
+`--no-default-features` build skips all of that.
 
 `build.rs`:
 
@@ -25,17 +32,21 @@ cargo build --release
 - sets `WAYTERM_GIT_COMMIT` to the checkout's short commit hash for the
   About page (doc 13 §About); a build outside a git checkout, or without
   git, leaves it unset;
-- with the `backend-ghostty` feature only, compiles the libghostty-vt shim
-  and links the pinned static library (doc 02 §libghostty-vt pin).
+- with the `backend-ghostty` feature, builds the pinned libghostty-vt if
+  this machine has not yet, compiles the shim and links the static
+  library (doc 02 §libghostty-vt pin).
 
 ## Cargo features
 
 | Feature | Default | What |
 |---|---|---|
-| `backend-ghostty` | off | the libghostty-vt terminal backend (doc 02 §GhosttyBackend); needs the library built locally; enables the `terminal_parse` benchmark |
+| `backend-ghostty` | on | the libghostty-vt terminal backend (doc 02 §GhosttyBackend), statically linked; `build.rs` fetches and builds the library (doc 02 §libghostty-vt pin); enables the `terminal_parse` benchmark |
 
-The default build has no optional native dependencies beyond GTK 4 and
-VTE.
+It is the only feature, so `--no-default-features` is the minimal build:
+VTE alone, nothing downloaded, and no native dependencies beyond GTK 4
+and VTE. There the Ghostty check box in Settings is disabled (doc 02
+§Backend selection) and the About page says the library is not included
+(doc 13 §About).
 
 ## App icon
 
@@ -56,7 +67,9 @@ and data paths (doc 05 §Keyring).
 
 `cargo deb` (metadata under `[package.metadata.deb]` in `Cargo.toml`,
 output in `target/debian/`) installs the binary, the desktop entry, the
-metainfo and the icons.
+metainfo and the icons. It builds with the default features, so the
+binary has the Ghostty backend; libghostty-vt is linked statically and
+adds nothing to the package's `Depends`.
 
 ### AppImage
 
@@ -91,6 +104,8 @@ file transfers). Inside the sandbox the keyring source uses the portal
 
 `.github/workflows/release.yml` runs on a `v*` tag push: it builds the
 `.deb` with `cargo-deb` on `ubuntu-latest` (Ubuntu 26.04, as CI uses),
+where `build.rs` downloads the pinned Zig and builds libghostty-vt for a
+baseline CPU (doc 02 §libghostty-vt pin),
 builds the AppImage from it with a pkg2appimage pinned by checksum, and
 attaches both to the GitHub Release for that tag. A manual run
 (`workflow_dispatch`) builds the artifacts without releasing. The
@@ -121,11 +136,12 @@ A release goes out like this:
 
 - The Flatpak build fetches crates over the network
   (`--share=network` at build time) — fine for local builds, not for
-  Flathub, which needs vendored cargo sources. The release workflow does
+  Flathub, which needs vendored cargo sources. `build.rs` fetches
+  libghostty-vt and Zig over the same network, and the Flatpak has not
+  been built since it began to. The release workflow does
   not build it, and its sandbox access to SSH keys, the keyring and files
   is not verified, nor is handing a file opened from the SFTP sidebar to
   another application (doc 07 §Opening files).
-- Packages are built without `backend-ghostty`.
 - The AppImage and `.deb` target x86_64 only.
 - The AppImage bundles GTK 4 and GLib from Ubuntu 26.04, which need
   glibc 2.42 (the highest version symbol its bundled libraries ask for;
