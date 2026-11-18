@@ -717,6 +717,12 @@ nothing to fetch or build by hand first. A build with the feature:
    otherwise, and such a library dies with SIGILL on an older CPU;
    `-Dcpu=baseline` makes one that runs wherever the binary is taken,
    as a package or from CI's cache.
+   Zig runs with `GIT_CEILING_DIRECTORIES` set to the build tree:
+   upstream's `build.zig` asks git for a release tag, and without the
+   ceiling git finds Wayterm's checkout, which `target/` sits in. On a
+   tagged Wayterm commit it would read that tag as its own version and
+   panic ("tagged releases must be in vX.Y.Z format matching
+   build.zig").
 5. Keeps `include/ghostty/` and `lib/libghostty-vt.a` in the cache, and
    deletes the downloads, the unpacked Zig and the build tree, which
    were under Cargo's `OUT_DIR`.

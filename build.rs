@@ -189,12 +189,14 @@ mod ghostty {
         let zig = zig(&work);
 
         // Offline: Zig takes its packages from the dependency tarball,
-        // and its global cache must start empty.
+        // and its global cache must start empty. Git stops at `work`, or
+        // build.zig reads a Wayterm tag as its own version and panics.
         let out = work.join("out");
         run(
             Command::new(&zig)
                 .current_dir(work.join(&source))
                 .env("ZIG_GLOBAL_CACHE_DIR", work.join("zig-cache"))
+                .env("GIT_CEILING_DIRECTORIES", &work)
                 .arg("build")
                 .arg("--system")
                 .arg(work.join(&deps))
