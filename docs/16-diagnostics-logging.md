@@ -54,7 +54,7 @@ not captured either.
 |---|---|
 | `logging` | the init result: the log file in use, or that logging is stderr only |
 | `app` | start (with the version) and shutdown; the custom-hotkey load report (doc 11 §Persistence); a tray that failed to start (doc 03 §Tray) |
-| `store::db` | the store opened, with how long it took; the schema steps done, with their time and whether the seed ran (doc 09 §Database); a store that failed to open; a settings row that could not be read |
+| `store::db` | the store opened, with how long it took; the schema ready, with its time and whether the seed ran (doc 09 §Database); a store that failed to open; a settings row that could not be read |
 | `transport::supervisor` | a dial starting and how it ended (connected, or the connect error); a pooled connection found closed and evicted; the last consumer's release and the disconnect that follows; the supervisor going away (doc 04 §Connection supervisor) |
 | `transport::connection` | authentication succeeding, failing (with the chain's reason) or being cancelled; a rejected host key or host certificate; a disconnect |
 | `transport::reconnect` | each backoff wait and attempt of a reconnect run, and how the run ended (doc 03 §Reconnect) |
