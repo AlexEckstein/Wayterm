@@ -1,7 +1,7 @@
 name: Release
 
-# Tag push `v*` builds the .deb, the AppImage and the Arch package and
-# attaches them to the GitHub Release for that tag. workflow_dispatch builds
+# Tag push `v*` builds the .deb, the AppImage, the Arch package and the RPM
+# and attaches them to the GitHub Release for that tag. workflow_dispatch builds
 # the artifacts only; the release job runs for tag refs alone.
 on:
   push:
@@ -137,9 +137,38 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  rpm:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      # git before checkout, so the checkout is a repository build.sh can clone.
+      - name: Install build tools
+        run: dnf install -y git-core rpm-build 'dnf-command(builddep)'
+
+      - uses: actions/checkout@v7
+
+      - name: Build the package
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          dnf builddep -y -D 'wayterm_version 0' packaging/rpm/wayterm.spec
+          packaging/rpm/build.sh
+
+      # What a reviewer would check by hand, kept in the job log.
+      - name: Show the package
+        run: |
+          rpm -qpil target/rpm/RPMS/x86_64/*.rpm
+          rpm -qp --requires --recommends --suggests target/rpm/RPMS/x86_64/*.rpm
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rpm
+          path: target/rpm/RPMS/x86_64/*.rpm
+          if-no-files-found: error
+          overwrite: true
+
   release:
     runs-on: ubuntu-latest
-    needs: [deb, appimage, arch]
+    needs: [deb, appimage, arch, rpm]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -157,5 +186,6 @@ jobs:
             dist/*.deb
             dist/*.AppImage
             dist/*.pkg.tar.zst
+            dist/*.rpm
           fail_on_unmatched_files: true
           generate_release_notes: true
