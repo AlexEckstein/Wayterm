@@ -310,134 +310,6 @@ fn move_folder_refuses_cycles() {
     assert!(!store.move_folder(9999, None).unwrap());
 }
 
-/// A database created before `sessions.icon` existed gains the column on
-/// open, keeps its rows, and stores icons afterwards.
-#[test]
-fn open_adds_session_icon_to_an_older_database() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("old.sqlite3");
-    {
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(&MIGRATION_001.replace(
-            "    icon             TEXT,                    -- icon name; NULL = the type's default\n",
-            "",
-        ))
-        .unwrap();
-        assert!(
-            !has_column(&conn, "sessions", "icon").unwrap(),
-            "the fixture must predate the column"
-        );
-        conn.execute(
-            "INSERT INTO sessions (name, type) VALUES ('old', '\"ssh\"')",
-            [],
-        )
-        .unwrap();
-    }
-
-    let store = SessionStore::open(&path).unwrap();
-    let mut old = store.list_sessions(None).unwrap().remove(0);
-    assert_eq!(old.name, "old");
-    assert_eq!(old.icon, None);
-    old.icon = Some("wayterm-homelab".into());
-    store.update_session(&old).unwrap();
-    assert_eq!(
-        store.get_session(old.id).unwrap().icon.as_deref(),
-        Some("wayterm-homelab")
-    );
-    // Opening again is a no-op.
-    drop(store);
-    SessionStore::open(&path).unwrap();
-}
-
-/// A database created while `sessions.notes` existed loses the column on
-/// open and keeps its rows.
-#[test]
-fn open_drops_session_notes_from_an_older_database() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("old.sqlite3");
-    {
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(MIGRATION_001).unwrap();
-        conn.execute_batch("ALTER TABLE sessions ADD COLUMN notes TEXT;")
-            .unwrap();
-        conn.execute(
-            "INSERT INTO sessions (name, type, notes) VALUES ('old', '\"ssh\"', 'kept nowhere')",
-            [],
-        )
-        .unwrap();
-    }
-
-    let store = SessionStore::open(&path).unwrap();
-    assert!(!has_column(&store.conn, "sessions", "notes").unwrap());
-    let old = store.list_sessions(None).unwrap().remove(0);
-    assert_eq!(old.name, "old");
-    store.update_session(&old).unwrap();
-    // Opening again is a no-op.
-    drop(store);
-    SessionStore::open(&path).unwrap();
-}
-
-/// A database seeded with the old `is_default = 1` hotkey rows loses them
-/// on open and keeps the user's own rows.
-#[test]
-fn open_deletes_the_old_seeded_hotkey_rows() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("old.sqlite3");
-    {
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(MIGRATION_001).unwrap();
-        conn.execute_batch(
-            "INSERT INTO hotkeys (action, key_sequence, context, is_default) VALUES \
-             ('copy', 'Ctrl+Shift+C', 'terminal', 1), \
-             ('split_vertical', 'Ctrl+Shift+E', 'terminal', 1), \
-             ('paste', 'Ctrl+Y', 'terminal', 0);",
-        )
-        .unwrap();
-    }
-
-    let store = SessionStore::open(&path).unwrap();
-    assert_eq!(store.scalar_i64("SELECT COUNT(*) FROM hotkeys"), 1);
-    assert_eq!(
-        store.load_custom_hotkeys().unwrap(),
-        [("paste".to_string(), "Ctrl+Y".to_string(), true)]
-    );
-}
-
-/// A database created with `connection_history` and the
-/// `last_connected`/`connect_count` columns loses them on open and keeps
-/// its rows.
-#[test]
-fn open_drops_connection_history_from_an_older_database() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("old.sqlite3");
-    {
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(MIGRATION_001).unwrap();
-        conn.execute_batch(
-            "ALTER TABLE sessions ADD COLUMN last_connected TEXT; \
-             ALTER TABLE sessions ADD COLUMN connect_count INTEGER DEFAULT 0; \
-             CREATE TABLE connection_history (id INTEGER PRIMARY KEY, \
-                 session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE); \
-             CREATE INDEX idx_history_session ON connection_history(session_id); \
-             INSERT INTO sessions (name, type, connect_count) VALUES ('old', '\"ssh\"', 3);",
-        )
-        .unwrap();
-    }
-
-    let store = SessionStore::open(&path).unwrap();
-    assert_eq!(store.schema_objects("table").len(), TABLES.len());
-    assert_eq!(store.schema_objects("index").len(), INDEXES.len());
-    for column in ["last_connected", "connect_count"] {
-        assert!(!has_column(&store.conn, "sessions", column).unwrap());
-    }
-    let old = store.list_sessions(None).unwrap().remove(0);
-    assert_eq!(old.name, "old");
-    store.update_session(&old).unwrap();
-    // Opening again is a no-op.
-    drop(store);
-    SessionStore::open(&path).unwrap();
-}
-
 #[test]
 fn delete_folder_cascades_and_orphans_sessions() {
     let store = SessionStore::in_memory().unwrap();
@@ -706,47 +578,6 @@ fn host_keys_column_wire_format() {
     assert_eq!(raw, r#"[{"key_type":"ssh-ed25519","key":"AAAAC3Nza"}]"#);
 }
 
-/// A database created before `sessions.host_keys` existed gains the column
-/// on open, keeps its rows (with no trusted keys), and stores keys after.
-#[test]
-fn open_adds_session_host_keys_to_an_older_database() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("old.sqlite3");
-    let line = "    host_keys       TEXT,                     -- JSON array, doc 04 §Host key verification:\n                                              -- [{key_type:\"ssh-ed25519\", key:\"<base64, unpadded>\"}]\n";
-    assert!(
-        MIGRATION_001.contains(line),
-        "the fixture must drop the column"
-    );
-    {
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(&MIGRATION_001.replace(line, ""))
-            .unwrap();
-        assert!(!has_column(&conn, "sessions", "host_keys").unwrap());
-        conn.execute(
-            "INSERT INTO sessions (name, type) VALUES ('old', '\"ssh\"')",
-            [],
-        )
-        .unwrap();
-    }
-
-    let store = SessionStore::open(&path).unwrap();
-    assert!(has_column(&store.conn, "sessions", "host_keys").unwrap());
-    let old = store.list_sessions(None).unwrap().remove(0);
-    assert_eq!(old.name, "old");
-    assert_eq!(old.host_keys, None);
-    let key = host_key("ssh-ed25519", "AAAAC3Nza");
-    store
-        .add_session_host_keys(old.id, std::slice::from_ref(&key))
-        .unwrap();
-    assert_eq!(
-        store.get_session(old.id).unwrap().host_keys,
-        Some(vec![key])
-    );
-    // Opening again is a no-op.
-    drop(store);
-    SessionStore::open(&path).unwrap();
-}
-
 #[test]
 fn session_crud_roundtrip() {
     let store = SessionStore::in_memory().unwrap();
@@ -969,21 +800,6 @@ fn macro_crud_roundtrip() {
     assert_eq!(store.list_macros().unwrap(), [deploy]);
 }
 
-/// A database opened before macros existed gains the table on open.
-#[test]
-fn macros_table_is_added_to_an_existing_database() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("old.sqlite3");
-    SessionStore::open(&path).unwrap();
-    {
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("DROP TABLE macros;").unwrap();
-    }
-    let store = SessionStore::open(&path).unwrap();
-    let id = store.insert_macro(&macro_named("m", &[(0, b"x")])).unwrap();
-    assert_eq!(store.list_macros().unwrap()[0].id, id);
-}
-
 /// Sessions name hosts and users and macros can hold typed passwords: the
 /// database and SQLite's files beside it are the owner's alone, on a new
 /// database and on one an earlier version left world-readable.
@@ -1032,8 +848,8 @@ fn log_line<'a>(output: &'a str, message: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no '{message}' line in: {output}"))
 }
 
-/// Opening logs the store's path and time, and the schema steps with
-/// whether the seed ran: on a fresh database only (doc 16).
+/// Opening logs the store's path and time, and the schema with whether
+/// the seed ran: on a fresh database only (doc 16).
 #[test]
 fn opening_logs_the_store_and_whether_it_was_seeded() {
     let dir = tempfile::tempdir().unwrap();
@@ -1047,16 +863,16 @@ fn opening_logs_the_store_and_whether_it_was_seeded() {
     assert!(opened.contains("INFO"), "{opened}");
     assert!(opened.contains(&path.display().to_string()), "{opened}");
     assert!(opened.contains("elapsed_ms="), "{opened}");
-    let steps = log_line(&output, "schema steps complete");
-    assert!(steps.contains("steps=8"), "{steps}");
-    assert!(steps.contains("seeded=true"), "{steps}");
+    let schema = log_line(&output, "schema ready");
+    assert!(schema.contains("seeded=true"), "{schema}");
+    assert!(schema.contains("elapsed_ms="), "{schema}");
 
     let (buffer, guard) = crate::logging::tests::capture(None);
     drop(SessionStore::open(&path).unwrap());
     drop(guard);
     let output = buffer.contents();
-    let steps = log_line(&output, "schema steps complete");
-    assert!(steps.contains("seeded=false"), "{steps}");
+    let schema = log_line(&output, "schema ready");
+    assert!(schema.contains("seeded=false"), "{schema}");
 }
 
 /// A store that cannot be opened is an error, logged with its path.
