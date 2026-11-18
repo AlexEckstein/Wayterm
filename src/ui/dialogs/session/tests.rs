@@ -126,8 +126,6 @@ fn edit_mode_preserves_identity_fields() {
     let fields = DialogFields {
         base: SessionConfig {
             id: 42,
-            last_connected: Some("2026-10-02T12:34:56Z".to_string()),
-            connect_count: 7,
             ..Default::default()
         },
         name: "updated".to_string(),
@@ -143,11 +141,6 @@ fn edit_mode_preserves_identity_fields() {
     let config = config_from_fields(&fields, &folders, &[]);
 
     assert_eq!(config.id, 42);
-    assert_eq!(
-        config.last_connected,
-        Some("2026-10-02T12:34:56Z".to_string())
-    );
-    assert_eq!(config.connect_count, 7);
     assert_eq!(config.folder_id, Some(1));
 }
 

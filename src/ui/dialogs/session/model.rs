@@ -467,8 +467,6 @@ pub fn config_from_fields(
         font_family: base.font_family.clone(),
         font_size: base.font_size,
         opacity: base.opacity,
-        last_connected: base.last_connected.clone(),
-        connect_count: base.connect_count,
         ..Default::default()
     };
 

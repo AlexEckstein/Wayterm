@@ -121,9 +121,7 @@ word is live text in a font few systems have.
 ## Settings rows
 
 The `settings` table (doc 09 §Schema) is a key-value store. The seed runs
-once, inside a transaction, when the table is empty; `hotkeys` has no
-`UNIQUE (action, context)`, so re-running it would duplicate rows. It also
-inserts 28 informational hotkey rows (doc 11 §Persistence).
+once, inside a transaction, when the table is empty.
 
 | Row | Seed | Meaning |
 |---|---|---|

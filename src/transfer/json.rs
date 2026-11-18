@@ -19,13 +19,7 @@ use crate::store::model::{HostKeyPolicy, SessionConfig};
 pub const EXPORT_VERSION: u32 = 1;
 
 /// Store-local fields a session export leaves out.
-const LOCAL_FIELDS: [&str; 5] = [
-    "id",
-    "folder_id",
-    "jump_session_id",
-    "last_connected",
-    "connect_count",
-];
+const LOCAL_FIELDS: [&str; 3] = ["id", "folder_id", "jump_session_id"];
 
 #[derive(Serialize)]
 struct ExportDoc {

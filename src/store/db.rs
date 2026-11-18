@@ -156,11 +156,9 @@ impl SessionStore {
         rows.collect()
     }
 
-    /// Persist `config` over the row with its id. `connect_count` and
-    /// `last_connected` are left alone (see [`Self::touch_connected`]), and
-    /// so is `host_keys` ([`Self::add_session_host_keys`]): editors that
-    /// rebuild a row from their widgets never wipe the keys a session
-    /// trusts.
+    /// Persist `config` over the row with its id. `host_keys` is left
+    /// alone ([`Self::add_session_host_keys`]): editors that rebuild a row
+    /// from their widgets never wipe the keys a session trusts.
     pub fn update_session(&self, config: &SessionConfig) -> rusqlite::Result<()> {
         let sql = format!(
             "UPDATE sessions SET ({SESSION_COLUMNS}) = ({}), updated_at = datetime('now') \
@@ -209,17 +207,6 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Bump `connect_count` and stamp `last_connected`. Nothing in the app
-    /// calls it (doc 09 §Limitations).
-    pub fn touch_connected(&self, id: i64) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE sessions SET last_connected = datetime('now'), \
-             connect_count = connect_count + 1 WHERE id = ?1",
-            [id],
-        )?;
-        Ok(())
-    }
-
     /// Every macro (doc 12), by name — case-insensitive — then id.
     pub fn list_macros(&self) -> rusqlite::Result<Vec<Macro>> {
         let mut stmt = self.conn.prepare(
@@ -254,8 +241,7 @@ impl SessionStore {
         Ok(())
     }
 
-    /// User-customized hotkey rows (`is_default = 0`), oldest first. Seeded
-    /// `is_default = 1` rows never load over the compiled-in defaults
+    /// User-customized hotkey rows (`is_default = 0`), oldest first
     /// (doc 11 §Persistence).
     pub fn load_custom_hotkeys(&self) -> rusqlite::Result<Vec<CustomHotkeyRow>> {
         let mut stmt = self.conn.prepare(
@@ -401,18 +387,6 @@ impl SessionStore {
     }
 }
 
-#[cfg(test)]
-impl SessionStore {
-    /// The seeded `is_default = 1` hotkey rows as `(action, key, context)`.
-    pub(crate) fn seeded_hotkeys(&self) -> rusqlite::Result<Vec<(String, String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT action, key_sequence, context FROM hotkeys WHERE is_default = 1 ORDER BY id",
-        )?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-        rows.collect()
-    }
-}
-
 /// Set the database file to mode 0600, creating it empty if it is missing:
 /// SQLite would create it by the umask, and gives its journal files the
 /// database's mode. Best effort: a path that cannot be opened is
@@ -462,9 +436,9 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     migrate_004(conn)?;
     conn.execute_batch(MIGRATION_005)?;
     migrate_006(conn)?;
-    // `hotkeys` has no UNIQUE constraint, so re-running the seed would
-    // duplicate rows: seed exactly once, atomically, keyed on an empty
-    // `settings` table.
+    conn.execute_batch(MIGRATION_007)?;
+    migrate_008(conn)?;
+    // Seed exactly once, atomically, keyed on an empty `settings` table.
     let already_seeded: bool =
         conn.query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |row| {
             row.get(0)
@@ -475,7 +449,7 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.commit()?;
     }
     tracing::info!(
-        steps = 6,
+        steps = 8,
         seeded = !already_seeded,
         elapsed_ms = elapsed_ms(started),
         "schema steps complete"
@@ -651,8 +625,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     icon             TEXT,                    -- icon name; NULL = the type's default
 
     -- Metadata
-    last_connected   TEXT,
-    connect_count    INTEGER DEFAULT 0,
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -673,24 +645,12 @@ CREATE TABLE IF NOT EXISTS settings (
     value       TEXT
 );
 
--- Connection history / recent sessions
-CREATE TABLE IF NOT EXISTS connection_history (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
-    connected_at TEXT NOT NULL DEFAULT (datetime('now')),
-    duration    INTEGER,
-    bytes_sent  INTEGER,
-    bytes_received INTEGER
-);
-
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_sessions_folder ON sessions(folder_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_type ON sessions(type);
 CREATE INDEX IF NOT EXISTS idx_sessions_host ON sessions(host);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
 CREATE INDEX IF NOT EXISTS idx_hotkeys_action ON hotkeys(action);
-CREATE INDEX IF NOT EXISTS idx_history_session ON connection_history(session_id);
-CREATE INDEX IF NOT EXISTS idx_history_recent ON connection_history(connected_at DESC);
 "#;
 
 /// Schema v2 — RDP server-certificate trust (TOFU fingerprints, one row per
@@ -754,43 +714,24 @@ fn migrate_006(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// First-run seed (doc 13 §Settings rows). The hotkey rows are
-/// informational (`is_default = 1` rows never load); doc 11's table in
-/// `hotkeys::defaults` is the source of truth.
-const SEED_DEFAULTS: &str = r#"
--- Default hotkeys — MUST stay in sync with doc 11's default-actions table.
--- (These rows are the seed data for is_default=1; user rebinding writes
--- is_default=0 rows which override at load time.)
-INSERT INTO hotkeys (action, key_sequence, context, is_default) VALUES
-('new_tab',           'Ctrl+Shift+T',    'global',       1),
-('close_tab',         'Ctrl+Shift+W',    'global',       1),
-('next_tab',          'Ctrl+Tab',        'global',       1),
-('prev_tab',          'Ctrl+Shift+Tab',  'global',       1),
-('toggle_sftp',       'Ctrl+Shift+B',    'global',       1),
-('toggle_session_tree','Ctrl+Shift+S',   'global',       1),
-('toggle_fullscreen', 'F11',             'global',       1),
-('reconnect',         'Ctrl+Shift+R',    'global',       1),
-('disconnect',        'Ctrl+Shift+X',    'global',       1),
-('new_session',       'Ctrl+N',          'global',       1),
-('rename_tab',        'Ctrl+Shift+Enter','global',       1),
-('split_horizontal',  'Ctrl+Shift+D',    'terminal',     1),
-('split_vertical',    'Ctrl+Shift+E',    'terminal',     1),
-('close_split',       'Ctrl+Shift+Q',    'terminal',     1),
-('search',            'Ctrl+Shift+F',    'terminal',     1),
-('search_scrollback', 'Ctrl+Shift+K',    'terminal',     1),
-('copy',              'Ctrl+Shift+C',    'terminal',     1),
-('paste',             'Ctrl+Shift+V',    'terminal',     1),
-('select_all',        'Ctrl+Shift+A',    'terminal',     1),
-('clear',             'Ctrl+Shift+L',    'terminal',     1),
-('edit_session',      'Ctrl+E',          'session_tree', 1),
-('duplicate_session', 'Ctrl+D',         'session_tree', 1),
-('delete_session',    'Delete',          'session_tree', 1),
-('connect_session',   'Enter',          'session_tree', 1),
-('sftp_upload',       'Ctrl+U',          'sftp',         1),
-('sftp_download',     'Ctrl+D',         'sftp',         1),
-('sftp_rename',       'F2',              'sftp',         1),
-('sftp_delete',       'Delete',          'sftp',         1);
+/// Schema v7 — delete the hotkey rows earlier seeds inserted with
+/// `is_default = 1`: nothing loads them (doc 11 §Persistence).
+const MIGRATION_007: &str = "DELETE FROM hotkeys WHERE is_default = 1;";
 
+/// Schema v8 — drop what nothing wrote: the `connection_history` table
+/// (its indexes go with it) and `sessions.last_connected`/`connect_count`.
+fn migrate_008(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS connection_history;")?;
+    for column in ["last_connected", "connect_count"] {
+        if has_column(conn, "sessions", column)? {
+            conn.execute_batch(&format!("ALTER TABLE sessions DROP COLUMN {column};"))?;
+        }
+    }
+    Ok(())
+}
+
+/// First-run seed (doc 13 §Settings rows).
+const SEED_DEFAULTS: &str = r#"
 -- Default settings
 INSERT INTO settings (key, value) VALUES
 ('default_backend',     'vte'),
@@ -864,8 +805,6 @@ fn row_to_session(row: &rusqlite::Row) -> rusqlite::Result<SessionConfig> {
         font_size: row.get("font_size")?,
         opacity: row.get("opacity")?,
         icon: row.get("icon")?,
-        last_connected: row.get("last_connected")?,
-        connect_count: row.get("connect_count")?,
     })
 }
 

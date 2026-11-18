@@ -2,11 +2,8 @@
 //! persistence path (doc 11 §Persistence).
 //!
 //! Persistence is tested against real SQLite — an in-memory store for
-//! the load/save semantics, and a file-backed pair for the two cases
-//! that need a second writer or raw SQL: the guard that keeps a rebind
-//! from accumulating duplicate `is_default = 0` rows, and the proof that
-//! a seeded `is_default = 1` row never loads back over the compiled-in
-//! default.
+//! the load/save semantics, and a file-backed pair for the guard that
+//! keeps two writers from accumulating duplicate `is_default = 0` rows.
 
 use std::path::Path;
 
@@ -154,10 +151,10 @@ fn conflicts_for_delegates_to_the_registry() {
     );
 }
 
-/// A fresh database is full of `is_default = 1` seed rows, and loading
-/// must leave every compiled-in default exactly as it was.
+/// A fresh database has no custom rows, so loading leaves every
+/// compiled-in default as it was.
 #[test]
-fn load_from_db_ignores_seed_rows() {
+fn load_from_db_on_a_fresh_store_keeps_the_defaults() {
     let store = store();
     let mut engine = engine();
     let report = engine.load_from_db(&store).expect("load");
@@ -165,28 +162,6 @@ fn load_from_db_ignores_seed_rows() {
     assert!(report.skipped.is_empty());
     assert_eq!(binding(&engine, "copy"), "Ctrl+Shift+C");
     assert_eq!(binding(&engine, "new_tab"), "Ctrl+Shift+T");
-}
-
-/// Even a *hand-edited* seed row must not reach the registry: the
-/// filter is `is_default = 0`, not "is the row's key still current".
-#[test]
-fn load_from_db_ignores_edited_seed_rows() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (store, raw) = file_store(dir.path());
-    raw.execute(
-        "UPDATE hotkeys SET key_sequence = 'Ctrl+Alt+Z' WHERE action = 'copy' AND is_default = 1",
-        [],
-    )
-    .expect("tamper with the seed");
-
-    let mut engine = engine();
-    let report = engine.load_from_db(&store).expect("load");
-    assert!(report.applied.is_empty());
-    assert_eq!(
-        binding(&engine, "copy"),
-        "Ctrl+Shift+C",
-        "a seed row must never load over the compiled-in default"
-    );
 }
 
 #[test]
@@ -399,38 +374,6 @@ fn save_is_idempotent() {
     engine.save_to_db(&store).expect("save");
     engine.save_to_db(&store).expect("save");
     assert_eq!(custom_rows(&store).len(), 1);
-}
-
-#[test]
-fn save_never_touches_the_seed_rows() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (store, raw) = file_store(dir.path());
-    let mut engine = engine();
-    engine.rebind("copy", "Ctrl+Y").unwrap();
-    engine.save_to_db(&store).expect("save");
-
-    // The seeded row survives beside the custom one: doc 09's design is
-    // "is_default = 0 rows override at load time", not "replace the row".
-    let count: i64 = raw
-        .query_row("SELECT COUNT(*) FROM hotkeys", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(count, 29, "28 seeded rows + 1 custom row");
-    let defaults: i64 = raw
-        .query_row(
-            "SELECT COUNT(*) FROM hotkeys WHERE is_default = 1",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(defaults, 28, "the seed is untouched");
-    let custom: i64 = raw
-        .query_row(
-            "SELECT COUNT(*) FROM hotkeys WHERE is_default = 0",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(custom, 1);
 }
 
 /// Doc 09's `hotkeys` table has no `UNIQUE (action, context)`
