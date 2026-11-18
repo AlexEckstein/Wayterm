@@ -1,0 +1,56 @@
+# Builds the commit checked out in the repository this file sits in,
+# not uncommitted changes (doc 14 §Arch package):
+#   cd packaging/arch && makepkg -s
+# pkgver() takes the version from Cargo.toml.
+
+pkgname=wayterm
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='An open source, multi-protocol connection manager and terminal for Linux'
+arch=('x86_64')
+url='https://github.com/AlexEckstein/Wayterm'
+license=('MIT')
+depends=('cairo' 'gdk-pixbuf2' 'glib2' 'glibc' 'graphene' 'gtk4' 'libgcc' 'pango' 'vte4')
+makedepends=('cargo' 'git' 'curl' 'xz')
+optdepends=(
+  'openssh: jump hosts and SSH key generation'
+  'freerdp: RDP tabs'
+  'bitwarden-cli: Bitwarden as a credential source'
+)
+# -flto would make the C shim GCC bitcode the link cannot read; no -debug split.
+options=('!lto' '!debug')
+
+prepare() {
+  local root
+  root="$(realpath "$startdir/../..")"
+  rm -rf "$srcdir/$pkgname"
+  git clone --quiet --no-checkout "$root" "$srcdir/$pkgname"
+  git -C "$srcdir/$pkgname" checkout --quiet --detach "$(git -C "$root" rev-parse HEAD)"
+  cd "$srcdir/$pkgname"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+pkgver() {
+  sed -n 's/^version = "\(.*\)"/\1/p' "$srcdir/$pkgname/Cargo.toml" | head -n1
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  cargo build --frozen --release
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  install -Dm755 target/release/wayterm "$pkgdir/usr/bin/wayterm"
+  install -Dm644 packaging/desktop/com.alex-eckstein.wayterm.desktop \
+    "$pkgdir/usr/share/applications/com.alex-eckstein.wayterm.desktop"
+  install -Dm644 packaging/metainfo/com.alex-eckstein.wayterm.appdata.xml \
+    "$pkgdir/usr/share/metainfo/com.alex-eckstein.wayterm.appdata.xml"
+  install -Dm644 assets/icons/scalable/apps/com.alex-eckstein.wayterm.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/com.alex-eckstein.wayterm.svg"
+  for size in 64 128 256; do
+    install -Dm644 "assets/icons/hicolor/${size}x${size}/apps/com.alex-eckstein.wayterm.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/com.alex-eckstein.wayterm.png"
+  done
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
