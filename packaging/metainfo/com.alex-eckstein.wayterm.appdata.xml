@@ -23,6 +23,11 @@
     <binary>wayterm</binary>
   </provides>
   <releases>
+    <release version="0.2.0" type="stable" date="2026-11-18">
+      <description>
+        <p>The Ghostty terminal backend is in the default build and no longer experimental. Adds diagnostics logging, SFTP for local shell tabs, and host keys trusted per session; fixes SFTP sidebar uploads and terminal focus when switching tabs.</p>
+      </description>
+    </release>
     <release version="0.1.0" type="stable" date="2026-11-12">
       <description>
         <p>First packaged release; see GitHub for details.</p>
