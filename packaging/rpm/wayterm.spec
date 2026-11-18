@@ -6,6 +6,8 @@
 %global debug_package %{nil}
 # -flto would make the C shim GCC bitcode the link cannot read.
 %global _lto_cflags %{nil}
+# No changelog section: release notes live on GitHub.
+%global source_date_epoch_from_changelog 0
 
 Name:           wayterm
 Version:        %{wayterm_version}
