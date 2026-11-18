@@ -66,7 +66,8 @@ cargo build --release --no-default-features
 - Flatpak: `flatpak-builder --user --install build-dir packaging/flatpak/com.alex-eckstein.wayterm.json`.
 - AppImage: pkg2appimage recipe `packaging/appimage/wayterm.yml`, built from the `.deb` in CI.
 - Arch Linux: `cd packaging/arch && makepkg -si` builds and installs the checked-out commit.
-- Releases: pushing a `v*` tag runs `.github/workflows/release.yml`, which attaches the `.deb`, AppImage and Arch package to the GitHub Release.
+- RPM (Fedora): `packaging/rpm/build.sh` builds the checked-out commit into `target/rpm/RPMS/`.
+- Releases: pushing a `v*` tag runs `.github/workflows/release.yml`, which attaches the `.deb`, AppImage, Arch package and RPM to the GitHub Release.
 
 ## Stack
 

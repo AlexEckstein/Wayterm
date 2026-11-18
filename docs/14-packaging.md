@@ -1,14 +1,15 @@
 # Building and Packaging
 
 How Wayterm is built, which Cargo features exist, and how the `.deb`,
-AppImage, Arch package and Flatpak are made and released.
+AppImage, Arch package, RPM and Flatpak are made and released.
 
 ## Build
 
 Needs Rust (stable), GTK 4, VTE for GTK 4 (≥ 0.72 at runtime), and
 `glib-compile-resources` from the GLib dev tools. On Debian/Ubuntu:
 `libgtk-4-dev libvte-2.91-gtk4-dev libsqlite3-dev` (the first pulls in
-`libglib2.0-dev-bin`, which has the tool). On Arch: `gtk4 vte4`.
+`libglib2.0-dev-bin`, which has the tool). On Arch: `gtk4 vte4`. On
+Fedora: `gtk4-devel vte291-gtk4-devel`.
 SQLite is bundled by `rusqlite`, so no system library is linked for it.
 
 ```sh
@@ -103,6 +104,24 @@ symbol undefined; `!debug` keeps it to one package.
 cd packaging/arch && makepkg -si
 ```
 
+### RPM
+
+`packaging/rpm/wayterm.spec`, built by `packaging/rpm/build.sh`: the
+script clones the checked-out commit, tars it with its `.git` (so the
+About page gets the commit hash) as the spec's source, and runs
+`rpmbuild` with `Cargo.toml`'s version; the package lands in
+`target/rpm/RPMS/`. Like the Arch package it installs what the `.deb`
+installs plus the license, builds with the default features, and turns
+LTO off (`_lto_cflags`) for the same reason. Library requirements come
+from rpm's own scan of the binary; `openssh-clients` is recommended and
+`freerdp` suggested. The spec keeps no `%changelog`. The build fetches crates, Zig and libghostty-vt
+over the network, so it runs under plain `rpmbuild`, not `mock`.
+
+```sh
+sudo dnf builddep -D 'wayterm_version 0' packaging/rpm/wayterm.spec
+packaging/rpm/build.sh
+```
+
 ### Flatpak
 
 `packaging/flatpak/com.alex-eckstein.wayterm.json`: GNOME runtime 47 with
@@ -127,8 +146,8 @@ where `build.rs` downloads the pinned Zig and builds libghostty-vt for a
 baseline CPU (doc 02 §libghostty-vt pin),
 builds the AppImage from it with a pkg2appimage pinned by checksum,
 builds the Arch package with `makepkg` in an `archlinux:latest`
-container, and attaches all three to the GitHub Release for that tag. A
-manual run (`workflow_dispatch`) builds the artifacts without releasing. The
+container and the RPM with `rpmbuild` in a `fedora:latest` one, and
+attaches all four to the GitHub Release for that tag. A manual run (`workflow_dispatch`) builds the artifacts without releasing. The
 workflow's token is read-only; only the job that publishes, which runs no
 build, gets one that can write. The `deb` job fails before building
 unless the tag matches `Cargo.toml`'s `version`, and the Release's notes
@@ -147,7 +166,8 @@ A release goes out like this:
    and its binary launched under Xvfb; the AppImage is extracted and its
    contents inspected, not run — it needs a newer glibc than the smoke
    host (§Limitations); the Arch package's file list and `.PKGINFO` are
-   read, and its binary launched under Xvfb on an Arch host.
+   read, and its binary launched under Xvfb on an Arch host; the RPM's
+   file list and requirements are read from the `rpm` job's log.
 4. The annotated tag `v<version>` is pushed; a published tag is never
    moved.
 5. The workflow publishes the Release, the notes get their lead
@@ -163,7 +183,12 @@ A release goes out like this:
   not build it, and its sandbox access to SSH keys, the keyring and files
   is not verified, nor is handing a file opened from the SFTP sidebar to
   another application (doc 07 §Opening files).
-- The AppImage, `.deb` and Arch package target x86_64 only.
+- The AppImage, `.deb`, Arch package and RPM target x86_64 only.
+- The RPM is built on the newest Fedora. It requires library sonames
+  and glibc 2.39 symbols, not Fedora package versions, but it has been
+  installed on no system yet, and older Fedora releases, RHEL and
+  openSUSE are untried. It is not in a repository (Fedora, COPR), which
+  needs an offline build, so nothing updates it.
 - The Arch package is built against Arch as it is on the day of the
   release and is not in the AUR: a later soname bump in GTK 4 or VTE
   needs a rebuild, and nothing tells the user one is due.
