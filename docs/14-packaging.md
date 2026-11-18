@@ -1,15 +1,15 @@
 # Building and Packaging
 
 How Wayterm is built, which Cargo features exist, and how the `.deb`,
-AppImage and Flatpak are made and released.
+AppImage, Arch package and Flatpak are made and released.
 
 ## Build
 
 Needs Rust (stable), GTK 4, VTE for GTK 4 (≥ 0.72 at runtime), and
 `glib-compile-resources` from the GLib dev tools. On Debian/Ubuntu:
 `libgtk-4-dev libvte-2.91-gtk4-dev libsqlite3-dev` (the first pulls in
-`libglib2.0-dev-bin`, which has the tool). SQLite is bundled by
-`rusqlite`, so no system library is linked for it.
+`libglib2.0-dev-bin`, which has the tool). On Arch: `gtk4 vte4`.
+SQLite is bundled by `rusqlite`, so no system library is linked for it.
 
 ```sh
 cargo run
@@ -84,6 +84,25 @@ WAYTERM_DEB=$PWD/target/debian/wayterm_<ver>_amd64.deb \
   ./pkg2appimage packaging/appimage/wayterm.yml
 ```
 
+### Arch package
+
+`packaging/arch/PKGBUILD` builds the commit checked out in the
+repository it sits in: `prepare()` clones that commit into `$srcdir`, so
+uncommitted changes are left out and the About page still gets the
+commit hash. `pkgver()` reads `Cargo.toml`'s version, so a release
+bumps no second number. It installs what the `.deb` installs plus the
+license, links GTK 4 and VTE from the system (`depends`), and builds
+with the default features, so libghostty-vt is linked statically.
+`openssh`, `freerdp` and `bitwarden-cli` are optional dependencies, for
+jump hosts and key generation, RDP tabs, and the Bitwarden source. It
+sets `!lto`, because makepkg's `-flto` in `CFLAGS` compiles the C shim
+to GCC bitcode that the link cannot read, leaving every `wt_ghostty_*`
+symbol undefined; `!debug` keeps it to one package.
+
+```sh
+cd packaging/arch && makepkg -si
+```
+
 ### Flatpak
 
 `packaging/flatpak/com.alex-eckstein.wayterm.json`: GNOME runtime 47 with
@@ -106,9 +125,10 @@ file transfers). Inside the sandbox the keyring source uses the portal
 `.deb` with `cargo-deb` on `ubuntu-latest` (Ubuntu 26.04, as CI uses),
 where `build.rs` downloads the pinned Zig and builds libghostty-vt for a
 baseline CPU (doc 02 §libghostty-vt pin),
-builds the AppImage from it with a pkg2appimage pinned by checksum, and
-attaches both to the GitHub Release for that tag. A manual run
-(`workflow_dispatch`) builds the artifacts without releasing. The
+builds the AppImage from it with a pkg2appimage pinned by checksum,
+builds the Arch package with `makepkg` in an `archlinux:latest`
+container, and attaches all three to the GitHub Release for that tag. A
+manual run (`workflow_dispatch`) builds the artifacts without releasing. The
 workflow's token is read-only; only the job that publishes, which runs no
 build, gets one that can write. The `deb` job fails before building
 unless the tag matches `Cargo.toml`'s `version`, and the Release's notes
@@ -126,7 +146,8 @@ A release goes out like this:
    checked with `dpkg-deb`, installed into a clean Debian container,
    and its binary launched under Xvfb; the AppImage is extracted and its
    contents inspected, not run — it needs a newer glibc than the smoke
-   host (§Limitations).
+   host (§Limitations); the Arch package's file list and `.PKGINFO` are
+   read, and its binary launched under Xvfb on an Arch host.
 4. The annotated tag `v<version>` is pushed; a published tag is never
    moved.
 5. The workflow publishes the Release, the notes get their lead
@@ -142,7 +163,10 @@ A release goes out like this:
   not build it, and its sandbox access to SSH keys, the keyring and files
   is not verified, nor is handing a file opened from the SFTP sidebar to
   another application (doc 07 §Opening files).
-- The AppImage and `.deb` target x86_64 only.
+- The AppImage, `.deb` and Arch package target x86_64 only.
+- The Arch package is built against Arch as it is on the day of the
+  release and is not in the AUR: a later soname bump in GTK 4 or VTE
+  needs a rebuild, and nothing tells the user one is due.
 - The AppImage bundles GTK 4 and GLib from Ubuntu 26.04, which need
   glibc 2.42 (the highest version symbol its bundled libraries ask for;
   the image's name carries it), so it does not run on Ubuntu 24.04 or

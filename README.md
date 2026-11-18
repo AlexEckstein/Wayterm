@@ -65,7 +65,8 @@ cargo build --release --no-default-features
 - `.deb`: `cargo deb` (metadata in `Cargo.toml`, output in `target/debian/`).
 - Flatpak: `flatpak-builder --user --install build-dir packaging/flatpak/com.alex-eckstein.wayterm.json`.
 - AppImage: pkg2appimage recipe `packaging/appimage/wayterm.yml`, built from the `.deb` in CI.
-- Releases: pushing a `v*` tag runs `.github/workflows/release.yml`, which attaches the `.deb` and AppImage to the GitHub Release.
+- Arch Linux: `cd packaging/arch && makepkg -si` builds and installs the checked-out commit.
+- Releases: pushing a `v*` tag runs `.github/workflows/release.yml`, which attaches the `.deb`, AppImage and Arch package to the GitHub Release.
 
 ## Stack
 

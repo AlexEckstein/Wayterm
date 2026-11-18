@@ -128,7 +128,7 @@ src/ui/panels/   ← side dock, session tree, SFTP sidebar, macros panel and edi
 tests/           ← integration tests; tests/common is the shared sshd fixture (doc 15)
 benches/         ← cargo benchmarks (terminal output parsing)
 assets/          ← SVG icons (app icon, window mark, session-tree icons)
-packaging/       ← desktop entry, metainfo, Flatpak manifest, AppImage recipe (doc 14)
+packaging/       ← desktop entry, metainfo, Flatpak manifest, AppImage recipe, Arch PKGBUILD (doc 14)
 scripts/         ← local sshd runners, the auth-method matrix, and the serial
                    loopback used by the integration suites
 ```
