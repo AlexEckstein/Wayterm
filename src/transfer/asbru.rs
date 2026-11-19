@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use serde_yaml_ng::{Mapping, Value};
+use saphyr::{LoadableYamlNode, Scalar, Yaml};
 
 use super::{FolderSet, ImportError, ImportReport, Parsed};
 use crate::store::model::{AuthMethod, SessionConfig, SessionType};
@@ -28,23 +28,30 @@ const KNOWN_FIELDS: [&str; 10] = [
 ];
 
 pub fn parse(text: &str) -> Result<Parsed, ImportError> {
-    let doc: Value =
-        serde_yaml_ng::from_str(text).map_err(|e| ImportError::Parse(e.to_string()))?;
-    let top = doc
-        .as_mapping()
-        .ok_or_else(|| ImportError::Parse("not an Asbru export (no mapping)".to_string()))?;
-    let entries = match top.get("environments").and_then(Value::as_mapping) {
-        Some(environments) => environments,
-        None => top,
+    let docs = Yaml::load_from_str(text).map_err(|e| ImportError::Parse(e.to_string()))?;
+    let top = match docs.as_slice() {
+        [doc] if doc.is_mapping() => doc,
+        _ => {
+            return Err(ImportError::Parse(
+                "not an Asbru export (no mapping)".to_string(),
+            ));
+        }
     };
-    let entries: Vec<(String, &Mapping)> = entries
-        .iter()
-        .filter_map(|(key, value)| Some((key.as_str()?.to_string(), value.as_mapping()?)))
+    let entries = top
+        .as_mapping_get("environments")
+        .filter(|environments| environments.is_mapping())
+        .unwrap_or(top);
+    let entries: Vec<(String, &Yaml)> = entries
+        .as_mapping()
+        .into_iter()
+        .flatten()
+        .filter(|(_, value)| value.is_mapping())
+        .filter_map(|(key, value)| Some((key.as_str()?.to_string(), value)))
         .filter(|(key, _)| !key.starts_with("__"))
         .collect();
-    let groups: HashMap<&str, &Mapping> = entries
+    let groups: HashMap<&str, &Yaml> = entries
         .iter()
-        .filter(|(_, entry)| truthy(entry.get("_is_group")))
+        .filter(|(_, entry)| truthy(entry.as_mapping_get("_is_group")))
         .map(|(uuid, entry)| (uuid.as_str(), *entry))
         .collect();
 
@@ -63,7 +70,7 @@ pub fn parse(text: &str) -> Result<Parsed, ImportError> {
             continue;
         }
         let folder = folders.ensure(path.iter().map(String::as_str));
-        for (key, value) in entry.iter() {
+        for (key, value) in entry.as_mapping().into_iter().flatten() {
             let Some(key) = key.as_str() else { continue };
             let lowered = key.to_ascii_lowercase();
             if lowered.contains("pass") || lowered.contains("secret") {
@@ -143,7 +150,7 @@ pub fn parse(text: &str) -> Result<Parsed, ImportError> {
 
 /// Names of the groups from the root down to `parent`. A dangling or
 /// cyclic parent chain stops where it breaks.
-fn group_path(groups: &HashMap<&str, &Mapping>, mut parent: Option<String>) -> Vec<String> {
+fn group_path(groups: &HashMap<&str, &Yaml>, mut parent: Option<String>) -> Vec<String> {
     let mut path = Vec::new();
     let mut seen = BTreeSet::new();
     while let Some(uuid) = parent.filter(|p| p != ROOT) {
@@ -161,35 +168,37 @@ fn group_path(groups: &HashMap<&str, &Mapping>, mut parent: Option<String>) -> V
 }
 
 /// A scalar field as text; blank → `None`.
-fn text_field(entry: &Mapping, key: &str) -> Option<String> {
-    let text = match entry.get(key)? {
-        Value::String(s) => s.trim().to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
+fn text_field(entry: &Yaml, key: &str) -> Option<String> {
+    let text = match entry.as_mapping_get(key)? {
+        Yaml::Value(Scalar::String(s)) => s.trim().to_string(),
+        Yaml::Value(Scalar::Integer(n)) => n.to_string(),
+        Yaml::Value(Scalar::FloatingPoint(n)) => n.to_string(),
+        Yaml::Value(Scalar::Boolean(b)) => b.to_string(),
         _ => return None,
     };
     (!text.is_empty()).then_some(text)
 }
 
-fn truthy(value: Option<&Value>) -> bool {
+fn truthy(value: Option<&Yaml>) -> bool {
     match value {
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_i64().is_some_and(|n| n != 0),
-        Some(Value::String(s)) => matches!(s.trim(), "1" | "true" | "yes"),
+        Some(Yaml::Value(Scalar::Boolean(b))) => *b,
+        Some(Yaml::Value(Scalar::Integer(n))) => *n != 0,
+        Some(Yaml::Value(Scalar::String(s))) => matches!(s.trim(), "1" | "true" | "yes"),
         _ => false,
     }
 }
 
 /// Null, empty, zero, or false: a field left at its default.
-fn is_blank(value: &Value) -> bool {
+fn is_blank(value: &Yaml) -> bool {
     match value {
-        Value::Null => true,
-        Value::Bool(b) => !b,
-        Value::Number(n) => n.as_f64() == Some(0.0),
-        Value::String(s) => s.trim().is_empty(),
-        Value::Sequence(s) => s.is_empty(),
-        Value::Mapping(m) => m.is_empty(),
-        Value::Tagged(_) => false,
+        Yaml::Value(Scalar::Null) => true,
+        Yaml::Value(Scalar::Boolean(b)) => !b,
+        Yaml::Value(Scalar::Integer(n)) => *n == 0,
+        Yaml::Value(Scalar::FloatingPoint(n)) => n.0 == 0.0,
+        Yaml::Value(Scalar::String(s)) => s.trim().is_empty(),
+        Yaml::Sequence(s) => s.is_empty(),
+        Yaml::Mapping(m) => m.is_empty(),
+        _ => false,
     }
 }
 
@@ -200,7 +209,7 @@ mod tests {
     #[test]
     fn not_a_mapping_is_a_parse_error() {
         assert!(matches!(parse("- a\n- b\n"), Err(ImportError::Parse(_))));
-        assert!(matches!(parse(": : :"), Err(ImportError::Parse(_))));
+        assert!(matches!(parse("a: [b\n"), Err(ImportError::Parse(_))));
     }
 
     #[test]
