@@ -46,7 +46,7 @@ serialport = { version = "4.10.1", default-features = false }
 vnc-rs = "=0.6.0"
 x11rb = "0.14"
 gdk4-x11 = "0.11"
-serde_yaml_ng = "0.10"
+saphyr = { version = "0.3", default-features = false }
 # Secret Service / Flatpak portal keyring (doc 05).
 oo7 = "0.7"
 pollster = "1.0"
