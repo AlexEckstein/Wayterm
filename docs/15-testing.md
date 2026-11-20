@@ -44,7 +44,11 @@ build without it, which CI's `minimal` job keeps passing.
   and flags.
 - **minimal:** clippy and `cargo test` with `--no-default-features`, the
   build without the Ghostty backend.
-- **audit:** a weekly `cargo audit` sweep.
+- **audit:** a weekly `cargo audit` sweep. It opens one issue per
+  advisory (vulnerability, unmaintained, unsound or notice), titled with
+  the advisory ID, and skips an ID already in the title of any issue or
+  PR, open or closed. The job does not fail on a finding: the issue is
+  the alert. It has the workflow's only `issues: write`.
 - **dependabot:** opens weekly update PRs for `cargo` (minor/patch
   grouped into one PR, majors separate) and for the `github-actions`
   versions used by the workflows.
