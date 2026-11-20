@@ -424,20 +424,13 @@ fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-/// The schema steps of doc 09 §Database, then the seed on a fresh
-/// database; logs how long they took (doc 16).
+/// The schema of doc 09 §Database, then the seed on a fresh database; logs
+/// how long they took (doc 16).
 fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
     let started = Instant::now();
     // `foreign_keys` is per connection; WAL persists in the file.
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-    conn.execute_batch(MIGRATION_001)?;
-    conn.execute_batch(MIGRATION_002)?;
-    migrate_003(conn)?;
-    migrate_004(conn)?;
-    conn.execute_batch(MIGRATION_005)?;
-    migrate_006(conn)?;
-    conn.execute_batch(MIGRATION_007)?;
-    migrate_008(conn)?;
+    conn.execute_batch(SCHEMA)?;
     // Seed exactly once, atomically, keyed on an empty `settings` table.
     let already_seeded: bool =
         conn.query_row("SELECT EXISTS(SELECT 1 FROM settings)", [], |row| {
@@ -449,10 +442,9 @@ fn initialize(conn: &mut Connection) -> rusqlite::Result<()> {
         tx.commit()?;
     }
     tracing::info!(
-        steps = 8,
         seeded = !already_seeded,
         elapsed_ms = elapsed_ms(started),
-        "schema steps complete"
+        "schema ready"
     );
     Ok(())
 }
@@ -549,8 +541,8 @@ fn optional_json_column<T: serde::de::DeserializeOwned>(
         .transpose()
 }
 
-/// Schema v1 — doc 09 §Schema, plus `IF NOT EXISTS`.
-const MIGRATION_001: &str = r#"
+/// Doc 09 §Schema, plus `IF NOT EXISTS`.
+const SCHEMA: &str = r#"
 -- Session folders for tree organization
 CREATE TABLE IF NOT EXISTS folders (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -651,12 +643,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_type ON sessions(type);
 CREATE INDEX IF NOT EXISTS idx_sessions_host ON sessions(host);
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
 CREATE INDEX IF NOT EXISTS idx_hotkeys_action ON hotkeys(action);
-"#;
 
-/// Schema v2 — RDP server-certificate trust (TOFU fingerprints, one row per
-/// endpoint). Idempotent like v1 (`IF NOT EXISTS`), so existing databases
-/// migrate on open.
-const MIGRATION_002: &str = r#"
+-- RDP server-certificate trust (TOFU fingerprints, one row per endpoint)
 CREATE TABLE IF NOT EXISTS rdp_trust (
     host        TEXT NOT NULL,
     port        INTEGER NOT NULL,
@@ -664,38 +652,9 @@ CREATE TABLE IF NOT EXISTS rdp_trust (
     first_seen  INTEGER NOT NULL,
     PRIMARY KEY (host, port)
 );
-"#;
 
-/// Schema v3 — `sessions.icon` (doc 09). `CREATE TABLE IF NOT EXISTS`
-/// leaves an existing table alone, and `ADD COLUMN` has no `IF NOT
-/// EXISTS`, so the column is added only where it is missing.
-fn migrate_003(conn: &Connection) -> rusqlite::Result<()> {
-    if !has_column(conn, "sessions", "icon")? {
-        conn.execute_batch("ALTER TABLE sessions ADD COLUMN icon TEXT;")?;
-    }
-    Ok(())
-}
-
-/// Schema v4 — drop `sessions.notes` (doc 09). A database created before
-/// v4 still has the column; one created since never did.
-fn migrate_004(conn: &Connection) -> rusqlite::Result<()> {
-    if has_column(conn, "sessions", "notes")? {
-        conn.execute_batch("ALTER TABLE sessions DROP COLUMN notes;")?;
-    }
-    Ok(())
-}
-
-fn has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
-        [table, column],
-        |row| row.get(0),
-    )
-}
-
-/// Schema v5 — keystroke macros (doc 12): `steps` is a JSON array of
-/// `{"delay_ms": …, "keys": [bytes]}`. Idempotent like v1.
-const MIGRATION_005: &str = r#"
+-- Keystroke macros (doc 12): `steps` is a JSON array of
+-- {"delay_ms": …, "keys": [bytes]}
 CREATE TABLE IF NOT EXISTS macros (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
@@ -704,31 +663,6 @@ CREATE TABLE IF NOT EXISTS macros (
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 "#;
-
-/// Schema v6 — `sessions.host_keys` (doc 09), the host keys a session
-/// trusts beside known_hosts; added where missing, as v3 adds `icon`.
-fn migrate_006(conn: &Connection) -> rusqlite::Result<()> {
-    if !has_column(conn, "sessions", "host_keys")? {
-        conn.execute_batch("ALTER TABLE sessions ADD COLUMN host_keys TEXT;")?;
-    }
-    Ok(())
-}
-
-/// Schema v7 — delete the hotkey rows earlier seeds inserted with
-/// `is_default = 1`: nothing loads them (doc 11 §Persistence).
-const MIGRATION_007: &str = "DELETE FROM hotkeys WHERE is_default = 1;";
-
-/// Schema v8 — drop what nothing wrote: the `connection_history` table
-/// (its indexes go with it) and `sessions.last_connected`/`connect_count`.
-fn migrate_008(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch("DROP TABLE IF EXISTS connection_history;")?;
-    for column in ["last_connected", "connect_count"] {
-        if has_column(conn, "sessions", column)? {
-            conn.execute_batch(&format!("ALTER TABLE sessions DROP COLUMN {column};"))?;
-        }
-    }
-    Ok(())
-}
 
 /// First-run seed (doc 13 §Settings rows).
 const SEED_DEFAULTS: &str = r#"

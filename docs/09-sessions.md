@@ -25,20 +25,10 @@ left readable by other local users is closed too: sessions name hosts and
 users, and macros can hold typed passwords (doc 12).
 
 `SessionStore::open` turns on `journal_mode=WAL` and `foreign_keys`, then
-runs every schema step and, on a fresh database, the seed (doc 13
-§Settings rows). There is no migration framework: each step is idempotent
-and runs on every open.
-
-| Step | Change |
-|---|---|
-| 1 | the base schema below (`IF NOT EXISTS`) |
-| 2 | `rdp_trust (host, port, fingerprint, first_seen)`, primary key (host, port) |
-| 3 | `sessions.icon`, added where missing |
-| 4 | drop the retired `sessions.notes` column where present |
-| 5 | `macros (id, name, steps, created_at, updated_at)` (doc 12 §Storage) |
-| 6 | `sessions.host_keys`, added where missing |
-| 7 | delete the `is_default = 1` hotkey rows earlier seeds inserted (doc 11 §Persistence) |
-| 8 | drop the never-written `connection_history` table and `sessions.last_connected`/`connect_count` where present |
+creates the schema below (`IF NOT EXISTS`, so it runs on every open) and,
+on a fresh database, the seed (doc 13 §Settings rows). Besides the tables
+below, the schema holds `rdp_trust (host, port, fingerprint, first_seen)`,
+primary key (host, port), and `macros` (doc 12 §Storage).
 
 ## Schema
 
@@ -290,6 +280,9 @@ and a reset to the default.
 
 ## Limitations
 
+- There are no migrations. `IF NOT EXISTS` leaves an existing table as it
+  is, so a later change to a table's columns needs its own step for
+  databases created before it.
 - `sort_order` is never edited: siblings sort by name.
 - The dialog edits none of `font_family`, `font_size`, `opacity`,
   `ssh_options`, `host_key_policy`, `host_keys`, `vnc_options` or

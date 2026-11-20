@@ -58,8 +58,8 @@ build without it, which CI's `minimal` job keeps passing.
 Every module carries its own `tests` (inline or `<module>/tests.rs`).
 Highlights:
 
-- **Store:** schema, seed, pragmas, the idempotent schema steps on old
-  databases, CRUD and foreign-key behavior; the serde spellings of every
+- **Store:** schema, seed, pragmas, reopening an existing database, CRUD
+  and foreign-key behavior; the serde spellings of every
   enum column (doc 09 §Wire formats); `host_keys` written on insert and
   merged by `add_session_host_keys`, never wiped by `update_session`.
 - **Host keys:** temp `known_hosts` files — unknown, matching, mismatched,
@@ -126,8 +126,8 @@ Highlights:
 Display-free: the recorder's pause arithmetic and report filtering, the
 notation (an exhaustive roundtrip over all byte pairs), the tap's ordering
 and arming, playback order, stop and a dropped terminal (`FakeBackend`),
-the editor's `Draft` operations and validation, and the store's CRUD and
-schema step. Under xvfb: the editor's rows and validation, the panel's
+the editor's `Draft` operations and validation, and the store's CRUD.
+Under xvfb: the editor's rows and validation, the panel's
 list and toolbar, and a record-then-play roundtrip through a real VTE
 terminal, including a non-UTF-8 byte.
 

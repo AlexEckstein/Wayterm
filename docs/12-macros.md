@@ -119,8 +119,7 @@ terminal being recorded or played into.
 
 ## Storage
 
-The `macros` table (schema step 5, doc 09 §Database), in the session
-store:
+The `macros` table (doc 09 §Database), in the session store:
 
 ```sql
 CREATE TABLE IF NOT EXISTS macros (
