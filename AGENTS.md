@@ -91,7 +91,8 @@ with a **Limitations** section listing that feature's known gaps.
   pin).
 - **minimal** — clippy and `cargo test` with `--no-default-features`:
   the build without the Ghostty backend.
-- **audit** — weekly cargo advisory sweep once `Cargo.lock` exists.
+- **audit** — weekly cargo advisory sweep once `Cargo.lock` exists;
+  files one issue per new advisory instead of failing.
 
 Do not disable or bypass checks to get green. Do not push with
 `--no-verify`. If a check is wrong, fix the check in a PR.

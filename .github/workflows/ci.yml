@@ -236,6 +236,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [detect]
     if: github.event_name == 'schedule' && needs.detect.outputs.has_lock == 'true'
+    # audit-check files one issue per new advisory ID on a schedule run.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
