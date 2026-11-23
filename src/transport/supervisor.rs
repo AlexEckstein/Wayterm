@@ -1,6 +1,6 @@
 //! [`ConnectionSupervisor`]: one authenticated SSH session per
-//! (host, port, username), host-key verification on or off, and set of
-//! session-trusted host keys, shared by every consumer and disconnected
+//! (host, port, username), host-key verification on or off, set of
+//! session-trusted host keys and compression choice, shared by every consumer and disconnected
 //! after the last one releases it (doc 04 §Connection supervisor).
 
 use std::collections::hash_map::Entry as MapEntry;
@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use russh::Preferred;
 use russh::client::{self, Config, Handle};
+use russh::{Preferred, compression};
 
 use crate::store::model::{SessionHostKey, SshOptions};
 use crate::transport::auth::ChallengeResponder;
@@ -36,15 +36,16 @@ pub struct ConnectParams {
 }
 
 /// What a pooled connection is shared under: its identity, whether its
-/// host key was checked, and the host keys its session trusts beside
-/// known_hosts. A session that verifies host keys is never handed a
-/// connection dialed with verification off, nor one whose key only another
-/// session's set trusts.
+/// host key was checked, the host keys its session trusts beside
+/// known_hosts, and whether it offered compression. A session that
+/// verifies host keys is never handed a connection dialed with
+/// verification off, nor one whose key only another session's set trusts.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct PoolKey {
     pub params: ConnectParams,
     pub verified: bool,
     pub session_keys: BTreeSet<SessionHostKey>,
+    pub compression: bool,
 }
 
 impl PoolKey {
@@ -55,6 +56,7 @@ impl PoolKey {
             params: params.clone(),
             verified: auth.verifier.verifies(),
             session_keys: auth.verifier.session_keys().identity(),
+            compression: auth.compression,
         }
     }
 }
@@ -197,14 +199,15 @@ impl<T: PooledConnection> Drop for ConnectionSupervisor<T> {
 
 /// How one hop authenticates (doc 04 §Authentication): the method, where its secrets
 /// come from, the host-key check, and who answers challenges, plus the
-/// keepalives its connection runs. Each hop of a jumped connection brings
-/// its own.
+/// keepalives its connection runs and whether it offers compression. Each
+/// hop of a jumped connection brings its own.
 pub struct HopAuth {
     pub method: AuthMethod,
     pub creds: CredentialManager,
     pub verifier: HostKeyVerifier,
     pub responder: Option<ChallengeResponder>,
     pub keepalive: Keepalive,
+    pub compression: bool,
 }
 
 /// SSH keepalives (doc 04 §Keepalives): a probe after `interval` with
@@ -246,15 +249,28 @@ impl Keepalive {
     }
 }
 
+/// Compression offers (doc 04 §Compression): delayed zlib as OpenSSH's
+/// `Compression yes` sends it, or none. `none` is always listed, so a
+/// server without zlib still connects.
+const COMPRESSED: &[compression::Name] = &[compression::ZLIB_LEGACY, compression::NONE];
+const UNCOMPRESSED: &[compression::Name] = &[compression::NONE];
+
 /// The russh client config for one dial to `params`, direct or through a
-/// jump host: the hop's keepalives, and the host-key algorithms in the
-/// order its known_hosts entries ask for (doc 04 §Host key verification).
+/// jump host: the hop's keepalives and compression offer, and the host-key
+/// algorithms in the order its known_hosts entries ask for (doc 04 §Host
+/// key verification).
 pub(crate) fn client_config(params: &ConnectParams, auth: &HopAuth) -> Arc<Config> {
+    let compression = if auth.compression {
+        COMPRESSED
+    } else {
+        UNCOMPRESSED
+    };
     Arc::new(Config {
         keepalive_interval: auth.keepalive.interval,
         keepalive_max: auth.keepalive.max,
         preferred: Preferred {
             key: auth.verifier.key_preference(&params.host, params.port),
+            compression: compression.into(),
             ..Preferred::default()
         },
         ..Config::default()

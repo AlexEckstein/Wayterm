@@ -34,6 +34,7 @@ fn key(host: &str) -> PoolKey {
         params: params(host),
         verified: true,
         session_keys: BTreeSet::new(),
+        compression: false,
     }
 }
 
@@ -62,6 +63,7 @@ fn hop(policy: crate::store::model::HostKeyPolicy, keys: &[&str]) -> HopAuth {
             .with_session_keys(SessionKeySet::new(keys.iter().map(|key| host_key(key)))),
         responder: None,
         keepalive: Keepalive::default(),
+        compression: false,
     }
 }
 
@@ -149,6 +151,23 @@ fn the_pool_key_tells_session_key_sets_apart() {
     assert_ne!(of(Strict, &["K1"]), of(Strict, &["K1", "K2"]));
     assert_ne!(of(Strict, &["K1"]), of(Off, &["K1"]));
     assert_ne!(of(Strict, &[]), of(Off, &[]));
+}
+
+/// A session that compresses and one that does not never share a
+/// connection, since the offer is fixed when it is dialed.
+#[test]
+fn the_pool_key_tells_compression_apart() {
+    let strict = crate::store::model::HostKeyPolicy::Strict;
+    let compressed = HopAuth {
+        compression: true,
+        ..hop(strict.clone(), &[])
+    };
+    let compressed_key = PoolKey::for_hop(&params("a"), &compressed);
+    assert!(compressed_key.compression);
+    assert_ne!(
+        compressed_key,
+        PoolKey::for_hop(&params("a"), &hop(strict, &[]))
+    );
 }
 
 /// Sessions that trust different keys for one host never share its
@@ -395,6 +414,7 @@ fn client_config_carries_the_keepalive_and_the_hosts_key_types() {
             interval: Some(Duration::from_secs(7)),
             max: 2,
         },
+        compression: false,
     };
     let config = client_config(&params("a"), &auth);
     assert_eq!(config.keepalive_interval, Some(Duration::from_secs(7)));
@@ -405,6 +425,26 @@ fn client_config_carries_the_keepalive_and_the_hosts_key_types() {
     ));
     let unknown = client_config(&params("b"), &auth);
     assert_eq!(unknown.preferred.key, Preferred::DEFAULT.key);
+}
+
+/// Off offers only `none`; on puts delayed zlib first and keeps `none`
+/// for servers without it.
+#[test]
+fn client_config_offers_compression_only_when_asked() {
+    use russh::compression::{NONE, ZLIB_LEGACY};
+    let off = hop(crate::store::model::HostKeyPolicy::Strict, &[]);
+    assert_eq!(
+        &*client_config(&params("a"), &off).preferred.compression,
+        &[NONE]
+    );
+    let on = HopAuth {
+        compression: true,
+        ..off
+    };
+    assert_eq!(
+        &*client_config(&params("a"), &on).preferred.compression,
+        &[ZLIB_LEGACY, NONE]
+    );
 }
 
 #[tokio::test]
@@ -561,6 +601,7 @@ async fn supervisor_events_never_name_the_user() {
         },
         verified: true,
         session_keys: BTreeSet::new(),
+        compression: false,
     };
     let dials = AtomicUsize::new(0);
     let flags = Mutex::new(Vec::new());

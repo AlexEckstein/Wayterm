@@ -199,7 +199,7 @@ pub(super) fn start(
 /// method, its own credential chain, a prompt-backed host-key check under
 /// its own policy — else the global one, or strict when the page has no
 /// store to read that from — trusting its own host keys, the challenge
-/// dialog, and its stored keepalives.
+/// dialog, and its stored keepalives and compression choice.
 fn hop_auth(session: &SessionConfig, store: Option<&SessionStore>) -> HopAuth {
     let policy = session
         .host_key_policy
@@ -213,6 +213,7 @@ fn hop_auth(session: &SessionConfig, store: Option<&SessionStore>) -> HopAuth {
         verifier,
         responder: Some(auth::challenge_responder(session.name.clone())),
         keepalive: Keepalive::from_options(session.ssh_options.as_ref()),
+        compression: session.ssh_options.as_ref().is_some_and(|o| o.compression),
     }
 }
 
