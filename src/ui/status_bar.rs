@@ -1,5 +1,5 @@
 //! The status bar: segments for the connection state, the endpoint, the
-//! time connected and what compression saves, each with a tooltip that
+//! server's uptime, the time connected and what compression saves, each with a tooltip that
 //! adds detail (doc 03 §Status bar). The `*_segment` functions decide what
 //! to show; [`StatusBar`] only renders it. Which tab drives it is the
 //! window's business.
@@ -76,9 +76,45 @@ impl ConnectedSince {
     }
 }
 
-/// Reads the current tab's compression saving (doc 04 §Compression
-/// savings).
-pub type SavingsSource = Rc<dyn Fn() -> Option<Savings>>;
+/// How long the server has been up, as it answered at `at` (doc 04
+/// §Server uptime).
+#[derive(Clone, Debug)]
+pub struct ServerUptime {
+    pub secs: u64,
+    pub at: Instant,
+    /// Local wall-clock time it booted, e.g. "11/11/26 10:02:11".
+    pub boot_clock: String,
+}
+
+impl ServerUptime {
+    pub fn measured(secs: u64) -> Self {
+        let boot_clock = glib::DateTime::now_local()
+            .and_then(|now| now.add_seconds(-(secs as f64)))
+            .and_then(|boot| boot.format("%x %X"))
+            .map(String::from)
+            .unwrap_or_default();
+        Self {
+            secs,
+            at: Instant::now(),
+            boot_clock,
+        }
+    }
+
+    pub fn now_secs(&self) -> u64 {
+        self.secs + self.at.elapsed().as_secs()
+    }
+}
+
+/// What the bar reads on every tick while connected.
+#[derive(Clone, Debug, Default)]
+pub struct LiveStatus {
+    /// Doc 04 §Compression savings.
+    pub savings: Option<Savings>,
+    pub uptime: Option<ServerUptime>,
+}
+
+/// Reads the current tab's [`LiveStatus`].
+pub type LiveSource = Rc<dyn Fn() -> LiveStatus>;
 
 /// `host:port`, or the bare description of a tab without a port (a shell
 /// path, `device@baud`).
@@ -216,6 +252,50 @@ pub fn savings_segment(savings: Savings) -> Segment {
     }
 }
 
+/// The server's uptime, with the boot time and the full duration in the
+/// tooltip.
+pub fn uptime_segment(secs: u64, boot_clock: &str) -> Segment {
+    let mut tooltip = format!("Server up {}", describe_duration(secs));
+    if !boot_clock.is_empty() {
+        tooltip.push_str(&format!("\nBooted {boot_clock}"));
+    }
+    Segment {
+        text: format!("Up {}", format_uptime(secs)),
+        tooltip,
+    }
+}
+
+/// `42m`, `5h 12m`, or `12d 4h` from a day on.
+pub fn format_uptime(secs: u64) -> String {
+    let (days, hours, minutes) = (secs / 86_400, (secs % 86_400) / 3600, (secs % 3600) / 60);
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+/// E.g. "12 days, 4 hours, 7 minutes"; zero parts are left out, and under
+/// a minute reads "less than a minute".
+fn describe_duration(secs: u64) -> String {
+    let parts: Vec<String> = [
+        (secs / 86_400, "day"),
+        ((secs % 86_400) / 3600, "hour"),
+        ((secs % 3600) / 60, "minute"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, unit)| format!("{n} {unit}{}", if n == 1 { "" } else { "s" }))
+    .collect();
+    if parts.is_empty() {
+        "less than a minute".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
 /// `m:ss`, or `h:mm:ss` from one hour on.
 pub fn format_elapsed(secs: u64) -> String {
     let hours = secs / 3600;
@@ -229,7 +309,7 @@ pub fn format_elapsed(secs: u64) -> String {
 }
 
 /// A segment's widgets: the separator before it and its label, with an
-/// optional icon, shown and hidden together.
+/// optional icon.
 #[derive(Clone)]
 struct Part {
     separator: gtk4::Separator,
@@ -262,10 +342,8 @@ impl Part {
         }
     }
 
-    fn append_to(&self, container: &gtk4::Box, separated: bool) {
-        if separated {
-            container.append(&self.separator);
-        }
+    fn append_to(&self, container: &gtk4::Box) {
+        container.append(&self.separator);
         container.append(&self.area);
     }
 
@@ -281,23 +359,33 @@ impl Part {
             }
             self.area.set_tooltip_text(Some(&segment.tooltip));
         }
-        self.separator.set_visible(segment.is_some());
         self.area.set_visible(segment.is_some());
     }
 }
 
+/// A separator shows only between two shown segments of one side.
+fn separate(side: &[&Part]) {
+    let mut before = false;
+    for part in side {
+        let shown = part.area.is_visible();
+        part.separator.set_visible(shown && before);
+        before |= shown;
+    }
+}
+
 /// The state (a coloured dot and its text) and the endpoint on the left;
-/// the time connected and the compression saving on the right, ticking
-/// every second while connected.
+/// the server's uptime, the time connected and the compression saving on
+/// the right, ticking every second while connected.
 pub struct StatusBar {
     container: gtk4::Box,
     dot: gtk4::Label,
     state: Part,
     endpoint: Part,
+    uptime: Part,
     elapsed: Part,
     savings: Part,
     timer: RefCell<Option<glib::SourceId>>,
-    savings_source: RefCell<Option<SavingsSource>>,
+    live_source: RefCell<Option<LiveSource>>,
 }
 
 impl StatusBar {
@@ -311,6 +399,7 @@ impl StatusBar {
         let state = Part::new(None, EllipsizeMode::End, false);
         state.area.prepend(&dot);
         let endpoint = Part::new(None, EllipsizeMode::Middle, false);
+        let uptime = Part::new(None, EllipsizeMode::None, false);
         let elapsed = Part::new(
             Some("document-open-recent-symbolic"),
             EllipsizeMode::None,
@@ -320,13 +409,14 @@ impl StatusBar {
 
         let container = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
         container.add_css_class("wayterm-status-bar");
-        state.append_to(&container, false);
-        endpoint.append_to(&container, true);
+        state.append_to(&container);
+        endpoint.append_to(&container);
         let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         container.append(&spacer);
-        elapsed.append_to(&container, false);
-        savings.append_to(&container, true);
+        uptime.append_to(&container);
+        elapsed.append_to(&container);
+        savings.append_to(&container);
         container.set_margin_top(2);
         container.set_margin_bottom(2);
         container.set_margin_start(8);
@@ -337,10 +427,11 @@ impl StatusBar {
             dot,
             state,
             endpoint,
+            uptime,
             elapsed,
             savings,
             timer: RefCell::default(),
-            savings_source: RefCell::default(),
+            live_source: RefCell::default(),
         };
         this.set_state(&TransportState::Disconnected, "", 0, None, None);
         this
@@ -350,9 +441,9 @@ impl StatusBar {
         self.container.upcast_ref()
     }
 
-    /// Where the next [`StatusBar::set_state`] reads the saving from.
-    pub fn set_savings_source(&self, source: Option<SavingsSource>) {
-        self.savings_source.replace(source);
+    /// Where the next [`StatusBar::set_state`] reads the live figures from.
+    pub fn set_live_source(&self, source: Option<LiveSource>) {
+        self.live_source.replace(source);
     }
 
     /// Show `state`. Connected shows the time since `since` and ticks it;
@@ -372,18 +463,28 @@ impl StatusBar {
         self.state.show(Some(&segment));
         self.endpoint
             .show(endpoint_segment(host, port, session).as_ref());
+        separate(&[&self.state, &self.endpoint]);
 
         let connected = *state == TransportState::Connected;
-        let source = self.savings_source.borrow().clone().filter(|_| connected);
+        let source = self.live_source.borrow().clone().filter(|_| connected);
         let since = connected.then(|| since.cloned().unwrap_or_else(ConnectedSince::now));
-        let (elapsed, savings) = (self.elapsed.clone(), self.savings.clone());
+        let (uptime, elapsed, savings) = (
+            self.uptime.clone(),
+            self.elapsed.clone(),
+            self.savings.clone(),
+        );
         let refresh = move || {
+            let live = source.as_ref().map(|source| source()).unwrap_or_default();
+            let up = live
+                .uptime
+                .map(|up| uptime_segment(up.now_secs(), &up.boot_clock));
+            uptime.show(up.as_ref());
             let segment = since
                 .as_ref()
                 .map(|since| elapsed_segment(since.at.elapsed().as_secs(), &since.clock));
             elapsed.show(segment.as_ref());
-            let saved = source.as_ref().and_then(|source| source());
-            savings.show(saved.map(savings_segment).as_ref());
+            savings.show(live.savings.map(savings_segment).as_ref());
+            separate(&[&uptime, &elapsed, &savings]);
         };
         refresh();
         if connected {
