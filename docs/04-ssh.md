@@ -12,7 +12,7 @@ a release blocker, not a feature gap.
 
 Code: `src/transport/` — `connection.rs` (`SshConnection`, the russh
 handler), `supervisor.rs` (the pool), `ssh.rs` (`SSHTransport`),
-`hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`; `src/ui/tabs/ssh.rs` (the
+`hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`, `traffic.rs`; `src/ui/tabs/ssh.rs` (the
 SSH connect flow), `src/ui/dialogs/` — `hostkey.rs`, `auth.rs`,
 `tunnels/`.
 
@@ -100,6 +100,24 @@ and the forwards, so they compress together. Each hop of a jumped
 connection uses its own session's setting; the jump hop carries the
 target's already encrypted stream, which does not compress, so
 compression belongs on the target.
+
+### Compression savings
+
+Each dial counts into a `Traffic` (`traffic.rs`), which
+`SshConnection::traffic` hands out: `CountingStream` counts the bytes read
+off the socket (or, for a jumped target, off its jump channel), and the
+handler adds what each incoming channel data message would have cost
+uncompressed — its bytes plus 38 bytes of framing (message fields,
+packet length, typical padding and a 16-byte AEAD tag; 4 more for
+stderr). Counting starts once authentication succeeds. The saving is
+`1 − wire ÷ estimate`, never below 0, so a server that declined
+compression reads about 0%. It is `None` for a session that did not
+offer compression and until 32 KiB have been measured, when the figure is
+still noise.
+
+The status bar shows it for the current tab (doc 03 §Status bar). It
+covers the whole connection, so the SFTP sidebar's transfers and the
+forwards count into the terminal tab's figure.
 
 ## Host key verification
 
@@ -373,9 +391,13 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   consulted unless the session names the address, and new entries are
   never hashed.
 - The `off` policy has no badge in the UI.
-- Nothing shows whether compression was negotiated or what it saves:
-  russh reports neither, and its `log` output, which names the
-  negotiated methods, is not bridged (doc 16).
+- russh reports neither the negotiated compression nor its byte counts,
+  so the saving is an estimate (§Compression savings): framing is
+  modelled, not read, so a MAC longer than 16 bytes (`hmac-*-etm`) reads
+  low. Incoming traffic only, since russh has no hook for outgoing channel
+  data, so uploads are not measured; incoming packets other than channel
+  data (keepalive replies, window adjusts, rekeys) count against the
+  saving.
 - The session dialog edits only `ssh_options.compression`, so keepalives
   can only be set by an import and `ssh_w_fallback` only by a JSON import
   (doc 10).
