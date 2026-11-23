@@ -299,6 +299,9 @@ pub(super) fn on_connect(
     conn: Arc<SshConnection>,
     terminal: &gtk4::Widget,
 ) {
+    state(page)
+        .traffic
+        .replace(Some(Arc::clone(conn.traffic())));
     arm_forward_engine(page, session, &conn);
 
     let Some(sidebar) = sidebar_of(page) else {

@@ -70,6 +70,10 @@ impl StatusRouter {
         if self.last.as_ref() == Some(&(page.clone(), state.clone())) {
             return;
         }
+        let weak = page.downgrade();
+        self.status_bar.set_savings_source(Some(Rc::new(move || {
+            SessionTab::compression_savings(&weak.upgrade()?)
+        })));
         self.status_bar.set_state(&state, host, port);
         self.last = Some((page.clone(), state));
     }
