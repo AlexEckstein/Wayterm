@@ -20,7 +20,7 @@ jobs:
   deb:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The tag names the release; Cargo.toml versions the package. Fail
       # before building anything if the two disagree.
@@ -40,10 +40,12 @@ jobs:
             libgtk-4-dev libvte-2.91-gtk4-dev libsqlite3-dev
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install cargo-deb
         run: cargo install --locked cargo-deb --version 3.8.0
@@ -51,7 +53,7 @@ jobs:
       - name: Build .deb
         run: cargo deb --locked
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deb
           path: target/debian/*.deb
@@ -70,9 +72,9 @@ jobs:
       # No FUSE on the runner.
       APPIMAGE_EXTRACT_AND_RUN: '1'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: deb
           path: dist
@@ -103,7 +105,7 @@ jobs:
           PATH="$shim:$PATH" WAYTERM_DEB="$(readlink -f dist/*.deb)" \
             ./pkg2appimage packaging/appimage/wayterm.yml
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: appimage
           path: out/*.AppImage
@@ -118,7 +120,7 @@ jobs:
       - name: Install build tools
         run: pacman -Syu --noconfirm --needed base-devel git
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # makepkg refuses to run as root.
       - name: Build the package
@@ -130,7 +132,7 @@ jobs:
           pacman -S --noconfirm --needed "${depends[@]}" "${makedepends[@]}"
           su builder -c 'makepkg --noconfirm'
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: arch
           path: packaging/arch/*.pkg.tar.zst
@@ -145,7 +147,7 @@ jobs:
       - name: Install build tools
         run: dnf install -y git-core rpm-build 'dnf-command(builddep)'
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build the package
         run: |
@@ -159,7 +161,7 @@ jobs:
           rpm -qpil target/rpm/RPMS/x86_64/*.rpm
           rpm -qp --requires --recommends --suggests target/rpm/RPMS/x86_64/*.rpm
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rpm
           path: target/rpm/RPMS/x86_64/*.rpm
@@ -173,13 +175,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
 
       - name: Create or update the GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ github.ref_name }}
           files: |
