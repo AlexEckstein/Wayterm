@@ -51,7 +51,12 @@ build without it, which CI's `minimal` job keeps passing.
   the alert. It has the workflow's only `issues: write`.
 - **dependabot:** opens weekly update PRs for `cargo` (minor/patch
   grouped into one PR, majors separate) and for the `github-actions`
-  versions used by the workflows.
+  versions used by the workflows. Every action is pinned to a full
+  commit SHA with its version in a trailing comment, so a moved tag
+  cannot change what runs; Dependabot updates the SHA and comment
+  together, and waits seven days after an action's release before
+  proposing it. The Rust toolchain is installed with the runner's own
+  `rustup`, not an action.
 
 ## Unit and display-free tests
 
