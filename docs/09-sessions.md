@@ -211,7 +211,9 @@ and is display-free; the GTK part only gathers `DialogFields`.
     SSH sessions that do not themselves jump; depth > 1 and self-jump are
     refused); forward rules (the Tunnels dialog's editor, doc 04
     §Tunnels dialog); tmux toggle and name (doc 04 §Tmux session
-    persistence).
+    persistence); **Compress traffic** (`ssh_options.compression`, doc 04
+    §Compression), which sets that one field over any stored options and
+    stores no options just to say off.
   - **Serial:** device, baud (starts at 115200), data bits, parity, stop
     bits, flow control.
   - **RDP:** domain, resolution (`WIDTHxHEIGHT`, empty = 1024×768), color
@@ -285,6 +287,6 @@ and a reset to the default.
   databases created before it.
 - `sort_order` is never edited: siblings sort by name.
 - The dialog edits none of `font_family`, `font_size`, `opacity`,
-  `ssh_options`, `host_key_policy`, `host_keys`, `vnc_options` or
-  `vnc_color_depth`; imports and JSON restores can set them (`host_keys`
-  also grows at the changed-key prompt, doc 04).
+  `ssh_options` beyond its `compression`, `host_key_policy`, `host_keys`,
+  `vnc_options` or `vnc_color_depth`; imports and JSON restores can set
+  them (`host_keys` also grows at the changed-key prompt, doc 04).
