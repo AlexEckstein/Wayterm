@@ -221,6 +221,36 @@ fn editing_keeps_the_columns_the_dialog_does_not_show() {
     );
 }
 
+/// The compression checkbox sets `ssh_options.compression` over the other
+/// stored options; left off, a row without options gets none.
+#[test]
+fn compression_stores_as_checked() {
+    use crate::store::model::SshOptions;
+    let save = |base: SessionConfig, ssh_compression: bool| {
+        let fields = DialogFields {
+            type_index: TYPE_INDEX_SSH,
+            ssh_compression,
+            base,
+            ..Default::default()
+        };
+        config_from_fields(&fields, &[], &[]).ssh_options
+    };
+    let imported = row_with_hidden_columns(SessionType::SSH);
+    let off = save(imported.clone(), false).expect("the imported options stay");
+    assert!(!off.compression);
+    assert_eq!(off.keepalive_interval, Some(30));
+    assert!(off.ssh_w_fallback);
+    assert!(save(imported, true).unwrap().compression);
+    assert_eq!(save(SessionConfig::default(), false), None);
+    assert_eq!(
+        save(SessionConfig::default(), true),
+        Some(SshOptions {
+            compression: true,
+            ..SshOptions::default()
+        })
+    );
+}
+
 /// The backend and scheme overrides store as picked, for every type, and
 /// picking Default clears a stored one.
 #[test]

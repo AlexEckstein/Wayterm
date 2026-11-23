@@ -2,9 +2,10 @@
 //!
 //! [`config_from_fields`] (in `model`) holds all of the mapping and is
 //! display-free; the GTK part only gathers [`DialogFields`]. Choosing a
-//! type reveals that type's group (SSH: auth, jump host, forwards, tmux;
-//! serial: line settings; RDP: domain, resolution, depth; local: shell and
-//! directory; VNC: a note that its password lives in the keyring). Only the selected group's values are stored.
+//! type reveals that type's group (SSH: auth, tmux, compression, jump
+//! host, forwards; serial: line settings; RDP: domain, resolution, depth;
+//! local: shell and directory; VNC: a note that its password lives in the
+//! keyring). Only the selected group's values are stored.
 //! Types with a terminal also show the Terminal group: the session's
 //! backend and color scheme overrides.
 //!
@@ -47,6 +48,10 @@ const VNC_KEYRING_NOTE: &str = "The VNC password is looked up in your OS keyring
                                 Service); the connect prompt stores nothing.";
 const TMUX_LABEL: &str = "Persist via tmux — survive reconnects; sessions on the remote host \
                           are named wayterm-<session name>";
+const COMPRESSION_LABEL: &str = "Compress traffic";
+const COMPRESSION_TOOLTIP: &str = "Helps on slow links, costs CPU on fast ones. A server \
+                                   without compression still connects, uncompressed. Open \
+                                   tabs keep their connection.";
 
 const BACKEND_TOOLTIP: &str = "The terminal this session's tabs open in; Default follows \
                                Settings. Open tabs keep theirs.";
@@ -223,6 +228,7 @@ struct Widgets {
     icon: IconPicker,
     tmux: gtk4::CheckButton,
     tmux_name: gtk4::Entry,
+    compression: gtk4::CheckButton,
     jump: gtk4::DropDown,
     jump_ids: Vec<Option<i64>>,
     forward_rules: RuleEditor,
@@ -258,6 +264,7 @@ impl Widgets {
             icon: self.icon.icon().unwrap_or_default(),
             tmux_enabled: self.tmux.is_active(),
             tmux_session_name: self.tmux_name.text().into(),
+            ssh_compression: self.compression.is_active(),
             jump_session_id: self
                 .jump_ids
                 .get(self.jump.selected() as usize)
@@ -334,6 +341,8 @@ impl Widgets {
             .set_default(session_type_icon(&config.session_type));
         self.icon.set_icon(config.icon.as_deref());
         self.tmux.set_active(config.tmux_enabled);
+        self.compression
+            .set_active(config.ssh_options.as_ref().is_some_and(|o| o.compression));
         self.serial_device.set_text(&text(&config.serial_device));
         let baud = config
             .serial_baud_rate
@@ -536,6 +545,9 @@ impl SessionDialog {
         let tmux = gtk4::CheckButton::with_label(TMUX_LABEL);
         ssh.span(&tmux);
         let tmux_name = ssh.entry("tmux session:", "wayterm-<session name>");
+        let compression = gtk4::CheckButton::with_label(COMPRESSION_LABEL);
+        compression.set_tooltip_text(Some(COMPRESSION_TOOLTIP));
+        ssh.span(&compression);
 
         // Jump host (doc 04): one ProxyJump hop through another SSH
         // session. Depth>1 choices stay listed but are refused with an
@@ -668,6 +680,7 @@ impl SessionDialog {
             icon,
             tmux,
             tmux_name,
+            compression,
             jump,
             jump_ids,
             forward_rules,
@@ -800,6 +813,7 @@ pub(in crate::ui) mod gtk_tests {
         let w = &dialog.widgets;
         assert_eq!(w.tmux_name.text(), "wayterm-");
         assert!(!w.tmux.is_active());
+        assert!(!w.compression.is_active());
         w.name.set_text("prod");
         assert_eq!(w.tmux_name.text(), "wayterm-prod");
         w.tmux_name.set_text("wayterm-custom");
@@ -817,11 +831,16 @@ pub(in crate::ui) mod gtk_tests {
             port: Some(2222),
             tmux_enabled: true,
             tmux_session_name: Some("shared".into()),
+            ssh_options: Some(crate::store::model::SshOptions {
+                compression: true,
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let dialog = SessionDialog::edit(&parent, &stored, &[], &[]);
         assert_eq!(dialog.widgets.icon.icon(), None);
         assert!(dialog.widgets.tmux.is_active());
+        assert!(dialog.widgets.compression.is_active());
         assert_eq!(dialog.widgets.tmux_name.text(), "wayterm-shared");
         assert_eq!(dialog.widgets.port.value(), 2222.0);
         dialog.widgets.name.set_text("renamed");

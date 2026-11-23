@@ -7,7 +7,8 @@ use crate::store::model::{
     AuthMethod, DEFAULT_SERIAL_BAUD, Folder, RDP_COLOR_DEPTH_DEFAULT, RDP_COLOR_DEPTHS,
     SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT, SERIAL_FLOW_CONTROL_DEFAULT, SERIAL_FLOW_CONTROLS,
     SERIAL_PARITIES, SERIAL_PARITY_DEFAULT, SERIAL_STOP_BITS, SERIAL_STOP_BITS_DEFAULT,
-    SessionConfig, SessionType, TMUX_NAME_PREFIX, strip_tmux_prefix, vocab_index, vocab_value,
+    SessionConfig, SessionType, SshOptions, TMUX_NAME_PREFIX, strip_tmux_prefix, vocab_index,
+    vocab_value,
 };
 use crate::terminal::{BackendKind, GHOSTTY_COMPILED, SchemeChoice};
 use crate::ui::dialogs::tunnels::model::{ForwardRuleDraft, rules_from_drafts};
@@ -45,6 +46,7 @@ pub struct DialogFields {
     pub tmux_enabled: bool,
     /// As shown: the full `wayterm-<suffix>` name.
     pub tmux_session_name: String,
+    pub ssh_compression: bool,
     pub serial_device: String,
     pub serial_baud: u32,
     pub serial_data_bits_index: u32,
@@ -86,6 +88,7 @@ impl Default for DialogFields {
             icon: String::new(),
             tmux_enabled: false,
             tmux_session_name: String::new(),
+            ssh_compression: false,
             serial_device: String::new(),
             serial_baud: DEFAULT_SERIAL_BAUD,
             serial_data_bits_index: default_index(&SERIAL_DATA_BITS, SERIAL_DATA_BITS_DEFAULT),
@@ -410,6 +413,21 @@ pub fn collect_peer_sessions(store: &SessionStore) -> Vec<SessionConfig> {
     out
 }
 
+/// `options` with compression set; no row is created just to say off.
+fn with_compression(options: Option<SshOptions>, compression: bool) -> Option<SshOptions> {
+    match options {
+        Some(options) => Some(SshOptions {
+            compression,
+            ..options
+        }),
+        None if compression => Some(SshOptions {
+            compression,
+            ..SshOptions::default()
+        }),
+        None => None,
+    }
+}
+
 /// The session the dialog's values describe. An out-of-range port falls
 /// back to the type's default. Per-type columns are written only for the
 /// selected type, so values left in a hidden group never leak; the tmux
@@ -421,9 +439,10 @@ pub fn collect_peer_sessions(store: &SessionStore) -> Vec<SessionConfig> {
 /// The terminal backend and color scheme overrides are common columns too,
 /// stored as picked whatever the type (only types with a terminal read
 /// them). Columns without a widget — font and opacity, and per type the key
-/// path, host-key policy and SSH, RDP or VNC options — keep the edited
-/// row's values, the per-type ones only while its type is unchanged: a
-/// save must never wipe what the dialog cannot show.
+/// path, host-key policy, the SSH options other than compression, and the
+/// RDP or VNC options — keep the edited row's values, the per-type ones
+/// only while its type is unchanged: a save must never wipe what the
+/// dialog cannot show.
 pub fn config_from_fields(
     fields: &DialogFields,
     folders: &[Folder],
@@ -533,6 +552,7 @@ pub fn config_from_fields(
                 config.host_key_policy = kept.host_key_policy.clone();
                 config.ssh_options = kept.ssh_options.clone();
             }
+            config.ssh_options = with_compression(config.ssh_options, fields.ssh_compression);
             config.jump_session_id = resolve_jump(peers, base.id, fields.jump_session_id);
             config.forward_rules = match rules_from_drafts(&fields.forward_drafts) {
                 Ok(rules) if !rules.is_empty() => Some(rules),
