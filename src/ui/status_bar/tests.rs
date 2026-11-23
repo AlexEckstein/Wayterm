@@ -51,6 +51,15 @@ fn connected_is_green_with_host_and_port() {
 }
 
 #[test]
+fn a_measured_saving_follows_the_time() {
+    let view = status_view_from(&TransportState::Connected, "example.com", 22, Some(754));
+    assert_eq!(
+        view.with_savings(Some(53)).text(),
+        "Connected to example.com:22 — 12:34 — 53% saved by compression"
+    );
+}
+
+#[test]
 fn connected_without_host_shows_bare_state() {
     let view = status_view_from(&TransportState::Connected, "", 22, None);
     assert_eq!(view.state, "Connected");

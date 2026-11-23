@@ -114,6 +114,7 @@ pub fn password_auth(password: &str) -> HopAuth {
         verifier: accept_all_verifier(),
         responder: Some(password_responder(password)),
         keepalive: Keepalive::default(),
+        compression: false,
     }
 }
 
@@ -126,6 +127,7 @@ pub fn no_auth() -> HopAuth {
         verifier: accept_all_verifier(),
         responder: None,
         keepalive: Keepalive::default(),
+        compression: false,
     }
 }
 

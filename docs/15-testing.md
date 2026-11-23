@@ -99,6 +99,12 @@ Highlights:
 - **Keepalives:** an in-process russh server behind a proxy that goes
   silent: keepalives close the connection, and the pool dials fresh while
   the dead one is still held (`tests/keepalive.rs`).
+- **Compression:** an in-process russh server that only speaks
+  `zlib@openssh.com` echoes data for a compressing session and finds no
+  common method for one that does not; a server without zlib takes a
+  compressing session uncompressed. The measured saving is over 50% on
+  repeated lines, at most 5% when the server declined, and absent for a
+  session that never offered compression (`tests/compression.rs`).
 - **Jumped sessions:** an in-process russh server playing both hops: a
   target dialed by `dial_with_jump` survives the supervisor's release
   poll, and dropping it releases the bastion (`tests/jump_bastion.rs`).

@@ -201,6 +201,7 @@ async fn ssh_w_spawn_path_against_a_closed_port() {
         verifier: verifier(),
         responder: None,
         keepalive: Keepalive::default(),
+        compression: false,
     };
     let stream = SshWStream::spawn(&jump, &target.host, target.port)
         .await

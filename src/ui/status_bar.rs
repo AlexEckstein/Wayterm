@@ -1,8 +1,10 @@
-//! The status bar: connection state, host, and time connected (doc 03
-//! §Status bar). [`status_view_from`] decides what to show; [`StatusBar`]
-//! only renders it. Which tab drives it is the window's business.
+//! The status bar: connection state, host, time connected and what
+//! compression saves (doc 03 §Status bar). [`status_view_from`] decides
+//! what to show; [`StatusBar`] only renders it. Which tab drives it is the
+//! window's business.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk4::glib;
@@ -40,17 +42,35 @@ pub struct StatusView {
     pub host: Option<String>,
     /// Only while connected.
     pub elapsed_secs: Option<u64>,
+    /// What compression saves on incoming traffic, once measured.
+    pub savings_percent: Option<u8>,
 }
 
 impl StatusView {
-    /// E.g. "Connected to example.com:22 — 12:34".
+    /// E.g. "Connected to example.com:22 — 12:34 — 53% saved by
+    /// compression".
     pub fn text(&self) -> String {
-        match self.elapsed_secs {
+        let mut text = match self.elapsed_secs {
             Some(secs) => format!("{} — {}", self.state, format_elapsed(secs)),
             None => self.state.clone(),
+        };
+        if let Some(percent) = self.savings_percent {
+            text.push_str(&format!(" — {percent}% saved by compression"));
+        }
+        text
+    }
+
+    pub fn with_savings(self, savings_percent: Option<u8>) -> Self {
+        Self {
+            savings_percent,
+            ..self
         }
     }
 }
+
+/// Reads the current tab's compression saving (doc 04 §Compression
+/// savings).
+pub type SavingsSource = Rc<dyn Fn() -> Option<u8>>;
 
 /// The view for `state`. The elapsed time is kept only while connected, so
 /// a stale duration is never shown.
@@ -100,6 +120,7 @@ pub fn status_view_from(
             TransportState::Connected => elapsed_secs,
             _ => None,
         },
+        savings_percent: None,
     }
 }
 
@@ -120,8 +141,9 @@ pub struct StatusBar {
     container: gtk4::Box,
     dot: gtk4::Label,
     label: gtk4::Label,
-    /// The tick updating the time connected, while connected.
+    /// The tick updating the time connected and the saving, while connected.
     timer: RefCell<Option<glib::SourceId>>,
+    savings: RefCell<Option<SavingsSource>>,
 }
 
 impl StatusBar {
@@ -149,6 +171,7 @@ impl StatusBar {
             dot,
             label,
             timer: RefCell::default(),
+            savings: RefCell::default(),
         };
         this.set_state(&TransportState::Disconnected, "", 0);
         this
@@ -158,17 +181,25 @@ impl StatusBar {
         self.container.upcast_ref()
     }
 
+    /// Where the next [`StatusBar::set_state`] reads the saving from.
+    pub fn set_savings_source(&self, source: Option<SavingsSource>) {
+        self.savings.replace(source);
+    }
+
     /// Show `state`; Connected (re)starts the timer, anything else stops it.
     pub fn set_state(&self, state: &TransportState, host: &str, port: u16) {
         self.stop_timer();
         let connected = *state == TransportState::Connected;
-        self.render(&status_view_from(state, host, port, connected.then_some(0)));
+        let savings = self.savings.borrow().clone().filter(|_| connected);
+        let read = move || savings.as_ref().and_then(|source| source());
+        let view = status_view_from(state, host, port, connected.then_some(0));
+        self.render(&view.with_savings(read()));
         if connected {
             let (label, host, since) = (self.label.clone(), host.to_string(), Instant::now());
             let tick = glib::timeout_add_local(Duration::from_secs(1), move || {
                 let elapsed = Some(since.elapsed().as_secs());
                 let view = status_view_from(&TransportState::Connected, &host, port, elapsed);
-                label.set_text(&view.text());
+                label.set_text(&view.with_savings(read()).text());
                 glib::ControlFlow::Continue
             });
             self.timer.replace(Some(tick));

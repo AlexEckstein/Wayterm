@@ -63,9 +63,10 @@ did next, so it never nags.
   are skipped with a warning;
 - mapped: `HostName`, `Port`, `User`, `IdentityFile` (the key path;
   `none` ignored), `IdentitiesOnly yes` (the key method),
-  `ServerAliveInterval` (the stored keepalive interval) and `ProxyJump`
-  (the jump host, resolved to another imported alias). Key files are never
-  read.
+  `ServerAliveInterval` (the stored keepalive interval), `Compression yes`
+  (doc 04 §Compression; a value other than `yes` or `no` is a warning)
+  and `ProxyJump` (the jump host, resolved to another imported alias).
+  Key files are never read.
 
 ### Remmina
 

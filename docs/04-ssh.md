@@ -2,8 +2,9 @@
 
 SSH tabs pair a terminal with an SFTP sidebar over one shared,
 authenticated connection. This doc covers the connection and its pool,
-the terminal channel, host-key verification, the authentication chain,
-tmux persistence, jump hosts and port forwarding. Where secrets come from
+the terminal channel, keepalives, compression, host-key verification,
+the authentication chain, tmux persistence, jump hosts and port
+forwarding. Where secrets come from
 is doc 05; the sidebar is doc 07.
 
 A connection manager that auto-accepts host keys is a MITM hole: that is
@@ -11,7 +12,7 @@ a release blocker, not a feature gap.
 
 Code: `src/transport/` — `connection.rs` (`SshConnection`, the russh
 handler), `supervisor.rs` (the pool), `ssh.rs` (`SSHTransport`),
-`hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`; `src/ui/tabs/ssh.rs` (the
+`hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`, `traffic.rs`; `src/ui/tabs/ssh.rs` (the
 SSH connect flow), `src/ui/dialogs/` — `hostkey.rs`, `auth.rs`,
 `tunnels/`.
 
@@ -24,8 +25,9 @@ direct-tcpip channels for jump hosts and local forwards. It is a module
 boundary (AGENTS.md).
 
 `ConnectionSupervisor` (one per window) shares one connection per
-(host, port, username), kept apart by whether its host key was checked
-and by the host keys its session trusts (`PoolKey`): a session under
+(host, port, username), kept apart by whether its host key was checked,
+by the host keys its session trusts and by whether it offered
+compression (`PoolKey`, §Compression): a session under
 `strict` or `accept-new` is never handed a connection that a session
 under `off` dialed, and a session is never handed one whose key only
 another session's set trusts (§Host key verification). Sessions trusting
@@ -77,6 +79,45 @@ The closed session ends every channel without an exit status, so each
 tab's reader reports `ConnectionLost` and the reconnect policy applies
 (doc 03 §Reconnect). A shared connection runs the keepalives of the
 session that dialed it.
+
+## Compression
+
+`ssh_options.compression` (the session dialog's **Compress traffic**,
+doc 09; `Compression yes` in an ssh_config import, doc 10) decides what
+the dial offers (`client_config`). On, it offers `zlib@openssh.com` then
+`none`, as OpenSSH's `Compression yes` does; off, only `none`. The
+server picks the client's first method it supports, and `none` is
+mandatory (RFC 4253), so a server without compression connects
+uncompressed and nothing changes on the server. `zlib@openssh.com` starts
+only after authentication; plain pre-auth `zlib` is never offered, and
+OpenSSH's sshd has refused it since 7.4.
+
+The offer is fixed for a connection's life, so it is part of the pool
+key: a compressing session and one that does not never share a
+connection, and a changed setting applies to the next dial, while open
+tabs keep theirs. One connection carries the terminal, the SFTP sidebar
+and the forwards, so they compress together. Each hop of a jumped
+connection uses its own session's setting; the jump hop carries the
+target's already encrypted stream, which does not compress, so
+compression belongs on the target.
+
+### Compression savings
+
+Each dial counts into a `Traffic` (`traffic.rs`), which
+`SshConnection::traffic` hands out: `CountingStream` counts the bytes read
+off the socket (or, for a jumped target, off its jump channel), and the
+handler adds what each incoming channel data message would have cost
+uncompressed — its bytes plus 38 bytes of framing (message fields,
+packet length, typical padding and a 16-byte AEAD tag; 4 more for
+stderr). Counting starts once authentication succeeds. The saving is
+`1 − wire ÷ estimate`, never below 0, so a server that declined
+compression reads about 0%. It is `None` for a session that did not
+offer compression and until 32 KiB have been measured, when the figure is
+still noise.
+
+The status bar shows it for the current tab (doc 03 §Status bar). It
+covers the whole connection, so the SFTP sidebar's transfers and the
+forwards count into the terminal tab's figure.
 
 ## Host key verification
 
@@ -324,7 +365,10 @@ same rule editor, so both accept exactly the same input.
 - **russh 0.65:** `known_hosts::learn_known_hosts_path` appends an entry
   (lookups are Wayterm's own, §Host key verification), and
   `Preferred::DEFAULT.key` is the host-key algorithm list that
-  `key_preference` reorders.
+  `key_preference` reorders. `Preferred::compression` is the offer, from
+  `russh::compression::{ZLIB_LEGACY, NONE}`; the `flate2` default
+  feature provides zlib, and `zlib@openssh.com` waits for authentication
+  (`Compression::is_deferred`).
 - **russh-sftp 3.0:** doc 07.
 
 Re-verify these when bumping a dependency; these APIs have moved before.
@@ -347,9 +391,16 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   consulted unless the session names the address, and new entries are
   never hashed.
 - The `off` policy has no badge in the UI.
-- `ssh_options.compression` is stored but not applied. The session
-  dialog edits no `ssh_options` field, so keepalives can only be set by an
-  import and `ssh_w_fallback` only by a JSON import (doc 10).
+- russh reports neither the negotiated compression nor its byte counts,
+  so the saving is an estimate (§Compression savings): framing is
+  modelled, not read, so a MAC longer than 16 bytes (`hmac-*-etm`) reads
+  low. Incoming traffic only, since russh has no hook for outgoing channel
+  data, so uploads are not measured; incoming packets other than channel
+  data (keepalive replies, window adjusts, rekeys) count against the
+  saving.
+- The session dialog edits only `ssh_options.compression`, so keepalives
+  can only be set by an import and `ssh_w_fallback` only by a JSON import
+  (doc 10).
 - A redial or new tab that starts before keepalives catch a dead link is
   handed that connection and waits on it; once keepalives close it, the
   attempt fails and the next one dials fresh.

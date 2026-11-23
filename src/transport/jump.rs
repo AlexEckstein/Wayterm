@@ -24,6 +24,7 @@ use crate::transport::connection::{AppClientHandler, AuthMethod, SshConnection};
 use crate::transport::supervisor::{
     ConnectParams, ConnectionSupervisor, HopAuth, authenticated, client_config, connect_error,
 };
+use crate::transport::traffic::{CountingStream, Traffic};
 use crate::transport::types::TransportError;
 
 /// Depth and self-jump checks (doc 04: depth ≤ 1). Pure so the connect flow
@@ -203,11 +204,14 @@ async fn connect_inner<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let handler = AppClientHandler::new(target.host.clone(), target.port, auth.verifier.clone());
+    let traffic = Traffic::new(auth.compression);
+    let handler = AppClientHandler::new(target.host.clone(), target.port, auth.verifier.clone())
+        .with_traffic(Arc::clone(&traffic));
+    let stream = CountingStream::new(stream, Arc::clone(&traffic));
     let handle = client::connect_stream(client_config(target, auth), stream, handler)
         .await
         .map_err(|err| connect_error(&target.host, err))?;
-    authenticated(handle, target, auth).await
+    authenticated(handle, target, auth, traffic).await
 }
 
 /// `ssh -W host:port -- user@host` argv. No secrets ever appear here: the

@@ -33,6 +33,7 @@ use crate::macros::InputTap;
 use crate::store::SessionStore;
 use crate::store::model::{SessionConfig, SessionType};
 use crate::terminal::TerminalBackend;
+use crate::transport::traffic::Traffic;
 use crate::transport::types::{TransportError, TransportState};
 use crate::ui::dialogs::tunnels::ForwardStatusSource;
 use crate::ui::main_window::route_status;
@@ -135,6 +136,8 @@ struct PageState {
     /// The next connect was asked for by the user, so it takes focus.
     focus_on_connect: Cell<bool>,
     status: RefCell<PageStatus>,
+    /// The SSH connection's counters, from its last connect.
+    traffic: RefCell<Option<Arc<Traffic>>>,
 }
 
 /// `page`'s state, created on first use.
@@ -214,6 +217,16 @@ impl SessionTab {
     /// The last state `page` published, if it is a session tab.
     pub(crate) fn page_status(page: &gtk4::Widget) -> Option<PageStatus> {
         Some(existing_state(page)?.status.borrow().clone())
+    }
+
+    /// What compression saves on `page`'s SSH connection, once measured
+    /// (doc 04 §Compression savings).
+    pub(crate) fn compression_savings(page: &gtk4::Widget) -> Option<u8> {
+        existing_state(page)?
+            .traffic
+            .borrow()
+            .as_ref()?
+            .savings_percent()
     }
 
     /// The current tab's live forward status source, while its engine is

@@ -256,7 +256,10 @@ only). A corrupt list costs one launch's layout, never the launch.
 connected, yellow connecting/verifying/authenticating/reconnecting, red
 disconnected or failed), the state text with the endpoint ("Connected to
 example.com:22"), and the time connected (`m:ss`, `h:mm:ss` from an hour
-on) while connected. Local and serial tabs show the transport's
+on) while connected. An SSH tab whose session compresses adds what
+compression saves on its connection once measured ("53% saved by
+compression", doc 04 §Compression savings), read on every tick from the
+page's last connection. Local and serial tabs show the transport's
 description (shell path, `device@baud`) instead of a host. Each page keeps
 its last published state, replayed when it becomes current; the window's
 status router shows only the current page's updates.

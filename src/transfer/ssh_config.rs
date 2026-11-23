@@ -44,6 +44,8 @@ struct Scanner {
     by_name: HashMap<String, usize>,
     /// Raw `ProxyJump` per session, resolved in [`Scanner::finish`].
     proxy_jump: Vec<Option<String>>,
+    /// Per session, folded into `ssh_options` in [`Scanner::finish`].
+    ssh_keys: Vec<SshKeys>,
     /// Canonical paths of the `Include` chain being read.
     include_stack: Vec<PathBuf>,
     match_blocks: usize,
@@ -107,6 +109,7 @@ impl Scanner {
                         ..SessionConfig::default()
                     });
                     self.proxy_jump.push(None);
+                    self.ssh_keys.push(SshKeys::default());
                     self.by_name
                         .insert(pattern.clone(), self.sessions.len() - 1);
                     self.sessions.len() - 1
@@ -156,18 +159,25 @@ impl Scanner {
                 }
             }
             "serveraliveinterval" => {
-                if session.ssh_options.is_none() {
+                let keys = &mut self.ssh_keys[index];
+                if keys.keepalive_interval.is_none() {
                     match value.parse::<u32>() {
-                        Ok(interval) => {
-                            session.ssh_options = Some(SshOptions {
-                                compression: false,
-                                keepalive_interval: Some(interval),
-                                keepalive_count: None,
-                                ssh_w_fallback: false,
-                            })
-                        }
+                        Ok(interval) => keys.keepalive_interval = Some(interval),
                         Err(_) => self.report.warnings.push(format!(
                             "{}: ServerAliveInterval \"{value}\" is not a number, ignored",
+                            session.name
+                        )),
+                    }
+                }
+            }
+            "compression" => {
+                let keys = &mut self.ssh_keys[index];
+                if keys.compression.is_none() {
+                    match value.to_ascii_lowercase().as_str() {
+                        "yes" => keys.compression = Some(true),
+                        "no" => keys.compression = Some(false),
+                        _ => self.report.warnings.push(format!(
+                            "{}: Compression \"{value}\" is not yes or no, ignored",
                             session.name
                         )),
                     }
@@ -290,6 +300,15 @@ impl Scanner {
     }
 
     fn finish(mut self) -> Parsed {
+        for (session, keys) in self.sessions.iter_mut().zip(&self.ssh_keys) {
+            if keys.compression == Some(true) || keys.keepalive_interval.is_some() {
+                session.ssh_options = Some(SshOptions {
+                    compression: keys.compression.unwrap_or(false),
+                    keepalive_interval: keys.keepalive_interval,
+                    ..SshOptions::default()
+                });
+            }
+        }
         for index in 0..self.sessions.len() {
             let Some(target) = self.proxy_jump[index].take() else {
                 continue;
@@ -329,15 +348,23 @@ impl Scanner {
 }
 
 /// The keywords [`Scanner::apply`] maps.
-const MAPPED_KEYS: [&str; 7] = [
+const MAPPED_KEYS: [&str; 8] = [
     "hostname",
     "user",
     "port",
     "identityfile",
     "identitiesonly",
     "serveraliveinterval",
+    "compression",
     "proxyjump",
 ];
+
+/// The first `Compression` and `ServerAliveInterval` of one session.
+#[derive(Default)]
+struct SshKeys {
+    compression: Option<bool>,
+    keepalive_interval: Option<u32>,
+}
 
 /// Physical lines with backslash continuations joined.
 fn logical_lines(text: &str) -> Vec<String> {

@@ -66,6 +66,44 @@ Host bare
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 }
 
+/// `Compression` and `ServerAliveInterval` each keep their first value,
+/// in either order; `Compression no` alone stores no options.
+#[test]
+fn ssh_config_compression() {
+    let text = "\
+Host zipped
+  Compression yes
+  ServerAliveInterval 20
+Host kept
+  ServerAliveInterval 10
+  Compression YES
+Host plain
+  Compression no
+Host first-wins
+  Compression no
+  Compression yes
+Host bad
+  Compression maybe
+";
+    let (_, sessions, report) = ssh(text, None);
+    let options = |name| find(&sessions, name).ssh_options.clone();
+    let compressed = |interval| SshOptions {
+        compression: true,
+        keepalive_interval: interval,
+        ..SshOptions::default()
+    };
+    assert_eq!(options("zipped"), Some(compressed(Some(20))));
+    assert_eq!(options("kept"), Some(compressed(Some(10))));
+    assert_eq!(options("plain"), None);
+    assert_eq!(options("first-wins"), None, "first value wins");
+    assert_eq!(options("bad"), None);
+    assert!(
+        has_warning(&report, "Compression \"maybe\""),
+        "{:?}",
+        report.warnings
+    );
+}
+
 #[test]
 fn ssh_config_continuation_line() {
     let (_, sessions, _) = ssh("Host one \\\n two\n  User u\n", None);
