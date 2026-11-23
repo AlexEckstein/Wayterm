@@ -158,7 +158,8 @@ task), a local-shell tab that connects and closes and whose sidebar
 follows its shell, color schemes and the
 system theme, the user stylesheet reload, terminal opacity (the rendered
 alpha of a VTE terminal and of the window under it, across tab switches),
-the VNC view, RDP embedding, the tab bar's "+", and that every shortcut
+the VNC view, RDP embedding, the tab bar's "+", the status bar's segments
+and tooltips, and that every shortcut
 has a window action.
 
 Other ignored display tests: VTE scrollback extraction

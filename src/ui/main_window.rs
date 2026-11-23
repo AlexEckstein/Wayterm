@@ -24,7 +24,7 @@ use crate::ui::panels::side_dock::SideDock;
 use crate::ui::status_bar::StatusBar;
 use crate::ui::tabs::restore::TabPersistence;
 use crate::ui::tabs::{self, terminal_actions};
-use crate::ui::tabs::{SessionTab, current_page};
+use crate::ui::tabs::{PageStatus, SessionTab, current_page};
 use crate::ui::translucency::{self, CHROME_CLASS};
 use crate::ui::widgets::{data, set_data};
 use crate::ui::{appearance, settings};
@@ -54,28 +54,34 @@ struct StatusRouter {
 }
 
 impl StatusRouter {
-    fn push(&mut self, page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
+    fn push(&mut self, page: &gtk4::Widget, status: PageStatus) {
         let current = self
             .notebook
             .current_page()
             .and_then(|num| self.notebook.nth_page(Some(num)));
         if current.as_ref() == Some(page) {
-            self.show(page, state, host, port);
+            self.show(page, status);
         }
     }
 
-    /// Show `page`'s state as the current page's. `switch-page` calls this
+    /// Show `page`'s status as the current page's. `switch-page` calls this
     /// directly: GTK emits it before the notebook makes `page` current.
-    fn show(&mut self, page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
-        if self.last.as_ref() == Some(&(page.clone(), state.clone())) {
+    fn show(&mut self, page: &gtk4::Widget, status: PageStatus) {
+        if self.last.as_ref() == Some(&(page.clone(), status.state.clone())) {
             return;
         }
         let weak = page.downgrade();
         self.status_bar.set_savings_source(Some(Rc::new(move || {
             SessionTab::compression_savings(&weak.upgrade()?)
         })));
-        self.status_bar.set_state(&state, host, port);
-        self.last = Some((page.clone(), state));
+        self.status_bar.set_state(
+            &status.state,
+            &status.host,
+            status.port,
+            status.since.as_ref(),
+            SessionTab::status_session(page).as_ref(),
+        );
+        self.last = Some((page.clone(), status.state));
     }
 }
 
@@ -86,12 +92,10 @@ type StatusRouterCell = Rc<RefCell<StatusRouter>>;
 pub(crate) fn route_status(
     window: &gtk4::ApplicationWindow,
     page: &gtk4::Widget,
-    state: TransportState,
-    host: &str,
-    port: u16,
+    status: PageStatus,
 ) {
     if let Some(router) = data::<StatusRouterCell>(window, STATUS_ROUTER_KEY) {
-        router.borrow_mut().push(page, state, host, port);
+        router.borrow_mut().push(page, status);
     }
 }
 
@@ -178,9 +182,7 @@ impl MainWindow {
         let for_switch = router.clone();
         notebook.connect_switch_page(move |_, page, _| {
             let status = SessionTab::page_status(page).unwrap_or_default();
-            for_switch
-                .borrow_mut()
-                .show(page, status.state, &status.host, status.port);
+            for_switch.borrow_mut().show(page, status);
         });
 
         let tunnels_button = gtk4::Button::with_label("Tunnels…");

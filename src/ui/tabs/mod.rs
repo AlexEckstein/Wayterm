@@ -33,11 +33,12 @@ use crate::macros::InputTap;
 use crate::store::SessionStore;
 use crate::store::model::{SessionConfig, SessionType};
 use crate::terminal::TerminalBackend;
-use crate::transport::traffic::Traffic;
+use crate::transport::traffic::{Savings, Traffic};
 use crate::transport::types::{TransportError, TransportState};
 use crate::ui::dialogs::tunnels::ForwardStatusSource;
 use crate::ui::main_window::route_status;
 use crate::ui::panels::sftp_sidebar::SftpSidebar;
+use crate::ui::status_bar::{ConnectedSince, SessionInfo};
 use crate::ui::widgets::{centered_label, data, data_or_default, set_data, window_of};
 
 pub mod actions;
@@ -81,6 +82,8 @@ pub(crate) struct PageStatus {
     pub(crate) state: TransportState,
     pub(crate) host: String,
     pub(crate) port: u16,
+    /// Set while Connected, so the time connected survives tab switches.
+    pub(crate) since: Option<ConnectedSince>,
 }
 
 impl Default for PageStatus {
@@ -89,6 +92,7 @@ impl Default for PageStatus {
             state: TransportState::Disconnected,
             host: String::new(),
             port: 0,
+            since: None,
         }
     }
 }
@@ -221,12 +225,25 @@ impl SessionTab {
 
     /// What compression saves on `page`'s SSH connection, once measured
     /// (doc 04 §Compression savings).
-    pub(crate) fn compression_savings(page: &gtk4::Widget) -> Option<u8> {
-        existing_state(page)?
-            .traffic
-            .borrow()
-            .as_ref()?
-            .savings_percent()
+    pub(crate) fn compression_savings(page: &gtk4::Widget) -> Option<Savings> {
+        existing_state(page)?.traffic.borrow().as_ref()?.savings()
+    }
+
+    /// The session `page` shows, for the status bar's endpoint tooltip.
+    pub(crate) fn status_session(page: &gtk4::Widget) -> Option<SessionInfo> {
+        let state = existing_state(page)?;
+        let session = state.session.get()?;
+        let jump = session
+            .jump_session_id
+            .filter(|_| TabType::of(&session.session_type) == TabType::Ssh)
+            .and_then(|id| state.store.get()?.get_session(id).ok())
+            .map(|jump| jump.name);
+        Some(SessionInfo {
+            name: session.name.clone(),
+            kind: session.session_type.clone(),
+            user: session.username.clone().filter(|user| !user.is_empty()),
+            jump,
+        })
     }
 
     /// The current tab's live forward status source, while its engine is
@@ -393,13 +410,23 @@ fn close_tab(notebook: &gtk4::Notebook, page: &gtk4::Widget) {
 /// Record `state` on the page and show it if the page is current.
 // used by ui::tabs::vnc and ui::tabs::rdp
 pub(crate) fn publish_status(page: &gtk4::Widget, state: TransportState, host: &str, port: u16) {
-    self::state(page).status.replace(PageStatus {
-        state: state.clone(),
+    let cell = &self::state(page).status;
+    let since = (state == TransportState::Connected).then(|| {
+        let last = cell.borrow();
+        match (&last.state, &last.since) {
+            (TransportState::Connected, Some(since)) => since.clone(),
+            _ => ConnectedSince::now(),
+        }
+    });
+    let status = PageStatus {
+        state,
         host: host.to_string(),
         port,
-    });
+        since,
+    };
+    cell.replace(status.clone());
     if let Some(window) = window_of(page).and_then(|w| w.downcast().ok()) {
-        route_status(&window, page, state, host, port);
+        route_status(&window, page, status);
     }
 }
 
