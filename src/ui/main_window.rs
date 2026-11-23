@@ -71,8 +71,10 @@ impl StatusRouter {
             return;
         }
         let weak = page.downgrade();
-        self.status_bar.set_savings_source(Some(Rc::new(move || {
-            SessionTab::compression_savings(&weak.upgrade()?)
+        self.status_bar.set_live_source(Some(Rc::new(move || {
+            weak.upgrade()
+                .map(|page| SessionTab::live_status(&page))
+                .unwrap_or_default()
         })));
         self.status_bar.set_state(
             &status.state,
