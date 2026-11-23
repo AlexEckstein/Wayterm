@@ -1,7 +1,7 @@
 //! Where the tab's shell is, asked of the remote over the shared
 //! connection for shells that do not report it with OSC 7 (doc 07
-//! §Following the shell). Each probe runs one `sh` with its script on
-//! stdin, so the login shell (fish, bash, zsh) never parses the script.
+//! §Following the shell). Each probe runs one remote script
+//! (`transport::remote_script`).
 //!
 //! A tmux tab asks tmux for its session's active pane. A plain tab walks
 //! up from the probe to this connection's SSH server process and takes its
@@ -14,10 +14,10 @@
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
 use crate::transport::connection::SshConnection;
+use crate::transport::remote_script::run_script;
 use crate::transport::ssh::shell_quote;
 
 /// Prefixes the answer, since login-shell startup files may print too.
@@ -87,9 +87,10 @@ impl ShellCwdProbe {
     pub async fn run(&self) -> Option<String> {
         let connection = self.connection.upgrade()?;
         let script = probe_script(self.tmux_session.as_deref());
-        let output = tokio::time::timeout(PROBE_TIMEOUT, run_script(&connection, &script))
-            .await
-            .ok()??;
+        let output =
+            tokio::time::timeout(PROBE_TIMEOUT, run_script(&connection, &script, MAX_OUTPUT))
+                .await
+                .ok()??;
         parse_probe_output(&output)
     }
 }
@@ -123,30 +124,6 @@ pub fn parse_probe_output(output: &[u8]) -> Option<String> {
         .rev()
         .find_map(|line| line.strip_prefix(MARKER))?;
     path.starts_with('/').then(|| path.to_string())
-}
-
-/// Run `sh` with `script` on stdin over a fresh session channel and
-/// collect its stdout.
-async fn run_script(connection: &SshConnection, script: &str) -> Option<Vec<u8>> {
-    let mut channel = connection.open_session_channel().await.ok()?;
-    channel.exec(true, "sh").await.ok()?;
-    channel.data(script.as_bytes()).await.ok()?;
-    channel.eof().await.ok()?;
-    let mut output = Vec::new();
-    while let Some(msg) = channel.wait().await {
-        match msg {
-            ChannelMsg::Data { data } => {
-                output.extend_from_slice(&data);
-                if output.len() > MAX_OUTPUT {
-                    break;
-                }
-            }
-            ChannelMsg::Eof | ChannelMsg::Close => break,
-            _ => {}
-        }
-    }
-    let _ = channel.close().await;
-    Some(output)
 }
 
 #[cfg(test)]
