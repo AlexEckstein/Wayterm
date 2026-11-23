@@ -260,7 +260,7 @@ separators, each with a tooltip that adds detail:
 | State | a colored dot (green connected, yellow connecting/verifying/authenticating/reconnecting, red disconnected or failed) and the state ("Connected", "Reconnecting (attempt 2)…", an error's message) | the state with the endpoint ("Connected to example.com:22"); an error's whole message, which the bar may cut short |
 | Endpoint | `host:port`; a local or serial tab's transport description (shell path, `device@baud`) | the session's name and type, then host, port, user and jump host, or the shell or serial line |
 | Time connected | `m:ss`, `h:mm:ss` from an hour on, while connected | the local time the connection came up |
-| Server uptime | how long an SSH tab's server has been up ("Up 12d 4h", `5h 12m`, `42m`), once it answered (doc 04 §Server uptime) | the full duration and the local time it booted |
+| Uptime | how long an SSH tab's server has been up once it answered (doc 04 §Server uptime), or a local shell's machine (doc 06 §Local shell): "Up 12d 4h", `5h 12m`, `42m` | whose uptime ("Server", "This computer"), the full duration and the local time it booted |
 | Compression | what compression saves on an SSH connection once measured ("Compression saves 53%", doc 04 §Compression savings) | the bytes received and the uncompressed estimate |
 
 The state and the endpoint sit on the left, the uptime, time and saving

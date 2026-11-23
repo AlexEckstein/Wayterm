@@ -27,7 +27,8 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         wire: 60 * 1024,
         uncompressed: 100 * 1024,
     };
-    let uptime = ServerUptime {
+    let uptime = HostUptime {
+        of: UptimeOf::Server,
         secs: 2 * 86_400 + 3 * 3600,
         at: Instant::now(),
         boot_clock: "11/21/26 07:00:00".to_string(),

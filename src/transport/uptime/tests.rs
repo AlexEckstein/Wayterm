@@ -17,6 +17,21 @@ fn the_answer_is_the_last_marked_number() {
     assert_eq!(parse_uptime(b""), None);
 }
 
+#[test]
+fn proc_uptime_reads_its_whole_seconds() {
+    assert_eq!(parse_proc_uptime("12345.67 890123.45\n"), Some(12345));
+    assert_eq!(parse_proc_uptime("7 1\n"), Some(7));
+    assert_eq!(parse_proc_uptime(""), None);
+    assert_eq!(parse_proc_uptime("x.5 1\n"), None);
+}
+
+#[test]
+fn this_machine_has_an_uptime() {
+    if std::path::Path::new("/proc/uptime").exists() {
+        assert!(local_uptime().is_some());
+    }
+}
+
 /// `sh`'s stdout for `script`, with `path_dir` first on `PATH`.
 fn run(script: &str, path_dir: Option<&std::path::Path>) -> Vec<u8> {
     let mut command = Command::new("sh");

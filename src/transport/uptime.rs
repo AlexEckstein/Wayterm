@@ -1,5 +1,6 @@
 //! How long the server has been up, asked once per connection
-//! (doc 04 §Server uptime).
+//! (doc 04 §Server uptime), and this machine's own for local shells
+//! (doc 06 §Local shell).
 
 use std::time::Duration;
 
@@ -34,6 +35,21 @@ pub async fn server_uptime(connection: &SshConnection) -> Option<u64> {
     .await
     .ok()??;
     parse_uptime(&output)
+}
+
+/// This machine's uptime in seconds, from `/proc/uptime`.
+pub fn local_uptime() -> Option<u64> {
+    parse_proc_uptime(&std::fs::read_to_string("/proc/uptime").ok()?)
+}
+
+/// The whole seconds of `/proc/uptime`'s first field (`"12345.67 890.12"`).
+pub fn parse_proc_uptime(text: &str) -> Option<u64> {
+    text.split_whitespace()
+        .next()?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// The last marked line's seconds.

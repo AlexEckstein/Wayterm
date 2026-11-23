@@ -33,6 +33,10 @@ of a host.
   reaps the child on disconnect and on drop, sending `SIGKILL` after 5 s
   if a hung-up shell lingers, so no zombie remains.
 - **tmux** does not apply locally: the flag is accepted and ignored.
+- **Uptime:** when the shell starts, the tab reads this machine's
+  `/proc/uptime` (`uptime::local_uptime`) for the status bar's uptime
+  segment, which counts on from there (doc 03 §Status bar). A serial tab
+  shows none.
 
 The New Tab picker's "Local shell" and the tab bar's "+" open an unsaved
 local session: the login shell in the home directory (doc 03 §New Tab).

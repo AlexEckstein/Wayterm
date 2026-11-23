@@ -1,5 +1,5 @@
 //! The status bar: segments for the connection state, the endpoint, the
-//! server's uptime, the time connected and what compression saves, each with a tooltip that
+//! host's uptime, the time connected and what compression saves, each with a tooltip that
 //! adds detail (doc 03 §Status bar). The `*_segment` functions decide what
 //! to show; [`StatusBar`] only renders it. Which tab drives it is the
 //! window's business.
@@ -76,24 +76,34 @@ impl ConnectedSince {
     }
 }
 
-/// How long the server has been up, as it answered at `at` (doc 04
-/// §Server uptime).
+/// Whose uptime a tab shows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UptimeOf {
+    /// An SSH tab's server (doc 04 §Server uptime).
+    Server,
+    /// The machine a local shell runs on (doc 06 §Local shell).
+    ThisComputer,
+}
+
+/// How long a host has been up, as read at `at`.
 #[derive(Clone, Debug)]
-pub struct ServerUptime {
+pub struct HostUptime {
+    pub of: UptimeOf,
     pub secs: u64,
     pub at: Instant,
     /// Local wall-clock time it booted, e.g. "11/11/26 10:02:11".
     pub boot_clock: String,
 }
 
-impl ServerUptime {
-    pub fn measured(secs: u64) -> Self {
+impl HostUptime {
+    pub fn measured(of: UptimeOf, secs: u64) -> Self {
         let boot_clock = glib::DateTime::now_local()
             .and_then(|now| now.add_seconds(-(secs as f64)))
             .and_then(|boot| boot.format("%x %X"))
             .map(String::from)
             .unwrap_or_default();
         Self {
+            of,
             secs,
             at: Instant::now(),
             boot_clock,
@@ -110,7 +120,7 @@ impl ServerUptime {
 pub struct LiveStatus {
     /// Doc 04 §Compression savings.
     pub savings: Option<Savings>,
-    pub uptime: Option<ServerUptime>,
+    pub uptime: Option<HostUptime>,
 }
 
 /// Reads the current tab's [`LiveStatus`].
@@ -252,10 +262,14 @@ pub fn savings_segment(savings: Savings) -> Segment {
     }
 }
 
-/// The server's uptime, with the boot time and the full duration in the
+/// A host's uptime, with the full duration and the boot time in the
 /// tooltip.
-pub fn uptime_segment(secs: u64, boot_clock: &str) -> Segment {
-    let mut tooltip = format!("Server up {}", describe_duration(secs));
+pub fn uptime_segment(of: UptimeOf, secs: u64, boot_clock: &str) -> Segment {
+    let whose = match of {
+        UptimeOf::Server => "Server",
+        UptimeOf::ThisComputer => "This computer",
+    };
+    let mut tooltip = format!("{whose} up {}", describe_duration(secs));
     if !boot_clock.is_empty() {
         tooltip.push_str(&format!("\nBooted {boot_clock}"));
     }
@@ -374,7 +388,7 @@ fn separate(side: &[&Part]) {
 }
 
 /// The state (a coloured dot and its text) and the endpoint on the left;
-/// the server's uptime, the time connected and the compression saving on
+/// the host's uptime, the time connected and the compression saving on
 /// the right, ticking every second while connected.
 pub struct StatusBar {
     container: gtk4::Box,
@@ -477,7 +491,7 @@ impl StatusBar {
             let live = source.as_ref().map(|source| source()).unwrap_or_default();
             let up = live
                 .uptime
-                .map(|up| uptime_segment(up.now_secs(), &up.boot_clock));
+                .map(|up| uptime_segment(up.of, up.now_secs(), &up.boot_clock));
             uptime.show(up.as_ref());
             let segment = since
                 .as_ref()
