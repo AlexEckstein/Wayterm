@@ -260,14 +260,16 @@ separators, each with a tooltip that adds detail:
 | State | a colored dot (green connected, yellow connecting/verifying/authenticating/reconnecting, red disconnected or failed) and the state ("Connected", "Reconnecting (attempt 2)…", an error's message) | the state with the endpoint ("Connected to example.com:22"); an error's whole message, which the bar may cut short |
 | Endpoint | `host:port`; a local or serial tab's transport description (shell path, `device@baud`) | the session's name and type, then host, port, user and jump host, or the shell or serial line |
 | Time connected | `m:ss`, `h:mm:ss` from an hour on, while connected | the local time the connection came up |
+| Server uptime | how long an SSH tab's server has been up ("Up 12d 4h", `5h 12m`, `42m`), once it answered (doc 04 §Server uptime) | the full duration and the local time it booted |
 | Compression | what compression saves on an SSH connection once measured ("Compression saves 53%", doc 04 §Compression savings) | the bytes received and the uncompressed estimate |
 
-The state and the endpoint sit on the left, the time and the saving on
-the right; a segment with nothing to show is hidden with its separator.
+The state and the endpoint sit on the left, the uptime, time and saving
+on the right. A segment with nothing to show is hidden, and a separator
+shows only between two shown segments on the same side.
 The time digits are tabular, so the ticking figure keeps its width. While
 connected the bar ticks every second, reading the time from when the page
-published Connected and the saving from the page's last connection, so
-neither restarts on a tab switch. Each page keeps its last published
+published Connected, and the uptime and saving from the page's last
+connection, so none restarts on a tab switch. Each page keeps its last published
 state, replayed when it becomes current; the window's status router shows
 only the current page's updates.
 
