@@ -138,6 +138,8 @@ The answer is kept on the page with the instant it arrived, and the bar
 adds the time since, so the server is asked once per connect, not per
 tick. The probe holds the connection weakly, and an answer that lands
 after a newer attempt started is dropped. A jumped tab asks the target.
+A local shell tab shows this machine's uptime instead (doc 06 §Local
+shell).
 
 ## Host key verification
 

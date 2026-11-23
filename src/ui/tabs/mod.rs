@@ -38,7 +38,7 @@ use crate::transport::types::{TransportError, TransportState};
 use crate::ui::dialogs::tunnels::ForwardStatusSource;
 use crate::ui::main_window::route_status;
 use crate::ui::panels::sftp_sidebar::SftpSidebar;
-use crate::ui::status_bar::{ConnectedSince, LiveStatus, ServerUptime, SessionInfo};
+use crate::ui::status_bar::{ConnectedSince, HostUptime, LiveStatus, SessionInfo};
 use crate::ui::widgets::{centered_label, data, data_or_default, set_data, window_of};
 
 pub mod actions;
@@ -142,8 +142,9 @@ struct PageState {
     status: RefCell<PageStatus>,
     /// The SSH connection's counters, from its last connect.
     traffic: RefCell<Option<Arc<Traffic>>>,
-    /// The server's answer for the last connection (doc 04 §Server uptime).
-    uptime: RefCell<Option<ServerUptime>>,
+    /// The SSH server's answer for the last connection (doc 04 §Server
+    /// uptime), or this machine's for a local shell (doc 06 §Local shell).
+    uptime: RefCell<Option<HostUptime>>,
 }
 
 /// `page`'s state, created on first use.
