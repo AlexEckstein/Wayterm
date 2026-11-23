@@ -66,10 +66,10 @@ impl Traffic {
             .fetch_add(bytes as u64 + overhead, Ordering::Relaxed);
     }
 
-    /// The share of incoming traffic compression saved, in percent: `None`
-    /// without compression or before [`MIN_MEASURED`]. Never below 0, so a
-    /// server that declined compression reads about 0%.
-    pub fn savings_percent(&self) -> Option<u8> {
+    /// What compression saved on incoming traffic: `None` without
+    /// compression or before [`MIN_MEASURED`]. Never below 0%, so a server
+    /// that declined compression reads about 0%.
+    pub fn savings(&self) -> Option<Savings> {
         let plain = self.plain_in.load(Ordering::Relaxed);
         if !self.compressing || plain < MIN_MEASURED {
             return None;
@@ -79,8 +79,25 @@ impl Traffic {
             .load(Ordering::Relaxed)
             .saturating_sub(self.wire_at_auth.load(Ordering::Relaxed));
         let saved = plain.saturating_sub(wire) * 100 / plain;
-        Some(saved as u8)
+        Some(Savings {
+            percent: saved as u8,
+            wire,
+            uncompressed: plain,
+        })
     }
+
+    pub fn savings_percent(&self) -> Option<u8> {
+        self.savings().map(|savings| savings.percent)
+    }
+}
+
+/// A measured saving: the bytes received since authentication and the
+/// estimate of what they would have cost uncompressed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Savings {
+    pub percent: u8,
+    pub wire: u64,
+    pub uncompressed: u64,
 }
 
 /// A stream that counts what is read from it into [`Traffic`].

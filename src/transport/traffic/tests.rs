@@ -37,6 +37,20 @@ fn savings_compare_the_wire_with_the_uncompressed_estimate() {
 }
 
 #[test]
+fn savings_report_the_bytes_they_compare() {
+    let plain = 100 * (1000 + DATA_OVERHEAD as usize);
+    let savings = measured(true, 5000, 100, 1000, plain / 4).savings();
+    assert_eq!(
+        savings,
+        Some(Savings {
+            percent: 75,
+            wire: (plain / 4) as u64,
+            uncompressed: plain as u64,
+        })
+    );
+}
+
+#[test]
 fn savings_need_compression_and_enough_traffic() {
     assert_eq!(measured(false, 0, 100, 1000, 1000).savings_percent(), None);
     let little = measured(true, 0, 1, 1000, 10);
