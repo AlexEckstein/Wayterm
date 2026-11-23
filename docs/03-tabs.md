@@ -252,17 +252,24 @@ only). A corrupt list costs one launch's layout, never the launch.
 
 ## Status bar
 
-`src/ui/status_bar.rs` shows the current tab's state: a colored dot (green
-connected, yellow connecting/verifying/authenticating/reconnecting, red
-disconnected or failed), the state text with the endpoint ("Connected to
-example.com:22"), and the time connected (`m:ss`, `h:mm:ss` from an hour
-on) while connected. An SSH tab whose session compresses adds what
-compression saves on its connection once measured ("53% saved by
-compression", doc 04 §Compression savings), read on every tick from the
-page's last connection. Local and serial tabs show the transport's
-description (shell path, `device@baud`) instead of a host. Each page keeps
-its last published state, replayed when it becomes current; the window's
-status router shows only the current page's updates.
+`src/ui/status_bar.rs` shows the current tab in segments, divided by
+separators, each with a tooltip that adds detail:
+
+| Segment | Shows | Tooltip |
+|---|---|---|
+| State | a colored dot (green connected, yellow connecting/verifying/authenticating/reconnecting, red disconnected or failed) and the state ("Connected", "Reconnecting (attempt 2)…", an error's message) | the state with the endpoint ("Connected to example.com:22"); an error's whole message, which the bar may cut short |
+| Endpoint | `host:port`; a local or serial tab's transport description (shell path, `device@baud`) | the session's name and type, then host, port, user and jump host, or the shell or serial line |
+| Time connected | `m:ss`, `h:mm:ss` from an hour on, while connected | the local time the connection came up |
+| Compression | what compression saves on an SSH connection once measured ("Compression saves 53%", doc 04 §Compression savings) | the bytes received and the uncompressed estimate |
+
+The state and the endpoint sit on the left, the time and the saving on
+the right; a segment with nothing to show is hidden with its separator.
+The time digits are tabular, so the ticking figure keeps its width. While
+connected the bar ticks every second, reading the time from when the page
+published Connected and the saving from the page's last connection, so
+neither restarts on a tab switch. Each page keeps its last published
+state, replayed when it becomes current; the window's status router shows
+only the current page's updates.
 
 ## Tray
 
@@ -301,3 +308,5 @@ alert's, so repeated alerts replace each other.
 - Reconnect is never automatic after `SessionEnded`, by design.
 - The Ghostty backend's grid is not measured before connecting: its
   transport opens at 24×80 and resizes on the first allocation.
+- The status bar's tooltips need a pointer: its segments take no
+  keyboard focus, so their detail is not reachable from the keyboard.

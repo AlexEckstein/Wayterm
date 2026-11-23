@@ -1,121 +1,86 @@
-//! Unit tests for the display-free data layer of [`super::StatusBar`].
-//!
-//! These tests avoid GTK initialization and exercise only
-//! [`status_view_from`], [`format_elapsed`] and [`ColorKind`].
+//! Unit tests for the display-free segments of [`super::StatusBar`].
 
+use crate::store::model::SessionType;
+use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 
-use super::{ColorKind, StatusView, format_elapsed, status_view_from};
+use super::{
+    ColorKind, SessionInfo, elapsed_segment, endpoint_segment, format_elapsed, savings_segment,
+    state_segment,
+};
 
-#[test]
-fn disconnected_is_red_without_host() {
-    let view = status_view_from(&TransportState::Disconnected, "", 0, None);
-    assert_eq!(view.state, "Disconnected");
-    assert_eq!(view.color, ColorKind::Red);
-    assert_eq!(view.host, None);
-    assert_eq!(view.elapsed_secs, None);
-    assert_eq!(view.text(), "Disconnected");
-}
-
-#[test]
-fn connecting_is_yellow() {
-    let view = status_view_from(&TransportState::Connecting, "example.com", 22, None);
-    assert_eq!(view.state, "Connecting…");
-    assert_eq!(view.color, ColorKind::Yellow);
-    assert_eq!(view.host.as_deref(), Some("example.com"));
-    assert_eq!(view.elapsed_secs, None);
-}
-
-#[test]
-fn verifying_host_key_is_yellow() {
-    let view = status_view_from(&TransportState::VerifyingHostKey, "example.com", 22, None);
-    assert_eq!(view.state, "Verifying host key…");
-    assert_eq!(view.color, ColorKind::Yellow);
-}
-
-#[test]
-fn authenticating_is_yellow() {
-    let view = status_view_from(&TransportState::Authenticating, "example.com", 22, None);
-    assert_eq!(view.state, "Authenticating…");
-    assert_eq!(view.color, ColorKind::Yellow);
-}
-
-#[test]
-fn connected_is_green_with_host_and_port() {
-    let view = status_view_from(&TransportState::Connected, "example.com", 2222, Some(754));
-    assert_eq!(view.state, "Connected to example.com:2222");
-    assert_eq!(view.color, ColorKind::Green);
-    assert_eq!(view.host.as_deref(), Some("example.com"));
-    assert_eq!(view.elapsed_secs, Some(754));
-    assert_eq!(view.text(), "Connected to example.com:2222 — 12:34");
-}
-
-#[test]
-fn a_measured_saving_follows_the_time() {
-    let view = status_view_from(&TransportState::Connected, "example.com", 22, Some(754));
-    assert_eq!(
-        view.with_savings(Some(53)).text(),
-        "Connected to example.com:22 — 12:34 — 53% saved by compression"
-    );
-}
-
-#[test]
-fn connected_without_host_shows_bare_state() {
-    let view = status_view_from(&TransportState::Connected, "", 22, None);
-    assert_eq!(view.state, "Connected");
-    assert_eq!(view.color, ColorKind::Green);
-    assert_eq!(view.text(), "Connected");
-}
-
-#[test]
-fn reconnecting_reports_attempt_and_is_yellow() {
-    let view = status_view_from(&TransportState::Reconnecting { attempt: 3 }, "h", 22, None);
-    assert_eq!(view.state, "Reconnecting (attempt 3)…");
-    assert_eq!(view.color, ColorKind::Yellow);
-    assert_eq!(view.host.as_deref(), Some("h"));
-}
-
-#[test]
-fn reconnecting_first_attempt_text() {
-    let view = status_view_from(&TransportState::Reconnecting { attempt: 1 }, "h", 22, None);
-    assert_eq!(view.state, "Reconnecting (attempt 1)…");
-}
-
-#[test]
-fn error_passes_message_through_in_red() {
-    let view = status_view_from(
-        &TransportState::Error("connection failed: refused".to_string()),
-        "example.com",
-        22,
-        None,
-    );
-    assert_eq!(view.state, "connection failed: refused");
-    assert_eq!(view.color, ColorKind::Red);
-    assert_eq!(view.text(), "connection failed: refused");
-}
-
-#[test]
-fn non_connected_states_drop_elapsed() {
-    for state in [
-        TransportState::Disconnected,
-        TransportState::Connecting,
-        TransportState::VerifyingHostKey,
-        TransportState::Authenticating,
-        TransportState::Reconnecting { attempt: 2 },
-        TransportState::Error("boom".to_string()),
-    ] {
-        let view = status_view_from(&state, "h", 22, Some(99));
-        assert_eq!(
-            view.elapsed_secs, None,
-            "state {state:?} kept a stale duration"
-        );
-        assert_eq!(view.text(), view.state);
+fn ssh_session() -> SessionInfo {
+    SessionInfo {
+        name: "prod".to_string(),
+        kind: SessionType::SSH,
+        user: Some("alex".to_string()),
+        jump: Some("bastion".to_string()),
     }
 }
 
 #[test]
-fn every_state_maps_to_a_distinct_color_and_text() {
-    let states = [
+fn disconnected_is_red() {
+    let (color, segment) = state_segment(&TransportState::Disconnected, "", 0);
+    assert_eq!(color, ColorKind::Red);
+    assert_eq!(segment.text, "Disconnected");
+    assert_eq!(segment.tooltip, "Disconnected");
+    let (_, segment) = state_segment(&TransportState::Disconnected, "db", 22);
+    assert_eq!(segment.tooltip, "Not connected to db:22");
+}
+
+#[test]
+fn the_transient_states_are_yellow_and_name_the_endpoint() {
+    for (state, text, tooltip) in [
+        (
+            TransportState::Connecting,
+            "Connecting…",
+            "Connecting to example.com:22",
+        ),
+        (
+            TransportState::VerifyingHostKey,
+            "Verifying host key…",
+            "Checking the host key of example.com:22",
+        ),
+        (
+            TransportState::Authenticating,
+            "Authenticating…",
+            "Logging in to example.com:22",
+        ),
+        (
+            TransportState::Reconnecting { attempt: 3 },
+            "Reconnecting (attempt 3)…",
+            "Connection lost, reconnecting to example.com:22, attempt 3",
+        ),
+    ] {
+        let (color, segment) = state_segment(&state, "example.com", 22);
+        assert_eq!(color, ColorKind::Yellow, "{state:?}");
+        assert_eq!(segment.text, text);
+        assert_eq!(segment.tooltip, tooltip);
+    }
+}
+
+#[test]
+fn connected_is_green_and_leaves_the_endpoint_to_its_segment() {
+    let (color, segment) = state_segment(&TransportState::Connected, "example.com", 2222);
+    assert_eq!(color, ColorKind::Green);
+    assert_eq!(segment.text, "Connected");
+    assert_eq!(segment.tooltip, "Connected to example.com:2222");
+    let (_, segment) = state_segment(&TransportState::Connected, "", 22);
+    assert_eq!(segment.tooltip, "Connected");
+}
+
+#[test]
+fn an_error_shows_its_whole_message_in_the_tooltip() {
+    let message = "connection failed: refused".to_string();
+    let (color, segment) = state_segment(&TransportState::Error(message.clone()), "h", 22);
+    assert_eq!(color, ColorKind::Red);
+    assert_eq!(segment.text, message);
+    assert_eq!(segment.tooltip, message);
+}
+
+#[test]
+fn every_state_has_its_own_text() {
+    let texts: std::collections::HashSet<String> = [
         TransportState::Disconnected,
         TransportState::Connecting,
         TransportState::VerifyingHostKey,
@@ -123,28 +88,85 @@ fn every_state_maps_to_a_distinct_color_and_text() {
         TransportState::Connected,
         TransportState::Reconnecting { attempt: 1 },
         TransportState::Error("e".to_string()),
-    ];
-    let views: Vec<StatusView> = states
-        .iter()
-        .map(|s| status_view_from(s, "h", 22, None))
-        .collect();
+    ]
+    .iter()
+    .map(|state| state_segment(state, "h", 22).1.text)
+    .collect();
+    assert_eq!(texts.len(), 7);
+}
 
-    let texts: std::collections::HashSet<&str> = views.iter().map(|v| v.state.as_str()).collect();
-    assert_eq!(texts.len(), views.len());
+#[test]
+fn no_endpoint_no_segment() {
+    assert_eq!(endpoint_segment("", 22, Some(&ssh_session())), None);
+}
 
-    // Disconnected and Error are red, Connected green, the three
-    // transient states plus Reconnecting yellow.
-    for (i, expected) in [
-        (0, ColorKind::Red),
-        (1, ColorKind::Yellow),
-        (2, ColorKind::Yellow),
-        (3, ColorKind::Yellow),
-        (4, ColorKind::Green),
-        (5, ColorKind::Yellow),
-        (6, ColorKind::Red),
-    ] {
-        assert_eq!(views[i].color, expected, "state {i} = {:?}", views[i]);
-    }
+#[test]
+fn an_ssh_endpoint_lists_the_session_behind_it() {
+    let segment = endpoint_segment("db.internal", 22, Some(&ssh_session())).unwrap();
+    assert_eq!(segment.text, "db.internal:22");
+    assert_eq!(
+        segment.tooltip,
+        "Session: prod\nType: SSH\nHost: db.internal\nPort: 22\nUser: alex\nJump host: bastion"
+    );
+}
+
+#[test]
+fn local_and_serial_endpoints_are_their_descriptions() {
+    let local = SessionInfo {
+        name: "Local shell".to_string(),
+        kind: SessionType::LocalShell,
+        user: Some("ignored".to_string()),
+        jump: None,
+    };
+    let segment = endpoint_segment("/bin/zsh", 0, Some(&local)).unwrap();
+    assert_eq!(segment.text, "/bin/zsh");
+    assert_eq!(
+        segment.tooltip,
+        "Session: Local shell\nType: Local shell\nShell: /bin/zsh"
+    );
+
+    let serial = SessionInfo {
+        name: "console".to_string(),
+        kind: SessionType::Serial,
+        ..SessionInfo::default()
+    };
+    let segment = endpoint_segment("/dev/ttyUSB0@115200", 0, Some(&serial)).unwrap();
+    assert_eq!(segment.text, "/dev/ttyUSB0@115200");
+    assert!(
+        segment
+            .tooltip
+            .ends_with("Type: Serial\nLine: /dev/ttyUSB0@115200")
+    );
+}
+
+#[test]
+fn an_endpoint_without_a_session_shows_host_and_port() {
+    let segment = endpoint_segment("vnc.lan", 5900, None).unwrap();
+    assert_eq!(segment.text, "vnc.lan:5900");
+    assert_eq!(segment.tooltip, "Host: vnc.lan\nPort: 5900");
+}
+
+#[test]
+fn the_elapsed_tooltip_names_the_start() {
+    let segment = elapsed_segment(754, "14:02:11");
+    assert_eq!(segment.text, "12:34");
+    assert_eq!(segment.tooltip, "Connected since 14:02:11");
+    assert_eq!(elapsed_segment(0, "").tooltip, "Time connected");
+}
+
+#[test]
+fn the_savings_tooltip_shows_the_bytes() {
+    let segment = savings_segment(Savings {
+        percent: 53,
+        wire: 1024 * 1024,
+        uncompressed: 2252 * 1024,
+    });
+    assert_eq!(segment.text, "Compression saves 53%");
+    assert_eq!(
+        segment.tooltip,
+        "1.0 MB received, about 2.2 MB uncompressed\n\
+         Counts the terminal, SFTP and forwards on this connection"
+    );
 }
 
 #[test]
@@ -179,12 +201,4 @@ fn color_kind_hex_colors_are_distinct() {
             "{color} is not a #rrggbb colour"
         );
     }
-}
-
-#[test]
-fn a_port_of_zero_shows_the_bare_description() {
-    let view = status_view_from(&TransportState::Connected, "/bin/bash", 0, None);
-    assert_eq!(view.text(), "Connected to /bin/bash");
-    let view = status_view_from(&TransportState::Connected, "db", 22, None);
-    assert_eq!(view.text(), "Connected to db:22");
 }
