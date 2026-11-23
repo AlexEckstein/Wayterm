@@ -15,4 +15,5 @@ pub mod reconnect;
 pub mod serial;
 pub mod ssh;
 pub mod supervisor;
+pub mod traffic;
 pub mod types;

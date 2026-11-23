@@ -90,8 +90,13 @@ fn auth(compression: bool) -> HopAuth {
     }
 }
 
-/// Sends a compressible payload over a session channel and reads it back.
-async fn echo_round_trip(supervisor: &ConnectionSupervisor, addr: SocketAddr, compression: bool) {
+/// Sends a compressible payload over a session channel, reads it back,
+/// and returns what compression saved on the way in.
+async fn echo_round_trip(
+    supervisor: &ConnectionSupervisor,
+    addr: SocketAddr,
+    compression: bool,
+) -> Option<u8> {
     let conn = supervisor
         .get_or_connect(&params(addr), &auth(compression))
         .await
@@ -112,6 +117,7 @@ async fn echo_round_trip(supervisor: &ConnectionSupervisor, addr: SocketAddr, co
     .await
     .expect("the echo arrives");
     assert_eq!(echoed, payload);
+    conn.traffic().savings_percent()
 }
 
 /// A server that only speaks delayed zlib proves the offer reaches the
@@ -121,7 +127,11 @@ async fn echo_round_trip(supervisor: &ConnectionSupervisor, addr: SocketAddr, co
 async fn a_compressing_session_negotiates_delayed_zlib() {
     let addr = start_server(&[compression::ZLIB_LEGACY]).await;
     let supervisor = ConnectionSupervisor::new();
-    echo_round_trip(&supervisor, addr, true).await;
+    let saved = echo_round_trip(&supervisor, addr, true).await;
+    assert!(
+        saved.is_some_and(|p| p > 50),
+        "repeated lines compress: {saved:?}"
+    );
 
     let refused = supervisor.get_or_connect(&params(addr), &auth(false)).await;
     assert!(
@@ -130,10 +140,23 @@ async fn a_compressing_session_negotiates_delayed_zlib() {
     );
 }
 
-/// A server without zlib still takes a compressing session, uncompressed.
+/// A server without zlib still takes a compressing session, uncompressed,
+/// and the measured saving says so.
 #[tokio::test]
 async fn a_server_without_zlib_connects_uncompressed() {
     let addr = start_server(&[compression::NONE]).await;
     let supervisor = ConnectionSupervisor::new();
-    echo_round_trip(&supervisor, addr, true).await;
+    let saved = echo_round_trip(&supervisor, addr, true).await;
+    assert!(
+        saved.is_some_and(|p| p <= 5),
+        "nothing compressed: {saved:?}"
+    );
+}
+
+/// A session that never offered compression shows no saving.
+#[tokio::test]
+async fn an_uncompressed_session_reports_no_saving() {
+    let addr = start_server(&[compression::NONE]).await;
+    let supervisor = ConnectionSupervisor::new();
+    assert_eq!(echo_round_trip(&supervisor, addr, false).await, None);
 }

@@ -8,13 +8,14 @@ use std::sync::Arc;
 
 use russh::client::{self, Handle, Msg};
 use russh::keys::{HashAlg, PublicKeyOrCertificate, load_secret_key};
-use russh::{Channel, Disconnect};
+use russh::{Channel, ChannelId, Disconnect};
 use tokio::sync::Mutex;
 use zeroize::Zeroizing;
 
 use crate::transport::auth::{AuthConfig, AuthOutcome, ChallengeResponder, authenticate_chain};
 use crate::transport::credentials::CredentialManager;
 use crate::transport::hostkey::{HostKeyDecision, HostKeyFacts, HostKeyVerifier};
+use crate::transport::traffic::Traffic;
 use crate::transport::types::TransportError;
 
 /// The method a session uses, which decides what the chain tries
@@ -45,6 +46,7 @@ pub struct SshConnection {
     /// The hop this session's channel runs over (doc 04 §Jump hosts). After
     /// `handle` so the session closes before its bastion is let go.
     jump: Option<Arc<SshConnection>>,
+    traffic: Arc<Traffic>,
 }
 
 impl SshConnection {
@@ -60,6 +62,7 @@ impl SshConnection {
             port,
             username,
             jump: None,
+            traffic: Traffic::new(false),
         }
     }
 
@@ -67,6 +70,16 @@ impl SshConnection {
     pub(crate) fn holding_jump(mut self, jump: Arc<SshConnection>) -> Self {
         self.jump = Some(jump);
         self
+    }
+
+    /// The counters its dial set up (doc 04 §Compression savings).
+    pub(crate) fn with_traffic(mut self, traffic: Arc<Traffic>) -> Self {
+        self.traffic = traffic;
+        self
+    }
+
+    pub fn traffic(&self) -> &Arc<Traffic> {
+        &self.traffic
     }
 
     pub fn host(&self) -> &str {
@@ -284,6 +297,7 @@ pub struct AppClientHandler {
     host: String,
     port: u16,
     verifier: HostKeyVerifier,
+    traffic: Arc<Traffic>,
 }
 
 impl AppClientHandler {
@@ -294,7 +308,14 @@ impl AppClientHandler {
             host,
             port,
             verifier,
+            traffic: Traffic::new(false),
         }
+    }
+
+    /// Count incoming channel data into `traffic`.
+    pub(crate) fn with_traffic(mut self, traffic: Arc<Traffic>) -> Self {
+        self.traffic = traffic;
+        self
     }
 }
 
@@ -345,6 +366,27 @@ impl client::Handler for AppClientHandler {
         _banner: &str,
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn data(
+        &mut self,
+        _channel: ChannelId,
+        data: &[u8],
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.traffic.add_data(data.len(), false);
+        Ok(())
+    }
+
+    async fn extended_data(
+        &mut self,
+        _channel: ChannelId,
+        _ext: u32,
+        data: &[u8],
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.traffic.add_data(data.len(), true);
         Ok(())
     }
 }

@@ -18,6 +18,7 @@ use crate::transport::auth::ChallengeResponder;
 use crate::transport::connection::{AppClientHandler, AuthMethod, HandlerError, SshConnection};
 use crate::transport::credentials::CredentialManager;
 use crate::transport::hostkey::HostKeyVerifier;
+use crate::transport::traffic::{CountingStream, Traffic};
 use crate::transport::types::TransportError;
 
 /// How often a release monitor checks for the last consumer (short in unit
@@ -288,14 +289,18 @@ impl ConnectionSupervisor<SshConnection> {
         let key = PoolKey::for_hop(params, auth);
         let dial = || async {
             let session = auth.creds.session_id();
+            let traffic = Traffic::new(auth.compression);
             let handler =
-                AppClientHandler::new(params.host.clone(), params.port, auth.verifier.clone());
+                AppClientHandler::new(params.host.clone(), params.port, auth.verifier.clone())
+                    .with_traffic(Arc::clone(&traffic));
             tracing::info!(host = %params.host, port = params.port, session = %session, "connecting");
-            let handle = client::connect(
-                client_config(params, auth),
-                (params.host.as_str(), params.port),
-                handler,
-            )
+            let handle = async {
+                let socket = tokio::net::TcpStream::connect((params.host.as_str(), params.port))
+                    .await
+                    .map_err(|err| HandlerError::Ssh(russh::Error::IO(err)))?;
+                let stream = CountingStream::new(socket, Arc::clone(&traffic));
+                client::connect_stream(client_config(params, auth), stream, handler).await
+            }
             .await
             .map_err(|err| {
                 let err = connect_error(&params.host, err);
@@ -308,7 +313,7 @@ impl ConnectionSupervisor<SshConnection> {
                 );
                 err
             })?;
-            let conn = authenticated(handle, params, auth).await?;
+            let conn = authenticated(handle, params, auth, traffic).await?;
             tracing::info!(host = %params.host, port = params.port, session = %session, "connected");
             Ok(Arc::new(conn))
         };
@@ -318,20 +323,23 @@ impl ConnectionSupervisor<SshConnection> {
 }
 
 /// Wrap a fresh russh handle in an [`SshConnection`] and run the auth chain
-/// on it (doc 04 §Authentication), disconnecting on failure. Shared by the direct
+/// on it (doc 04 §Authentication), disconnecting on failure; `traffic` is
+/// what the dial counts into, measured from here on. Shared by the direct
 /// dial above and the jump dial (`transport::jump`), which arrives with a
 /// handle built over a direct-tcpip channel instead of a TCP socket.
 pub(crate) async fn authenticated(
     handle: Handle<AppClientHandler>,
     params: &ConnectParams,
     auth: &HopAuth,
+    traffic: Arc<Traffic>,
 ) -> Result<SshConnection, TransportError> {
     let conn = SshConnection::new(
         handle,
         params.host.clone(),
         params.port,
         params.username.clone(),
-    );
+    )
+    .with_traffic(Arc::clone(&traffic));
     let authenticated = conn
         .authenticate(&auth.method, &auth.creds, auth.responder.clone())
         .await;
@@ -339,6 +347,7 @@ pub(crate) async fn authenticated(
         let _ = conn.disconnect().await;
         return Err(err);
     }
+    traffic.mark_authenticated();
     Ok(conn)
 }
 
