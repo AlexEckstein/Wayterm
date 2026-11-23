@@ -27,7 +27,17 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         wire: 60 * 1024,
         uncompressed: 100 * 1024,
     };
-    bar.set_savings_source(Some(Rc::new(move || Some(saving))));
+    let uptime = HostUptime {
+        of: UptimeOf::Server,
+        secs: 2 * 86_400 + 3 * 3600,
+        at: Instant::now(),
+        boot_clock: "11/21/26 07:00:00".to_string(),
+    };
+    let live = LiveStatus {
+        savings: Some(saving),
+        uptime: Some(uptime),
+    };
+    bar.set_live_source(Some(Rc::new(move || live.clone())));
     let session = SessionInfo {
         name: "prod".to_string(),
         kind: SessionType::SSH,
@@ -53,7 +63,28 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
     assert_eq!(bar.elapsed.label.text(), "1:15", "counted from `since`");
     assert_eq!(tooltip(&bar.elapsed), "Connected since 14:02:11");
     assert_eq!(bar.savings.label.text(), "Compression saves 40%");
+    assert_eq!(bar.uptime.label.text(), "Up 2d 3h");
+    assert_eq!(
+        tooltip(&bar.uptime),
+        "Server up 2 days, 3 hours\nBooted 11/21/26 07:00:00"
+    );
+    assert!(!bar.uptime.separator.is_visible(), "first on its side");
+    assert!(bar.elapsed.separator.is_visible() && bar.savings.separator.is_visible());
     assert!(bar.timer.borrow().is_some());
+
+    bar.set_live_source(Some(Rc::new(LiveStatus::default)));
+    bar.set_state(
+        &TransportState::Connected,
+        "db",
+        22,
+        Some(&since),
+        Some(&session),
+    );
+    assert!(!shown(&bar.uptime) && !shown(&bar.savings));
+    assert!(
+        !bar.elapsed.separator.is_visible(),
+        "no separator before the first shown segment"
+    );
 
     bar.set_state(
         &TransportState::Reconnecting { attempt: 2 },
@@ -64,7 +95,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
     );
     assert_eq!(bar.state.label.text(), "Reconnecting (attempt 2)…");
     assert!(shown(&bar.endpoint));
-    assert!(!shown(&bar.elapsed) && !shown(&bar.savings));
+    assert!(!shown(&bar.uptime) && !shown(&bar.elapsed) && !shown(&bar.savings));
     assert!(!bar.savings.separator.is_visible());
     assert!(bar.timer.borrow().is_none());
 }

@@ -17,6 +17,7 @@ use wayterm::transport::connection::{AuthMethod, SshConnection};
 use wayterm::transport::credentials::CredentialManager;
 use wayterm::transport::ssh::SSHTransport;
 use wayterm::transport::types::{Transport, TransportEvent, TransportState};
+use wayterm::transport::uptime::server_uptime;
 
 fn ssh_transport(connection: Arc<SshConnection>) -> (SSHTransport, mpsc::Receiver<TransportEvent>) {
     let (tx, rx) = mpsc::channel(64);
@@ -591,4 +592,18 @@ async fn shell_cwd_probe_gives_up_on_a_missing_tmux_session() {
     let connection = connect_any(&f).await;
     let probe = ShellCwdProbe::new(&connection, Some("wayterm-no-such-session".into()));
     assert_eq!(probe.run().await, None);
+}
+
+/// The CI sshd runs on Linux, so the answer is its `/proc/uptime`.
+#[tokio::test]
+async fn the_server_reports_its_uptime() {
+    let Some(f) = fixture() else { return };
+    let connection = connect_any(&f).await;
+    let reported = server_uptime(&connection).await.expect("an uptime");
+    let local = std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|text| text.split('.').next()?.parse::<u64>().ok());
+    if let Some(local) = local {
+        assert!(reported.abs_diff(local) <= 5, "{reported} vs {local}");
+    }
 }

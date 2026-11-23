@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use gtk4::glib;
 use gtk4::prelude::*;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use vte4::prelude::*;
 
 use super::terminal::finish_connect;
@@ -32,12 +32,14 @@ use crate::transport::hostkey::{HostKeyVerifier, SessionKeySet};
 use crate::transport::jump;
 use crate::transport::supervisor::{ConnectParams, ConnectionSupervisor, HopAuth, Keepalive};
 use crate::transport::types::{TransportError, TransportState};
+use crate::transport::uptime;
 use crate::ui::dialogs::auth;
 use crate::ui::dialogs::hostkey;
 use crate::ui::dialogs::tunnels::EngineStatusBridge;
 use crate::ui::main_window::SUPERVISOR_KEY;
 use crate::ui::panels::sftp_sidebar::{self, DirectoryFollower, SftpSidebar};
 use crate::ui::panels::side_dock;
+use crate::ui::status_bar::{HostUptime, UptimeOf};
 use crate::ui::widgets::{data, data_or_default, window_of};
 
 /// Page data key: the page's [`SshPageState`].
@@ -302,6 +304,7 @@ pub(super) fn on_connect(
     state(page)
         .traffic
         .replace(Some(Arc::clone(conn.traffic())));
+    probe_uptime(page, &conn);
     arm_forward_engine(page, session, &conn);
 
     let Some(sidebar) = sidebar_of(page) else {
@@ -322,6 +325,32 @@ pub(super) fn on_connect(
             side_dock::reveal_sftp(notebook, page);
         }
     }
+}
+
+/// Ask the server how long it has been up, once per connect (doc 04
+/// §Server uptime). The probe holds the connection weakly, and an answer
+/// for a superseded attempt is dropped.
+fn probe_uptime(page: &gtk4::Widget, conn: &Arc<SshConnection>) {
+    state(page).uptime.replace(None);
+    let generation = current_gen(page);
+    let weak = Arc::downgrade(conn);
+    let (reply, answer) = oneshot::channel();
+    tokio::spawn(async move {
+        if let Some(conn) = weak.upgrade() {
+            let _ = reply.send(uptime::server_uptime(&conn).await);
+        }
+    });
+    let page = page.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        let (Ok(Some(secs)), Some(page)) = (answer.await, page.upgrade()) else {
+            return;
+        };
+        if current_gen(&page) == generation {
+            state(&page)
+                .uptime
+                .replace(Some(HostUptime::measured(UptimeOf::Server, secs)));
+        }
+    });
 }
 
 /// The rules the forward engine arms on `finish_connect`: the session's

@@ -5,8 +5,8 @@ use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 
 use super::{
-    ColorKind, SessionInfo, elapsed_segment, endpoint_segment, format_elapsed, savings_segment,
-    state_segment,
+    ColorKind, SessionInfo, UptimeOf, elapsed_segment, endpoint_segment, format_elapsed,
+    format_uptime, savings_segment, state_segment, uptime_segment,
 };
 
 fn ssh_session() -> SessionInfo {
@@ -166,6 +166,38 @@ fn the_savings_tooltip_shows_the_bytes() {
         segment.tooltip,
         "1.0 MB received, about 2.2 MB uncompressed\n\
          Counts the terminal, SFTP and forwards on this connection"
+    );
+}
+
+#[test]
+fn uptime_reads_in_the_two_largest_units() {
+    assert_eq!(format_uptime(0), "0m");
+    assert_eq!(format_uptime(59 * 60 + 59), "59m");
+    assert_eq!(format_uptime(3600), "1h 0m");
+    assert_eq!(format_uptime(5 * 3600 + 12 * 60), "5h 12m");
+    assert_eq!(format_uptime(86_400), "1d 0h");
+    assert_eq!(format_uptime(12 * 86_400 + 4 * 3600 + 7 * 60), "12d 4h");
+}
+
+#[test]
+fn the_uptime_tooltip_spells_out_the_duration_and_boot() {
+    let segment = uptime_segment(
+        UptimeOf::Server,
+        12 * 86_400 + 4 * 3600 + 7 * 60,
+        "11/11/26 10:02:11",
+    );
+    assert_eq!(segment.text, "Up 12d 4h");
+    assert_eq!(
+        segment.tooltip,
+        "Server up 12 days, 4 hours, 7 minutes\nBooted 11/11/26 10:02:11"
+    );
+    assert_eq!(
+        uptime_segment(UptimeOf::Server, 86_400 + 60, "").tooltip,
+        "Server up 1 day, 1 minute"
+    );
+    assert_eq!(
+        uptime_segment(UptimeOf::ThisComputer, 30, "").tooltip,
+        "This computer up less than a minute"
     );
 }
 

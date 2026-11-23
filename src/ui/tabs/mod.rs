@@ -33,12 +33,12 @@ use crate::macros::InputTap;
 use crate::store::SessionStore;
 use crate::store::model::{SessionConfig, SessionType};
 use crate::terminal::TerminalBackend;
-use crate::transport::traffic::{Savings, Traffic};
+use crate::transport::traffic::Traffic;
 use crate::transport::types::{TransportError, TransportState};
 use crate::ui::dialogs::tunnels::ForwardStatusSource;
 use crate::ui::main_window::route_status;
 use crate::ui::panels::sftp_sidebar::SftpSidebar;
-use crate::ui::status_bar::{ConnectedSince, SessionInfo};
+use crate::ui::status_bar::{ConnectedSince, HostUptime, LiveStatus, SessionInfo};
 use crate::ui::widgets::{centered_label, data, data_or_default, set_data, window_of};
 
 pub mod actions;
@@ -142,6 +142,9 @@ struct PageState {
     status: RefCell<PageStatus>,
     /// The SSH connection's counters, from its last connect.
     traffic: RefCell<Option<Arc<Traffic>>>,
+    /// The SSH server's answer for the last connection (doc 04 §Server
+    /// uptime), or this machine's for a local shell (doc 06 §Local shell).
+    uptime: RefCell<Option<HostUptime>>,
 }
 
 /// `page`'s state, created on first use.
@@ -223,10 +226,17 @@ impl SessionTab {
         Some(existing_state(page)?.status.borrow().clone())
     }
 
-    /// What compression saves on `page`'s SSH connection, once measured
-    /// (doc 04 §Compression savings).
-    pub(crate) fn compression_savings(page: &gtk4::Widget) -> Option<Savings> {
-        existing_state(page)?.traffic.borrow().as_ref()?.savings()
+    /// What compression saves on `page`'s SSH connection once measured
+    /// (doc 04 §Compression savings), and its server's uptime once it
+    /// answered.
+    pub(crate) fn live_status(page: &gtk4::Widget) -> LiveStatus {
+        let Some(state) = existing_state(page) else {
+            return LiveStatus::default();
+        };
+        LiveStatus {
+            savings: state.traffic.borrow().as_ref().and_then(|t| t.savings()),
+            uptime: state.uptime.borrow().clone(),
+        }
     }
 
     /// The session `page` shows, for the status bar's endpoint tooltip.

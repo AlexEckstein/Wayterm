@@ -2,7 +2,8 @@
 
 SSH tabs pair a terminal with an SFTP sidebar over one shared,
 authenticated connection. This doc covers the connection and its pool,
-the terminal channel, keepalives, compression, host-key verification,
+the terminal channel, keepalives, compression, server uptime, host-key
+verification,
 the authentication chain, tmux persistence, jump hosts and port
 forwarding. Where secrets come from
 is doc 05; the sidebar is doc 07.
@@ -12,7 +13,8 @@ a release blocker, not a feature gap.
 
 Code: `src/transport/` — `connection.rs` (`SshConnection`, the russh
 handler), `supervisor.rs` (the pool), `ssh.rs` (`SSHTransport`),
-`hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`, `traffic.rs`; `src/ui/tabs/ssh.rs` (the
+`hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`, `traffic.rs`,
+`uptime.rs`, `remote_script.rs`; `src/ui/tabs/ssh.rs` (the
 SSH connect flow), `src/ui/dialogs/` — `hostkey.rs`, `auth.rs`,
 `tunnels/`.
 
@@ -118,6 +120,26 @@ still noise.
 The status bar shows it for the current tab (doc 03 §Status bar). It
 covers the whole connection, so the SFTP sidebar's transfers and the
 forwards count into the terminal tab's figure.
+
+## Server uptime
+
+Each connect of an SSH tab asks the server how long it has been up, for
+the status bar (doc 03 §Status bar). `uptime::server_uptime` runs one
+script through `remote_script::run_script`: `sh` on its own exec channel
+of the shared connection, the script on stdin so the login shell never
+parses it (the SFTP sidebar's shell probe runs the same way, doc 07
+§Following the shell). The script prints `wayterm-uptime:<seconds>`, from
+`/proc/uptime` on Linux, else from `sysctl -n kern.boottime` (macOS and
+the BSDs) against `date +%s`; the last marked line wins, so startup files
+that print do not matter. No answer within 5 s, or none at all, leaves
+the segment hidden.
+
+The answer is kept on the page with the instant it arrived, and the bar
+adds the time since, so the server is asked once per connect, not per
+tick. The probe holds the connection weakly, and an answer that lands
+after a newer attempt started is dropped. A jumped tab asks the target.
+A local shell tab shows this machine's uptime instead (doc 06 §Local
+shell).
 
 ## Host key verification
 
@@ -414,3 +436,9 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   sessions.
 - Plain (non-tmux) shells on one shared connection cannot be told apart
   by the SFTP sidebar's directory probe (doc 07 §Limitations).
+- Server uptime needs a POSIX `sh` and either `/proc/uptime` or
+  `sysctl kern.boottime`: a Windows OpenSSH server, or a restricted shell
+  that refuses exec channels, shows no uptime. Only the Linux path has run
+  against a real server; the `sysctl` path is tested against a stand-in
+  `sysctl`. Every SSH tab asks, even when it shares its connection with
+  another tab that already did.
