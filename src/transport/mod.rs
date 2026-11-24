@@ -4,6 +4,7 @@
 //! RDP/VNC are not byte streams (doc 08); they never appear here.
 
 pub mod auth;
+pub mod bandwidth;
 pub mod connection;
 pub mod credentials;
 pub mod factory;
