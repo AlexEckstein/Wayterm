@@ -293,9 +293,24 @@ pub fn bandwidth_segment(of: Host, rate: &Rate) -> Segment {
     }
 }
 
-/// E.g. `512 B/s`, `1.2 MB/s`.
+/// Bits per second in the largest unit (steps of 1000) that keeps the
+/// figure under 1000, as network rates are given: `800 bit/s`,
+/// `16.4 kbit/s`, `250 Mbit/s`.
 pub fn format_rate(bytes_per_sec: u64) -> String {
-    format!("{}/s", format_size(bytes_per_sec))
+    const UNITS: [&str; 5] = ["bit/s", "kbit/s", "Mbit/s", "Gbit/s", "Tbit/s"];
+    let bits = bytes_per_sec.saturating_mul(8);
+    if bits < 1000 {
+        return format!("{bits} {}", UNITS[0]);
+    }
+    let mut value = bits as f64;
+    let mut unit = 0;
+    // 999.5 and up would round to "1000", so it takes the next unit.
+    while value >= 999.5 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    let decimals = if value < 99.95 { 1 } else { 0 };
+    format!("{value:.decimals$} {}", UNITS[unit])
 }
 
 /// A host's uptime, with the full duration and the boot time in the

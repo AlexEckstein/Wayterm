@@ -153,7 +153,9 @@ defaults on `lo`). It then prints
 `wayterm-net:<interface> <rx bytes> <tx bytes>` from `/proc/net/dev`
 every 2 s. The counters cover both IP versions. The tab turns
 consecutive samples into bytes per second (`RateMeter`), timed by when
-each sample arrives. A counter that went
+each sample arrives, and the status bar shows them as bits per second in
+the unit that keeps the figure under 1000 (`800 bit/s`, `16.4 kbit/s`,
+`250 Mbit/s`). A counter that went
 backwards (the interface was reset) or a changed interface skips one
 figure. The figure counts everything on the server's interface, not just
 this connection, as MobaXterm's monitor does.

@@ -76,7 +76,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         tooltip(&bar.uptime),
         "Server up 2 days, 3 hours\nBooted 11/21/26 07:00:00"
     );
-    assert_eq!(bar.bandwidth.label.text(), "↓ 2.0 KB/s ↑ 10 B/s");
+    assert_eq!(bar.bandwidth.label.text(), "↓ 16.4 kbit/s ↑ 80 bit/s");
     assert!(tooltip(&bar.bandwidth).starts_with("Server network, eth0"));
     assert!(!bar.bandwidth.separator.is_visible(), "first on its side");
     assert!(bar.uptime.separator.is_visible());
