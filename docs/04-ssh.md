@@ -147,10 +147,13 @@ While an SSH tab is the one shown and connected (doc 03 §Status bar),
 `bandwidth::stream_server` runs one long-lived script on its own exec
 channel of the shared connection, the same way as the uptime probe. The
 script finds the default route's interface in `/proc/net/route` (the
-`00000000` destination), then prints
+`00000000` destination), or when there is no IPv4 default, in
+`/proc/net/ipv6_route` (`::/0`, skipping the kernel's unreachable
+defaults on `lo`). It then prints
 `wayterm-net:<interface> <rx bytes> <tx bytes>` from `/proc/net/dev`
-every 2 s. The tab turns consecutive samples into bytes per second
-(`RateMeter`), timed by when each sample arrives. A counter that went
+every 2 s. The counters cover both IP versions. The tab turns
+consecutive samples into bytes per second (`RateMeter`), timed by when
+each sample arrives. A counter that went
 backwards (the interface was reset) or a changed interface skips one
 figure. The figure counts everything on the server's interface, not just
 this connection, as MobaXterm's monitor does.
@@ -464,8 +467,8 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   `sysctl`. Every SSH tab asks, even when it shares its connection with
   another tab that already did.
 - Server bandwidth reads `/proc`, so only Linux servers show it; macOS,
-  the BSDs and Windows show none. Only an IPv4 default route is found
-  (`/proc/net/route`): a server whose only default route is IPv6 shows
-  none. Showing a tab again starts a new script, so its first figure
+  the BSDs and Windows show none. When the server has default routes on
+  several interfaces, the first listed is measured, IPv4 before IPv6,
+  which may not be the one this connection uses. Showing a tab again starts a new script, so its first figure
   takes one interval. The rate includes this connection's own traffic,
   the sampling's few bytes every 2 s among it.

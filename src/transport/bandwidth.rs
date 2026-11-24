@@ -17,13 +17,22 @@ const MARKER: &str = "wayterm-net:";
 /// A longer unterminated line is not a sample.
 const MAX_LINE: usize = 4096;
 
-/// Finds the default route's interface, then prints its received and sent
-/// byte counters every `{interval}` seconds until its output closes.
-const SAMPLE_SCRIPT: &str = r#"[ -r /proc/net/route ] || exit 0
+/// Finds the default route's interface, IPv4 first and then IPv6, then
+/// prints its received and sent byte counters every `{interval}` seconds
+/// until its output closes.
+const SAMPLE_SCRIPT: &str = r#"[ -r /proc/net/dev ] || exit 0
 i=
-while read -r n d _; do
-  [ "$d" = 00000000 ] && { i=$n; break; }
-done < /proc/net/route
+if [ -r /proc/net/route ]; then
+  while read -r n d _; do
+    [ "$d" = 00000000 ] && { i=$n; break; }
+  done < /proc/net/route
+fi
+if [ -z "$i" ] && [ -r /proc/net/ipv6_route ]; then
+  while read -r d p _ _ _ _ _ _ _ n; do
+    [ "$d$p" = 0000000000000000000000000000000000 ] && [ "$n" != lo ] &&
+      { i=$n; break; }
+  done < /proc/net/ipv6_route
+fi
 [ -n "$i" ] || exit 0
 while :; do
   c=
@@ -105,6 +114,20 @@ pub fn default_route_interface(route: &str) -> Option<String> {
     })
 }
 
+/// The interface of `/proc/net/ipv6_route`'s default route (`::/0`),
+/// skipping the kernel's unreachable defaults, which are always on `lo`.
+pub fn default_ipv6_route_interface(route: &str) -> Option<String> {
+    const ANY: &str = "00000000000000000000000000000000";
+    route.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let [dest, prefix, .., interface] = fields.as_slice() else {
+            return None;
+        };
+        (fields.len() == 10 && *dest == ANY && *prefix == "00" && *interface != "lo")
+            .then(|| interface.to_string())
+    })
+}
+
 /// `interface`'s counters in `/proc/net/dev`: received bytes is the first
 /// field after the colon, sent bytes the ninth.
 pub fn interface_counters(dev: &str, interface: &str) -> Option<Counters> {
@@ -124,9 +147,13 @@ pub fn interface_counters(dev: &str, interface: &str) -> Option<Counters> {
 
 /// This machine's default-route interface counters.
 pub fn local_counters() -> Option<Counters> {
-    let route = std::fs::read_to_string("/proc/net/route").ok()?;
-    let interface = default_route_interface(&route)?;
-    interface_counters(&std::fs::read_to_string("/proc/net/dev").ok()?, &interface)
+    let read = |path: &str| std::fs::read_to_string(path).ok();
+    let interface = read("/proc/net/route")
+        .and_then(|route| default_route_interface(&route))
+        .or_else(|| {
+            read("/proc/net/ipv6_route").and_then(|route| default_ipv6_route_interface(&route))
+        })?;
+    interface_counters(&read("/proc/net/dev")?, &interface)
 }
 
 /// Send the server's samples to `samples` until its receiver is dropped or
