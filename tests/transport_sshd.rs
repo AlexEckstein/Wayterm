@@ -16,6 +16,8 @@ use wayterm::transport::auth::{AuthConfig, AuthMethodKind, AuthOutcome, authenti
 use wayterm::transport::bandwidth;
 use wayterm::transport::connection::{AuthMethod, SshConnection};
 use wayterm::transport::credentials::CredentialManager;
+use wayterm::transport::disks;
+use wayterm::transport::load;
 use wayterm::transport::ssh::SSHTransport;
 use wayterm::transport::types::{Transport, TransportEvent, TransportState};
 use wayterm::transport::uptime::server_uptime;
@@ -622,6 +624,58 @@ async fn the_server_streams_its_interface_counters() {
     assert!(rate.is_some(), "two samples make a rate");
     drop(received);
     tokio::time::timeout(std::time::Duration::from_secs(10), stream)
+        .await
+        .expect("dropping the receiver ends the stream")
+        .unwrap();
+}
+
+/// The CI sshd runs on this machine, so the server's figures are ours.
+#[tokio::test]
+async fn the_server_streams_its_cpu_and_memory() {
+    let Some(f) = fixture() else { return };
+    let Some(local) = load::local_sample() else {
+        return;
+    };
+    let connection = connect_any(&f).await;
+    let (samples, mut received) = mpsc::channel(4);
+    let stream = tokio::spawn(load::stream_server(Arc::downgrade(&connection), samples));
+    let mut meter = load::CpuMeter::default();
+    let mut busy = None;
+    for _ in 0..2 {
+        let sample = timeout(Duration::from_secs(10), received.recv())
+            .await
+            .expect("a sample in time")
+            .expect("the stream stays open");
+        assert_eq!(sample.cores, local.cores);
+        assert_eq!(sample.memory.total, local.memory.total);
+        busy = meter.add(sample.cpu);
+    }
+    assert!(busy.is_some(), "two samples make a busy share");
+    drop(received);
+    timeout(Duration::from_secs(10), stream)
+        .await
+        .expect("dropping the receiver ends the stream")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_server_lists_its_filesystems() {
+    let Some(f) = fixture() else { return };
+    let Some(local) = disks::local_filesystems() else {
+        return;
+    };
+    let connection = connect_any(&f).await;
+    let (samples, mut received) = mpsc::channel(2);
+    let stream = tokio::spawn(disks::stream_server(Arc::downgrade(&connection), samples));
+    let listed = timeout(Duration::from_secs(20), received.recv())
+        .await
+        .expect("a round in time")
+        .expect("the stream stays open");
+    if local.iter().any(|f| f.mount == "/") {
+        assert!(listed.iter().any(|f| f.mount == "/"), "{listed:?}");
+    }
+    drop(received);
+    timeout(Duration::from_secs(10), stream)
         .await
         .expect("dropping the receiver ends the stream")
         .unwrap();
