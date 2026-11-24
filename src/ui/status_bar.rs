@@ -1,6 +1,6 @@
 //! The status bar: segments for the connection state, the endpoint, the
-//! host's bandwidth and uptime, the time connected and what compression
-//! saves, each with a tooltip that adds detail (doc 03 §Status bar). The
+//! host's CPU, memory, disks, bandwidth and uptime, the time connected and
+//! what compression saves, each with a tooltip that adds detail (doc 03 §Status bar). The
 //! `*_segment` functions decide what to show; [`StatusBar`] only renders
 //! it. Which tab drives it is the window's business.
 
@@ -14,6 +14,8 @@ use gtk4::prelude::*;
 
 use crate::store::model::SessionType;
 use crate::transport::bandwidth::{INTERVAL, Rate};
+use crate::transport::disks::{self, Filesystem, Usage};
+use crate::transport::load::{self, Memory};
 use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 use crate::ui::panels::sftp_sidebar::format_size;
@@ -40,10 +42,27 @@ impl ColorKind {
 }
 
 /// One part of the bar and what its tooltip adds.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Segment {
     pub text: String,
     pub tooltip: String,
+    /// The text's colour, when it warns.
+    pub color: Option<&'static str>,
+    /// Pango markup shown instead of `tooltip`, which stays its plain text.
+    pub tooltip_markup: Option<String>,
+}
+
+/// Amber from 80 % full, red from 90 %.
+const FILLING: &str = "#d08700";
+const FULL: &str = "#e0443e";
+
+/// The text colour for how full a filesystem is; `None` while it has room.
+pub fn fullness_color(percent: u8) -> Option<&'static str> {
+    match percent {
+        90.. => Some(FULL),
+        80.. => Some(FILLING),
+        _ => None,
+    }
 }
 
 /// The session a tab shows, for the endpoint's tooltip.
@@ -77,7 +96,7 @@ impl ConnectedSince {
     }
 }
 
-/// The machine an uptime or bandwidth figure is about.
+/// The machine a host figure (load, disks, bandwidth, uptime) is about.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Host {
     /// An SSH tab's server (doc 04 §Server uptime, §Server bandwidth).
@@ -123,6 +142,23 @@ pub struct HostRate {
     pub rate: Rate,
 }
 
+/// A host's CPU and memory use. `busy` waits for a second sample.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostLoad {
+    pub of: Host,
+    pub busy: Option<u8>,
+    pub cores: u32,
+    pub load_average: [String; 3],
+    pub memory: Memory,
+}
+
+/// A host's real filesystems.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostDisks {
+    pub of: Host,
+    pub filesystems: Vec<Filesystem>,
+}
+
 /// What the bar reads on every tick while connected.
 #[derive(Clone, Debug, Default)]
 pub struct LiveStatus {
@@ -130,6 +166,8 @@ pub struct LiveStatus {
     pub savings: Option<Savings>,
     pub uptime: Option<HostUptime>,
     pub bandwidth: Option<HostRate>,
+    pub load: Option<HostLoad>,
+    pub disks: Option<HostDisks>,
 }
 
 /// Reads the current tab's [`LiveStatus`].
@@ -181,6 +219,7 @@ pub fn state_segment(state: &TransportState, host: &str, port: u16) -> (ColorKin
                 Segment {
                     text: msg.clone(),
                     tooltip: msg.clone(),
+                    ..Default::default()
                 },
             );
         }
@@ -192,7 +231,14 @@ pub fn state_segment(state: &TransportState, host: &str, port: u16) -> (ColorKin
         }
         (false, _) => format!("{phrase} {}", endpoint(host, port)),
     };
-    (color, Segment { text, tooltip })
+    (
+        color,
+        Segment {
+            text,
+            tooltip,
+            ..Default::default()
+        },
+    )
 }
 
 /// The endpoint and, in its tooltip, the session behind it. `None` until
@@ -229,6 +275,7 @@ pub fn endpoint_segment(host: &str, port: u16, session: Option<&SessionInfo>) ->
     Some(Segment {
         text: endpoint(host, port),
         tooltip: lines.join("\n"),
+        ..Default::default()
     })
 }
 
@@ -251,6 +298,7 @@ pub fn elapsed_segment(secs: u64, since_clock: &str) -> Segment {
         } else {
             format!("Connected since {since_clock}")
         },
+        ..Default::default()
     }
 }
 
@@ -268,6 +316,7 @@ pub fn savings_segment(savings: Savings) -> Segment {
             format_size(wire),
             format_size(uncompressed),
         ),
+        ..Default::default()
     }
 }
 
@@ -276,6 +325,125 @@ fn host_name(of: Host) -> &'static str {
         Host::Server => "Server",
         Host::ThisComputer => "This computer",
     }
+}
+
+/// How busy a host's CPUs were over the last interval, with the core
+/// count and load averages in the tooltip.
+pub fn cpu_segment(of: Host, busy: u8, cores: u32, load_average: &[String; 3]) -> Segment {
+    let [one, five, fifteen] = load_average;
+    Segment {
+        text: format!("CPU {busy}%"),
+        tooltip: format!(
+            "{} CPU {busy}% busy, {cores} {}\n\
+             Load average {one}, {five}, {fifteen} (1, 5, 15 min)\n\
+             Sampled every {} s",
+            host_name(of),
+            if cores == 1 { "core" } else { "cores" },
+            load::INTERVAL.as_secs(),
+        ),
+        ..Default::default()
+    }
+}
+
+/// How much of a host's memory is in use, with what is available and the
+/// swap in the tooltip. `None` without a total.
+pub fn memory_segment(of: Host, memory: &Memory) -> Option<Segment> {
+    if memory.total == 0 {
+        return None;
+    }
+    let used = memory.used();
+    let percent = (used * 100 + memory.total / 2) / memory.total;
+    let swap = if memory.swap_total == 0 {
+        "No swap".to_string()
+    } else {
+        format!(
+            "Swap: {} used of {}",
+            format_size(memory.swap_total.saturating_sub(memory.swap_free)),
+            format_size(memory.swap_total)
+        )
+    };
+    Some(Segment {
+        text: format!("RAM {percent}%"),
+        tooltip: format!(
+            "{} memory: {} used of {} ({percent}%)\n{} available\n{swap}",
+            host_name(of),
+            format_size(used),
+            format_size(memory.total),
+            format_size(memory.available),
+        ),
+        ..Default::default()
+    })
+}
+
+/// A mount point column at most this wide; longer ones lose their middle.
+const MOUNT_WIDTH: usize = 24;
+
+fn shorten(mount: &str) -> String {
+    let chars: Vec<char> = mount.chars().collect();
+    if chars.len() <= MOUNT_WIDTH {
+        return mount.to_string();
+    }
+    let keep = MOUNT_WIDTH - 1;
+    let head: String = chars[..keep / 2].iter().collect();
+    let tail: String = chars[chars.len() - (keep - keep / 2)..].iter().collect();
+    format!("{head}…{tail}")
+}
+
+/// The total across a host's filesystems, coloured by the fullest one, so
+/// a filling filesystem warns even when the total has room. The tooltip
+/// has a line per filesystem, each coloured by its own fullness, and the
+/// total. `None` without filesystems.
+pub fn disk_segment(of: Host, filesystems: &[Filesystem]) -> Option<Segment> {
+    let fullest = filesystems.iter().map(|f| f.usage.percent()).max()?;
+    let total = filesystems
+        .iter()
+        .fold(Usage::default(), |sum, f| sum + f.usage);
+    let mut rows: Vec<(String, Usage)> = filesystems
+        .iter()
+        .map(|f| (shorten(&f.mount), f.usage))
+        .collect();
+    if rows.len() > 1 {
+        rows.push(("Total".to_string(), total));
+    }
+    let width = rows
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let line = |name: &str, usage: &Usage| {
+        format!(
+            "{name:<width$}  {:>4}  {} used, {} free of {}",
+            format!("{}%", usage.percent()),
+            format_size(usage.used),
+            format_size(usage.available),
+            format_size(usage.size),
+        )
+    };
+    let heading = format!("{} filesystems", host_name(of));
+    let footer = format!("Sampled every {} s", disks::INTERVAL.as_secs());
+    let mut tooltip = vec![heading.clone()];
+    let mut markup = vec![glib::markup_escape_text(&heading).to_string()];
+    for (name, usage) in &rows {
+        let text = line(name, usage);
+        let escaped = glib::markup_escape_text(&text);
+        markup.push(match fullness_color(usage.percent()) {
+            Some(color) => format!("<tt><span foreground=\"{color}\">{escaped}</span></tt>"),
+            None => format!("<tt>{escaped}</tt>"),
+        });
+        tooltip.push(text);
+    }
+    tooltip.push(footer.clone());
+    markup.push(glib::markup_escape_text(&footer).to_string());
+    Some(Segment {
+        text: format!(
+            "Disk {} / {}",
+            format_size(total.used),
+            format_size(total.size)
+        ),
+        tooltip: tooltip.join("\n"),
+        color: fullness_color(fullest),
+        tooltip_markup: Some(markup.join("\n")),
+    })
 }
 
 /// A host's interface traffic: received and sent per second.
@@ -290,6 +458,7 @@ pub fn bandwidth_segment(of: Host, rate: &Rate) -> Segment {
             rate.interface,
             INTERVAL.as_secs(),
         ),
+        ..Default::default()
     }
 }
 
@@ -323,6 +492,7 @@ pub fn uptime_segment(of: Host, secs: u64, boot_clock: &str) -> Segment {
     Segment {
         text: format!("Up {}", format_uptime(secs)),
         tooltip,
+        ..Default::default()
     }
 }
 
@@ -410,15 +580,25 @@ impl Part {
 
     fn show(&self, segment: Option<&Segment>) {
         if let Some(segment) = segment {
+            let mut attributes = String::new();
             if self.numeric {
+                attributes.push_str(" font_features=\"tnum\"");
+            }
+            if let Some(color) = segment.color {
+                attributes.push_str(&format!(" foreground=\"{color}\""));
+            }
+            if attributes.is_empty() {
+                self.label.set_text(&segment.text);
+            } else {
                 self.label.set_markup(&format!(
-                    "<span font_features=\"tnum\">{}</span>",
+                    "<span{attributes}>{}</span>",
                     glib::markup_escape_text(&segment.text)
                 ));
-            } else {
-                self.label.set_text(&segment.text);
             }
-            self.area.set_tooltip_text(Some(&segment.tooltip));
+            match &segment.tooltip_markup {
+                Some(markup) => self.area.set_tooltip_markup(Some(markup)),
+                None => self.area.set_tooltip_text(Some(&segment.tooltip)),
+            }
         }
         self.area.set_visible(segment.is_some());
     }
@@ -435,13 +615,17 @@ fn separate(side: &[&Part]) {
 }
 
 /// The state (a coloured dot and its text) and the endpoint on the left;
-/// the host's bandwidth and uptime, the time connected and the compression
-/// saving on the right, ticking every second while connected.
+/// the host's CPU, memory, disks, bandwidth and uptime, the time connected
+/// and the compression saving on the right, ticking every second while
+/// connected.
 pub struct StatusBar {
     container: gtk4::Box,
     dot: gtk4::Label,
     state: Part,
     endpoint: Part,
+    cpu: Part,
+    memory: Part,
+    disk: Part,
     bandwidth: Part,
     uptime: Part,
     elapsed: Part,
@@ -461,6 +645,9 @@ impl StatusBar {
         let state = Part::new(None, EllipsizeMode::End, false);
         state.area.prepend(&dot);
         let endpoint = Part::new(None, EllipsizeMode::Middle, false);
+        let cpu = Part::new(None, EllipsizeMode::None, true);
+        let memory = Part::new(None, EllipsizeMode::None, true);
+        let disk = Part::new(None, EllipsizeMode::None, true);
         let bandwidth = Part::new(None, EllipsizeMode::None, true);
         let uptime = Part::new(None, EllipsizeMode::None, false);
         let elapsed = Part::new(
@@ -477,6 +664,9 @@ impl StatusBar {
         let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         container.append(&spacer);
+        cpu.append_to(&container);
+        memory.append_to(&container);
+        disk.append_to(&container);
         bandwidth.append_to(&container);
         uptime.append_to(&container);
         elapsed.append_to(&container);
@@ -491,6 +681,9 @@ impl StatusBar {
             dot,
             state,
             endpoint,
+            cpu,
+            memory,
+            disk,
             bandwidth,
             uptime,
             elapsed,
@@ -533,6 +726,7 @@ impl StatusBar {
         let connected = *state == TransportState::Connected;
         let source = self.live_source.borrow().clone().filter(|_| connected);
         let since = connected.then(|| since.cloned().unwrap_or_else(ConnectedSince::now));
+        let (cpu, memory, disk) = (self.cpu.clone(), self.memory.clone(), self.disk.clone());
         let (bandwidth, uptime, elapsed, savings) = (
             self.bandwidth.clone(),
             self.uptime.clone(),
@@ -541,6 +735,23 @@ impl StatusBar {
         );
         let refresh = move || {
             let live = source.as_ref().map(|source| source()).unwrap_or_default();
+            let load = live.load.as_ref();
+            let busy = load.and_then(|load| {
+                Some(cpu_segment(
+                    load.of,
+                    load.busy?,
+                    load.cores,
+                    &load.load_average,
+                ))
+            });
+            cpu.show(busy.as_ref());
+            let used = load.and_then(|load| memory_segment(load.of, &load.memory));
+            memory.show(used.as_ref());
+            let full = live
+                .disks
+                .as_ref()
+                .and_then(|disks| disk_segment(disks.of, &disks.filesystems));
+            disk.show(full.as_ref());
             let rate = live
                 .bandwidth
                 .map(|host| bandwidth_segment(host.of, &host.rate));
@@ -554,7 +765,9 @@ impl StatusBar {
                 .map(|since| elapsed_segment(since.at.elapsed().as_secs(), &since.clock));
             elapsed.show(segment.as_ref());
             savings.show(live.savings.map(savings_segment).as_ref());
-            separate(&[&bandwidth, &uptime, &elapsed, &savings]);
+            separate(&[
+                &cpu, &memory, &disk, &bandwidth, &uptime, &elapsed, &savings,
+            ]);
         };
         refresh();
         if connected {

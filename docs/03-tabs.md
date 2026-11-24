@@ -260,26 +260,33 @@ separators, each with a tooltip that adds detail:
 | State | a colored dot (green connected, yellow connecting/verifying/authenticating/reconnecting, red disconnected or failed) and the state ("Connected", "Reconnecting (attempt 2)…", an error's message) | the state with the endpoint ("Connected to example.com:22"); an error's whole message, which the bar may cut short |
 | Endpoint | `host:port`; a local or serial tab's transport description (shell path, `device@baud`) | the session's name and type, then host, port, user and jump host, or the shell or serial line |
 | Time connected | `m:ss`, `h:mm:ss` from an hour on, while connected | the local time the connection came up |
+| CPU | how busy the host's CPUs were over the last 2 s ("CPU 12%"): an SSH tab's server (doc 04 §Server load and disks) or a local shell's machine (doc 06 §Local shell) | whose CPU ("Server", "This computer"), the core count and the 1, 5 and 15 minute load averages |
+| RAM | the share of the host's memory in use, what is not available ("RAM 41%") | the memory used, total and available, and the swap used |
+| Disk | the total used and size across the host's real filesystems ("Disk 66.4 GB / 96.0 GB"), coloured by the fullest one: amber from 80 %, red from 90 % | a line per filesystem (mount point, use %, used, free, size), each coloured by its own fullness, then the total |
 | Bandwidth | the traffic on the host's default-route interface, received and sent, in bits per second scaled to fit ("↓ 1.5 Mbit/s ↑ 200 bit/s"): an SSH tab's server (doc 04 §Server bandwidth) or a local shell's machine (doc 06 §Local shell) | whose network ("Server", "This computer"), the interface, and that it counts all traffic on it |
 | Uptime | how long an SSH tab's server has been up once it answered (doc 04 §Server uptime), or a local shell's machine (doc 06 §Local shell): "Up 12d 4h", `5h 12m`, `42m` | whose uptime ("Server", "This computer"), the full duration and the local time it booted |
 | Compression | what compression saves on an SSH connection once measured ("Compression saves 53%", doc 04 §Compression savings) | the bytes received and the uncompressed estimate |
 
-The state and the endpoint sit on the left, the bandwidth, uptime, time
-and saving on the right. A segment with nothing to show is hidden, and a
-separator shows only between two shown segments on the same side. The
-time and bandwidth digits are tabular, so the ticking figures keep their
-width. While connected the bar ticks every second, reading the time from
+The state and the endpoint sit on the left, the CPU, RAM, disk,
+bandwidth, uptime, time and saving on the right. A segment with nothing
+to show is hidden, and a separator shows only between two shown segments
+on the same side. The time and the host figures' digits are tabular, so
+the ticking figures keep their width. The disk segment's colour follows
+its fullest filesystem rather than the total, so one filling filesystem
+warns even when the total has room. While connected the bar ticks every second, reading the time from
 when the page published Connected, and the uptime and saving from the
 page's last connection, so none restarts on a tab switch. Each page keeps
 its last published state, replayed when it becomes current; the window's
 status router shows only the current page's updates.
 
-Bandwidth is sampled only for the shown tab. When the router shows a
-connected page it starts that page's `BandwidthMonitor`
-(`src/ui/tabs/bandwidth.rs`), and it drops the monitor when another page
-is shown or the page leaves Connected; dropping it stops sampling and
-clears the figure. The first figure appears one sample interval (2 s)
-after the tab is shown, since a rate needs two samples.
+The host figures are sampled only for the shown tab. When the router
+shows a connected page it starts that page's `HostMonitors`: a
+`BandwidthMonitor` (`src/ui/tabs/bandwidth.rs`) and a `ResourceMonitor`
+(`src/ui/tabs/resources.rs`) for the CPU, memory and disks. It drops them
+when another page is shown or the page leaves Connected; dropping them
+stops sampling and clears the figures. Memory and disks show with the
+first sample; the bandwidth and CPU figures appear one sample interval
+(2 s) after the tab is shown, since each needs two samples.
 
 ## Tray
 

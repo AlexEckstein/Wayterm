@@ -6,16 +6,14 @@
 use std::sync::Weak;
 use std::time::{Duration, Instant};
 
-use russh::ChannelMsg;
 use tokio::sync::mpsc;
 
 use crate::transport::connection::SshConnection;
+use crate::transport::remote_script;
 
 pub const INTERVAL: Duration = Duration::from_secs(2);
 /// Prefixes each sample, since login-shell startup files may print too.
 const MARKER: &str = "wayterm-net:";
-/// A longer unterminated line is not a sample.
-const MAX_LINE: usize = 4096;
 
 /// Finds the default route's interface, IPv4 first and then IPv6, then
 /// prints its received and sent byte counters every `{interval}` seconds
@@ -157,50 +155,9 @@ pub fn local_counters() -> Option<Counters> {
 }
 
 /// Send the server's samples to `samples` until its receiver is dropped or
-/// the server stops. The connection is held only while the channel opens,
-/// so sampling never keeps a released connection alive.
+/// the server stops (`remote_script::stream`).
 pub async fn stream_server(connection: Weak<SshConnection>, samples: mpsc::Sender<Counters>) {
-    let Some(connection) = connection.upgrade() else {
-        return;
-    };
-    let Ok(mut channel) = connection.open_session_channel().await else {
-        return;
-    };
-    drop(connection);
-    let started = async {
-        channel.exec(true, "sh").await?;
-        channel.data(sample_script().as_bytes()).await?;
-        channel.eof().await
-    };
-    if started.await.is_err() {
-        return;
-    }
-    let mut pending = Vec::new();
-    'read: loop {
-        let msg = tokio::select! {
-            _ = samples.closed() => break,
-            msg = channel.wait() => msg,
-        };
-        match msg {
-            Some(ChannelMsg::Data { data }) => {
-                pending.extend_from_slice(&data);
-                while let Some(end) = pending.iter().position(|&b| b == b'\n') {
-                    let line: Vec<u8> = pending.drain(..=end).collect();
-                    if let Some(counters) = parse_sample(&String::from_utf8_lossy(&line))
-                        && samples.send(counters).await.is_err()
-                    {
-                        break 'read;
-                    }
-                }
-                if pending.len() > MAX_LINE {
-                    pending.clear();
-                }
-            }
-            Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
-            _ => {}
-        }
-    }
-    let _ = channel.close().await;
+    remote_script::stream(connection, &sample_script(), parse_sample, samples).await;
 }
 
 #[cfg(test)]

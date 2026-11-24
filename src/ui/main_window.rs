@@ -24,7 +24,7 @@ use crate::ui::panels::side_dock::SideDock;
 use crate::ui::status_bar::StatusBar;
 use crate::ui::tabs::restore::TabPersistence;
 use crate::ui::tabs::{self, terminal_actions};
-use crate::ui::tabs::{BandwidthMonitor, PageStatus, SessionTab, current_page};
+use crate::ui::tabs::{HostMonitors, PageStatus, SessionTab, current_page};
 use crate::ui::translucency::{self, CHROME_CLASS};
 use crate::ui::widgets::{data, set_data};
 use crate::ui::{appearance, settings};
@@ -52,7 +52,7 @@ struct StatusRouter {
     status_bar: Rc<StatusBar>,
     last: Option<(gtk4::Widget, TransportState)>,
     /// Samples the shown page's host while it is connected.
-    bandwidth: Option<BandwidthMonitor>,
+    monitors: Option<HostMonitors>,
 }
 
 impl StatusRouter {
@@ -78,9 +78,9 @@ impl StatusRouter {
                 .map(|page| SessionTab::live_status(&page))
                 .unwrap_or_default()
         })));
-        self.bandwidth = None;
+        self.monitors = None;
         if status.state == TransportState::Connected {
-            self.bandwidth = SessionTab::start_bandwidth(page);
+            self.monitors = SessionTab::start_monitors(page);
         }
         self.status_bar.set_state(
             &status.state,
@@ -186,7 +186,7 @@ impl MainWindow {
             notebook: notebook.clone(),
             status_bar: status_bar.clone(),
             last: None,
-            bandwidth: None,
+            monitors: None,
         }));
         let for_switch = router.clone();
         notebook.connect_switch_page(move |_, page, _| {
@@ -470,17 +470,24 @@ pub(super) mod gtk_tests {
             .find(|w| w.is_visible() && w.title().as_deref() == Some(title))
     }
 
-    /// The status bar's text: the last label in the window's bottom row.
+    /// The status bar's shown segments, e.g. "Connected | /bin/sh | …".
     fn status_text(window: &gtk4::ApplicationWindow) -> String {
-        window
+        let bar = window
             .child()
             .and_then(|root| root.last_child())
             .and_then(|row| row.first_child())
-            .and_then(|bar| bar.last_child())
-            .and_downcast::<gtk4::Label>()
-            .expect("the status label")
-            .text()
-            .to_string()
+            .expect("the status bar");
+        let children = |widget: &gtk4::Widget| {
+            std::iter::successors(widget.first_child(), |child| child.next_sibling())
+        };
+        children(&bar)
+            .filter(|segment| segment.is_visible())
+            .flat_map(|segment| children(&segment).collect::<Vec<_>>())
+            .filter_map(|part| part.downcast::<gtk4::Label>().ok())
+            .map(|label| label.text().to_string())
+            .filter(|text| text != "●")
+            .collect::<Vec<_>>()
+            .join(" | ")
     }
 
     fn spin_until(what: &str, done: impl Fn() -> bool) {
@@ -648,7 +655,7 @@ pub(super) mod gtk_tests {
         });
         act("goto_tab_3");
         spin_until("the box session's shell shows", || {
-            status_text(&window).starts_with("Connected to /bin/sh")
+            status_text(&window).starts_with("Connected | /bin/sh")
         });
         for _ in 0..4 {
             act("close_tab");

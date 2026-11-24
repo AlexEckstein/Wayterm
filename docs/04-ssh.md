@@ -2,8 +2,8 @@
 
 SSH tabs pair a terminal with an SFTP sidebar over one shared,
 authenticated connection. This doc covers the connection and its pool,
-the terminal channel, keepalives, compression, server uptime and
-bandwidth, host-key verification,
+the terminal channel, keepalives, compression, server uptime,
+bandwidth, load and disks, host-key verification,
 the authentication chain, tmux persistence, jump hosts and port
 forwarding. Where secrets come from
 is doc 05; the sidebar is doc 07.
@@ -14,7 +14,8 @@ a release blocker, not a feature gap.
 Code: `src/transport/` — `connection.rs` (`SshConnection`, the russh
 handler), `supervisor.rs` (the pool), `ssh.rs` (`SSHTransport`),
 `hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`, `traffic.rs`,
-`uptime.rs`, `bandwidth.rs`, `remote_script.rs`; `src/ui/tabs/ssh.rs` (the
+`uptime.rs`, `bandwidth.rs`, `load.rs`, `disks.rs`, `remote_script.rs`;
+`src/ui/tabs/ssh.rs` (the
 SSH connect flow), `src/ui/dialogs/` — `hostkey.rs`, `auth.rs`,
 `tunnels/`.
 
@@ -166,6 +167,34 @@ disconnect drops the receiver; the stream then closes its channel, and
 the server's script ends on its next write. No default route, or no
 `/proc`, ends the script at once and leaves the segment hidden. A
 jumped tab samples the target.
+
+## Server load and disks
+
+Alongside the bandwidth, the shown SSH tab runs two more long-lived
+scripts, each on its own exec channel and through the same
+`remote_script::stream` (held connection, receiver, ending as above):
+
+- **Load** (`load::stream_server`): every 2 s it prints
+  `wayterm-load:<cores> <load averages> <memory> <cpu times>`: the
+  `cpuN` line count from `/proc/stat` (counted once), the three
+  `/proc/loadavg` figures, `MemTotal`, `MemAvailable`, `SwapTotal` and
+  `SwapFree` from `/proc/meminfo`, and the aggregate `cpu` line's times.
+  Kernels before 3.14 have no `MemAvailable`; free plus buffers plus
+  cache stands in. The tab turns consecutive CPU times into a busy share
+  (`CpuMeter`): idle and iowait count as idle, and the guest fields are
+  already in user and nice. Used memory is what is not available.
+- **Disks** (`disks::stream_server`): every 30 s it prints the mount
+  table (`/proc/mounts`) and `df -P -k`, each line marked, then an end
+  line; `disks::Collector` joins them by mount point. Only real storage
+  counts: tmpfs, devtmpfs, ramfs, overlays, squashfs and erofs (snap and
+  image mounts, always full), ISO and UDF media, autofs and the desktop's
+  FUSE bridges are skipped, and so is a zero-sized filesystem. A mount
+  point mounted over keeps only its last mount, and a device mounted at
+  several points (bind mounts, btrfs subvolumes) counts once, at its
+  shortest mount point that `df` listed. Use % is `df`'s: used over used
+  plus available, rounded up. `df` runs on a channel of its own because
+  it can block on a hung network mount: that stalls only the disk
+  figure, which keeps its last value.
 
 ## Host key verification
 
@@ -474,3 +503,12 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   which may not be the one this connection uses. Showing a tab again starts a new script, so its first figure
   takes one interval. The rate includes this connection's own traffic,
   the sampling's few bytes every 2 s among it.
+- Server load and disks read `/proc` and need `sed` and `df`, so only
+  Linux servers show them. Each ZFS dataset reports its pool's free
+  space, so a pool with several datasets is over-counted in the disk
+  total; LVM thin pools and other overcommitted storage are not
+  recognised either. A `df` stuck on a hung network mount leaves the
+  last disk figure up while the tab stays shown, and none once it is
+  shown again. The shown SSH tab
+  holds three exec channels for sampling, on top of its shell and SFTP,
+  which counts against the server's `MaxSessions` (10 by default).
