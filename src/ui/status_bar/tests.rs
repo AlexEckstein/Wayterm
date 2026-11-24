@@ -1,12 +1,13 @@
 //! Unit tests for the display-free segments of [`super::StatusBar`].
 
 use crate::store::model::SessionType;
+use crate::transport::bandwidth::Rate;
 use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 
 use super::{
-    ColorKind, SessionInfo, UptimeOf, elapsed_segment, endpoint_segment, format_elapsed,
-    format_uptime, savings_segment, state_segment, uptime_segment,
+    ColorKind, Host, SessionInfo, bandwidth_segment, elapsed_segment, endpoint_segment,
+    format_elapsed, format_rate, format_uptime, savings_segment, state_segment, uptime_segment,
 };
 
 fn ssh_session() -> SessionInfo {
@@ -182,7 +183,7 @@ fn uptime_reads_in_the_two_largest_units() {
 #[test]
 fn the_uptime_tooltip_spells_out_the_duration_and_boot() {
     let segment = uptime_segment(
-        UptimeOf::Server,
+        Host::Server,
         12 * 86_400 + 4 * 3600 + 7 * 60,
         "11/11/26 10:02:11",
     );
@@ -192,12 +193,42 @@ fn the_uptime_tooltip_spells_out_the_duration_and_boot() {
         "Server up 12 days, 4 hours, 7 minutes\nBooted 11/11/26 10:02:11"
     );
     assert_eq!(
-        uptime_segment(UptimeOf::Server, 86_400 + 60, "").tooltip,
+        uptime_segment(Host::Server, 86_400 + 60, "").tooltip,
         "Server up 1 day, 1 minute"
     );
     assert_eq!(
-        uptime_segment(UptimeOf::ThisComputer, 30, "").tooltip,
+        uptime_segment(Host::ThisComputer, 30, "").tooltip,
         "This computer up less than a minute"
+    );
+}
+
+#[test]
+fn rates_use_the_sidebars_units_per_second() {
+    assert_eq!(format_rate(0), "0 B/s");
+    assert_eq!(format_rate(512), "512 B/s");
+    assert_eq!(format_rate(1536), "1.5 KB/s");
+    assert_eq!(format_rate(3 * 1024 * 1024), "3.0 MB/s");
+}
+
+#[test]
+fn the_bandwidth_segment_names_the_interface_and_whose_it_is() {
+    let rate = Rate {
+        interface: "ens3".to_string(),
+        rx_per_sec: 1536,
+        tx_per_sec: 200,
+    };
+    let segment = bandwidth_segment(Host::Server, &rate);
+    assert_eq!(segment.text, "↓ 1.5 KB/s ↑ 200 B/s");
+    assert_eq!(
+        segment.tooltip,
+        "Server network, ens3 (the default route)\n\
+         Receiving 1.5 KB/s, sending 200 B/s\n\
+         All traffic on the interface, sampled every 2 s"
+    );
+    assert!(
+        bandwidth_segment(Host::ThisComputer, &rate)
+            .tooltip
+            .starts_with("This computer network, ens3")
     );
 }
 

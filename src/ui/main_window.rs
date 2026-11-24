@@ -24,7 +24,7 @@ use crate::ui::panels::side_dock::SideDock;
 use crate::ui::status_bar::StatusBar;
 use crate::ui::tabs::restore::TabPersistence;
 use crate::ui::tabs::{self, terminal_actions};
-use crate::ui::tabs::{PageStatus, SessionTab, current_page};
+use crate::ui::tabs::{BandwidthMonitor, PageStatus, SessionTab, current_page};
 use crate::ui::translucency::{self, CHROME_CLASS};
 use crate::ui::widgets::{data, set_data};
 use crate::ui::{appearance, settings};
@@ -51,6 +51,8 @@ struct StatusRouter {
     notebook: gtk4::Notebook,
     status_bar: Rc<StatusBar>,
     last: Option<(gtk4::Widget, TransportState)>,
+    /// Samples the shown page's host while it is connected.
+    bandwidth: Option<BandwidthMonitor>,
 }
 
 impl StatusRouter {
@@ -76,6 +78,10 @@ impl StatusRouter {
                 .map(|page| SessionTab::live_status(&page))
                 .unwrap_or_default()
         })));
+        self.bandwidth = None;
+        if status.state == TransportState::Connected {
+            self.bandwidth = SessionTab::start_bandwidth(page);
+        }
         self.status_bar.set_state(
             &status.state,
             &status.host,
@@ -180,6 +186,7 @@ impl MainWindow {
             notebook: notebook.clone(),
             status_bar: status_bar.clone(),
             last: None,
+            bandwidth: None,
         }));
         let for_switch = router.clone();
         notebook.connect_switch_page(move |_, page, _| {

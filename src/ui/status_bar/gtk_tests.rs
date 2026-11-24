@@ -28,7 +28,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         uncompressed: 100 * 1024,
     };
     let uptime = HostUptime {
-        of: UptimeOf::Server,
+        of: Host::Server,
         secs: 2 * 86_400 + 3 * 3600,
         at: Instant::now(),
         boot_clock: "11/21/26 07:00:00".to_string(),
@@ -36,6 +36,14 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
     let live = LiveStatus {
         savings: Some(saving),
         uptime: Some(uptime),
+        bandwidth: Some(HostRate {
+            of: Host::Server,
+            rate: Rate {
+                interface: "eth0".to_string(),
+                rx_per_sec: 2048,
+                tx_per_sec: 10,
+            },
+        }),
     };
     bar.set_live_source(Some(Rc::new(move || live.clone())));
     let session = SessionInfo {
@@ -68,7 +76,10 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         tooltip(&bar.uptime),
         "Server up 2 days, 3 hours\nBooted 11/21/26 07:00:00"
     );
-    assert!(!bar.uptime.separator.is_visible(), "first on its side");
+    assert_eq!(bar.bandwidth.label.text(), "↓ 2.0 KB/s ↑ 10 B/s");
+    assert!(tooltip(&bar.bandwidth).starts_with("Server network, eth0"));
+    assert!(!bar.bandwidth.separator.is_visible(), "first on its side");
+    assert!(bar.uptime.separator.is_visible());
     assert!(bar.elapsed.separator.is_visible() && bar.savings.separator.is_visible());
     assert!(bar.timer.borrow().is_some());
 
@@ -80,7 +91,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         Some(&since),
         Some(&session),
     );
-    assert!(!shown(&bar.uptime) && !shown(&bar.savings));
+    assert!(!shown(&bar.bandwidth) && !shown(&bar.uptime) && !shown(&bar.savings));
     assert!(
         !bar.elapsed.separator.is_visible(),
         "no separator before the first shown segment"

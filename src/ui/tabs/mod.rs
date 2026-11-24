@@ -33,15 +33,17 @@ use crate::macros::InputTap;
 use crate::store::SessionStore;
 use crate::store::model::{SessionConfig, SessionType};
 use crate::terminal::TerminalBackend;
+use crate::transport::connection::SshConnection;
 use crate::transport::traffic::Traffic;
 use crate::transport::types::{TransportError, TransportState};
 use crate::ui::dialogs::tunnels::ForwardStatusSource;
 use crate::ui::main_window::route_status;
 use crate::ui::panels::sftp_sidebar::SftpSidebar;
-use crate::ui::status_bar::{ConnectedSince, HostUptime, LiveStatus, SessionInfo};
+use crate::ui::status_bar::{ConnectedSince, HostRate, HostUptime, LiveStatus, SessionInfo};
 use crate::ui::widgets::{centered_label, data, data_or_default, set_data, window_of};
 
 pub mod actions;
+mod bandwidth;
 pub mod bar;
 mod credentials;
 mod duplicate;
@@ -59,6 +61,7 @@ pub mod terminal_tab;
 mod views;
 pub mod vnc;
 
+pub(crate) use bandwidth::BandwidthMonitor;
 pub(crate) use credentials::credential_manager;
 pub(crate) use duplicate::TMUX_NOTICE_SETTING;
 use terminal::close_terminal;
@@ -145,6 +148,10 @@ struct PageState {
     /// The SSH server's answer for the last connection (doc 04 §Server
     /// uptime), or this machine's for a local shell (doc 06 §Local shell).
     uptime: RefCell<Option<HostUptime>>,
+    /// The SSH connection from the last connect, for the bandwidth monitor.
+    connection: RefCell<std::sync::Weak<SshConnection>>,
+    /// The monitor's last rate, while the router keeps it.
+    bandwidth: RefCell<Option<HostRate>>,
 }
 
 /// `page`'s state, created on first use.
@@ -236,6 +243,21 @@ impl SessionTab {
         LiveStatus {
             savings: state.traffic.borrow().as_ref().and_then(|t| t.savings()),
             uptime: state.uptime.borrow().clone(),
+            bandwidth: state.bandwidth.borrow().clone(),
+        }
+    }
+
+    /// Start sampling `page`'s host bandwidth: an SSH tab's server, a local
+    /// shell's machine; other tabs have none.
+    pub(crate) fn start_bandwidth(page: &gtk4::Widget) -> Option<BandwidthMonitor> {
+        let state = existing_state(page)?;
+        match state.session.get()?.session_type {
+            SessionType::SSH => Some(BandwidthMonitor::server(
+                page,
+                state.connection.borrow().clone(),
+            )),
+            SessionType::LocalShell => Some(BandwidthMonitor::local(page)),
+            _ => None,
         }
     }
 

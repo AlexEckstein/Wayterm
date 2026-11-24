@@ -1,8 +1,8 @@
 //! The status bar: segments for the connection state, the endpoint, the
-//! host's uptime, the time connected and what compression saves, each with a tooltip that
-//! adds detail (doc 03 §Status bar). The `*_segment` functions decide what
-//! to show; [`StatusBar`] only renders it. Which tab drives it is the
-//! window's business.
+//! host's bandwidth and uptime, the time connected and what compression
+//! saves, each with a tooltip that adds detail (doc 03 §Status bar). The
+//! `*_segment` functions decide what to show; [`StatusBar`] only renders
+//! it. Which tab drives it is the window's business.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,6 +13,7 @@ use gtk4::pango::EllipsizeMode;
 use gtk4::prelude::*;
 
 use crate::store::model::SessionType;
+use crate::transport::bandwidth::{INTERVAL, Rate};
 use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 use crate::ui::panels::sftp_sidebar::format_size;
@@ -76,10 +77,10 @@ impl ConnectedSince {
     }
 }
 
-/// Whose uptime a tab shows.
+/// The machine an uptime or bandwidth figure is about.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UptimeOf {
-    /// An SSH tab's server (doc 04 §Server uptime).
+pub enum Host {
+    /// An SSH tab's server (doc 04 §Server uptime, §Server bandwidth).
     Server,
     /// The machine a local shell runs on (doc 06 §Local shell).
     ThisComputer,
@@ -88,7 +89,7 @@ pub enum UptimeOf {
 /// How long a host has been up, as read at `at`.
 #[derive(Clone, Debug)]
 pub struct HostUptime {
-    pub of: UptimeOf,
+    pub of: Host,
     pub secs: u64,
     pub at: Instant,
     /// Local wall-clock time it booted, e.g. "11/11/26 10:02:11".
@@ -96,7 +97,7 @@ pub struct HostUptime {
 }
 
 impl HostUptime {
-    pub fn measured(of: UptimeOf, secs: u64) -> Self {
+    pub fn measured(of: Host, secs: u64) -> Self {
         let boot_clock = glib::DateTime::now_local()
             .and_then(|now| now.add_seconds(-(secs as f64)))
             .and_then(|boot| boot.format("%x %X"))
@@ -115,12 +116,20 @@ impl HostUptime {
     }
 }
 
+/// A host's default-route interface traffic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostRate {
+    pub of: Host,
+    pub rate: Rate,
+}
+
 /// What the bar reads on every tick while connected.
 #[derive(Clone, Debug, Default)]
 pub struct LiveStatus {
     /// Doc 04 §Compression savings.
     pub savings: Option<Savings>,
     pub uptime: Option<HostUptime>,
+    pub bandwidth: Option<HostRate>,
 }
 
 /// Reads the current tab's [`LiveStatus`].
@@ -262,14 +271,37 @@ pub fn savings_segment(savings: Savings) -> Segment {
     }
 }
 
+fn host_name(of: Host) -> &'static str {
+    match of {
+        Host::Server => "Server",
+        Host::ThisComputer => "This computer",
+    }
+}
+
+/// A host's interface traffic: received and sent per second.
+pub fn bandwidth_segment(of: Host, rate: &Rate) -> Segment {
+    let (down, up) = (format_rate(rate.rx_per_sec), format_rate(rate.tx_per_sec));
+    Segment {
+        text: format!("↓ {down} ↑ {up}"),
+        tooltip: format!(
+            "{} network, {} (the default route)\nReceiving {down}, sending {up}\n\
+             All traffic on the interface, sampled every {} s",
+            host_name(of),
+            rate.interface,
+            INTERVAL.as_secs(),
+        ),
+    }
+}
+
+/// E.g. `512 B/s`, `1.2 MB/s`.
+pub fn format_rate(bytes_per_sec: u64) -> String {
+    format!("{}/s", format_size(bytes_per_sec))
+}
+
 /// A host's uptime, with the full duration and the boot time in the
 /// tooltip.
-pub fn uptime_segment(of: UptimeOf, secs: u64, boot_clock: &str) -> Segment {
-    let whose = match of {
-        UptimeOf::Server => "Server",
-        UptimeOf::ThisComputer => "This computer",
-    };
-    let mut tooltip = format!("{whose} up {}", describe_duration(secs));
+pub fn uptime_segment(of: Host, secs: u64, boot_clock: &str) -> Segment {
+    let mut tooltip = format!("{} up {}", host_name(of), describe_duration(secs));
     if !boot_clock.is_empty() {
         tooltip.push_str(&format!("\nBooted {boot_clock}"));
     }
@@ -388,13 +420,14 @@ fn separate(side: &[&Part]) {
 }
 
 /// The state (a coloured dot and its text) and the endpoint on the left;
-/// the host's uptime, the time connected and the compression saving on
-/// the right, ticking every second while connected.
+/// the host's bandwidth and uptime, the time connected and the compression
+/// saving on the right, ticking every second while connected.
 pub struct StatusBar {
     container: gtk4::Box,
     dot: gtk4::Label,
     state: Part,
     endpoint: Part,
+    bandwidth: Part,
     uptime: Part,
     elapsed: Part,
     savings: Part,
@@ -413,6 +446,7 @@ impl StatusBar {
         let state = Part::new(None, EllipsizeMode::End, false);
         state.area.prepend(&dot);
         let endpoint = Part::new(None, EllipsizeMode::Middle, false);
+        let bandwidth = Part::new(None, EllipsizeMode::None, true);
         let uptime = Part::new(None, EllipsizeMode::None, false);
         let elapsed = Part::new(
             Some("document-open-recent-symbolic"),
@@ -428,6 +462,7 @@ impl StatusBar {
         let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         container.append(&spacer);
+        bandwidth.append_to(&container);
         uptime.append_to(&container);
         elapsed.append_to(&container);
         savings.append_to(&container);
@@ -441,6 +476,7 @@ impl StatusBar {
             dot,
             state,
             endpoint,
+            bandwidth,
             uptime,
             elapsed,
             savings,
@@ -482,13 +518,18 @@ impl StatusBar {
         let connected = *state == TransportState::Connected;
         let source = self.live_source.borrow().clone().filter(|_| connected);
         let since = connected.then(|| since.cloned().unwrap_or_else(ConnectedSince::now));
-        let (uptime, elapsed, savings) = (
+        let (bandwidth, uptime, elapsed, savings) = (
+            self.bandwidth.clone(),
             self.uptime.clone(),
             self.elapsed.clone(),
             self.savings.clone(),
         );
         let refresh = move || {
             let live = source.as_ref().map(|source| source()).unwrap_or_default();
+            let rate = live
+                .bandwidth
+                .map(|host| bandwidth_segment(host.of, &host.rate));
+            bandwidth.show(rate.as_ref());
             let up = live
                 .uptime
                 .map(|up| uptime_segment(up.of, up.now_secs(), &up.boot_clock));
@@ -498,7 +539,7 @@ impl StatusBar {
                 .map(|since| elapsed_segment(since.at.elapsed().as_secs(), &since.clock));
             elapsed.show(segment.as_ref());
             savings.show(live.savings.map(savings_segment).as_ref());
-            separate(&[&uptime, &elapsed, &savings]);
+            separate(&[&bandwidth, &uptime, &elapsed, &savings]);
         };
         refresh();
         if connected {
