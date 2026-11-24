@@ -2,12 +2,15 @@
 
 use crate::store::model::SessionType;
 use crate::transport::bandwidth::Rate;
+use crate::transport::disks::{Filesystem, Usage};
+use crate::transport::load::Memory;
 use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 
 use super::{
-    ColorKind, Host, SessionInfo, bandwidth_segment, elapsed_segment, endpoint_segment,
-    format_elapsed, format_rate, format_uptime, savings_segment, state_segment, uptime_segment,
+    ColorKind, FILLING, FULL, Host, SessionInfo, bandwidth_segment, cpu_segment, disk_segment,
+    elapsed_segment, endpoint_segment, format_elapsed, format_rate, format_uptime, fullness_color,
+    memory_segment, savings_segment, shorten, state_segment, uptime_segment,
 };
 
 fn ssh_session() -> SessionInfo {
@@ -273,4 +276,139 @@ fn color_kind_hex_colors_are_distinct() {
             "{color} is not a #rrggbb colour"
         );
     }
+}
+
+#[test]
+fn fullness_turns_amber_at_80_and_red_at_90() {
+    assert_eq!(fullness_color(0), None);
+    assert_eq!(fullness_color(79), None);
+    assert_eq!(fullness_color(80), Some(FILLING));
+    assert_eq!(fullness_color(89), Some(FILLING));
+    assert_eq!(fullness_color(90), Some(FULL));
+    assert_eq!(fullness_color(100), Some(FULL));
+}
+
+#[test]
+fn the_cpu_segment_adds_cores_and_load_averages() {
+    let averages = ["0.52", "0.48", "0.40"].map(str::to_string);
+    let segment = cpu_segment(Host::Server, 12, 4, &averages);
+    assert_eq!(segment.text, "CPU 12%");
+    assert_eq!(
+        segment.tooltip,
+        "Server CPU 12% busy, 4 cores\n\
+         Load average 0.52, 0.48, 0.40 (1, 5, 15 min)\n\
+         Sampled every 2 s"
+    );
+    assert_eq!(segment.color, None, "only the disks warn");
+    assert!(
+        cpu_segment(Host::ThisComputer, 0, 1, &averages)
+            .tooltip
+            .starts_with("This computer CPU 0% busy, 1 core\n")
+    );
+}
+
+#[test]
+fn the_memory_segment_counts_what_is_not_available() {
+    const GIB: u64 = 1 << 30;
+    let mut memory = Memory {
+        total: 8 * GIB,
+        available: 5 * GIB,
+        swap_total: 2 * GIB,
+        swap_free: 2 * GIB - 512 * 1024 * 1024,
+    };
+    let segment = memory_segment(Host::Server, &memory).unwrap();
+    assert_eq!(segment.text, "RAM 38%");
+    assert_eq!(
+        segment.tooltip,
+        "Server memory: 3.0 GB used of 8.0 GB (38%)\n5.0 GB available\n\
+         Swap: 512.0 MB used of 2.0 GB"
+    );
+    memory.swap_total = 0;
+    assert!(
+        memory_segment(Host::Server, &memory)
+            .unwrap()
+            .tooltip
+            .ends_with("\nNo swap")
+    );
+    memory.total = 0;
+    assert_eq!(memory_segment(Host::Server, &memory), None);
+}
+
+fn filesystem(mount: &str, size_gib: u64, used_gib: u64, available_gib: u64) -> Filesystem {
+    const GIB: u64 = 1 << 30;
+    Filesystem {
+        mount: mount.to_string(),
+        usage: Usage {
+            size: size_gib * GIB,
+            used: used_gib * GIB,
+            available: available_gib * GIB,
+        },
+    }
+}
+
+#[test]
+fn the_disk_segment_totals_and_colours_by_the_fullest() {
+    let filesystems = [
+        filesystem("/", 45, 20, 25),
+        filesystem("/boot", 2, 1, 1),
+        filesystem("/var", 50, 46, 4),
+    ];
+    let segment = disk_segment(Host::Server, &filesystems).unwrap();
+    assert_eq!(segment.text, "Disk 67.0 GB / 97.0 GB");
+    assert_eq!(segment.color, Some(FULL), "/var is 92% full; the total 70%");
+    assert_eq!(
+        segment.tooltip,
+        "Server filesystems\n\
+         /       45%  20.0 GB used, 25.0 GB free of 45.0 GB\n\
+         /boot   50%  1.0 GB used, 1.0 GB free of 2.0 GB\n\
+         /var    92%  46.0 GB used, 4.0 GB free of 50.0 GB\n\
+         Total   70%  67.0 GB used, 30.0 GB free of 97.0 GB\n\
+         Sampled every 30 s"
+    );
+    assert_eq!(
+        segment.tooltip_markup.as_deref(),
+        Some(
+            "Server filesystems\n\
+             <tt>/       45%  20.0 GB used, 25.0 GB free of 45.0 GB</tt>\n\
+             <tt>/boot   50%  1.0 GB used, 1.0 GB free of 2.0 GB</tt>\n\
+             <tt><span foreground=\"#e0443e\">/var    92%  46.0 GB used, 4.0 GB free of 50.0 GB</span></tt>\n\
+             <tt>Total   70%  67.0 GB used, 30.0 GB free of 97.0 GB</tt>\n\
+             Sampled every 30 s"
+        )
+    );
+}
+
+#[test]
+fn one_filesystem_needs_no_total_and_room_needs_no_colour() {
+    let segment = disk_segment(Host::ThisComputer, &[filesystem("/", 45, 20, 25)]).unwrap();
+    assert_eq!(segment.color, None);
+    assert_eq!(
+        segment.tooltip,
+        "This computer filesystems\n\
+         /   45%  20.0 GB used, 25.0 GB free of 45.0 GB\n\
+         Sampled every 30 s"
+    );
+    let filling = disk_segment(Host::Server, &[filesystem("/", 100, 85, 15)]).unwrap();
+    assert_eq!(filling.color, Some(FILLING));
+    assert_eq!(disk_segment(Host::Server, &[]), None);
+}
+
+#[test]
+fn long_mount_points_lose_their_middle() {
+    assert_eq!(shorten("/srv/data"), "/srv/data");
+    let long = "/mnt/backups/2026/november/weekly";
+    let short = shorten(long);
+    assert_eq!(short.chars().count(), 24);
+    assert_eq!(short, "/mnt/backup…ember/weekly");
+}
+
+#[test]
+fn markup_in_a_mount_point_is_escaped() {
+    let segment = disk_segment(Host::Server, &[filesystem("/mnt/a<b>&c", 10, 1, 9)]).unwrap();
+    assert!(
+        segment
+            .tooltip_markup
+            .unwrap()
+            .contains("<tt>/mnt/a&lt;b&gt;&amp;c")
+    );
 }

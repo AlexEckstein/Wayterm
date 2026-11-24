@@ -43,6 +43,13 @@ of a host.
   every 2 s (`bandwidth::local_counters`), the same
   figure as an SSH tab's server bandwidth (doc 04 §Server bandwidth).
   A serial tab shows none.
+- **CPU, memory and disks:** while the tab is shown, it reads this
+  machine's `/proc/stat`, `/proc/loadavg` and `/proc/meminfo` every 2 s
+  (`load::local_sample`) and its mount table with `statvfs` every 30 s
+  (`disks::local_filesystems`), on tokio's blocking pool so a hung
+  network mount never stalls the window. The filesystems are chosen as
+  for an SSH tab's server (doc 04 §Server load and disks). A serial tab
+  shows none.
 
 The New Tab picker's "Local shell" and the tab bar's "+" open an unsaved
 local session: the login shell in the home directory (doc 03 §New Tab).

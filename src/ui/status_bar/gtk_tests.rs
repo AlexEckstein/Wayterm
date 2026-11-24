@@ -44,6 +44,39 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
                 tx_per_sec: 10,
             },
         }),
+        load: Some(HostLoad {
+            of: Host::Server,
+            busy: Some(12),
+            cores: 4,
+            load_average: ["0.52", "0.48", "0.40"].map(str::to_string),
+            memory: Memory {
+                total: 8 << 30,
+                available: 5 << 30,
+                swap_total: 0,
+                swap_free: 0,
+            },
+        }),
+        disks: Some(HostDisks {
+            of: Host::Server,
+            filesystems: vec![
+                Filesystem {
+                    mount: "/".to_string(),
+                    usage: Usage {
+                        size: 45 << 30,
+                        used: 20 << 30,
+                        available: 25 << 30,
+                    },
+                },
+                Filesystem {
+                    mount: "/var".to_string(),
+                    usage: Usage {
+                        size: 50 << 30,
+                        used: 46 << 30,
+                        available: 4 << 30,
+                    },
+                },
+            ],
+        }),
     };
     bar.set_live_source(Some(Rc::new(move || live.clone())));
     let session = SessionInfo {
@@ -78,7 +111,22 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
     );
     assert_eq!(bar.bandwidth.label.text(), "↓ 16.4 kbit/s ↑ 80 bit/s");
     assert!(tooltip(&bar.bandwidth).starts_with("Server network, eth0"));
-    assert!(!bar.bandwidth.separator.is_visible(), "first on its side");
+    assert_eq!(bar.cpu.label.text(), "CPU 12%");
+    assert!(!bar.cpu.separator.is_visible(), "first on its side");
+    assert_eq!(bar.memory.label.text(), "RAM 38%");
+    assert!(tooltip(&bar.memory).starts_with("Server memory: 3.0 GB used"));
+    assert_eq!(bar.disk.label.text(), "Disk 66.0 GB / 95.0 GB");
+    assert!(
+        bar.disk.label.label().contains("foreground=\"#e0443e\""),
+        "/var is 92% full"
+    );
+    assert!(
+        tooltip(&bar.disk).contains("/var    92%  46.0 GB used"),
+        "the markup's text: {}",
+        tooltip(&bar.disk)
+    );
+    assert!(bar.memory.separator.is_visible() && bar.disk.separator.is_visible());
+    assert!(bar.bandwidth.separator.is_visible());
     assert!(bar.uptime.separator.is_visible());
     assert!(bar.elapsed.separator.is_visible() && bar.savings.separator.is_visible());
     assert!(bar.timer.borrow().is_some());
@@ -92,6 +140,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         Some(&session),
     );
     assert!(!shown(&bar.bandwidth) && !shown(&bar.uptime) && !shown(&bar.savings));
+    assert!(!shown(&bar.cpu) && !shown(&bar.memory) && !shown(&bar.disk));
     assert!(
         !bar.elapsed.separator.is_visible(),
         "no separator before the first shown segment"

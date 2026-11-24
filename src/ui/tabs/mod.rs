@@ -39,7 +39,9 @@ use crate::transport::types::{TransportError, TransportState};
 use crate::ui::dialogs::tunnels::ForwardStatusSource;
 use crate::ui::main_window::route_status;
 use crate::ui::panels::sftp_sidebar::SftpSidebar;
-use crate::ui::status_bar::{ConnectedSince, HostRate, HostUptime, LiveStatus, SessionInfo};
+use crate::ui::status_bar::{
+    ConnectedSince, HostDisks, HostLoad, HostRate, HostUptime, LiveStatus, SessionInfo,
+};
 use crate::ui::widgets::{centered_label, data, data_or_default, set_data, window_of};
 
 pub mod actions;
@@ -52,6 +54,7 @@ pub mod label;
 mod local;
 pub mod rdp;
 pub mod resilience;
+mod resources;
 pub mod restore;
 mod ssh;
 pub mod state;
@@ -61,7 +64,9 @@ pub mod terminal_tab;
 mod views;
 pub mod vnc;
 
-pub(crate) use bandwidth::BandwidthMonitor;
+use bandwidth::BandwidthMonitor;
+use resources::ResourceMonitor;
+
 pub(crate) use credentials::credential_manager;
 pub(crate) use duplicate::TMUX_NOTICE_SETTING;
 use terminal::close_terminal;
@@ -148,10 +153,19 @@ struct PageState {
     /// The SSH server's answer for the last connection (doc 04 §Server
     /// uptime), or this machine's for a local shell (doc 06 §Local shell).
     uptime: RefCell<Option<HostUptime>>,
-    /// The SSH connection from the last connect, for the bandwidth monitor.
+    /// The SSH connection from the last connect, for the host monitors.
     connection: RefCell<std::sync::Weak<SshConnection>>,
-    /// The monitor's last rate, while the router keeps it.
+    /// The monitors' last figures, while the router keeps them.
     bandwidth: RefCell<Option<HostRate>>,
+    load: RefCell<Option<HostLoad>>,
+    disks: RefCell<Option<HostDisks>>,
+}
+
+/// Samples a connected tab's host while the window's status router keeps
+/// it; dropping it stops every sampler and clears their figures.
+pub(crate) struct HostMonitors {
+    _bandwidth: BandwidthMonitor,
+    _resources: ResourceMonitor,
 }
 
 /// `page`'s state, created on first use.
@@ -234,8 +248,8 @@ impl SessionTab {
     }
 
     /// What compression saves on `page`'s SSH connection once measured
-    /// (doc 04 §Compression savings), and its server's uptime once it
-    /// answered.
+    /// (doc 04 §Compression savings), its server's uptime once it answered,
+    /// and the host monitors' last figures.
     pub(crate) fn live_status(page: &gtk4::Widget) -> LiveStatus {
         let Some(state) = existing_state(page) else {
             return LiveStatus::default();
@@ -244,19 +258,27 @@ impl SessionTab {
             savings: state.traffic.borrow().as_ref().and_then(|t| t.savings()),
             uptime: state.uptime.borrow().clone(),
             bandwidth: state.bandwidth.borrow().clone(),
+            load: state.load.borrow().clone(),
+            disks: state.disks.borrow().clone(),
         }
     }
 
-    /// Start sampling `page`'s host bandwidth: an SSH tab's server, a local
-    /// shell's machine; other tabs have none.
-    pub(crate) fn start_bandwidth(page: &gtk4::Widget) -> Option<BandwidthMonitor> {
+    /// Start sampling `page`'s host: an SSH tab's server, a local shell's
+    /// machine; other tabs have none.
+    pub(crate) fn start_monitors(page: &gtk4::Widget) -> Option<HostMonitors> {
         let state = existing_state(page)?;
         match state.session.get()?.session_type {
-            SessionType::SSH => Some(BandwidthMonitor::server(
-                page,
-                state.connection.borrow().clone(),
-            )),
-            SessionType::LocalShell => Some(BandwidthMonitor::local(page)),
+            SessionType::SSH => {
+                let connection = state.connection.borrow().clone();
+                Some(HostMonitors {
+                    _bandwidth: BandwidthMonitor::server(page, connection.clone()),
+                    _resources: ResourceMonitor::server(page, connection),
+                })
+            }
+            SessionType::LocalShell => Some(HostMonitors {
+                _bandwidth: BandwidthMonitor::local(page),
+                _resources: ResourceMonitor::local(page),
+            }),
             _ => None,
         }
     }
