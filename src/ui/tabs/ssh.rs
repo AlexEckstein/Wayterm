@@ -39,7 +39,7 @@ use crate::ui::dialogs::tunnels::EngineStatusBridge;
 use crate::ui::main_window::SUPERVISOR_KEY;
 use crate::ui::panels::sftp_sidebar::{self, DirectoryFollower, SftpSidebar};
 use crate::ui::panels::side_dock;
-use crate::ui::status_bar::{HostUptime, UptimeOf};
+use crate::ui::status_bar::{Host, HostUptime};
 use crate::ui::widgets::{data, data_or_default, window_of};
 
 /// Page data key: the page's [`SshPageState`].
@@ -305,6 +305,7 @@ pub(super) fn on_connect(
         .traffic
         .replace(Some(Arc::clone(conn.traffic())));
     probe_uptime(page, &conn);
+    super::bandwidth::remember_connection(page, &conn);
     arm_forward_engine(page, session, &conn);
 
     let Some(sidebar) = sidebar_of(page) else {
@@ -348,7 +349,7 @@ fn probe_uptime(page: &gtk4::Widget, conn: &Arc<SshConnection>) {
         if current_gen(&page) == generation {
             state(&page)
                 .uptime
-                .replace(Some(HostUptime::measured(UptimeOf::Server, secs)));
+                .replace(Some(HostUptime::measured(Host::Server, secs)));
         }
     });
 }

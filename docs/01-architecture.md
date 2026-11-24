@@ -14,7 +14,7 @@ map; each feature has its own doc (§Documents).
 │ │ SFTP ││ tab's SFTP     │ │ RDP tab:   embedded xfreerdp window   │ │
 │ │      ││ sidebar        │ │ VNC tab:   framebuffer view           │ │
 │ └──────┘└────────────────┘ └──────────────────────────────────────┘ │
-│ Status bar: ● state | endpoint      uptime | time connected | saved │
+│ Status bar: ● state | endpoint    bandwidth | uptime | time | saved │
 └─────────────────────────────────────────────────────────────────────┘
  GTK main thread ── bounded channels ── tokio runtime (SSH, SFTP, VNC, RDP, reconnect)
 ```

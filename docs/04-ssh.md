@@ -2,8 +2,8 @@
 
 SSH tabs pair a terminal with an SFTP sidebar over one shared,
 authenticated connection. This doc covers the connection and its pool,
-the terminal channel, keepalives, compression, server uptime, host-key
-verification,
+the terminal channel, keepalives, compression, server uptime and
+bandwidth, host-key verification,
 the authentication chain, tmux persistence, jump hosts and port
 forwarding. Where secrets come from
 is doc 05; the sidebar is doc 07.
@@ -14,7 +14,7 @@ a release blocker, not a feature gap.
 Code: `src/transport/` — `connection.rs` (`SshConnection`, the russh
 handler), `supervisor.rs` (the pool), `ssh.rs` (`SSHTransport`),
 `hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`, `traffic.rs`,
-`uptime.rs`, `remote_script.rs`; `src/ui/tabs/ssh.rs` (the
+`uptime.rs`, `bandwidth.rs`, `remote_script.rs`; `src/ui/tabs/ssh.rs` (the
 SSH connect flow), `src/ui/dialogs/` — `hostkey.rs`, `auth.rs`,
 `tunnels/`.
 
@@ -140,6 +140,32 @@ tick. The probe holds the connection weakly, and an answer that lands
 after a newer attempt started is dropped. A jumped tab asks the target.
 A local shell tab shows this machine's uptime instead (doc 06 §Local
 shell).
+
+## Server bandwidth
+
+While an SSH tab is the one shown and connected (doc 03 §Status bar),
+`bandwidth::stream_server` runs one long-lived script on its own exec
+channel of the shared connection, the same way as the uptime probe. The
+script finds the default route's interface in `/proc/net/route` (the
+`00000000` destination), or when there is no IPv4 default, in
+`/proc/net/ipv6_route` (`::/0`, skipping the kernel's unreachable
+defaults on `lo`). It then prints
+`wayterm-net:<interface> <rx bytes> <tx bytes>` from `/proc/net/dev`
+every 2 s. The counters cover both IP versions. The tab turns
+consecutive samples into bytes per second (`RateMeter`), timed by when
+each sample arrives, and the status bar shows them as bits per second in
+the unit that keeps the figure under 1000 (`800 bit/s`, `16.4 kbit/s`,
+`250 Mbit/s`). A counter that went
+backwards (the interface was reset) or a changed interface skips one
+figure. The figure counts everything on the server's interface, not just
+this connection, as MobaXterm's monitor does.
+
+The stream holds the connection only while its channel opens, so it
+never keeps a released connection alive. Switching tabs, a drop or a
+disconnect drops the receiver; the stream then closes its channel, and
+the server's script ends on its next write. No default route, or no
+`/proc`, ends the script at once and leaves the segment hidden. A
+jumped tab samples the target.
 
 ## Host key verification
 
@@ -442,3 +468,9 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   against a real server; the `sysctl` path is tested against a stand-in
   `sysctl`. Every SSH tab asks, even when it shares its connection with
   another tab that already did.
+- Server bandwidth reads `/proc`, so only Linux servers show it; macOS,
+  the BSDs and Windows show none. When the server has default routes on
+  several interfaces, the first listed is measured, IPv4 before IPv6,
+  which may not be the one this connection uses. Showing a tab again starts a new script, so its first figure
+  takes one interval. The rate includes this connection's own traffic,
+  the sampling's few bytes every 2 s among it.

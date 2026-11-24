@@ -11,7 +11,7 @@ use super::terminal::finish_connect;
 use super::{current_gen, ssh, state};
 use crate::store::model::{SessionConfig, SessionType};
 use crate::transport::uptime::local_uptime;
-use crate::ui::status_bar::{HostUptime, UptimeOf};
+use crate::ui::status_bar::{Host, HostUptime};
 
 /// Connect `session` for attempt `generation`: straight to the terminal.
 pub(super) fn start(
@@ -34,7 +34,7 @@ pub(super) fn start(
 /// the shell from there.
 pub(super) fn on_connect(page: &gtk4::Widget, session: &SessionConfig, terminal: &gtk4::Widget) {
     if session.session_type == SessionType::LocalShell {
-        let uptime = local_uptime().map(|secs| HostUptime::measured(UptimeOf::ThisComputer, secs));
+        let uptime = local_uptime().map(|secs| HostUptime::measured(Host::ThisComputer, secs));
         state(page).uptime.replace(uptime);
     }
     let Some(sidebar) = ssh::sidebar_of(page).filter(|sidebar| sidebar.is_local()) else {

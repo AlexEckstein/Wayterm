@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 use common::*;
 use wayterm::sftp::{SftpClient, SftpCommand, ShellCwdProbe, commands::DirEntry};
 use wayterm::transport::auth::{AuthConfig, AuthMethodKind, AuthOutcome, authenticate_chain};
+use wayterm::transport::bandwidth;
 use wayterm::transport::connection::{AuthMethod, SshConnection};
 use wayterm::transport::credentials::CredentialManager;
 use wayterm::transport::ssh::SSHTransport;
@@ -592,6 +593,38 @@ async fn shell_cwd_probe_gives_up_on_a_missing_tmux_session() {
     let connection = connect_any(&f).await;
     let probe = ShellCwdProbe::new(&connection, Some("wayterm-no-such-session".into()));
     assert_eq!(probe.run().await, None);
+}
+
+/// The CI sshd is this machine, so the server's samples are this
+/// machine's default-route interface, and they keep coming.
+#[tokio::test]
+async fn the_server_streams_its_interface_counters() {
+    let Some(f) = fixture() else { return };
+    let Some(local) = bandwidth::local_counters() else {
+        return;
+    };
+    let connection = connect_any(&f).await;
+    let (samples, mut received) = tokio::sync::mpsc::channel(4);
+    let stream = tokio::spawn(bandwidth::stream_server(
+        std::sync::Arc::downgrade(&connection),
+        samples,
+    ));
+    let mut meter = bandwidth::RateMeter::default();
+    let mut rate = None;
+    for _ in 0..2 {
+        let counters = tokio::time::timeout(std::time::Duration::from_secs(10), received.recv())
+            .await
+            .expect("a sample in time")
+            .expect("the stream stays open");
+        assert_eq!(counters.interface, local.interface);
+        rate = meter.add(counters, std::time::Instant::now());
+    }
+    assert!(rate.is_some(), "two samples make a rate");
+    drop(received);
+    tokio::time::timeout(std::time::Duration::from_secs(10), stream)
+        .await
+        .expect("dropping the receiver ends the stream")
+        .unwrap();
 }
 
 /// The CI sshd runs on Linux, so the answer is its `/proc/uptime`.

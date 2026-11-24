@@ -37,6 +37,12 @@ of a host.
   `/proc/uptime` (`uptime::local_uptime`) for the status bar's uptime
   segment, which counts on from there (doc 03 §Status bar). A serial tab
   shows none.
+- **Bandwidth:** while the tab is shown, it reads this machine's
+  default-route interface counters from `/proc/net/route` (or
+  `/proc/net/ipv6_route` without an IPv4 default) and `/proc/net/dev`
+  every 2 s (`bandwidth::local_counters`), the same
+  figure as an SSH tab's server bandwidth (doc 04 §Server bandwidth).
+  A serial tab shows none.
 
 The New Tab picker's "Local shell" and the tab bar's "+" open an unsaved
 local session: the login shell in the home directory (doc 03 §New Tab).

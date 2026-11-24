@@ -1,12 +1,13 @@
 //! Unit tests for the display-free segments of [`super::StatusBar`].
 
 use crate::store::model::SessionType;
+use crate::transport::bandwidth::Rate;
 use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 
 use super::{
-    ColorKind, SessionInfo, UptimeOf, elapsed_segment, endpoint_segment, format_elapsed,
-    format_uptime, savings_segment, state_segment, uptime_segment,
+    ColorKind, Host, SessionInfo, bandwidth_segment, elapsed_segment, endpoint_segment,
+    format_elapsed, format_rate, format_uptime, savings_segment, state_segment, uptime_segment,
 };
 
 fn ssh_session() -> SessionInfo {
@@ -182,7 +183,7 @@ fn uptime_reads_in_the_two_largest_units() {
 #[test]
 fn the_uptime_tooltip_spells_out_the_duration_and_boot() {
     let segment = uptime_segment(
-        UptimeOf::Server,
+        Host::Server,
         12 * 86_400 + 4 * 3600 + 7 * 60,
         "11/11/26 10:02:11",
     );
@@ -192,12 +193,51 @@ fn the_uptime_tooltip_spells_out_the_duration_and_boot() {
         "Server up 12 days, 4 hours, 7 minutes\nBooted 11/11/26 10:02:11"
     );
     assert_eq!(
-        uptime_segment(UptimeOf::Server, 86_400 + 60, "").tooltip,
+        uptime_segment(Host::Server, 86_400 + 60, "").tooltip,
         "Server up 1 day, 1 minute"
     );
     assert_eq!(
-        uptime_segment(UptimeOf::ThisComputer, 30, "").tooltip,
+        uptime_segment(Host::ThisComputer, 30, "").tooltip,
         "This computer up less than a minute"
+    );
+}
+
+#[test]
+fn rates_are_bits_in_the_unit_that_fits() {
+    assert_eq!(format_rate(0), "0 bit/s");
+    assert_eq!(format_rate(100), "800 bit/s");
+    assert_eq!(format_rate(124), "992 bit/s");
+    assert_eq!(format_rate(125), "1.0 kbit/s");
+    assert_eq!(format_rate(2048), "16.4 kbit/s");
+    assert_eq!(format_rate(12_493), "99.9 kbit/s");
+    assert_eq!(format_rate(12_494), "100 kbit/s");
+    assert_eq!(format_rate(124_937), "999 kbit/s");
+    assert_eq!(format_rate(124_938), "1.0 Mbit/s", "not 1000 kbit/s");
+    assert_eq!(format_rate(125_000), "1.0 Mbit/s");
+    assert_eq!(format_rate(31_250_000), "250 Mbit/s");
+    assert_eq!(format_rate(125_000_000), "1.0 Gbit/s");
+    assert_eq!(format_rate(1_250_000_000), "10.0 Gbit/s");
+}
+
+#[test]
+fn the_bandwidth_segment_names_the_interface_and_whose_it_is() {
+    let rate = Rate {
+        interface: "ens3".to_string(),
+        rx_per_sec: 187_500,
+        tx_per_sec: 25,
+    };
+    let segment = bandwidth_segment(Host::Server, &rate);
+    assert_eq!(segment.text, "↓ 1.5 Mbit/s ↑ 200 bit/s");
+    assert_eq!(
+        segment.tooltip,
+        "Server network, ens3 (the default route)\n\
+         Receiving 1.5 Mbit/s, sending 200 bit/s\n\
+         All traffic on the interface, sampled every 2 s"
+    );
+    assert!(
+        bandwidth_segment(Host::ThisComputer, &rate)
+            .tooltip
+            .starts_with("This computer network, ens3")
     );
 }
 
