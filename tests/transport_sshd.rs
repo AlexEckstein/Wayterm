@@ -15,7 +15,7 @@ use wayterm::sftp::{SftpClient, SftpCommand, ShellCwdProbe, commands::DirEntry};
 use wayterm::transport::auth::{AuthConfig, AuthMethodKind, AuthOutcome, authenticate_chain};
 use wayterm::transport::connection::{AuthMethod, SshConnection};
 use wayterm::transport::credentials::CredentialManager;
-use wayterm::transport::host_stats::{self, Sample};
+use wayterm::transport::host_stats::{self, Sample, Wanted};
 use wayterm::transport::ssh::SSHTransport;
 use wayterm::transport::types::{Transport, TransportEvent, TransportState};
 
@@ -594,12 +594,13 @@ async fn shell_cwd_probe_gives_up_on_a_missing_tmux_session() {
     assert_eq!(probe.run().await, None);
 }
 
-/// A host's figures from its script: the first uptime, load and counters,
-/// and every disk reading.
+/// A host's figures from its script: the first uptime, CPU, memory and
+/// counters, and every disk reading.
 #[derive(Debug, Default)]
 struct Figures {
     uptime: Option<u64>,
-    load: Option<wayterm::transport::load::LoadSample>,
+    cpu: Option<wayterm::transport::load::CpuSample>,
+    memory: Option<wayterm::transport::load::Memory>,
     net: Option<wayterm::transport::bandwidth::Counters>,
     disks: Vec<wayterm::transport::disks::Disks>,
 }
@@ -607,7 +608,11 @@ struct Figures {
 impl Figures {
     /// Every figure, and both `df` jobs of the first round.
     fn complete(&self) -> bool {
-        self.uptime.is_some() && self.load.is_some() && self.net.is_some() && self.disks.len() >= 2
+        self.uptime.is_some()
+            && self.cpu.is_some()
+            && self.memory.is_some()
+            && self.net.is_some()
+            && self.disks.len() >= 2
     }
 
     fn mounts(&self) -> Vec<String> {
@@ -623,7 +628,8 @@ async fn gather(received: &mut mpsc::Receiver<Sample>, within: Duration) -> Figu
         while !figures.complete() {
             match received.recv().await.expect("the stream stays open") {
                 Sample::Uptime(secs) => figures.uptime = figures.uptime.or(Some(secs)),
-                Sample::Load(load) => figures.load = figures.load.take().or(Some(load)),
+                Sample::Cpu(cpu) => figures.cpu = figures.cpu.take().or(Some(cpu)),
+                Sample::Memory(memory) => figures.memory = figures.memory.or(Some(memory)),
                 Sample::Net(net) => figures.net = figures.net.take().or(Some(net)),
                 Sample::Disks(disks) => figures.disks.push(disks),
             }
@@ -639,7 +645,7 @@ async fn gather(received: &mut mpsc::Receiver<Sample>, within: Duration) -> Figu
 async fn the_server_streams_every_figure_on_one_channel() {
     let Some(f) = fixture() else { return };
     let (samples, mut local) = mpsc::channel(8);
-    let local_stream = tokio::spawn(host_stats::stream_local(samples));
+    let local_stream = tokio::spawn(host_stats::stream_local(Wanted::ALL, samples));
     let expected = gather(&mut local, Duration::from_secs(10)).await;
     drop(local);
     timeout(Duration::from_secs(10), local_stream)
@@ -651,6 +657,7 @@ async fn the_server_streams_every_figure_on_one_channel() {
     let (samples, mut received) = mpsc::channel(8);
     let stream = tokio::spawn(host_stats::stream_server(
         Arc::downgrade(&connection),
+        Wanted::ALL,
         samples,
     ));
     let reported = gather(&mut received, Duration::from_secs(20)).await;
@@ -660,9 +667,14 @@ async fn the_server_streams_every_figure_on_one_channel() {
         expected.uptime.unwrap(),
     );
     assert!(server.abs_diff(local) <= 5, "{server} vs {local}");
-    let (server, local) = (reported.load.expect("a load"), expected.load.unwrap());
-    assert_eq!(server.cores, local.cores);
-    assert_eq!(server.memory.total, local.memory.total);
+    assert_eq!(
+        reported.cpu.expect("a CPU sample").cores,
+        expected.cpu.unwrap().cores
+    );
+    assert_eq!(
+        reported.memory.expect("a memory sample").total,
+        expected.memory.unwrap().total
+    );
     assert_eq!(
         reported.net.map(|n| n.interface),
         expected.net.map(|n| n.interface)

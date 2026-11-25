@@ -5,11 +5,13 @@
 //! the sections below them to one backend each: [`vte`] and, in a build
 //! with it, [`ghostty`]. Each has its own color scheme (`System`, `Light`,
 //! `Dark`), which re-colors its open terminals at once; `System` follows
-//! the desktop theme ([`appearance`](crate::ui::appearance)). [`rows`]
-//! builds the controls.
+//! the desktop theme ([`appearance`](crate::ui::appearance)). Last, which
+//! segments the status bar shows ([`status_bar`]). [`rows`] builds the
+//! controls.
 
 mod ghostty;
 mod rows;
+mod status_bar;
 mod vte;
 
 use std::rc::Rc;
@@ -26,6 +28,7 @@ use crate::terminal::defaults::{
 use crate::terminal::{
     DEFAULT_COLOR_SCHEME_SETTING, GHOSTTY_COMPILED, SchemeChoice, TerminalDefaults,
 };
+use crate::ui::status_bar::{Items, STATUS_BAR_ITEMS_SETTING};
 
 // ---------------------------------------------------------------------------
 // Display-free data layer
@@ -69,6 +72,17 @@ pub const SCROLLBACK_TITLE: &str = "Scrollback lines";
 pub const SCROLLBACK_SUBTITLE: &str = "Lines each terminal keeps; 0 keeps none. \
                                        Lowering it drops older lines from open tabs.";
 
+/// The stored status bar items: missing shows them all.
+pub fn status_bar_items(store: &SessionStore) -> Items {
+    Items::from_setting(store.setting(STATUS_BAR_ITEMS_SETTING).as_deref())
+}
+
+/// Store which items the status bar shows; [`apply`](super::general::apply)
+/// makes it take effect.
+pub fn save_status_bar_items(store: &SessionStore, items: Items) -> rusqlite::Result<()> {
+    store.set_setting(STATUS_BAR_ITEMS_SETTING, &items.to_setting())
+}
+
 /// The stored font, opacity and scrollback rows, as tabs resolve them.
 pub fn terminal_defaults(store: &SessionStore) -> TerminalDefaults {
     TerminalDefaults::from_rows(|key| store.setting(key))
@@ -95,7 +109,8 @@ pub fn save_scrollback(store: &SessionStore, lines: u32) -> rusqlite::Result<()>
 // GTK layer
 // ---------------------------------------------------------------------------
 
-/// The page widget: every terminal's rows, then a section per backend.
+/// The page widget: every terminal's rows, a section per backend, then
+/// the status bar's.
 pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     let terminal = super::boxed_list();
     terminal.append(&font_row(&store));
@@ -114,6 +129,7 @@ pub fn page(store: Rc<SessionStore>) -> gtk4::Widget {
     if GHOSTTY_COMPILED {
         add("Ghostty", ghostty::section(&store));
     }
+    add("Status bar", status_bar::section(&store));
     let children: Vec<&gtk4::Widget> = children.iter().collect();
     super::scrolling_page(&children)
 }

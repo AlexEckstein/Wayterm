@@ -307,6 +307,7 @@ pub(super) mod gtk_tests {
 
         terminal_appearance_controls();
         backend_sections();
+        status_bar_section();
         about_page(&stack);
     }
 
@@ -448,6 +449,34 @@ pub(super) mod gtk_tests {
     /// Each section's controls open on its rows, write only those rows, and
     /// reach `apply`; Reset blanks a color row without saving the color it
     /// shows, and the color reads as unset again.
+    /// A switch per status bar item, after every terminal row: all on
+    /// for a fresh store, each saving the row and reaching the bar.
+    fn status_bar_section() {
+        use crate::ui::status_bar::{Item, Items, STATUS_BAR_ITEMS_SETTING, shown_items};
+
+        let store = Rc::new(SessionStore::in_memory().unwrap());
+        let page = customize::page(store.clone());
+        let mut found: Vec<gtk4::Switch> = Vec::new();
+        descendants(&page, &mut found);
+        let items = &found[found.len() - Item::ALL.len()..];
+        assert!(items.iter().all(|switch| switch.is_active()));
+
+        let disk = Item::ALL
+            .iter()
+            .position(|item| *item == Item::Disk)
+            .unwrap();
+        items[disk].set_active(false);
+        let without_disk = Items::ALL.with(Item::Disk, false);
+        assert_eq!(
+            store.get_setting(STATUS_BAR_ITEMS_SETTING).unwrap(),
+            Some(without_disk.to_setting())
+        );
+        assert_eq!(shown_items(), without_disk);
+        assert!(!shown_items().wanted().disks, "df stops");
+        items[disk].set_active(true);
+        assert_eq!(shown_items(), Items::ALL);
+    }
+
     fn backend_sections() {
         use crate::terminal::options::{
             VTE_AUDIBLE_BELL_SETTING, VTE_BACKGROUND_SETTING, VTE_CURSOR_SHAPE_SETTING,

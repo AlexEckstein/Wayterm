@@ -57,16 +57,16 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
             rx_per_sec: 2048,
             tx_per_sec: 10,
         }),
-        load: Some(Load {
+        cpu: Some(CpuUse {
             busy: Some(12),
             cores: 4,
             load_average: ["0.52", "0.48", "0.40"].map(str::to_string),
-            memory: Memory {
-                total: 8 << 30,
-                available: 5 << 30,
-                swap_total: 0,
-                swap_free: 0,
-            },
+        }),
+        memory: Some(Memory {
+            total: 8 << 30,
+            available: 5 << 30,
+            swap_total: 0,
+            swap_free: 0,
         }),
         disks: Some(DiskReading {
             filesystems: vec![
@@ -222,4 +222,46 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
     );
     assert!(!part_of(&bar, Item::Savings).separator.is_visible());
     assert!(bar.timer.borrow().is_none());
+}
+
+/// A hidden item never shows, and the separators close up around it.
+pub(in crate::ui) fn hidden_items_are_not_shown() {
+    let bar = StatusBar::new();
+    let live = LiveStatus {
+        savings: Some(Savings {
+            percent: 40,
+            wire: 60,
+            uncompressed: 100,
+        }),
+        host: Some(HostFigures {
+            memory: Some(Memory {
+                total: 8 << 30,
+                available: 5 << 30,
+                swap_total: 0,
+                swap_free: 0,
+            }),
+            ..HostFigures::new(Host::Server)
+        }),
+    };
+    bar.set_live_source(Some(Rc::new(move || live.clone())));
+    install_items(
+        Items::ALL
+            .with(Item::State, false)
+            .with(Item::Memory, false),
+    );
+    bar.set_state(&TransportState::Connected, "db", 22, None, None);
+    assert!(!shown(part_of(&bar, Item::State)));
+    assert!(shown(part_of(&bar, Item::Endpoint)));
+    assert!(
+        !part_of(&bar, Item::Endpoint).separator.is_visible(),
+        "first shown on its side"
+    );
+    assert!(!shown(part_of(&bar, Item::Memory)));
+    assert!(shown(part_of(&bar, Item::Elapsed)));
+    assert!(!part_of(&bar, Item::Elapsed).separator.is_visible());
+    assert!(shown(part_of(&bar, Item::Savings)));
+
+    install_items(Items::ALL);
+    bar.set_state(&TransportState::Connected, "db", 22, None, None);
+    assert!(shown(part_of(&bar, Item::State)) && shown(part_of(&bar, Item::Memory)));
 }

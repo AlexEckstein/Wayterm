@@ -11,7 +11,8 @@ Code: `src/transport/types.rs`, `factory.rs`, `reconnect.rs` (display-free);
 `src/ui/tabs/` — `mod.rs` (the page core), the per-type connect flows,
 `terminal_tab.rs`, `resilience.rs`, `ended.rs`, `label.rs`, `actions.rs`,
 `state.rs`, `restore.rs`; `src/ui/dialogs/host_picker.rs`,
-`src/ui/status_bar.rs` and `status_bar/segments.rs`, `src/ui/tray.rs`.
+`src/ui/status_bar.rs`, `status_bar/segments.rs` and
+`status_bar/settings.rs`, `src/ui/tray.rs`.
 
 ## Tab kinds
 
@@ -281,12 +282,20 @@ page's last connection, so none restarts on a tab switch. Each page keeps
 its last published state, replayed when it becomes current; the window's
 status router shows only the current page's updates.
 
-The host figures are sampled only for the shown tab. When the router
-shows a connected page it starts that page's `HostMonitor`
-(`src/ui/tabs/monitor.rs`): one script for all of them, on one exec
-channel for an SSH tab and under this machine's `sh` for a local shell
-(doc 04 §Server figures). It drops it when another page is shown or the
-page leaves Connected; dropping it stops the script and clears the CPU,
+Which segments show is one global setting, a switch per segment on the
+Settings window's Customize page (doc 13 §Customize), the same for every
+tab and session; all show by default. A hidden segment is never shown,
+and the separators close up around it. `status_bar/settings.rs` holds the
+shown `Items`, and each window's status router follows a change at once.
+
+The host figures are sampled only for the shown tab, and only those whose
+segments are shown. When the router shows a connected page it starts that
+page's `HostMonitor` (`src/ui/tabs/monitor.rs`): one script for all of
+them, on one exec channel for an SSH tab and under this machine's `sh`
+for a local shell (doc 04 §Server figures). With CPU, RAM, disk,
+bandwidth and uptime all hidden it starts none, and a change of which of
+those show restarts it, so a hidden figure stops being read. It drops it
+when another page is shown or the page leaves Connected; dropping it stops the script and clears the CPU,
 memory, disk and bandwidth figures, while the uptime stays and counts on.
 The uptime comes back a round trip after the tab is shown, memory and
 disks with their first sample; the bandwidth and CPU figures appear one
@@ -329,5 +338,8 @@ alert's, so repeated alerts replace each other.
 - Reconnect is never automatic after `SessionEnded`, by design.
 - The Ghostty backend's grid is not measured before connecting: its
   transport opens at 24×80 and resizes on the first allocation.
+- The status bar's segments can be hidden but not reordered or moved to
+  the other side, and the choice is global: a session cannot show its
+  own.
 - The status bar's tooltips need a pointer: its segments take no
   keyboard focus, so their detail is not reachable from the keyboard.

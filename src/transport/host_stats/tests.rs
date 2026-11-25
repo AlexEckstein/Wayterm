@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 
 use super::*;
 use crate::transport::disks::{Group, Late};
-use crate::transport::load::{Memory, cpu_times};
+use crate::transport::load::{CpuSample, Memory, cpu_times};
 
 const UPTIME_FILE: &str = "12345.67 890123.45\n";
 
@@ -132,10 +132,15 @@ done
     /// The script's output over `ticks` ticks of `interval`, reading the
     /// disks every `disk_ticks`.
     fn run(&self, interval: &str, disk_ticks: u64, ticks: usize) -> String {
+        self.run_wanting(Wanted::ALL, interval, disk_ticks, ticks)
+    }
+
+    /// [`Fixture::run`] for the `wanted` figures only.
+    fn run_wanting(&self, wanted: Wanted, interval: &str, disk_ticks: u64, ticks: usize) -> String {
         let proc = format!("{}/", self.proc().display());
         let bin = self.dir.path().join("bin");
         run_script(
-            &render(interval, disk_ticks),
+            &render(interval, disk_ticks, wanted),
             Some(&proc),
             Some(&bin),
             ticks,
@@ -196,12 +201,12 @@ fn the_script_reports_every_figure() {
     let fixture = Fixture::linux();
     let samples = samples(&fixture.run("0", 15, 1));
     assert_eq!(samples[0], Sample::Uptime(12345), "the uptime comes first");
-    assert!(samples.contains(&Sample::Load(LoadSample {
+    assert!(samples.contains(&Sample::Cpu(CpuSample {
         cores: 2,
         load_average: ["0.52", "0.48", "0.40"].map(str::to_string),
-        cpu: cpu_times("100 20 30 800 50 5 5 0 10 0").unwrap(),
-        memory: memory(5_000_000),
+        times: cpu_times("100 20 30 800 50 5 5 0 10 0").unwrap(),
     })));
+    assert!(samples.contains(&Sample::Memory(memory(5_000_000))));
     assert!(samples.contains(&Sample::Net(Counters {
         interface: "ens3".to_string(),
         rx: 123456,
@@ -247,11 +252,11 @@ fn a_hung_network_mount_skips_only_its_rounds() {
     assert_eq!(count(&output, "wayterm-disks-late:net"), 3);
     assert_eq!(count(&output, "wayterm-disks:net"), 1, "it finishes once");
     assert!(count(&output, "wayterm-disks:local") >= 3);
-    let loads = output
+    let cpus = output
         .lines()
-        .filter(|l| l.starts_with("wayterm-load:"))
+        .filter(|l| l.starts_with("wayterm-cpu:"))
         .count();
-    assert_eq!(loads, 4, "the load never waits");
+    assert_eq!(cpus, 4, "the CPU never waits");
     let nas = fixture.df_operands();
     assert_eq!(nas.iter().filter(|o| *o == "/mnt/nas").count(), 1);
 
@@ -280,10 +285,10 @@ fn old_kernels_lack_mem_available() {
     let meminfo = MEMINFO.replace("MemAvailable:    5000000 kB\n", "");
     let fixture = Fixture::new(&[("stat", STAT), ("meminfo", &meminfo), ("loadavg", LOADAVG)]);
     let samples = samples(&fixture.run("0", 15, 1));
-    let Some(Sample::Load(load)) = samples.first() else {
-        panic!("{samples:?}");
-    };
-    assert_eq!(load.memory, memory(3_200_000));
+    assert!(
+        samples.contains(&Sample::Memory(memory(3_200_000))),
+        "{samples:?}"
+    );
 }
 
 #[test]
@@ -300,8 +305,8 @@ fn the_interface_is_ipv4s_default_then_ipv6s() {
         }
         let samples = samples(&fixture.run("0", 15, 1));
         assert!(
-            samples.iter().any(|s| matches!(s, Sample::Load(_))),
-            "the load does not need a route"
+            samples.iter().any(|s| matches!(s, Sample::Cpu(_))),
+            "the CPU does not need a route"
         );
         samples.into_iter().find_map(|sample| match sample {
             Sample::Net(counters) => Some(counters.interface),
@@ -376,20 +381,100 @@ fn the_script_samples_this_machine() {
     if !Path::new("/proc/stat").exists() {
         return;
     }
-    let samples = samples(&run_script(&render("0", 15), None, None, 1));
+    let samples = samples(&run_script(&render("0", 15, Wanted::ALL), None, None, 1));
     assert!(matches!(samples.first(), Some(Sample::Uptime(_))));
-    let load = samples.iter().find_map(|sample| match sample {
-        Sample::Load(load) => Some(load),
+    let cpu = samples.iter().find_map(|sample| match sample {
+        Sample::Cpu(cpu) => Some(cpu),
         _ => None,
     });
-    let load = load.expect("a load sample");
-    assert!(load.cores > 0 && load.memory.total > 0 && load.cpu.total > 0);
+    let cpu = cpu.expect("a CPU sample");
+    assert!(cpu.cores > 0 && cpu.times.total > 0);
+    let memory = samples.iter().find_map(|sample| match sample {
+        Sample::Memory(memory) => Some(memory),
+        _ => None,
+    });
+    assert!(memory.expect("a memory sample").total > 0);
     assert!(last_disks(&samples).is_some(), "a disk reading");
 }
 
 #[test]
 fn the_script_ticks_every_interval_and_reads_disks_every_30_s() {
-    let script = script();
+    let script = script(Wanted::ALL);
     assert!(script.contains(&format!("sleep {}\n", INTERVAL.as_secs())));
     assert!(script.contains("t=15\n"));
+}
+
+/// A figure not wanted is never read: no line, no `df`.
+#[test]
+fn only_the_wanted_figures_are_read() {
+    let fixture = Fixture::linux();
+    let kinds = |wanted: Wanted| -> Vec<&'static str> {
+        let mut kinds: Vec<&str> = samples(&fixture.run_wanting(wanted, "0", 15, 2))
+            .iter()
+            .map(|sample| match sample {
+                Sample::Uptime(_) => "uptime",
+                Sample::Cpu(_) => "cpu",
+                Sample::Memory(_) => "memory",
+                Sample::Net(_) => "net",
+                Sample::Disks(_) => "disks",
+            })
+            .collect();
+        kinds.dedup();
+        kinds
+    };
+    let none = Wanted {
+        uptime: false,
+        cpu: false,
+        memory: false,
+        bandwidth: false,
+        disks: false,
+    };
+    assert_eq!(
+        kinds(Wanted {
+            memory: true,
+            ..none
+        }),
+        ["memory"]
+    );
+    assert_eq!(
+        kinds(Wanted {
+            cpu: true,
+            bandwidth: true,
+            ..none
+        }),
+        ["cpu", "net", "cpu", "net"]
+    );
+    assert_eq!(
+        kinds(Wanted {
+            uptime: true,
+            ..none
+        }),
+        ["uptime"],
+        "it ends after the uptime"
+    );
+    assert!(fixture.df_operands().is_empty(), "no df without the disks");
+    assert_eq!(
+        kinds(Wanted {
+            disks: true,
+            ..none
+        }),
+        ["disks"]
+    );
+    assert!(!fixture.df_operands().is_empty());
+    assert!(!none.any() && Wanted::ALL.any());
+}
+
+/// A wanted figure the host cannot give is dropped, and with nothing left
+/// the script ends.
+#[test]
+fn a_figure_without_its_files_is_dropped() {
+    let fixture = Fixture::new(&[("meminfo", MEMINFO)]);
+    let only_cpu = Wanted {
+        uptime: false,
+        memory: false,
+        bandwidth: false,
+        disks: false,
+        cpu: true,
+    };
+    assert_eq!(fixture.run_wanting(only_cpu, "0", 15, 3), "");
 }

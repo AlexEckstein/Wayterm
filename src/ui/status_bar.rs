@@ -1,8 +1,9 @@
 //! The status bar: segments for the connection state, the endpoint, the
 //! host's CPU, memory, disks, bandwidth and uptime, the time connected and
 //! what compression saves, each with a tooltip that adds detail (doc 03
-//! §Status bar). [`segments`] decides what each shows; [`StatusBar`] only
-//! renders it. Which tab drives it is the window's business.
+//! §Status bar). [`segments`] decides what each shows and [`settings`]
+//! which are shown; [`StatusBar`] only renders it. Which tab drives it is
+//! the window's business.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,7 +16,9 @@ use gtk4::prelude::*;
 use crate::transport::types::TransportState;
 
 pub mod segments;
+pub mod settings;
 pub use segments::*;
+pub use settings::*;
 
 /// Reads the current tab's [`LiveStatus`].
 pub type LiveSource = Rc<dyn Fn() -> LiveStatus>;
@@ -112,9 +115,9 @@ fn part(item: Item) -> Part {
     }
 }
 
-/// The segments of [`Item::LEFT`] on the left and [`Item::RIGHT`] on the
-/// right, the state led by a coloured dot, ticking every second while
-/// connected.
+/// The shown segments of [`Item::LEFT`] on the left and [`Item::RIGHT`]
+/// on the right, the state led by a coloured dot, ticking every second
+/// while connected.
 pub struct StatusBar {
     container: gtk4::Box,
     dot: gtk4::Label,
@@ -204,9 +207,11 @@ impl StatusBar {
         let (left, right) = (self.left.clone(), self.right.clone());
         let refresh = move || {
             let live = source.as_ref().map(|source| source()).unwrap_or_default();
+            let items = shown_items();
             for side in [&left, &right] {
                 for (item, part) in side {
-                    part.show(item.segment(&tab, &live).as_ref());
+                    let segment = items.shows(*item).then(|| item.segment(&tab, &live));
+                    part.show(segment.flatten().as_ref());
                 }
                 separate(side);
             }

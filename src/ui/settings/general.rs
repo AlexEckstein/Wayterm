@@ -27,7 +27,7 @@ use crate::terminal::{
 };
 use crate::ui::panels::sftp_sidebar;
 use crate::ui::tabs::{self, resilience};
-use crate::ui::{appearance, tray};
+use crate::ui::{appearance, status_bar, tray};
 
 // ---------------------------------------------------------------------------
 // Display-free data layer
@@ -138,6 +138,7 @@ pub fn apply(store: &SessionStore) {
         store.setting(GHOSTTY_COLOR_SCHEME_SETTING),
     );
     appearance::install_terminal_defaults(customize::terminal_defaults(store));
+    status_bar::install_items(customize::status_bar_items(store));
 }
 
 // ---------------------------------------------------------------------------

@@ -75,6 +75,14 @@ Each reaches open terminals at once, numbers once settled. Switches write
 not set. A scheme's row reads through to `default_color_scheme` while it is
 missing (doc 02 §Color schemes).
 
+Last, a Status bar section (`customize/status_bar.rs`): a switch per
+status bar segment, in bar order (Connection state, Endpoint, CPU, RAM,
+Disk, Bandwidth, Uptime, Time connected, Compression saving), all on by
+default. It writes `status_bar_items` and reaches the bar at once, for
+every tab; there is no per-session choice. A hidden CPU, RAM, disk,
+bandwidth or uptime segment is not read from the host at all (doc 03
+§Status bar, doc 04 §Server figures).
+
 The font picker lists monospace families and sets the family only: a
 terminal's rows hold no face, so Bold could not be kept. Numeric controls
 save 150 ms after their last change, because each save re-applies to every
@@ -138,6 +146,7 @@ once, inside a transaction, when the table is empty.
 | `minimize_to_tray` | — | missing = on |
 | `sftp_on_connect` | — | missing = on; off defers the SFTP channel until first viewed |
 | `sftp_columns` | — | the SFTP listing's optional columns that are shown, e.g. `size,modified`; missing = `size,modified,permissions`; written by the listing's header menu, no Settings control (doc 07 §Listing) |
+| `status_bar_items` | — | the status bar segments that are shown, e.g. `state,endpoint,cpu`; missing = all of `state,endpoint,cpu,memory,disk,bandwidth,uptime,elapsed,savings`, names it does not know are skipped (§Customize) |
 | `duplicate_tmux_notice` | — | missing = on; off after "Do not show me again" on the duplicate-tab tmux notice |
 | `confirm_close_notice` | — | missing = on; off after closing with "Do not show me again" ticked |
 | `bitwarden.enabled` | — | missing = **off** (doc 05 §Settings) |

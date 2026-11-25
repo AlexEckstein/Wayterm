@@ -1,8 +1,9 @@
-//! A host's CPU and memory use, from the host script's load lines
-//! (`host_stats`; doc 04 §Server figures).
+//! A host's CPU and memory use, from the host script's `cpu` and `mem`
+//! lines (`host_stats`; doc 04 §Server figures).
 
-/// Prefixes each sample, since login-shell startup files may print too.
-const MARKER: &str = "wayterm-load:";
+/// Prefix each sample, since login-shell startup files may print too.
+const CPU: &str = "wayterm-cpu:";
+const MEMORY: &str = "wayterm-mem:";
 
 /// Time the CPUs spent, in clock ticks since boot, summed over all cores.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,12 +28,11 @@ impl Memory {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LoadSample {
+pub struct CpuSample {
     pub cores: u32,
     /// The 1, 5 and 15 minute load averages, as the kernel prints them.
     pub load_average: [String; 3],
-    pub cpu: CpuTimes,
-    pub memory: Memory,
+    pub times: CpuTimes,
 }
 
 /// The busy share between consecutive [`CpuTimes`].
@@ -76,28 +76,38 @@ pub fn cpu_times(fields: &str) -> Option<CpuTimes> {
     })
 }
 
-/// A sample line from the script.
-pub fn parse_sample(line: &str) -> Option<LoadSample> {
-    let rest = line.trim().strip_prefix(MARKER)?;
-    let mut fields = rest.splitn(9, ' ');
+/// `wayterm-cpu:<cores> <load averages> <cpu line fields>`.
+pub fn parse_cpu(line: &str) -> Option<CpuSample> {
+    let rest = line.trim().strip_prefix(CPU)?;
+    let mut fields = rest.splitn(5, ' ');
     let mut next = || fields.next();
     let cores = next()?.parse().ok()?;
     let load_average = [next()?, next()?, next()?].map(str::to_string);
     if load_average.iter().any(|l| l.parse::<f64>().is_err()) {
         return None;
     }
-    let mut kib = || -> Option<u64> { Some(next()?.parse::<u64>().ok()? * 1024) };
-    let memory = Memory {
-        total: kib()?,
-        available: kib()?,
-        swap_total: kib()?,
-        swap_free: kib()?,
-    };
-    Some(LoadSample {
+    Some(CpuSample {
         cores,
         load_average,
-        cpu: cpu_times(next()?)?,
-        memory,
+        times: cpu_times(next()?)?,
+    })
+}
+
+/// `wayterm-mem:<total> <available> <swap total> <swap free>`, in KiB.
+pub fn parse_memory(line: &str) -> Option<Memory> {
+    let rest = line.trim().strip_prefix(MEMORY)?;
+    let kib: Vec<u64> = rest
+        .split(' ')
+        .map(|field| field.parse::<u64>().ok().map(|kib| kib * 1024))
+        .collect::<Option<_>>()?;
+    let [total, available, swap_total, swap_free] = kib[..] else {
+        return None;
+    };
+    Some(Memory {
+        total,
+        available,
+        swap_total,
+        swap_free,
     })
 }
 

@@ -1,6 +1,7 @@
-//! A host's figures for the status bar, from one long-lived script: its
-//! uptime once, then CPU, memory and bandwidth every [`INTERVAL`] and its
-//! filesystems every [`disks::INTERVAL`]. An SSH tab runs it on one exec
+//! A host's figures for the status bar, from one long-lived script that
+//! reads only the [`Wanted`] ones: its uptime once, then CPU, memory and
+//! bandwidth every [`INTERVAL`] and its filesystems every
+//! [`disks::INTERVAL`]. An SSH tab runs it on one exec
 //! channel of the server's connection (doc 04 §Server figures), a local
 //! shell under this machine's `sh` (doc 06 §Local shell); both read its
 //! lines through the same [`Parser`].
@@ -14,7 +15,7 @@ use tokio::sync::mpsc;
 use crate::transport::bandwidth::{self, Counters};
 use crate::transport::connection::SshConnection;
 use crate::transport::disks::{self, Collector, Disks};
-use crate::transport::load::{self, LoadSample};
+use crate::transport::load::{self, CpuSample, Memory};
 
 /// How often CPU, memory and bandwidth are sampled.
 pub const INTERVAL: Duration = Duration::from_secs(2);
@@ -22,15 +23,43 @@ const UPTIME: &str = "wayterm-uptime:";
 /// A longer unterminated line is dropped.
 const MAX_LINE: usize = 4096;
 
+/// Which figures the script reads; the others it never touches, and with
+/// none of them wanted no script runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Wanted {
+    pub uptime: bool,
+    pub cpu: bool,
+    pub memory: bool,
+    pub bandwidth: bool,
+    pub disks: bool,
+}
+
+impl Wanted {
+    pub const ALL: Self = Self {
+        uptime: true,
+        cpu: true,
+        memory: true,
+        bandwidth: true,
+        disks: true,
+    };
+
+    pub fn any(self) -> bool {
+        self.uptime || self.cpu || self.memory || self.bandwidth || self.disks
+    }
+}
+
 /// Every figure's line is marked, since login-shell startup files may
 /// print too, and is written whole by one `printf`, so lines from the
-/// background `df` jobs never break into another's.
+/// background `df` jobs never break into another's. `U`, `C`, `M`, `N` and
+/// `D` say whether the uptime, CPU, memory, network and disks are wanted;
+/// one whose files cannot be read is dropped, and the script ends once
+/// nothing is left to sample.
 ///
 /// The uptime comes first, from `/proc/uptime` on Linux, else from
 /// `kern.boottime` (macOS and the BSDs: `{ sec = N, usec = M } …` or a
 /// bare `N`); the rest needs Linux's `/proc`. Each tick prints the core
-/// count, load averages, memory and swap (KiB) and the aggregate `cpu`
-/// times, then the default route's interface counters (IPv4's, else
+/// count, load averages and aggregate `cpu` times, the memory and swap
+/// (KiB), then the default route's interface counters (IPv4's, else
 /// IPv6's). Kernels before 3.14 have no `MemAvailable`; free plus buffers
 /// plus cache stands in.
 ///
@@ -40,10 +69,11 @@ const MAX_LINE: usize = 4096;
 /// one kind never stalls the other. A job still running at the next round
 /// is not started again: the round says it is late instead, and the other
 /// figures carry on.
-const SCRIPT: &str = r#"if [ -r /proc/uptime ]; then
+const SCRIPT: &str = r#"U={uptime} C={cpu} M={memory} N={bandwidth} D={disks}
+if [ "$U" = 1 ] && [ -r /proc/uptime ]; then
   read -r up _ < /proc/uptime
   printf 'wayterm-uptime:%s\n' "${up%%.*}"
-else
+elif [ "$U" = 1 ]; then
   b=$(sysctl -n kern.boottime 2>/dev/null)
   case $b in *"sec = "*) b=${b#*sec = }; b=${b%%,*} ;; esac
   case $b in
@@ -51,20 +81,25 @@ else
     *) printf 'wayterm-uptime:%s\n' $(( $(date +%s) - b )) ;;
   esac
 fi
-[ -r /proc/stat ] && [ -r /proc/meminfo ] && [ -r /proc/loadavg ] || exit 0
-n=$(grep -c '^cpu[0-9]' /proc/stat)
+[ -r /proc/stat ] && [ -r /proc/loadavg ] || C=0
+[ -r /proc/meminfo ] || M=0
+[ -r /proc/mounts ] || D=0
 i=
-if [ -r /proc/net/dev ] && [ -r /proc/net/route ]; then
+if [ "$N" = 1 ] && [ -r /proc/net/dev ] && [ -r /proc/net/route ]; then
   while read -r f d _; do
     [ "$d" = 00000000 ] && { i=$f; break; }
   done < /proc/net/route
 fi
-if [ -r /proc/net/dev ] && [ -z "$i" ] && [ -r /proc/net/ipv6_route ]; then
+if [ "$N" = 1 ] && [ -r /proc/net/dev ] && [ -z "$i" ] && [ -r /proc/net/ipv6_route ]; then
   while read -r d p _ _ _ _ _ _ _ f; do
     [ "$d$p" = 0000000000000000000000000000000000 ] && [ "$f" != lo ] &&
       { i=$f; break; }
   done < /proc/net/ipv6_route
 fi
+[ -n "$i" ] || N=0
+[ "$C$M$N$D" = 0000 ] && exit 0
+n=
+[ "$C" = 1 ] && n=$(grep -c '^cpu[0-9]' /proc/stat)
 disks() {
   g=$1
   set --
@@ -90,7 +125,7 @@ disks() {
 }
 t=0 lp= np=
 while :; do
-  if [ "$t" -le 0 ] && [ -r /proc/mounts ]; then
+  if [ "$D" = 1 ] && [ "$t" -le 0 ]; then
     t={disk_ticks}
     while read -r l; do
       printf 'wayterm-mount:%s\n' "$l" || exit 0
@@ -108,24 +143,28 @@ while :; do
     fi
   fi
   t=$((t - 1))
-  read -r _ c < /proc/stat
-  read -r l1 l5 l15 _ < /proc/loadavg
-  mt= ma= mf=0 mb=0 mc=0 st=0 sf=0
-  while read -r k v _; do
-    case $k in
-      MemTotal:) mt=$v ;;
-      MemFree:) mf=$v ;;
-      MemAvailable:) ma=$v ;;
-      Buffers:) mb=$v ;;
-      Cached:) mc=$v ;;
-      SwapTotal:) st=$v ;;
-      SwapFree:) sf=$v; break ;;
-    esac
-  done < /proc/meminfo
-  [ -n "$ma" ] || ma=$((mf + mb + mc))
-  printf 'wayterm-load:%s %s %s %s %s %s %s %s %s\n' \
-    "$n" "$l1" "$l5" "$l15" "$mt" "$ma" "$st" "$sf" "$c" || exit 0
-  if [ -n "$i" ]; then
+  if [ "$C" = 1 ]; then
+    read -r _ c < /proc/stat
+    read -r l1 l5 l15 _ < /proc/loadavg
+    printf 'wayterm-cpu:%s %s %s %s %s\n' "$n" "$l1" "$l5" "$l15" "$c" || exit 0
+  fi
+  if [ "$M" = 1 ]; then
+    mt= ma= mf=0 mb=0 mc=0 st=0 sf=0
+    while read -r k v _; do
+      case $k in
+        MemTotal:) mt=$v ;;
+        MemFree:) mf=$v ;;
+        MemAvailable:) ma=$v ;;
+        Buffers:) mb=$v ;;
+        Cached:) mc=$v ;;
+        SwapTotal:) st=$v ;;
+        SwapFree:) sf=$v; break ;;
+      esac
+    done < /proc/meminfo
+    [ -n "$ma" ] || ma=$((mf + mb + mc))
+    printf 'wayterm-mem:%s %s %s %s\n' "$mt" "$ma" "$st" "$sf" || exit 0
+  fi
+  if [ "$N" = 1 ]; then
     x=
     while read -r l; do
       case $l in "$i:"*) x=${l#*:}; break ;; esac
@@ -139,20 +178,27 @@ while :; do
 done
 "#;
 
-/// The script, sleeping `interval` (as `sleep` takes it) between ticks and
-/// reading the disks every `disk_ticks` ticks.
-fn render(interval: &str, disk_ticks: u64) -> String {
+/// The script for the `wanted` figures, sleeping `interval` (as `sleep`
+/// takes it) between ticks and reading the disks every `disk_ticks` ticks.
+fn render(interval: &str, disk_ticks: u64, wanted: Wanted) -> String {
+    let flag = |on: bool| if on { "1" } else { "0" };
     SCRIPT
+        .replace("{uptime}", flag(wanted.uptime))
+        .replace("{cpu}", flag(wanted.cpu))
+        .replace("{memory}", flag(wanted.memory))
+        .replace("{bandwidth}", flag(wanted.bandwidth))
+        .replace("{disks}", flag(wanted.disks))
         .replace("{interval}", interval)
         .replace("{disk_ticks}", &disk_ticks.to_string())
         .replace("{skipped}", &disks::SKIPPED_TYPES.join("|"))
         .replace("{network}", &disks::NETWORK_TYPES.join("|"))
 }
 
-fn script() -> String {
+fn script(wanted: Wanted) -> String {
     render(
         &INTERVAL.as_secs().to_string(),
         disks::INTERVAL.as_secs() / INTERVAL.as_secs(),
+        wanted,
     )
 }
 
@@ -161,7 +207,8 @@ fn script() -> String {
 pub enum Sample {
     /// Seconds since boot.
     Uptime(u64),
-    Load(LoadSample),
+    Cpu(CpuSample),
+    Memory(Memory),
     Net(Counters),
     Disks(Disks),
 }
@@ -177,8 +224,11 @@ impl Parser {
         if let Some(secs) = parse_uptime(line) {
             return Some(Sample::Uptime(secs));
         }
-        if let Some(sample) = load::parse_sample(line) {
-            return Some(Sample::Load(sample));
+        if let Some(sample) = load::parse_cpu(line) {
+            return Some(Sample::Cpu(sample));
+        }
+        if let Some(memory) = load::parse_memory(line) {
+            return Some(Sample::Memory(memory));
         }
         if let Some(counters) = bandwidth::parse_sample(line) {
             return Some(Sample::Net(counters));
@@ -192,11 +242,15 @@ pub fn parse_uptime(line: &str) -> Option<u64> {
     line.trim().strip_prefix(UPTIME)?.parse().ok()
 }
 
-/// Send the server's figures to `samples` until its receiver is dropped or
-/// the script ends. `sh` reads the script on stdin, so the login shell
+/// Send the server's `wanted` figures to `samples` until its receiver is
+/// dropped or the script ends. `sh` reads the script on stdin, so the login shell
 /// never parses it. The connection is held only while the channel opens,
 /// so the stream never keeps a released connection alive.
-pub async fn stream_server(connection: Weak<SshConnection>, samples: mpsc::Sender<Sample>) {
+pub async fn stream_server(
+    connection: Weak<SshConnection>,
+    wanted: Wanted,
+    samples: mpsc::Sender<Sample>,
+) {
     let Some(connection) = connection.upgrade() else {
         return;
     };
@@ -204,7 +258,7 @@ pub async fn stream_server(connection: Weak<SshConnection>, samples: mpsc::Sende
         return;
     };
     drop(connection);
-    let script = script();
+    let script = script(wanted);
     let started = async {
         channel.exec(true, "sh").await?;
         channel.data(script.as_bytes()).await?;
@@ -216,9 +270,10 @@ pub async fn stream_server(connection: Weak<SshConnection>, samples: mpsc::Sende
     let _ = channel.close().await;
 }
 
-/// Send this machine's figures to `samples` until its receiver is dropped
-/// or the script ends; the same script runs under this machine's `sh`.
-pub async fn stream_local(samples: mpsc::Sender<Sample>) {
+/// Send this machine's `wanted` figures to `samples` until its receiver is
+/// dropped or the script ends; the same script runs under this machine's
+/// `sh`.
+pub async fn stream_local(wanted: Wanted, samples: mpsc::Sender<Sample>) {
     let spawned = tokio::process::Command::new("sh")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -229,7 +284,7 @@ pub async fn stream_local(samples: mpsc::Sender<Sample>) {
     let (Some(mut stdin), Some(stdout)) = (sh.stdin.take(), sh.stdout.take()) else {
         return;
     };
-    if stdin.write_all(script().as_bytes()).await.is_err() {
+    if stdin.write_all(script(wanted).as_bytes()).await.is_err() {
         return;
     }
     drop(stdin);

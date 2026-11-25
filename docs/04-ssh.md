@@ -131,9 +131,17 @@ login shell never parses it (the SFTP sidebar's shell probe runs the same
 way, doc 07 §Following the shell). A local shell tab runs the same script
 under this machine's `sh` (doc 06 §Local shell), and both read its output
 through one `host_stats::Parser`. Every line is marked (`wayterm-uptime:`,
-`wayterm-load:`, `wayterm-net:`, `wayterm-df:` …), so startup files that
-print do not matter, and each is written whole by one `printf`, so the
-background `df` jobs' lines never break into another's.
+`wayterm-cpu:`, `wayterm-mem:`, `wayterm-net:`, `wayterm-df:` …), so
+startup files that print do not matter, and each is written whole by one
+`printf`, so the background `df` jobs' lines never break into another's.
+
+The script reads only the figures whose status bar segments are shown
+(doc 13 §Customize): it is written with one flag per figure
+(`host_stats::Wanted`), and a hidden figure's files are never read, nor
+`df` run for hidden disks. A figure whose files cannot be read is dropped
+the same way, and the script ends once none is left; with no host
+segment shown no script runs and no channel opens. Showing or hiding a
+host segment restarts the shown tab's script with the new flags.
 
 - **Uptime**, first and once: `/proc/uptime` on Linux, else
   `sysctl -n kern.boottime` (macOS and the BSDs) against `date +%s`. The
@@ -141,16 +149,17 @@ background `df` jobs' lines never break into another's.
   time since. It is read each time the tab is shown, kept while the tab is
   hidden, and cleared on each connect, so a new connection never shows
   the last one's. Without `/proc` the script ends here.
-- **Load**, every 2 s: `wayterm-load:<cores> <load averages> <memory>
-  <cpu times>`: the `cpuN` line count from `/proc/stat` (counted once),
-  the three `/proc/loadavg` figures, `MemTotal`, `MemAvailable`,
-  `SwapTotal` and `SwapFree` from `/proc/meminfo`, and the aggregate
-  `cpu` line's times. Kernels before 3.14 have no `MemAvailable`; free
-  plus buffers plus cache stands in. The tab turns consecutive CPU times
-  into a busy share (`CpuMeter`): idle and iowait count as idle, and the
-  guest fields are already in user and nice. Used memory is what is not
-  available.
-- **Bandwidth**, every 2 s after the load: the script finds the default
+- **CPU**, every 2 s: `wayterm-cpu:<cores> <load averages> <cpu times>`:
+  the `cpuN` line count from `/proc/stat` (counted once), the three
+  `/proc/loadavg` figures and the aggregate `cpu` line's times. The tab
+  turns consecutive times into a busy share (`CpuMeter`): idle and iowait
+  count as idle, and the guest fields are already in user and nice.
+- **Memory**, every 2 s: `wayterm-mem:<total> <available> <swap total>
+  <swap free>`, `MemTotal`, `MemAvailable`, `SwapTotal` and `SwapFree`
+  from `/proc/meminfo`, in KiB. Kernels before 3.14 have no
+  `MemAvailable`; free plus buffers plus cache stands in. Used memory is
+  what is not available.
+- **Bandwidth**, every 2 s after the memory: the script finds the default
   route's interface once, in `/proc/net/route` (the `00000000`
   destination), or when there is no IPv4 default, in
   `/proc/net/ipv6_route` (`::/0`, skipping the kernel's unreachable
@@ -176,7 +185,7 @@ background `df` jobs' lines never break into another's.
   is not mounted by asking. A job still running when the next round is
   due, a `df` stuck on a hung mount, which no signal ends, is not started
   again: the round prints `wayterm-disks-late:<group>` instead. So stuck
-  `df`s never pile up, and the load, the bandwidth and the other group
+  `df`s never pile up, and the CPU, memory, bandwidth and the other group
   keep updating. `disks::Collector` keeps each group's last finished
   reading and joins them with the latest mount table by mount point; a
   late group's figures stay up, and the disk tooltip says which group is
@@ -501,8 +510,9 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   path has run against a real server, and the `sysctl` path is tested
   against a stand-in `sysctl`. Everything else reads `/proc` and needs
   `grep`, `sed` and `df`, so only Linux servers show it. Showing a tab
-  again starts a new script, so its uptime returns after a round trip and
-  its CPU and bandwidth figures after one interval.
+  again, or showing or hiding a host segment, starts a new script, so its
+  uptime returns after a round trip and its CPU and bandwidth figures
+  after one interval.
 - When the server has default routes on several interfaces, the first
   listed is measured, IPv4 before IPv6, which may not be the one this
   connection uses. The rate includes this connection's own traffic, the

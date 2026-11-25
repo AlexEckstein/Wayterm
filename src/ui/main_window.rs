@@ -21,7 +21,7 @@ use crate::ui::panels::macros_panel::MacrosPanel;
 use crate::ui::panels::session_tree::SessionTree;
 use crate::ui::panels::sftp_sidebar::{self, SftpButton};
 use crate::ui::panels::side_dock::SideDock;
-use crate::ui::status_bar::StatusBar;
+use crate::ui::status_bar::{StatusBar, on_items_changed, shown_items};
 use crate::ui::tabs::restore::TabPersistence;
 use crate::ui::tabs::{self, terminal_actions};
 use crate::ui::tabs::{HostMonitor, PageStatus, SessionTab, current_page};
@@ -79,9 +79,19 @@ impl StatusRouter {
                 .unwrap_or_default()
         })));
         self.monitor = None;
+        self.start_monitor(page, &status);
+        self.render(page, &status);
+        self.last = Some((page.clone(), status.state));
+    }
+
+    /// Sample `page`'s host for the shown items while it is connected.
+    fn start_monitor(&mut self, page: &gtk4::Widget, status: &PageStatus) {
         if status.state == TransportState::Connected {
-            self.monitor = SessionTab::start_monitor(page);
+            self.monitor = SessionTab::start_monitor(page, shown_items().wanted());
         }
+    }
+
+    fn render(&self, page: &gtk4::Widget, status: &PageStatus) {
         self.status_bar.set_state(
             &status.state,
             &status.host,
@@ -89,7 +99,21 @@ impl StatusRouter {
             status.since.as_ref(),
             SessionTab::status_session(page).as_ref(),
         );
-        self.last = Some((page.clone(), status.state));
+    }
+
+    /// The shown items changed: show them, and restart the monitor when
+    /// the figures it reads changed, so a hidden one stops being read.
+    fn items_changed(&mut self) {
+        let Some((page, _)) = self.last.clone() else {
+            return;
+        };
+        let status = SessionTab::page_status(&page).unwrap_or_default();
+        let wanted = shown_items().wanted();
+        if self.monitor.as_ref().map(HostMonitor::wanted) != Some(wanted) {
+            self.monitor = None;
+            self.start_monitor(&page, &status);
+        }
+        self.render(&page, &status);
     }
 }
 
@@ -188,6 +212,14 @@ impl MainWindow {
             last: None,
             monitor: None,
         }));
+        let for_items = Rc::downgrade(&router);
+        on_items_changed(move || {
+            let Some(router) = for_items.upgrade() else {
+                return false;
+            };
+            router.borrow_mut().items_changed();
+            true
+        });
         let for_switch = router.clone();
         notebook.connect_switch_page(move |_, page, _| {
             let status = SessionTab::page_status(page).unwrap_or_default();
@@ -657,6 +689,12 @@ pub(super) mod gtk_tests {
         spin_until("the box session's shell shows", || {
             status_text(&window).starts_with("Connected | /bin/sh")
         });
+        // A change of the shown items reaches the bar at once.
+        use crate::ui::status_bar::{Item, Items, install_items};
+        install_items(Items::ALL.with(Item::Endpoint, false));
+        assert!(!status_text(&window).contains("/bin/sh"));
+        install_items(Items::ALL);
+        assert!(status_text(&window).starts_with("Connected | /bin/sh"));
         for _ in 0..4 {
             act("close_tab");
         }

@@ -34,6 +34,7 @@ use crate::store::SessionStore;
 use crate::store::model::{SessionConfig, SessionType};
 use crate::terminal::TerminalBackend;
 use crate::transport::connection::SshConnection;
+use crate::transport::host_stats::Wanted;
 use crate::transport::traffic::Traffic;
 use crate::transport::types::{TransportError, TransportState};
 use crate::ui::dialogs::tunnels::ForwardStatusSource;
@@ -245,16 +246,20 @@ impl SessionTab {
         }
     }
 
-    /// Start sampling `page`'s host: an SSH tab's server, a local shell's
-    /// machine; other tabs have none.
-    pub(crate) fn start_monitor(page: &gtk4::Widget) -> Option<HostMonitor> {
+    /// Start sampling `page`'s host for the `wanted` figures: an SSH tab's
+    /// server, a local shell's machine; other tabs have none, and with
+    /// none wanted nothing is sampled.
+    pub(crate) fn start_monitor(page: &gtk4::Widget, wanted: Wanted) -> Option<HostMonitor> {
+        if !wanted.any() {
+            return None;
+        }
         let state = existing_state(page)?;
         match state.session.get()?.session_type {
             SessionType::SSH => {
                 let connection = state.connection.borrow().clone();
-                Some(HostMonitor::server(page, connection))
+                Some(HostMonitor::server(page, connection, wanted))
             }
-            SessionType::LocalShell => Some(HostMonitor::local(page)),
+            SessionType::LocalShell => Some(HostMonitor::local(page, wanted)),
             _ => None,
         }
     }
