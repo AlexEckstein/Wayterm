@@ -13,35 +13,51 @@ use tokio::sync::mpsc;
 use super::{existing_state, state};
 use crate::transport::bandwidth::RateMeter;
 use crate::transport::connection::SshConnection;
-use crate::transport::host_stats::{self, Sample};
+use crate::transport::host_stats::{self, Sample, Wanted};
 use crate::transport::load::CpuMeter;
-use crate::ui::status_bar::{DiskReading, Host, HostFigures, Load, Uptime};
+use crate::ui::status_bar::{CpuUse, DiskReading, Host, HostFigures, Uptime};
 
 /// Dropping it stops sampling and clears the page's figures, all but the
 /// uptime, which counts on from its answer.
 pub(crate) struct HostMonitor {
     page: glib::WeakRef<gtk4::Widget>,
+    wanted: Wanted,
     /// Receives the samples; aborting it drops the receiver, which ends the
     /// script.
     task: glib::JoinHandle<()>,
 }
 
 impl HostMonitor {
-    /// Sample the server of `connection` (doc 04 §Server figures).
-    pub(super) fn server(page: &gtk4::Widget, connection: Weak<SshConnection>) -> Self {
+    /// Sample the `wanted` figures of the server of `connection` (doc 04
+    /// §Server figures).
+    pub(super) fn server(
+        page: &gtk4::Widget,
+        connection: Weak<SshConnection>,
+        wanted: Wanted,
+    ) -> Self {
         let (samples, received) = mpsc::channel(8);
-        tokio::spawn(host_stats::stream_server(connection, samples));
-        Self::receive(page, Host::Server, received)
+        tokio::spawn(host_stats::stream_server(connection, wanted, samples));
+        Self::receive(page, Host::Server, wanted, received)
     }
 
-    /// Sample this machine (doc 06 §Local shell).
-    pub(super) fn local(page: &gtk4::Widget) -> Self {
+    /// Sample this machine's `wanted` figures (doc 06 §Local shell).
+    pub(super) fn local(page: &gtk4::Widget, wanted: Wanted) -> Self {
         let (samples, received) = mpsc::channel(8);
-        tokio::spawn(host_stats::stream_local(samples));
-        Self::receive(page, Host::ThisComputer, received)
+        tokio::spawn(host_stats::stream_local(wanted, samples));
+        Self::receive(page, Host::ThisComputer, wanted, received)
     }
 
-    fn receive(page: &gtk4::Widget, of: Host, mut received: mpsc::Receiver<Sample>) -> Self {
+    /// The figures it reads.
+    pub(crate) fn wanted(&self) -> Wanted {
+        self.wanted
+    }
+
+    fn receive(
+        page: &gtk4::Widget,
+        of: Host,
+        wanted: Wanted,
+        mut received: mpsc::Receiver<Sample>,
+    ) -> Self {
         let weak = page.downgrade();
         let task = glib::MainContext::default().spawn_local(async move {
             let mut rates = RateMeter::default();
@@ -53,14 +69,14 @@ impl HostMonitor {
                 let figures = host.get_or_insert_with(|| HostFigures::new(of));
                 match sample {
                     Sample::Uptime(secs) => figures.uptime = Some(Uptime::measured(secs)),
-                    Sample::Load(sample) => {
-                        figures.load = Some(Load {
-                            busy: cpu.add(sample.cpu),
+                    Sample::Cpu(sample) => {
+                        figures.cpu = Some(CpuUse {
+                            busy: cpu.add(sample.times),
                             cores: sample.cores,
                             load_average: sample.load_average,
-                            memory: sample.memory,
                         });
                     }
+                    Sample::Memory(memory) => figures.memory = Some(memory),
                     Sample::Net(counters) => {
                         if let Some(rate) = rates.add(counters, Instant::now()) {
                             figures.bandwidth = Some(rate);
@@ -72,6 +88,7 @@ impl HostMonitor {
         });
         Self {
             page: page.downgrade(),
+            wanted,
             task,
         }
     }

@@ -102,7 +102,8 @@ pub enum Host {
 pub struct HostFigures {
     pub of: Host,
     pub uptime: Option<Uptime>,
-    pub load: Option<Load>,
+    pub cpu: Option<CpuUse>,
+    pub memory: Option<Memory>,
     /// The default-route interface's traffic.
     pub bandwidth: Option<Rate>,
     pub disks: Option<DiskReading>,
@@ -113,7 +114,8 @@ impl HostFigures {
         Self {
             of,
             uptime: None,
-            load: None,
+            cpu: None,
+            memory: None,
             bandwidth: None,
             disks: None,
         }
@@ -143,13 +145,12 @@ impl Uptime {
     }
 }
 
-/// A host's CPU and memory use. `busy` waits for a second sample.
+/// How busy a host's CPUs are. `busy` waits for a second sample.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Load {
+pub struct CpuUse {
     pub busy: Option<u8>,
     pub cores: u32,
     pub load_average: [String; 3],
-    pub memory: Memory,
 }
 
 /// A host's real filesystems, and which of them are not up to date.
@@ -203,7 +204,8 @@ pub struct TabStatus {
     pub since: Option<ConnectedSince>,
 }
 
-/// One of the bar's segments.
+/// One of the bar's segments; which are shown is a setting
+/// ([`super::settings`]).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Item {
     State,
@@ -238,10 +240,15 @@ impl Item {
             Item::State => Some(state_segment(&tab.state, &tab.host, tab.port)),
             Item::Endpoint => endpoint_segment(&tab.host, tab.port, tab.session.as_ref()),
             Item::Cpu => {
-                let (of, load) = (host?.of, host?.load.as_ref()?);
-                Some(cpu_segment(of, load.busy?, load.cores, &load.load_average))
+                let cpu = host?.cpu.as_ref()?;
+                Some(cpu_segment(
+                    host?.of,
+                    cpu.busy?,
+                    cpu.cores,
+                    &cpu.load_average,
+                ))
             }
-            Item::Memory => memory_segment(host?.of, &host?.load.as_ref()?.memory),
+            Item::Memory => memory_segment(host?.of, host?.memory.as_ref()?),
             Item::Disk => {
                 let disks = host?.disks.as_ref()?;
                 disk_segment(host?.of, &disks.filesystems, &disks.stale)

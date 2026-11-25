@@ -40,7 +40,8 @@ of a host.
   exactly as for a server (doc 04 §Server figures): the `df` jobs run in
   the background, so a hung network mount never stalls the other figures,
   and the window never waits on the script. The uptime is read when the
-  tab is shown. A serial tab shows none.
+  tab is shown, and a hidden segment's figure is not read (doc 03
+  §Status bar). A serial tab shows none.
 
 The New Tab picker's "Local shell" and the tab bar's "+" open an unsaved
 local session: the login shell in the home directory (doc 03 §New Tab).

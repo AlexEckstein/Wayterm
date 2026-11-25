@@ -8,10 +8,11 @@ use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 
 use super::{
-    ColorKind, ConnectedSince, DiskReading, FILLING, FULL, Host, HostFigures, Item, LiveStatus,
-    Load, SessionInfo, StaleDisks, TabStatus, Uptime, bandwidth_segment, cpu_segment, disk_segment,
-    elapsed_segment, endpoint_segment, format_elapsed, format_rate, format_uptime, fullness_color,
-    memory_segment, savings_segment, shorten, state_color, state_segment, uptime_segment,
+    ColorKind, ConnectedSince, CpuUse, DiskReading, FILLING, FULL, Host, HostFigures, Item,
+    LiveStatus, SessionInfo, StaleDisks, TabStatus, Uptime, bandwidth_segment, cpu_segment,
+    disk_segment, elapsed_segment, endpoint_segment, format_elapsed, format_rate, format_uptime,
+    fullness_color, memory_segment, savings_segment, shorten, state_color, state_segment,
+    uptime_segment,
 };
 
 fn ssh_session() -> SessionInfo {
@@ -513,16 +514,16 @@ fn each_item_waits_for_its_figure() {
         [Item::State, Item::Endpoint, Item::Elapsed]
     );
     let mut host = HostFigures::new(Host::Server);
-    host.load = Some(Load {
+    host.cpu = Some(CpuUse {
         busy: None,
         cores: 4,
         load_average: ["0.1", "0.2", "0.3"].map(str::to_string),
-        memory: Memory {
-            total: 8 << 30,
-            available: 4 << 30,
-            swap_total: 0,
-            swap_free: 0,
-        },
+    });
+    host.memory = Some(Memory {
+        total: 8 << 30,
+        available: 4 << 30,
+        swap_total: 0,
+        swap_free: 0,
     });
     host.uptime = Some(Uptime::measured(60));
     live.host = Some(host.clone());
@@ -537,7 +538,7 @@ fn each_item_waits_for_its_figure() {
         ],
         "the CPU waits for a second sample"
     );
-    host.load.as_mut().unwrap().busy = Some(5);
+    host.cpu.as_mut().unwrap().busy = Some(5);
     host.disks = Some(DiskReading {
         filesystems: vec![filesystem("/", 45, 20, 25)],
         stale: Vec::new(),
