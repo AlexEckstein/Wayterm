@@ -45,6 +45,8 @@ pub struct Segment {
     pub color: Option<&'static str>,
     /// Pango markup shown instead of `tooltip`, which stays its plain text.
     pub tooltip_markup: Option<String>,
+    /// `text` in the fields of [`Item::widest`], when it has more than one.
+    pub fields: Vec<String>,
 }
 
 /// Amber from 80 % full, red from 90 %.
@@ -236,28 +238,29 @@ impl Item {
     /// What it shows, `None` while it has nothing to show.
     pub fn segment(self, tab: &TabStatus, live: &LiveStatus) -> Option<Segment> {
         let host = live.host.as_ref();
+        let heading = || Some(host_heading(host?.of, &tab.host));
         match self {
             Item::State => Some(state_segment(&tab.state, &tab.host, tab.port)),
             Item::Endpoint => endpoint_segment(&tab.host, tab.port, tab.session.as_ref()),
             Item::Cpu => {
                 let cpu = host?.cpu.as_ref()?;
                 Some(cpu_segment(
-                    host?.of,
+                    heading()?,
                     cpu.busy?,
                     cpu.cores,
                     &cpu.load_average,
                 ))
             }
-            Item::Memory => memory_segment(host?.of, host?.memory.as_ref()?),
+            Item::Memory => memory_segment(heading()?, host?.memory.as_ref()?),
             Item::Disk => {
                 let disks = host?.disks.as_ref()?;
-                disk_segment(host?.of, &disks.filesystems, &disks.stale)
+                disk_segment(heading()?, &disks.filesystems, &disks.stale)
             }
-            Item::Bandwidth => Some(bandwidth_segment(host?.of, host?.bandwidth.as_ref()?)),
+            Item::Bandwidth => Some(bandwidth_segment(heading()?, host?.bandwidth.as_ref()?)),
             Item::Uptime => {
                 let uptime = host?.uptime.as_ref()?;
                 Some(uptime_segment(
-                    host?.of,
+                    heading()?,
                     uptime.now_secs(),
                     &uptime.boot_clock,
                 ))
@@ -267,6 +270,44 @@ impl Item {
                 Some(elapsed_segment(since.at.elapsed().as_secs(), &since.clock))
             }
             Item::Savings => live.savings.map(savings_segment),
+        }
+    }
+
+    /// The widest texts each of its fields can show, so the bar can hold a
+    /// field at that width however its figure changes. Empty for one field
+    /// of free width.
+    pub fn widest(self) -> Vec<Vec<String>> {
+        let rates = || {
+            let mut rates = vec![format_rate(124)];
+            // 99.9 of each unit from kbit/s on, the widest with a decimal.
+            rates.extend((0..4).map(|k| format_rate(12_492 * 1000u64.pow(k))));
+            rates
+        };
+        let sizes: Vec<String> = std::iter::once(1023)
+            .chain((1..6).map(|k| 1024u64.pow(k) * 1023 + 1024u64.pow(k - 1) * 922))
+            .map(format_size)
+            .collect();
+        match self {
+            Item::State | Item::Endpoint => Vec::new(),
+            Item::Cpu => vec![vec![cpu_text(100)]],
+            Item::Memory => vec![vec![memory_text(100)]],
+            Item::Disk => vec![
+                sizes
+                    .iter()
+                    .flat_map(|used| sizes.iter().map(move |size| disk_text(used, size)))
+                    .collect(),
+            ],
+            Item::Bandwidth => vec![
+                rates().iter().map(|rate| format!("↓ {rate}")).collect(),
+                rates().iter().map(|rate| format!("↑ {rate}")).collect(),
+            ],
+            Item::Uptime => vec![
+                [23 * 3600 + 59 * 60, 999 * 86_400 + 23 * 3600]
+                    .map(uptime_text)
+                    .to_vec(),
+            ],
+            Item::Elapsed => vec![vec![format_elapsed(99 * 3600 + 59 * 60 + 59)]],
+            Item::Savings => vec![vec![savings_text(100)]],
         }
     }
 }
@@ -392,6 +433,10 @@ pub fn elapsed_segment(secs: u64, since_clock: &str) -> Segment {
     }
 }
 
+fn savings_text(percent: u8) -> String {
+    format!("Compression saves {percent}%")
+}
+
 pub fn savings_segment(savings: Savings) -> Segment {
     let Savings {
         percent,
@@ -399,7 +444,7 @@ pub fn savings_segment(savings: Savings) -> Segment {
         uncompressed,
     } = savings;
     Segment {
-        text: format!("Compression saves {percent}%"),
+        text: savings_text(percent),
         tooltip: format!(
             "{} received, about {} uncompressed\n\
              Counts the terminal, SFTP and forwards on this connection",
@@ -410,41 +455,68 @@ pub fn savings_segment(savings: Savings) -> Segment {
     }
 }
 
-fn host_name(of: Host) -> &'static str {
+/// What a host figure's tooltip is headed with: the server's host name,
+/// or "This computer".
+fn host_heading(of: Host, server: &str) -> &str {
     match of {
-        Host::Server => "Server",
+        Host::Server if server.is_empty() => "Server",
+        Host::Server => server,
         Host::ThisComputer => "This computer",
+    }
+}
+
+/// A host figure, its tooltip `lines` under the machine's name in bold.
+fn host_segment(text: String, heading: &str, lines: &[String]) -> Segment {
+    let markup = std::iter::once(format!("<b>{}</b>", glib::markup_escape_text(heading)))
+        .chain(
+            lines
+                .iter()
+                .map(|line| glib::markup_escape_text(line).to_string()),
+        )
+        .collect::<Vec<_>>();
+    Segment {
+        text,
+        tooltip: std::iter::once(heading.to_string())
+            .chain(lines.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        tooltip_markup: Some(markup.join("\n")),
+        ..Default::default()
     }
 }
 
 /// How busy a host's CPUs were over the last interval, with the core
 /// count and load averages in the tooltip.
-pub fn cpu_segment(of: Host, busy: u8, cores: u32, load_average: &[String; 3]) -> Segment {
+pub fn cpu_segment(heading: &str, busy: u8, cores: u32, load_average: &[String; 3]) -> Segment {
     let [one, five, fifteen] = load_average;
-    Segment {
-        text: format!("CPU {busy}%"),
-        tooltip: format!(
-            "{} CPU {busy}% busy, {cores} {}\n\
-             Load average {one}, {five}, {fifteen} (1, 5, 15 min)\n\
-             Sampled every {} s",
-            host_name(of),
-            if cores == 1 { "core" } else { "cores" },
-            INTERVAL.as_secs(),
-        ),
-        ..Default::default()
-    }
+    host_segment(
+        cpu_text(busy),
+        heading,
+        &[
+            format!(
+                "CPU: {busy}% busy, {cores} {}",
+                if cores == 1 { "core" } else { "cores" }
+            ),
+            format!("Load average: {one}, {five}, {fifteen} (1, 5, 15 min)"),
+            format!("Sampled every {} s", INTERVAL.as_secs()),
+        ],
+    )
+}
+
+fn cpu_text(busy: u8) -> String {
+    format!("CPU {busy}%")
 }
 
 /// How much of a host's memory is in use, with what is available and the
 /// swap in the tooltip. `None` without a total.
-pub fn memory_segment(of: Host, memory: &Memory) -> Option<Segment> {
+pub fn memory_segment(heading: &str, memory: &Memory) -> Option<Segment> {
     if memory.total == 0 {
         return None;
     }
     let used = memory.used();
     let percent = (used * 100 + memory.total / 2) / memory.total;
     let swap = if memory.swap_total == 0 {
-        "No swap".to_string()
+        "Swap: none".to_string()
     } else {
         format!(
             "Swap: {} used of {}",
@@ -452,17 +524,23 @@ pub fn memory_segment(of: Host, memory: &Memory) -> Option<Segment> {
             format_size(memory.swap_total)
         )
     };
-    Some(Segment {
-        text: format!("RAM {percent}%"),
-        tooltip: format!(
-            "{} memory: {} used of {} ({percent}%)\n{} available\n{swap}",
-            host_name(of),
-            format_size(used),
-            format_size(memory.total),
-            format_size(memory.available),
-        ),
-        ..Default::default()
-    })
+    Some(host_segment(
+        memory_text(percent),
+        heading,
+        &[
+            format!(
+                "Memory: {} used of {} ({percent}%)",
+                format_size(used),
+                format_size(memory.total),
+            ),
+            format!("Available: {}", format_size(memory.available)),
+            swap,
+        ],
+    ))
+}
+
+fn memory_text(percent: u64) -> String {
+    format!("RAM {percent}%")
 }
 
 /// A mount point column at most this wide; longer ones lose their middle.
@@ -484,7 +562,11 @@ fn shorten(mount: &str) -> String {
 /// room. The tooltip has a line per filesystem, each coloured by its own
 /// fullness, and the total, then a line for each `stale` group. `None`
 /// without filesystems.
-pub fn disk_segment(of: Host, filesystems: &[Filesystem], stale: &[StaleDisks]) -> Option<Segment> {
+pub fn disk_segment(
+    heading: &str,
+    filesystems: &[Filesystem],
+    stale: &[StaleDisks],
+) -> Option<Segment> {
     let fullest = filesystems.iter().map(|f| f.percent(filesystems)).max()?;
     let total = disks::total_usage(filesystems);
     let describe = |usage: &Usage| {
@@ -519,10 +601,9 @@ pub fn disk_segment(of: Host, filesystems: &[Filesystem], stale: &[StaleDisks]) 
         .map(|(name, _, _)| name.chars().count())
         .max()
         .unwrap_or(0);
-    let heading = format!("{} filesystems", host_name(of));
     let footer = format!("Sampled every {} s", disks::INTERVAL.as_secs());
-    let mut tooltip = vec![heading.clone()];
-    let mut markup = vec![glib::markup_escape_text(&heading).to_string()];
+    let mut tooltip = vec![heading.to_string()];
+    let mut markup = vec![format!("<b>{}</b>", glib::markup_escape_text(heading))];
     for (name, percent, detail) in &rows {
         let text = format!("{name:<width$}  {:>4}  {detail}", format!("{percent}%"));
         let escaped = glib::markup_escape_text(&text);
@@ -547,30 +628,38 @@ pub fn disk_segment(of: Host, filesystems: &[Filesystem], stale: &[StaleDisks]) 
     tooltip.push(footer.clone());
     markup.push(glib::markup_escape_text(&footer).to_string());
     Some(Segment {
-        text: format!(
-            "Disk {} / {}",
-            format_size(total.used),
-            format_size(total.size)
-        ),
+        text: disk_text(&format_size(total.used), &format_size(total.size)),
         tooltip: tooltip.join("\n"),
         color: fullness_color(fullest),
         tooltip_markup: Some(markup.join("\n")),
+        ..Default::default()
     })
 }
 
-/// A host's interface traffic: received and sent per second.
-pub fn bandwidth_segment(of: Host, rate: &Rate) -> Segment {
+fn disk_text(used: &str, size: &str) -> String {
+    format!("Disk {used} / {size}")
+}
+
+/// A host's interface traffic: received and sent per second, each its
+/// own field.
+pub fn bandwidth_segment(heading: &str, rate: &Rate) -> Segment {
     let (down, up) = (format_rate(rate.rx_per_sec), format_rate(rate.tx_per_sec));
+    let fields = vec![format!("↓ {down}"), format!("↑ {up}")];
     Segment {
-        text: format!("↓ {down} ↑ {up}"),
-        tooltip: format!(
-            "{} network, {} (the default route)\nReceiving {down}, sending {up}\n\
-             All traffic on the interface, sampled every {} s",
-            host_name(of),
-            rate.interface,
-            INTERVAL.as_secs(),
-        ),
-        ..Default::default()
+        fields: fields.clone(),
+        ..host_segment(
+            fields.join(" "),
+            heading,
+            &[
+                format!("Interface: {} (the default route)", rate.interface),
+                format!("Receiving: {down}"),
+                format!("Sending: {up}"),
+                format!(
+                    "All traffic on the interface, sampled every {} s",
+                    INTERVAL.as_secs()
+                ),
+            ],
+        )
     }
 }
 
@@ -596,16 +685,16 @@ pub fn format_rate(bytes_per_sec: u64) -> String {
 
 /// A host's uptime, with the full duration and the boot time in the
 /// tooltip.
-pub fn uptime_segment(of: Host, secs: u64, boot_clock: &str) -> Segment {
-    let mut tooltip = format!("{} up {}", host_name(of), describe_duration(secs));
+pub fn uptime_segment(heading: &str, secs: u64, boot_clock: &str) -> Segment {
+    let mut lines = vec![format!("Uptime: {}", describe_duration(secs))];
     if !boot_clock.is_empty() {
-        tooltip.push_str(&format!("\nBooted {boot_clock}"));
+        lines.push(format!("Booted: {boot_clock}"));
     }
-    Segment {
-        text: format!("Up {}", format_uptime(secs)),
-        tooltip,
-        ..Default::default()
-    }
+    host_segment(uptime_text(secs), heading, &lines)
+}
+
+fn uptime_text(secs: u64) -> String {
+    format!("Up {}", format_uptime(secs))
 }
 
 /// `42m`, `5h 12m`, or `12d 4h` from a day on.

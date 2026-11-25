@@ -26,13 +26,21 @@ fn tooltip(part: &Part) -> String {
         .unwrap_or_default()
 }
 
+fn text(part: &Part) -> String {
+    part.labels
+        .iter()
+        .map(|label| label.text().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn shown(part: &Part) -> bool {
     part.area.is_visible()
 }
 
 pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
     let bar = StatusBar::new();
-    assert_eq!(part_of(&bar, Item::State).label.text(), "Disconnected");
+    assert_eq!(text(part_of(&bar, Item::State)), "Disconnected");
     assert!(
         !shown(part_of(&bar, Item::Endpoint))
             && !part_of(&bar, Item::Endpoint).separator.is_visible()
@@ -114,16 +122,16 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         Some(&since),
         Some(&session),
     );
-    assert_eq!(part_of(&bar, Item::State).label.text(), "Connected");
+    assert_eq!(text(part_of(&bar, Item::State)), "Connected");
     assert_eq!(tooltip(part_of(&bar, Item::State)), "Connected to db:22");
     assert!(
         shown(part_of(&bar, Item::Endpoint))
             && part_of(&bar, Item::Endpoint).separator.is_visible()
     );
-    assert_eq!(part_of(&bar, Item::Endpoint).label.text(), "db:22");
+    assert_eq!(text(part_of(&bar, Item::Endpoint)), "db:22");
     assert!(tooltip(part_of(&bar, Item::Endpoint)).contains("User: alex"));
     assert_eq!(
-        part_of(&bar, Item::Elapsed).label.text(),
+        text(part_of(&bar, Item::Elapsed)),
         "1:15",
         "counted from `since`"
     );
@@ -131,34 +139,38 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         tooltip(part_of(&bar, Item::Elapsed)),
         "Connected since 14:02:11"
     );
-    assert_eq!(
-        part_of(&bar, Item::Savings).label.text(),
-        "Compression saves 40%"
-    );
-    assert_eq!(part_of(&bar, Item::Uptime).label.text(), "Up 2d 3h");
+    assert_eq!(text(part_of(&bar, Item::Savings)), "Compression saves 40%");
+    assert_eq!(text(part_of(&bar, Item::Uptime)), "Up 2d 3h");
     assert_eq!(
         tooltip(part_of(&bar, Item::Uptime)),
-        "Server up 2 days, 3 hours\nBooted 11/21/26 07:00:00"
+        "db\nUptime: 2 days, 3 hours\nBooted: 11/21/26 07:00:00"
     );
     assert_eq!(
-        part_of(&bar, Item::Bandwidth).label.text(),
+        text(part_of(&bar, Item::Bandwidth)),
         "↓ 16.4 kbit/s ↑ 80 bit/s"
     );
-    assert!(tooltip(part_of(&bar, Item::Bandwidth)).starts_with("Server network, eth0"));
-    assert_eq!(part_of(&bar, Item::Cpu).label.text(), "CPU 12%");
+    assert!(tooltip(part_of(&bar, Item::Bandwidth)).starts_with("db\nInterface: eth0"));
+    let bandwidth = &part_of(&bar, Item::Bandwidth).labels;
+    assert_eq!(bandwidth.len(), 2, "down and up in their own fields");
+    assert!(
+        bandwidth.iter().all(|label| label.width_request() > 0),
+        "held at their widest"
+    );
+    assert_eq!(
+        part_of(&bar, Item::State).labels[0].width_request(),
+        -1,
+        "the state takes its own width"
+    );
+    assert_eq!(text(part_of(&bar, Item::Cpu)), "CPU 12%");
     assert!(
         !part_of(&bar, Item::Cpu).separator.is_visible(),
         "first on its side"
     );
-    assert_eq!(part_of(&bar, Item::Memory).label.text(), "RAM 38%");
-    assert!(tooltip(part_of(&bar, Item::Memory)).starts_with("Server memory: 3.0 GB used"));
-    assert_eq!(
-        part_of(&bar, Item::Disk).label.text(),
-        "Disk 66.0 GB / 95.0 GB"
-    );
+    assert_eq!(text(part_of(&bar, Item::Memory)), "RAM 38%");
+    assert!(tooltip(part_of(&bar, Item::Memory)).starts_with("db\nMemory: 3.0 GB used"));
+    assert_eq!(text(part_of(&bar, Item::Disk)), "Disk 66.0 GB / 95.0 GB");
     assert!(
-        part_of(&bar, Item::Disk)
-            .label
+        part_of(&bar, Item::Disk).labels[0]
             .label()
             .contains("foreground=\"#e0443e\""),
         "/var is 92% full"
@@ -211,7 +223,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         Some(&session),
     );
     assert_eq!(
-        part_of(&bar, Item::State).label.text(),
+        text(part_of(&bar, Item::State)),
         "Reconnecting (attempt 2)…"
     );
     assert!(shown(part_of(&bar, Item::Endpoint)));

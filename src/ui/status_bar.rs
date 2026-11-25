@@ -23,22 +23,27 @@ pub use settings::*;
 /// Reads the current tab's [`LiveStatus`].
 pub type LiveSource = Rc<dyn Fn() -> LiveStatus>;
 
-/// A segment's widgets: the separator before it and its label, with an
-/// optional icon.
+/// A segment's widgets: the separator before it and a label per field,
+/// with an optional icon.
 #[derive(Clone)]
 struct Part {
     separator: gtk4::Separator,
     area: gtk4::Box,
-    label: gtk4::Label,
-    /// Tabular digits, so a ticking figure keeps its width.
-    numeric: bool,
+    labels: Vec<gtk4::Label>,
+    /// Per label the texts it is held as wide as ([`Item::widest`]); a held
+    /// label has tabular digits.
+    widest: Vec<Vec<String>>,
+    /// The font the widths were measured in.
+    measured_in: Rc<RefCell<Option<String>>>,
 }
 
 impl Part {
-    fn new(icon: Option<&str>, ellipsize: EllipsizeMode, numeric: bool) -> Self {
-        let label = gtk4::Label::new(None);
-        label.set_ellipsize(ellipsize);
-        label.set_xalign(0.0);
+    fn new(
+        icon: Option<&str>,
+        ellipsize: EllipsizeMode,
+        widest: Vec<Vec<String>>,
+        wrap_tooltip: bool,
+    ) -> Self {
         let area = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
         if let Some(icon) = icon {
             area.append(
@@ -48,12 +53,34 @@ impl Part {
                     .build(),
             );
         }
-        area.append(&label);
+        let labels: Vec<gtk4::Label> = (0..widest.len().max(1))
+            .map(|_| {
+                let label = gtk4::Label::new(None);
+                label.set_ellipsize(ellipsize);
+                label.set_xalign(0.0);
+                area.append(&label);
+                label
+            })
+            .collect();
+        // GTK wraps a tooltip at 70 average characters, which breaks the
+        // disk tooltip's monospace table.
+        if !wrap_tooltip {
+            let tip = gtk4::Label::new(None);
+            area.connect_query_tooltip(move |area, _, _, _, tooltip| {
+                let Some(markup) = area.tooltip_markup() else {
+                    return false;
+                };
+                tip.set_markup(&markup);
+                tooltip.set_custom(Some(&tip));
+                true
+            });
+        }
         Self {
             separator: gtk4::Separator::new(gtk4::Orientation::Vertical),
             area,
-            label,
-            numeric,
+            labels,
+            widest,
+            measured_in: Rc::default(),
         }
     }
 
@@ -62,29 +89,74 @@ impl Part {
         container.append(&self.area);
     }
 
+    fn markup(&self, text: &str, color: Option<&str>) -> Option<String> {
+        let mut attributes = String::new();
+        if !self.widest.is_empty() {
+            attributes.push_str(" font_features=\"tnum\"");
+        }
+        if let Some(color) = color {
+            attributes.push_str(&format!(" foreground=\"{color}\""));
+        }
+        (!attributes.is_empty()).then(|| {
+            format!(
+                "<span{attributes}>{}</span>",
+                glib::markup_escape_text(text)
+            )
+        })
+    }
+
     fn show(&self, segment: Option<&Segment>) {
         if let Some(segment) = segment {
-            let mut attributes = String::new();
-            if self.numeric {
-                attributes.push_str(" font_features=\"tnum\"");
-            }
-            if let Some(color) = segment.color {
-                attributes.push_str(&format!(" foreground=\"{color}\""));
-            }
-            if attributes.is_empty() {
-                self.label.set_text(&segment.text);
+            let whole = [segment.text.clone()];
+            let fields = if segment.fields.is_empty() {
+                &whole[..]
             } else {
-                self.label.set_markup(&format!(
-                    "<span{attributes}>{}</span>",
-                    glib::markup_escape_text(&segment.text)
-                ));
+                &segment.fields[..]
+            };
+            for (label, text) in self.labels.iter().zip(fields) {
+                match self.markup(text, segment.color) {
+                    Some(markup) => label.set_markup(&markup),
+                    None => label.set_text(text),
+                }
             }
             match &segment.tooltip_markup {
                 Some(markup) => self.area.set_tooltip_markup(Some(markup)),
                 None => self.area.set_tooltip_text(Some(&segment.tooltip)),
             }
+            self.hold_widths();
         }
         self.area.set_visible(segment.is_some());
+    }
+
+    /// Gives each held label the width of its widest text, so a changing
+    /// figure moves nothing; measured again when the font changes.
+    fn hold_widths(&self) {
+        let Some(first) = self.labels.first().filter(|_| !self.widest.is_empty()) else {
+            return;
+        };
+        let font = first
+            .pango_context()
+            .font_description()
+            .map(|font| font.to_string());
+        if *self.measured_in.borrow() == font {
+            return;
+        }
+        for (label, texts) in self.labels.iter().zip(&self.widest) {
+            let layout = label.create_pango_layout(None);
+            let width = texts
+                .iter()
+                .map(|text| {
+                    match self.markup(text, None) {
+                        Some(markup) => layout.set_markup(&markup),
+                        None => layout.set_text(text),
+                    }
+                    layout.pixel_size().0
+                })
+                .max()
+                .unwrap_or(-1);
+            label.set_size_request(width, -1);
+        }
+        self.measured_in.replace(font);
     }
 }
 
@@ -98,21 +170,16 @@ fn separate(side: &[(Item, Part)]) {
     }
 }
 
-/// An item's widgets. The time and the host figures have tabular digits.
+/// An item's widgets. Only the state's tooltip wraps, as it may be a long
+/// error message.
 fn part(item: Item) -> Part {
-    match item {
-        Item::State => Part::new(None, EllipsizeMode::End, false),
-        Item::Endpoint => Part::new(None, EllipsizeMode::Middle, false),
-        Item::Cpu | Item::Memory | Item::Disk | Item::Bandwidth => {
-            Part::new(None, EllipsizeMode::None, true)
-        }
-        Item::Uptime | Item::Savings => Part::new(None, EllipsizeMode::None, false),
-        Item::Elapsed => Part::new(
-            Some("document-open-recent-symbolic"),
-            EllipsizeMode::None,
-            true,
-        ),
-    }
+    let (icon, ellipsize) = match item {
+        Item::State => (None, EllipsizeMode::End),
+        Item::Endpoint => (None, EllipsizeMode::Middle),
+        Item::Elapsed => (Some("document-open-recent-symbolic"), EllipsizeMode::None),
+        _ => (None, EllipsizeMode::None),
+    };
+    Part::new(icon, ellipsize, item.widest(), item == Item::State)
 }
 
 /// The shown segments of [`Item::LEFT`] on the left and [`Item::RIGHT`]
