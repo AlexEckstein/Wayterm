@@ -1,4 +1,4 @@
-//! Unit tests for the display-free segments of [`super::StatusBar`].
+//! Unit tests for the display-free segments of the status bar.
 
 use crate::store::model::SessionType;
 use crate::transport::bandwidth::Rate;
@@ -8,9 +8,10 @@ use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 
 use super::{
-    ColorKind, FILLING, FULL, Host, SessionInfo, StaleDisks, bandwidth_segment, cpu_segment,
-    disk_segment, elapsed_segment, endpoint_segment, format_elapsed, format_rate, format_uptime,
-    fullness_color, memory_segment, savings_segment, shorten, state_segment, uptime_segment,
+    ColorKind, ConnectedSince, DiskReading, FILLING, FULL, Host, HostFigures, Item, LiveStatus,
+    Load, SessionInfo, StaleDisks, TabStatus, Uptime, bandwidth_segment, cpu_segment, disk_segment,
+    elapsed_segment, endpoint_segment, format_elapsed, format_rate, format_uptime, fullness_color,
+    memory_segment, savings_segment, shorten, state_color, state_segment, uptime_segment,
 };
 
 fn ssh_session() -> SessionInfo {
@@ -24,11 +25,11 @@ fn ssh_session() -> SessionInfo {
 
 #[test]
 fn disconnected_is_red() {
-    let (color, segment) = state_segment(&TransportState::Disconnected, "", 0);
-    assert_eq!(color, ColorKind::Red);
+    assert_eq!(state_color(&TransportState::Disconnected), ColorKind::Red);
+    let segment = state_segment(&TransportState::Disconnected, "", 0);
     assert_eq!(segment.text, "Disconnected");
     assert_eq!(segment.tooltip, "Disconnected");
-    let (_, segment) = state_segment(&TransportState::Disconnected, "db", 22);
+    let segment = state_segment(&TransportState::Disconnected, "db", 22);
     assert_eq!(segment.tooltip, "Not connected to db:22");
 }
 
@@ -56,8 +57,8 @@ fn the_transient_states_are_yellow_and_name_the_endpoint() {
             "Connection lost, reconnecting to example.com:22, attempt 3",
         ),
     ] {
-        let (color, segment) = state_segment(&state, "example.com", 22);
-        assert_eq!(color, ColorKind::Yellow, "{state:?}");
+        assert_eq!(state_color(&state), ColorKind::Yellow, "{state:?}");
+        let segment = state_segment(&state, "example.com", 22);
         assert_eq!(segment.text, text);
         assert_eq!(segment.tooltip, tooltip);
     }
@@ -65,19 +66,20 @@ fn the_transient_states_are_yellow_and_name_the_endpoint() {
 
 #[test]
 fn connected_is_green_and_leaves_the_endpoint_to_its_segment() {
-    let (color, segment) = state_segment(&TransportState::Connected, "example.com", 2222);
-    assert_eq!(color, ColorKind::Green);
+    assert_eq!(state_color(&TransportState::Connected), ColorKind::Green);
+    let segment = state_segment(&TransportState::Connected, "example.com", 2222);
     assert_eq!(segment.text, "Connected");
     assert_eq!(segment.tooltip, "Connected to example.com:2222");
-    let (_, segment) = state_segment(&TransportState::Connected, "", 22);
+    let segment = state_segment(&TransportState::Connected, "", 22);
     assert_eq!(segment.tooltip, "Connected");
 }
 
 #[test]
 fn an_error_shows_its_whole_message_in_the_tooltip() {
     let message = "connection failed: refused".to_string();
-    let (color, segment) = state_segment(&TransportState::Error(message.clone()), "h", 22);
-    assert_eq!(color, ColorKind::Red);
+    let state = TransportState::Error(message.clone());
+    assert_eq!(state_color(&state), ColorKind::Red);
+    let segment = state_segment(&state, "h", 22);
     assert_eq!(segment.text, message);
     assert_eq!(segment.tooltip, message);
 }
@@ -94,7 +96,7 @@ fn every_state_has_its_own_text() {
         TransportState::Error("e".to_string()),
     ]
     .iter()
-    .map(|state| state_segment(state, "h", 22).1.text)
+    .map(|state| state_segment(state, "h", 22).text)
     .collect();
     assert_eq!(texts.len(), 7);
 }
@@ -481,5 +483,104 @@ fn a_zfs_pool_counts_once_and_colours_its_datasets() {
             .unwrap()
             .contains("<span foreground=\"#e0443e\">/       95%  50.0 GB used"),
         "a small dataset in a full pool warns too"
+    );
+}
+
+fn connected_tab() -> TabStatus {
+    TabStatus {
+        state: TransportState::Connected,
+        host: "db".to_string(),
+        port: 22,
+        session: Some(ssh_session()),
+        since: Some(ConnectedSince::now()),
+    }
+}
+
+fn shown(tab: &TabStatus, live: &LiveStatus) -> Vec<Item> {
+    Item::LEFT
+        .into_iter()
+        .chain(Item::RIGHT)
+        .filter(|item| item.segment(tab, live).is_some())
+        .collect()
+}
+
+#[test]
+fn each_item_waits_for_its_figure() {
+    let tab = connected_tab();
+    let mut live = LiveStatus::default();
+    assert_eq!(
+        shown(&tab, &live),
+        [Item::State, Item::Endpoint, Item::Elapsed]
+    );
+    let mut host = HostFigures::new(Host::Server);
+    host.load = Some(Load {
+        busy: None,
+        cores: 4,
+        load_average: ["0.1", "0.2", "0.3"].map(str::to_string),
+        memory: Memory {
+            total: 8 << 30,
+            available: 4 << 30,
+            swap_total: 0,
+            swap_free: 0,
+        },
+    });
+    host.uptime = Some(Uptime::measured(60));
+    live.host = Some(host.clone());
+    assert_eq!(
+        shown(&tab, &live),
+        [
+            Item::State,
+            Item::Endpoint,
+            Item::Memory,
+            Item::Uptime,
+            Item::Elapsed
+        ],
+        "the CPU waits for a second sample"
+    );
+    host.load.as_mut().unwrap().busy = Some(5);
+    host.disks = Some(DiskReading {
+        filesystems: vec![filesystem("/", 45, 20, 25)],
+        stale: Vec::new(),
+    });
+    host.bandwidth = Some(Rate {
+        interface: "eth0".to_string(),
+        rx_per_sec: 1,
+        tx_per_sec: 1,
+    });
+    live.host = Some(host);
+    live.savings = Some(Savings {
+        percent: 10,
+        wire: 90,
+        uncompressed: 100,
+    });
+    assert_eq!(
+        shown(&tab, &live),
+        Item::LEFT
+            .into_iter()
+            .chain(Item::RIGHT)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        Item::Cpu.segment(&tab, &live).unwrap().tooltip,
+        cpu_segment(
+            Host::Server,
+            5,
+            4,
+            &["0.1", "0.2", "0.3"].map(str::to_string)
+        )
+        .tooltip,
+    );
+}
+
+#[test]
+fn only_a_connected_tab_counts_its_time() {
+    let tab = TabStatus {
+        state: TransportState::Disconnected,
+        since: None,
+        ..connected_tab()
+    };
+    assert_eq!(
+        shown(&tab, &LiveStatus::default()),
+        [Item::State, Item::Endpoint]
     );
 }

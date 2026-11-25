@@ -302,7 +302,7 @@ pub(super) fn on_connect(
     state(page)
         .traffic
         .replace(Some(Arc::clone(conn.traffic())));
-    state(page).uptime.replace(None);
+    state(page).host.replace(None);
     super::monitor::remember_connection(page, &conn);
     arm_forward_engine(page, session, &conn);
 

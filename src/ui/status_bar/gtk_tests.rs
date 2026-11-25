@@ -4,6 +4,20 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::store::model::SessionType;
+use crate::transport::bandwidth::Rate;
+use crate::transport::disks::{Filesystem, Usage};
+use crate::transport::load::Memory;
+use crate::transport::traffic::Savings;
+
+fn part_of(bar: &StatusBar, item: Item) -> &Part {
+    bar.left
+        .iter()
+        .chain(&bar.right)
+        .find(|(of, _)| *of == item)
+        .map(|(_, part)| part)
+        .expect("every item has a part")
+}
 
 fn tooltip(part: &Part) -> String {
     part.area
@@ -18,34 +32,32 @@ fn shown(part: &Part) -> bool {
 
 pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
     let bar = StatusBar::new();
-    assert_eq!(bar.state.label.text(), "Disconnected");
-    assert!(!shown(&bar.endpoint) && !bar.endpoint.separator.is_visible());
-    assert!(!shown(&bar.elapsed) && !shown(&bar.savings));
+    assert_eq!(part_of(&bar, Item::State).label.text(), "Disconnected");
+    assert!(
+        !shown(part_of(&bar, Item::Endpoint))
+            && !part_of(&bar, Item::Endpoint).separator.is_visible()
+    );
+    assert!(!shown(part_of(&bar, Item::Elapsed)) && !shown(part_of(&bar, Item::Savings)));
 
     let saving = Savings {
         percent: 40,
         wire: 60 * 1024,
         uncompressed: 100 * 1024,
     };
-    let uptime = HostUptime {
-        of: Host::Server,
+    let uptime = Uptime {
         secs: 2 * 86_400 + 3 * 3600,
         at: Instant::now(),
         boot_clock: "11/21/26 07:00:00".to_string(),
     };
-    let live = LiveStatus {
-        savings: Some(saving),
+    let host = HostFigures {
+        of: Host::Server,
         uptime: Some(uptime),
-        bandwidth: Some(HostRate {
-            of: Host::Server,
-            rate: Rate {
-                interface: "eth0".to_string(),
-                rx_per_sec: 2048,
-                tx_per_sec: 10,
-            },
+        bandwidth: Some(Rate {
+            interface: "eth0".to_string(),
+            rx_per_sec: 2048,
+            tx_per_sec: 10,
         }),
-        load: Some(HostLoad {
-            of: Host::Server,
+        load: Some(Load {
             busy: Some(12),
             cores: 4,
             load_average: ["0.52", "0.48", "0.40"].map(str::to_string),
@@ -56,8 +68,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
                 swap_free: 0,
             },
         }),
-        disks: Some(HostDisks {
-            of: Host::Server,
+        disks: Some(DiskReading {
             filesystems: vec![
                 Filesystem {
                     mount: "/".to_string(),
@@ -81,6 +92,10 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
             stale: Vec::new(),
         }),
     };
+    let live = LiveStatus {
+        savings: Some(saving),
+        host: Some(host),
+    };
     bar.set_live_source(Some(Rc::new(move || live.clone())));
     let session = SessionInfo {
         name: "prod".to_string(),
@@ -99,39 +114,70 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         Some(&since),
         Some(&session),
     );
-    assert_eq!(bar.state.label.text(), "Connected");
-    assert_eq!(tooltip(&bar.state), "Connected to db:22");
-    assert!(shown(&bar.endpoint) && bar.endpoint.separator.is_visible());
-    assert_eq!(bar.endpoint.label.text(), "db:22");
-    assert!(tooltip(&bar.endpoint).contains("User: alex"));
-    assert_eq!(bar.elapsed.label.text(), "1:15", "counted from `since`");
-    assert_eq!(tooltip(&bar.elapsed), "Connected since 14:02:11");
-    assert_eq!(bar.savings.label.text(), "Compression saves 40%");
-    assert_eq!(bar.uptime.label.text(), "Up 2d 3h");
+    assert_eq!(part_of(&bar, Item::State).label.text(), "Connected");
+    assert_eq!(tooltip(part_of(&bar, Item::State)), "Connected to db:22");
+    assert!(
+        shown(part_of(&bar, Item::Endpoint))
+            && part_of(&bar, Item::Endpoint).separator.is_visible()
+    );
+    assert_eq!(part_of(&bar, Item::Endpoint).label.text(), "db:22");
+    assert!(tooltip(part_of(&bar, Item::Endpoint)).contains("User: alex"));
     assert_eq!(
-        tooltip(&bar.uptime),
+        part_of(&bar, Item::Elapsed).label.text(),
+        "1:15",
+        "counted from `since`"
+    );
+    assert_eq!(
+        tooltip(part_of(&bar, Item::Elapsed)),
+        "Connected since 14:02:11"
+    );
+    assert_eq!(
+        part_of(&bar, Item::Savings).label.text(),
+        "Compression saves 40%"
+    );
+    assert_eq!(part_of(&bar, Item::Uptime).label.text(), "Up 2d 3h");
+    assert_eq!(
+        tooltip(part_of(&bar, Item::Uptime)),
         "Server up 2 days, 3 hours\nBooted 11/21/26 07:00:00"
     );
-    assert_eq!(bar.bandwidth.label.text(), "↓ 16.4 kbit/s ↑ 80 bit/s");
-    assert!(tooltip(&bar.bandwidth).starts_with("Server network, eth0"));
-    assert_eq!(bar.cpu.label.text(), "CPU 12%");
-    assert!(!bar.cpu.separator.is_visible(), "first on its side");
-    assert_eq!(bar.memory.label.text(), "RAM 38%");
-    assert!(tooltip(&bar.memory).starts_with("Server memory: 3.0 GB used"));
-    assert_eq!(bar.disk.label.text(), "Disk 66.0 GB / 95.0 GB");
+    assert_eq!(
+        part_of(&bar, Item::Bandwidth).label.text(),
+        "↓ 16.4 kbit/s ↑ 80 bit/s"
+    );
+    assert!(tooltip(part_of(&bar, Item::Bandwidth)).starts_with("Server network, eth0"));
+    assert_eq!(part_of(&bar, Item::Cpu).label.text(), "CPU 12%");
     assert!(
-        bar.disk.label.label().contains("foreground=\"#e0443e\""),
+        !part_of(&bar, Item::Cpu).separator.is_visible(),
+        "first on its side"
+    );
+    assert_eq!(part_of(&bar, Item::Memory).label.text(), "RAM 38%");
+    assert!(tooltip(part_of(&bar, Item::Memory)).starts_with("Server memory: 3.0 GB used"));
+    assert_eq!(
+        part_of(&bar, Item::Disk).label.text(),
+        "Disk 66.0 GB / 95.0 GB"
+    );
+    assert!(
+        part_of(&bar, Item::Disk)
+            .label
+            .label()
+            .contains("foreground=\"#e0443e\""),
         "/var is 92% full"
     );
     assert!(
-        tooltip(&bar.disk).contains("/var    92%  46.0 GB used"),
+        tooltip(part_of(&bar, Item::Disk)).contains("/var    92%  46.0 GB used"),
         "the markup's text: {}",
-        tooltip(&bar.disk)
+        tooltip(part_of(&bar, Item::Disk))
     );
-    assert!(bar.memory.separator.is_visible() && bar.disk.separator.is_visible());
-    assert!(bar.bandwidth.separator.is_visible());
-    assert!(bar.uptime.separator.is_visible());
-    assert!(bar.elapsed.separator.is_visible() && bar.savings.separator.is_visible());
+    assert!(
+        part_of(&bar, Item::Memory).separator.is_visible()
+            && part_of(&bar, Item::Disk).separator.is_visible()
+    );
+    assert!(part_of(&bar, Item::Bandwidth).separator.is_visible());
+    assert!(part_of(&bar, Item::Uptime).separator.is_visible());
+    assert!(
+        part_of(&bar, Item::Elapsed).separator.is_visible()
+            && part_of(&bar, Item::Savings).separator.is_visible()
+    );
     assert!(bar.timer.borrow().is_some());
 
     bar.set_live_source(Some(Rc::new(LiveStatus::default)));
@@ -142,10 +188,18 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         Some(&since),
         Some(&session),
     );
-    assert!(!shown(&bar.bandwidth) && !shown(&bar.uptime) && !shown(&bar.savings));
-    assert!(!shown(&bar.cpu) && !shown(&bar.memory) && !shown(&bar.disk));
     assert!(
-        !bar.elapsed.separator.is_visible(),
+        !shown(part_of(&bar, Item::Bandwidth))
+            && !shown(part_of(&bar, Item::Uptime))
+            && !shown(part_of(&bar, Item::Savings))
+    );
+    assert!(
+        !shown(part_of(&bar, Item::Cpu))
+            && !shown(part_of(&bar, Item::Memory))
+            && !shown(part_of(&bar, Item::Disk))
+    );
+    assert!(
+        !part_of(&bar, Item::Elapsed).separator.is_visible(),
         "no separator before the first shown segment"
     );
 
@@ -156,9 +210,16 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
         None,
         Some(&session),
     );
-    assert_eq!(bar.state.label.text(), "Reconnecting (attempt 2)…");
-    assert!(shown(&bar.endpoint));
-    assert!(!shown(&bar.uptime) && !shown(&bar.elapsed) && !shown(&bar.savings));
-    assert!(!bar.savings.separator.is_visible());
+    assert_eq!(
+        part_of(&bar, Item::State).label.text(),
+        "Reconnecting (attempt 2)…"
+    );
+    assert!(shown(part_of(&bar, Item::Endpoint)));
+    assert!(
+        !shown(part_of(&bar, Item::Uptime))
+            && !shown(part_of(&bar, Item::Elapsed))
+            && !shown(part_of(&bar, Item::Savings))
+    );
+    assert!(!part_of(&bar, Item::Savings).separator.is_visible());
     assert!(bar.timer.borrow().is_none());
 }
