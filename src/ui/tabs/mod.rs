@@ -45,16 +45,15 @@ use crate::ui::status_bar::{
 use crate::ui::widgets::{centered_label, data, data_or_default, set_data, window_of};
 
 pub mod actions;
-mod bandwidth;
 pub mod bar;
 mod credentials;
 mod duplicate;
 pub mod ended;
 pub mod label;
 mod local;
+mod monitor;
 pub mod rdp;
 pub mod resilience;
-mod resources;
 pub mod restore;
 mod ssh;
 pub mod state;
@@ -64,8 +63,7 @@ pub mod terminal_tab;
 mod views;
 pub mod vnc;
 
-use bandwidth::BandwidthMonitor;
-use resources::ResourceMonitor;
+pub(crate) use monitor::HostMonitor;
 
 pub(crate) use credentials::credential_manager;
 pub(crate) use duplicate::TMUX_NOTICE_SETTING;
@@ -150,8 +148,9 @@ struct PageState {
     status: RefCell<PageStatus>,
     /// The SSH connection's counters, from its last connect.
     traffic: RefCell<Option<Arc<Traffic>>>,
-    /// The SSH server's answer for the last connection (doc 04 §Server
-    /// uptime), or this machine's for a local shell (doc 06 §Local shell).
+    /// The host's uptime from its monitor's last answer: the SSH server's
+    /// for the last connection (doc 04 §Server figures), or this machine's
+    /// for a local shell (doc 06 §Local shell). Kept while the tab is hidden.
     uptime: RefCell<Option<HostUptime>>,
     /// The SSH connection from the last connect, for the host monitors.
     connection: RefCell<std::sync::Weak<SshConnection>>,
@@ -159,13 +158,6 @@ struct PageState {
     bandwidth: RefCell<Option<HostRate>>,
     load: RefCell<Option<HostLoad>>,
     disks: RefCell<Option<HostDisks>>,
-}
-
-/// Samples a connected tab's host while the window's status router keeps
-/// it; dropping it stops every sampler and clears their figures.
-pub(crate) struct HostMonitors {
-    _bandwidth: BandwidthMonitor,
-    _resources: ResourceMonitor,
 }
 
 /// `page`'s state, created on first use.
@@ -265,20 +257,14 @@ impl SessionTab {
 
     /// Start sampling `page`'s host: an SSH tab's server, a local shell's
     /// machine; other tabs have none.
-    pub(crate) fn start_monitors(page: &gtk4::Widget) -> Option<HostMonitors> {
+    pub(crate) fn start_monitor(page: &gtk4::Widget) -> Option<HostMonitor> {
         let state = existing_state(page)?;
         match state.session.get()?.session_type {
             SessionType::SSH => {
                 let connection = state.connection.borrow().clone();
-                Some(HostMonitors {
-                    _bandwidth: BandwidthMonitor::server(page, connection.clone()),
-                    _resources: ResourceMonitor::server(page, connection),
-                })
+                Some(HostMonitor::server(page, connection))
             }
-            SessionType::LocalShell => Some(HostMonitors {
-                _bandwidth: BandwidthMonitor::local(page),
-                _resources: ResourceMonitor::local(page),
-            }),
+            SessionType::LocalShell => Some(HostMonitor::local(page)),
             _ => None,
         }
     }

@@ -1,6 +1,3 @@
-use std::io::Write;
-use std::process::{Command, Stdio};
-
 use super::*;
 
 fn mount(device: &str, path: &str, kind: &str) -> Mount {
@@ -159,73 +156,104 @@ fn a_pool_counts_its_free_space_once() {
     assert_eq!(filesystems[3].percent(&filesystems), 50);
 }
 
+fn feed(collector: &mut Collector, lines: &[&str]) -> Option<Disks> {
+    lines.iter().fold(None, |_, line| collector.line(line))
+}
+
+fn mounts_of(disks: &Disks) -> Vec<&str> {
+    disks.filesystems.iter().map(|f| f.mount.as_str()).collect()
+}
+
+const TABLE: &[&str] = &[
+    "wayterm-mount:/dev/sda2 / ext4 rw 0 0\n",
+    "wayterm-mount:tmpfs /run tmpfs rw 0 0\n",
+    "wayterm-mount:nas:/export /mnt/nas nfs4 rw 0 0\n",
+    "motd from a login shell\n",
+    "wayterm-mounts\n",
+];
+
 #[test]
-fn the_collector_ends_a_round_at_its_end_line() {
+fn each_group_reports_its_own_df() {
     let mut collector = Collector::default();
+    assert_eq!(feed(&mut collector, TABLE), None);
     let lines = [
-        "wayterm-mount:/dev/sda2 / ext4 rw 0 0\n",
-        "wayterm-mount:tmpfs /run tmpfs rw 0 0\n",
-        "motd from a login shell\n",
-        "wayterm-df:Filesystem 1024-blocks Used Available Capacity Mounted on\n",
-        "wayterm-df:/dev/sda2 47185920 20971520 26214400 45% /\n",
-        "wayterm-df:tmpfs 1024 0 1024 0% /run\n",
+        "wayterm-df:net Filesystem 1024-blocks Used Available Capacity Mounted on\n",
+        "wayterm-df:local Filesystem 1024-blocks Used Available Capacity Mounted on\n",
+        "wayterm-load:interleaved, not a disk line\n",
+        "wayterm-df:local /dev/sda2 47185920 20971520 26214400 45% /\n",
     ];
-    for line in lines {
-        assert_eq!(collector.line(line), None);
-    }
-    let filesystems = collector.line("wayterm-disks\n").expect("a round");
+    assert_eq!(feed(&mut collector, &lines), None, "no group has ended");
+    let disks = collector.line("wayterm-disks:local\n").expect("a reading");
+    assert_eq!(mounts_of(&disks), ["/"]);
+    assert_eq!(disks.filesystems[0].usage, usage(45, 20, 25));
+    assert!(disks.late.is_empty());
+
+    collector.line("wayterm-df:net nas:/export 1048576 524288 524288 50% /mnt/nas\n");
+    let disks = collector.line("wayterm-disks:net\n").expect("a reading");
     assert_eq!(
-        filesystems,
-        [Filesystem {
-            mount: "/".to_string(),
-            usage: usage(45, 20, 25),
-            pool: None,
-        }]
-    );
-    assert_eq!(
-        collector.line("wayterm-disks\n"),
-        Some(Vec::new()),
-        "each round starts empty"
+        mounts_of(&disks),
+        ["/", "/mnt/nas"],
+        "the local reading stays"
     );
 }
 
-fn run_script() -> Option<Vec<Filesystem>> {
-    let script = sample_script()
-        .replace("while :; do", "for _ in 1; do")
-        .replace(&format!("sleep {}", INTERVAL.as_secs()), "true");
-    let mut sh = Command::new("sh")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("sh");
-    sh.stdin
-        .take()
-        .unwrap()
-        .write_all(script.as_bytes())
-        .unwrap();
-    let output = sh.wait_with_output().expect("sh exits");
-    assert!(output.status.success());
+#[test]
+fn a_late_group_keeps_its_last_reading() {
     let mut collector = Collector::default();
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find_map(|line| collector.line(line))
+    feed(&mut collector, TABLE);
+    feed(
+        &mut collector,
+        &[
+            "wayterm-df:local /dev/sda2 47185920 20971520 26214400 45% /\n",
+            "wayterm-disks:local\n",
+        ],
+    );
+    let disks = collector
+        .line("wayterm-disks-late:net\n")
+        .expect("a report");
+    assert_eq!(mounts_of(&disks), ["/"]);
+    assert_eq!(
+        disks.late,
+        [Late {
+            group: Group::Network,
+            last_read: None
+        }],
+        "never read"
+    );
+
+    feed(
+        &mut collector,
+        &[
+            "wayterm-df:net nas:/export 1048576 524288 524288 50% /mnt/nas\n",
+            "wayterm-disks:net\n",
+        ],
+    );
+    let disks = collector.line("wayterm-disks-late:net\n").unwrap();
+    assert_eq!(mounts_of(&disks), ["/", "/mnt/nas"]);
+    assert!(disks.late[0].last_read.is_some());
+    let disks = collector.line("wayterm-disks:net\n").unwrap();
+    assert!(disks.late.is_empty(), "the late job finished");
+    assert_eq!(collector.line("wayterm-disks-late:other\n"), None);
 }
 
-/// On this (Linux) machine the script and `statvfs` list the same
-/// filesystems.
 #[test]
-fn the_script_lists_this_machines_filesystems() {
-    let Some(expected) = local_filesystems() else {
-        return;
-    };
-    let listed = run_script().expect("a round");
-    let mounts = |filesystems: &[Filesystem]| -> Vec<String> {
-        filesystems.iter().map(|f| f.mount.clone()).collect()
-    };
-    assert_eq!(mounts(&listed), mounts(&expected));
-}
-
-#[test]
-fn the_script_sleeps_for_the_interval() {
-    assert!(sample_script().contains(&format!("sleep {}\n", INTERVAL.as_secs())));
+fn a_new_mount_table_drops_what_was_unmounted() {
+    let mut collector = Collector::default();
+    feed(&mut collector, TABLE);
+    feed(
+        &mut collector,
+        &[
+            "wayterm-df:net nas:/export 1048576 524288 524288 50% /mnt/nas\n",
+            "wayterm-disks:net\n",
+        ],
+    );
+    feed(
+        &mut collector,
+        &[
+            "wayterm-mount:/dev/sda2 / ext4 rw 0 0\n",
+            "wayterm-mounts\n",
+        ],
+    );
+    let disks = collector.line("wayterm-disks-late:net\n").unwrap();
+    assert_eq!(mounts_of(&disks), Vec::<&str>::new());
 }

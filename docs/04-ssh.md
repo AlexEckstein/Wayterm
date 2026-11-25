@@ -14,7 +14,7 @@ a release blocker, not a feature gap.
 Code: `src/transport/` — `connection.rs` (`SshConnection`, the russh
 handler), `supervisor.rs` (the pool), `ssh.rs` (`SSHTransport`),
 `hostkey.rs`, `auth.rs`, `jump.rs`, `forward.rs`, `traffic.rs`,
-`uptime.rs`, `bandwidth.rs`, `load.rs`, `disks.rs`, `remote_script.rs`;
+`host_stats.rs`, `bandwidth.rs`, `load.rs`, `disks.rs`, `remote_script.rs`;
 `src/ui/tabs/ssh.rs` (the
 SSH connect flow), `src/ui/dialogs/` — `hostkey.rs`, `auth.rs`,
 `tunnels/`.
@@ -122,70 +122,65 @@ The status bar shows it for the current tab (doc 03 §Status bar). It
 covers the whole connection, so the SFTP sidebar's transfers and the
 forwards count into the terminal tab's figure.
 
-## Server uptime
-
-Each connect of an SSH tab asks the server how long it has been up, for
-the status bar (doc 03 §Status bar). `uptime::server_uptime` runs one
-script through `remote_script::run_script`: `sh` on its own exec channel
-of the shared connection, the script on stdin so the login shell never
-parses it (the SFTP sidebar's shell probe runs the same way, doc 07
-§Following the shell). The script prints `wayterm-uptime:<seconds>`, from
-`/proc/uptime` on Linux, else from `sysctl -n kern.boottime` (macOS and
-the BSDs) against `date +%s`; the last marked line wins, so startup files
-that print do not matter. No answer within 5 s, or none at all, leaves
-the segment hidden.
-
-The answer is kept on the page with the instant it arrived, and the bar
-adds the time since, so the server is asked once per connect, not per
-tick. The probe holds the connection weakly, and an answer that lands
-after a newer attempt started is dropped. A jumped tab asks the target.
-A local shell tab shows this machine's uptime instead (doc 06 §Local
-shell).
-
-## Server bandwidth
+## Server figures
 
 While an SSH tab is the one shown and connected (doc 03 §Status bar),
-`bandwidth::stream_server` runs one long-lived script on its own exec
-channel of the shared connection, the same way as the uptime probe. The
-script finds the default route's interface in `/proc/net/route` (the
-`00000000` destination), or when there is no IPv4 default, in
-`/proc/net/ipv6_route` (`::/0`, skipping the kernel's unreachable
-defaults on `lo`). It then prints
-`wayterm-net:<interface> <rx bytes> <tx bytes>` from `/proc/net/dev`
-every 2 s. The counters cover both IP versions. The tab turns
-consecutive samples into bytes per second (`RateMeter`), timed by when
-each sample arrives, and the status bar shows them as bits per second in
-the unit that keeps the figure under 1000 (`800 bit/s`, `16.4 kbit/s`,
-`250 Mbit/s`). A counter that went
-backwards (the interface was reset) or a changed interface skips one
-figure. The figure counts everything on the server's interface, not just
-this connection, as MobaXterm's monitor does.
+`host_stats::stream_server` runs one long-lived script on one exec
+channel of the shared connection: `sh`, with the script on stdin so the
+login shell never parses it (the SFTP sidebar's shell probe runs the same
+way, doc 07 §Following the shell). A local shell tab runs the same script
+under this machine's `sh` (doc 06 §Local shell), and both read its output
+through one `host_stats::Parser`. Every line is marked (`wayterm-uptime:`,
+`wayterm-load:`, `wayterm-net:`, `wayterm-df:` …), so startup files that
+print do not matter, and each is written whole by one `printf`, so the
+background `df` jobs' lines never break into another's.
 
-The stream holds the connection only while its channel opens, so it
-never keeps a released connection alive. Switching tabs, a drop or a
-disconnect drops the receiver; the stream then closes its channel, and
-the server's script ends on its next write. No default route, or no
-`/proc`, ends the script at once and leaves the segment hidden. A
-jumped tab samples the target.
-
-## Server load and disks
-
-Alongside the bandwidth, the shown SSH tab runs two more long-lived
-scripts, each on its own exec channel and through the same
-`remote_script::stream` (held connection, receiver, ending as above):
-
-- **Load** (`load::stream_server`): every 2 s it prints
-  `wayterm-load:<cores> <load averages> <memory> <cpu times>`: the
-  `cpuN` line count from `/proc/stat` (counted once), the three
-  `/proc/loadavg` figures, `MemTotal`, `MemAvailable`, `SwapTotal` and
-  `SwapFree` from `/proc/meminfo`, and the aggregate `cpu` line's times.
-  Kernels before 3.14 have no `MemAvailable`; free plus buffers plus
-  cache stands in. The tab turns consecutive CPU times into a busy share
-  (`CpuMeter`): idle and iowait count as idle, and the guest fields are
-  already in user and nice. Used memory is what is not available.
-- **Disks** (`disks::stream_server`): every 30 s it prints the mount
-  table (`/proc/mounts`) and `df -P -k`, each line marked, then an end
-  line; `disks::Collector` joins them by mount point. Only real storage
+- **Uptime**, first and once: `/proc/uptime` on Linux, else
+  `sysctl -n kern.boottime` (macOS and the BSDs) against `date +%s`. The
+  page keeps the answer with the instant it arrived, and the bar adds the
+  time since. It is read each time the tab is shown, kept while the tab is
+  hidden, and cleared on each connect, so a new connection never shows
+  the last one's. Without `/proc` the script ends here.
+- **Load**, every 2 s: `wayterm-load:<cores> <load averages> <memory>
+  <cpu times>`: the `cpuN` line count from `/proc/stat` (counted once),
+  the three `/proc/loadavg` figures, `MemTotal`, `MemAvailable`,
+  `SwapTotal` and `SwapFree` from `/proc/meminfo`, and the aggregate
+  `cpu` line's times. Kernels before 3.14 have no `MemAvailable`; free
+  plus buffers plus cache stands in. The tab turns consecutive CPU times
+  into a busy share (`CpuMeter`): idle and iowait count as idle, and the
+  guest fields are already in user and nice. Used memory is what is not
+  available.
+- **Bandwidth**, every 2 s after the load: the script finds the default
+  route's interface once, in `/proc/net/route` (the `00000000`
+  destination), or when there is no IPv4 default, in
+  `/proc/net/ipv6_route` (`::/0`, skipping the kernel's unreachable
+  defaults on `lo`), then prints `wayterm-net:<interface> <rx bytes> <tx
+  bytes>` from `/proc/net/dev`. The counters cover both IP versions. The
+  tab turns consecutive samples into bytes per second (`RateMeter`),
+  timed by when each sample arrives, and the status bar shows them as
+  bits per second in the unit that keeps the figure under 1000
+  (`800 bit/s`, `16.4 kbit/s`, `250 Mbit/s`). A counter that went
+  backwards (the interface was reset) or a changed interface skips one
+  figure. The figure counts everything on the server's interface, not
+  just this connection, as MobaXterm's monitor does. Without a default
+  route there is no bandwidth line, and the other figures carry on.
+- **Disks**, every 30 s: the script prints the mount table
+  (`/proc/mounts`) and starts two background jobs, each running
+  `df -P -k` on its group's mount points: one for the network
+  filesystems (NFS, SMB/CIFS, 9p, Ceph, Gluster, Lustre and the like) and
+  the FUSE ones, which hang the same way when their daemon stops
+  (`fuseblk` is a local block device), the other for everything else.
+  The type lists live in `disks.rs` and are written into the script.
+  Mount points the table escapes (`\040` for a space) are unescaped for
+  `df`, and skipped types are never given to it, so an autofs mount point
+  is not mounted by asking. A job still running when the next round is
+  due, a `df` stuck on a hung mount, which no signal ends, is not started
+  again: the round prints `wayterm-disks-late:<group>` instead. So stuck
+  `df`s never pile up, and the load, the bandwidth and the other group
+  keep updating. `disks::Collector` keeps each group's last finished
+  reading and joins them with the latest mount table by mount point; a
+  late group's figures stay up, and the disk tooltip says which group is
+  not up to date and since when (doc 03 §Status bar). Only real storage
   counts: tmpfs, devtmpfs, ramfs, overlays, squashfs and erofs (snap and
   image mounts, always full), ISO and UDF media, autofs and the desktop's
   FUSE bridges are skipped, and so is a zero-sized filesystem. A mount
@@ -197,9 +192,13 @@ scripts, each on its own exec channel and through the same
   whose device starts with the pool's name) are reckoned together: their
   used space summed and the pool's free space counted once, the largest
   any dataset reports, since a quota only lowers it. Each dataset is as
-  full as its pool, and the total counts the pool once. `df` runs on a channel of its own because
-  it can block on a hung network mount: that stalls only the disk
-  figure, which keeps its last value.
+  full as its pool, and the total counts the pool once.
+
+The stream holds the connection only while its channel opens, so it
+never keeps a released connection alive. Switching tabs, a drop or a
+disconnect drops the receiver; the stream then closes its channel, and
+the server's script ends on its next write. A jumped tab samples the
+target.
 
 ## Host key verification
 
@@ -496,26 +495,29 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   sessions.
 - Plain (non-tmux) shells on one shared connection cannot be told apart
   by the SFTP sidebar's directory probe (doc 07 §Limitations).
-- Server uptime needs a POSIX `sh` and either `/proc/uptime` or
-  `sysctl kern.boottime`: a Windows OpenSSH server, or a restricted shell
-  that refuses exec channels, shows no uptime. Only the Linux path has run
-  against a real server; the `sysctl` path is tested against a stand-in
-  `sysctl`. Every SSH tab asks, even when it shares its connection with
-  another tab that already did.
-- Server bandwidth reads `/proc`, so only Linux servers show it; macOS,
-  the BSDs and Windows show none. When the server has default routes on
-  several interfaces, the first listed is measured, IPv4 before IPv6,
-  which may not be the one this connection uses. Showing a tab again starts a new script, so its first figure
-  takes one interval. The rate includes this connection's own traffic,
-  the sampling's few bytes every 2 s among it.
-- Server load and disks read `/proc` and need `sed` and `df`, so only
-  Linux servers show them. A ZFS pool's used space counts only its
-  mounted datasets: snapshots, unmounted datasets and reservations are
-  left out, so the pool reads emptier than `zpool list` says. When every
-  dataset has a quota, the pool's free space reads as the largest quota's
-  room. LVM thin pools and other overcommitted storage are not
-  recognised. A `df` stuck on a hung network mount leaves the
-  last disk figure up while the tab stays shown, and none once it is
-  shown again. The shown SSH tab
-  holds three exec channels for sampling, on top of its shell and SFTP,
-  which counts against the server's `MaxSessions` (10 by default).
+- Server figures need a POSIX `sh`: a Windows OpenSSH server, or a
+  restricted shell that refuses exec channels, shows none. The uptime
+  also comes from `sysctl kern.boottime` (macOS, the BSDs); only the Linux
+  path has run against a real server, and the `sysctl` path is tested
+  against a stand-in `sysctl`. Everything else reads `/proc` and needs
+  `grep`, `sed` and `df`, so only Linux servers show it. Showing a tab
+  again starts a new script, so its uptime returns after a round trip and
+  its CPU and bandwidth figures after one interval.
+- When the server has default routes on several interfaces, the first
+  listed is measured, IPv4 before IPv6, which may not be the one this
+  connection uses. The rate includes this connection's own traffic, the
+  sampling's few bytes every 2 s among it.
+- A ZFS pool's used space counts only its mounted datasets: snapshots,
+  unmounted datasets and reservations are left out, so the pool reads
+  emptier than `zpool list` says. When every dataset has a quota, the
+  pool's free space reads as the largest quota's room. LVM thin pools and
+  other overcommitted storage are not recognised.
+- Filesystems are grouped by type: a network filesystem of a type not in
+  the list counts as local, so a hung one stalls the local group too, and
+  one hung mount stalls its whole group. A `df` stuck on a hung mount
+  stays on the host until the mount answers, one per group each time the
+  tab is shown while it hangs. A group never read since the tab was shown
+  shows no filesystems until its `df` finishes.
+- The shown SSH tab holds one exec channel for its figures, on top of its
+  shell and SFTP, which counts against the server's `MaxSessions` (10 by
+  default).

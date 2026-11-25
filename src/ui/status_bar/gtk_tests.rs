@@ -78,6 +78,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
                     pool: None,
                 },
             ],
+            stale: Vec::new(),
         }),
     };
     bar.set_live_source(Some(Rc::new(move || live.clone())));

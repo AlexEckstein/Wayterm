@@ -13,9 +13,10 @@ use gtk4::pango::EllipsizeMode;
 use gtk4::prelude::*;
 
 use crate::store::model::SessionType;
-use crate::transport::bandwidth::{INTERVAL, Rate};
-use crate::transport::disks::{self, Filesystem, Usage};
-use crate::transport::load::{self, Memory};
+use crate::transport::bandwidth::Rate;
+use crate::transport::disks::{self, Disks, Filesystem, Group, Usage};
+use crate::transport::host_stats::INTERVAL;
+use crate::transport::load::Memory;
 use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 use crate::ui::panels::sftp_sidebar::format_size;
@@ -99,7 +100,7 @@ impl ConnectedSince {
 /// The machine a host figure (load, disks, bandwidth, uptime) is about.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Host {
-    /// An SSH tab's server (doc 04 §Server uptime, §Server bandwidth).
+    /// An SSH tab's server (doc 04 §Server figures).
     Server,
     /// The machine a local shell runs on (doc 06 §Local shell).
     ThisComputer,
@@ -152,11 +153,45 @@ pub struct HostLoad {
     pub memory: Memory,
 }
 
-/// A host's real filesystems.
+/// A host's real filesystems, and which of them are not up to date.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostDisks {
     pub of: Host,
     pub filesystems: Vec<Filesystem>,
+    pub stale: Vec<StaleDisks>,
+}
+
+/// A group of filesystems whose `df` has not finished by the next round.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StaleDisks {
+    pub group: Group,
+    /// Local wall-clock time of its last finished read, e.g. "14:02:11".
+    pub last_read: Option<String>,
+}
+
+impl HostDisks {
+    pub fn sampled(of: Host, disks: Disks) -> Self {
+        let clock = |at: Instant| {
+            glib::DateTime::now_local()
+                .and_then(|now| now.add_seconds(-at.elapsed().as_secs_f64()))
+                .and_then(|then| then.format("%X"))
+                .map(String::from)
+                .unwrap_or_default()
+        };
+        let stale = disks
+            .late
+            .iter()
+            .map(|late| StaleDisks {
+                group: late.group,
+                last_read: late.last_read.map(clock),
+            })
+            .collect();
+        Self {
+            of,
+            filesystems: disks.filesystems,
+            stale,
+        }
+    }
 }
 
 /// What the bar reads on every tick while connected.
@@ -339,7 +374,7 @@ pub fn cpu_segment(of: Host, busy: u8, cores: u32, load_average: &[String; 3]) -
              Sampled every {} s",
             host_name(of),
             if cores == 1 { "core" } else { "cores" },
-            load::INTERVAL.as_secs(),
+            INTERVAL.as_secs(),
         ),
         ..Default::default()
     }
@@ -392,8 +427,9 @@ fn shorten(mount: &str) -> String {
 /// The total across a host's filesystems (a ZFS pool once), coloured by
 /// the fullest one, so a filling filesystem warns even when the total has
 /// room. The tooltip has a line per filesystem, each coloured by its own
-/// fullness, and the total. `None` without filesystems.
-pub fn disk_segment(of: Host, filesystems: &[Filesystem]) -> Option<Segment> {
+/// fullness, and the total, then a line for each `stale` group. `None`
+/// without filesystems.
+pub fn disk_segment(of: Host, filesystems: &[Filesystem], stale: &[StaleDisks]) -> Option<Segment> {
     let fullest = filesystems.iter().map(|f| f.percent(filesystems)).max()?;
     let total = disks::total_usage(filesystems);
     let describe = |usage: &Usage| {
@@ -440,6 +476,18 @@ pub fn disk_segment(of: Host, filesystems: &[Filesystem]) -> Option<Segment> {
             None => format!("<tt>{escaped}</tt>"),
         });
         tooltip.push(text);
+    }
+    for stale in stale {
+        let group = match stale.group {
+            Group::Local => "Local",
+            Group::Network => "Network",
+        };
+        let line = match &stale.last_read {
+            Some(clock) => format!("{group} filesystems not updated since {clock}"),
+            None => format!("{group} filesystems not read yet"),
+        } + ": df has not finished (a hung mount?)";
+        markup.push(glib::markup_escape_text(&line).to_string());
+        tooltip.push(line);
     }
     tooltip.push(footer.clone());
     markup.push(glib::markup_escape_text(&footer).to_string());
@@ -759,7 +807,7 @@ impl StatusBar {
             let full = live
                 .disks
                 .as_ref()
-                .and_then(|disks| disk_segment(disks.of, &disks.filesystems));
+                .and_then(|disks| disk_segment(disks.of, &disks.filesystems, &disks.stale));
             disk.show(full.as_ref());
             let rate = live
                 .bandwidth

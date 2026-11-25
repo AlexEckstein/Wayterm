@@ -238,7 +238,8 @@ It learns that two ways:
   then 300 ms without terminal output) the sidebar asks the remote with a
   `ShellCwdProbe` (`src/sftp/shell_cwd.rs`): one `sh` on an exec channel
   of the shared connection, its script on stdin so the login shell never
-  parses it (`transport::remote_script`, doc 04 §Server uptime). A tmux tab asks
+  parses it (`transport::remote_script`; the status bar's figures run the
+  same way, doc 04 §Server figures). A tmux tab asks
   `tmux display-message -p -t '=<name>:' '#{pane_current_path}'`. A plain
   tab walks `/proc` from the probe up to this connection's SSH server
   process, takes its one child on a terminal that is not running tmux (the

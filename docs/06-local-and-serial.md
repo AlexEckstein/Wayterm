@@ -33,23 +33,14 @@ of a host.
   reaps the child on disconnect and on drop, sending `SIGKILL` after 5 s
   if a hung-up shell lingers, so no zombie remains.
 - **tmux** does not apply locally: the flag is accepted and ignored.
-- **Uptime:** when the shell starts, the tab reads this machine's
-  `/proc/uptime` (`uptime::local_uptime`) for the status bar's uptime
-  segment, which counts on from there (doc 03 §Status bar). A serial tab
-  shows none.
-- **Bandwidth:** while the tab is shown, it reads this machine's
-  default-route interface counters from `/proc/net/route` (or
-  `/proc/net/ipv6_route` without an IPv4 default) and `/proc/net/dev`
-  every 2 s (`bandwidth::local_counters`), the same
-  figure as an SSH tab's server bandwidth (doc 04 §Server bandwidth).
-  A serial tab shows none.
-- **CPU, memory and disks:** while the tab is shown, it reads this
-  machine's `/proc/stat`, `/proc/loadavg` and `/proc/meminfo` every 2 s
-  (`load::local_sample`) and its mount table with `statvfs` every 30 s
-  (`disks::local_filesystems`), on tokio's blocking pool so a hung
-  network mount never stalls the window. The filesystems are chosen as
-  for an SSH tab's server (doc 04 §Server load and disks). A serial tab
-  shows none.
+- **Host figures:** while the tab is shown, it runs the script an SSH
+  tab runs on its server under this machine's `sh`
+  (`host_stats::stream_local`), so the status bar's uptime, CPU, memory,
+  disks and bandwidth are read from this machine's `/proc` and `df`
+  exactly as for a server (doc 04 §Server figures): the `df` jobs run in
+  the background, so a hung network mount never stalls the other figures,
+  and the window never waits on the script. The uptime is read when the
+  tab is shown. A serial tab shows none.
 
 The New Tab picker's "Local shell" and the tab bar's "+" open an unsaved
 local session: the login shell in the home directory (doc 03 §New Tab).
