@@ -192,7 +192,12 @@ scripts, each on its own exec channel and through the same
   point mounted over keeps only its last mount, and a device mounted at
   several points (bind mounts, btrfs subvolumes) counts once, at its
   shortest mount point that `df` listed. Use % is `df`'s: used over used
-  plus available, rounded up. `df` runs on a channel of its own because
+  plus available, rounded up. Every dataset of a ZFS pool reports the
+  pool's free space as its own, so a pool's datasets (the `zfs` mounts
+  whose device starts with the pool's name) are reckoned together: their
+  used space summed and the pool's free space counted once, the largest
+  any dataset reports, since a quota only lowers it. Each dataset is as
+  full as its pool, and the total counts the pool once. `df` runs on a channel of its own because
   it can block on a hung network mount: that stalls only the disk
   figure, which keeps its last value.
 
@@ -504,10 +509,12 @@ Re-verify these when bumping a dependency; these APIs have moved before.
   takes one interval. The rate includes this connection's own traffic,
   the sampling's few bytes every 2 s among it.
 - Server load and disks read `/proc` and need `sed` and `df`, so only
-  Linux servers show them. Each ZFS dataset reports its pool's free
-  space, so a pool with several datasets is over-counted in the disk
-  total; LVM thin pools and other overcommitted storage are not
-  recognised either. A `df` stuck on a hung network mount leaves the
+  Linux servers show them. A ZFS pool's used space counts only its
+  mounted datasets: snapshots, unmounted datasets and reservations are
+  left out, so the pool reads emptier than `zpool list` says. When every
+  dataset has a quota, the pool's free space reads as the largest quota's
+  room. LVM thin pools and other overcommitted storage are not
+  recognised. A `df` stuck on a hung network mount leaves the
   last disk figure up while the tab stays shown, and none once it is
   shown again. The shown SSH tab
   holds three exec channels for sampling, on top of its shell and SFTP,

@@ -112,8 +112,51 @@ fn a_device_falls_back_to_a_mount_df_listed() {
         [Filesystem {
             mount: "/home".to_string(),
             usage: usage(45, 20, 25),
+            pool: None,
         }]
     );
+}
+
+fn dataset(mount: &str, pool: &str, used_gib: u64, available_gib: u64) -> Filesystem {
+    Filesystem {
+        mount: mount.to_string(),
+        usage: usage(used_gib + available_gib, used_gib, available_gib),
+        pool: Some(pool.to_string()),
+    }
+}
+
+#[test]
+fn zfs_datasets_name_their_pool() {
+    let mounts = [
+        mount("tank/root", "/", "zfs"),
+        mount("tank/home", "/home", "zfs"),
+        mount("/dev/sda1", "/boot", "ext4"),
+    ];
+    let filesystems = real_filesystems(&mounts, |_| Some(usage(10, 1, 9)));
+    let pools: Vec<Option<&str>> = filesystems.iter().map(|f| f.pool.as_deref()).collect();
+    assert_eq!(pools, [Some("tank"), None, Some("tank")]);
+}
+
+#[test]
+fn a_pool_counts_its_free_space_once() {
+    let filesystems = [
+        dataset("/", "tank", 50, 600),
+        dataset("/home", "tank", 300, 600),
+        dataset("/var", "tank", 50, 400),
+        Filesystem {
+            mount: "/boot".to_string(),
+            usage: usage(2, 1, 1),
+            pool: None,
+        },
+    ];
+    assert_eq!(
+        pool_usage(&filesystems, "tank"),
+        usage(1000, 400, 600),
+        "a quota lowers only /var's free space"
+    );
+    assert_eq!(total_usage(&filesystems), usage(1002, 401, 601));
+    assert_eq!(filesystems[0].percent(&filesystems), 40, "the pool's");
+    assert_eq!(filesystems[3].percent(&filesystems), 50);
 }
 
 #[test]
@@ -136,6 +179,7 @@ fn the_collector_ends_a_round_at_its_end_line() {
         [Filesystem {
             mount: "/".to_string(),
             usage: usage(45, 20, 25),
+            pool: None,
         }]
     );
     assert_eq!(

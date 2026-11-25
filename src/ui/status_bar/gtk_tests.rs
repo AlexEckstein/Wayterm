@@ -66,6 +66,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
                         used: 20 << 30,
                         available: 25 << 30,
                     },
+                    pool: None,
                 },
                 Filesystem {
                     mount: "/var".to_string(),
@@ -74,6 +75,7 @@ pub(in crate::ui) fn segments_follow_the_state_with_tooltips() {
                         used: 46 << 30,
                         available: 4 << 30,
                     },
+                    pool: None,
                 },
             ],
         }),
