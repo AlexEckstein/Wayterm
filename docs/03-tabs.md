@@ -11,7 +11,7 @@ Code: `src/transport/types.rs`, `factory.rs`, `reconnect.rs` (display-free);
 `src/ui/tabs/` — `mod.rs` (the page core), the per-type connect flows,
 `terminal_tab.rs`, `resilience.rs`, `ended.rs`, `label.rs`, `actions.rs`,
 `state.rs`, `restore.rs`; `src/ui/dialogs/host_picker.rs`,
-`src/ui/status_bar.rs`, `src/ui/tray.rs`.
+`src/ui/status_bar.rs` and `status_bar/segments.rs`, `src/ui/tray.rs`.
 
 ## Tab kinds
 
@@ -253,7 +253,9 @@ only). A corrupt list costs one launch's layout, never the launch.
 ## Status bar
 
 `src/ui/status_bar.rs` shows the current tab in segments, divided by
-separators, each with a tooltip that adds detail:
+separators, each with a tooltip that adds detail. What each segment
+shows is decided display-free in `status_bar/segments.rs`, one `Item`
+per segment; the bar only renders the items in order:
 
 | Segment | Shows | Tooltip |
 |---|---|---|

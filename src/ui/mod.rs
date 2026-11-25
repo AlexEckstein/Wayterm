@@ -3,6 +3,7 @@
 
 pub mod appearance;
 pub mod dialogs;
+pub mod format;
 pub mod icons;
 pub mod main_window;
 pub mod panels;

@@ -5,6 +5,7 @@
 
 use super::paths::{join_path, parent_path};
 use crate::sftp::DirEntry;
+use crate::ui::format::format_size;
 
 /// The synthetic "go up" row.
 pub const PARENT_ROW: &str = "..";
@@ -84,21 +85,6 @@ pub fn listing_rows(path: &str, entries: &[DirEntry]) -> Vec<RowView> {
     }
     rows.extend(entries.iter().map(row_from_entry));
     rows
-}
-
-/// Human-readable byte count, e.g. `1023 B`, `1.2 KB`, `4.0 MB`.
-pub fn format_size(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
 }
 
 /// Bar fraction in `0.0..=1.0`; an unknown (zero) total shows empty.

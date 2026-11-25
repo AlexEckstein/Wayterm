@@ -15,7 +15,7 @@ use crate::transport::bandwidth::RateMeter;
 use crate::transport::connection::SshConnection;
 use crate::transport::host_stats::{self, Sample};
 use crate::transport::load::CpuMeter;
-use crate::ui::status_bar::{Host, HostDisks, HostLoad, HostRate, HostUptime};
+use crate::ui::status_bar::{DiskReading, Host, HostFigures, Load, Uptime};
 
 /// Dropping it stops sampling and clears the page's figures, all but the
 /// uptime, which counts on from its answer.
@@ -49,27 +49,24 @@ impl HostMonitor {
             while let Some(sample) = received.recv().await {
                 let Some(page) = weak.upgrade() else { break };
                 let state = state(&page);
+                let mut host = state.host.borrow_mut();
+                let figures = host.get_or_insert_with(|| HostFigures::new(of));
                 match sample {
-                    Sample::Uptime(secs) => {
-                        state.uptime.replace(Some(HostUptime::measured(of, secs)));
-                    }
+                    Sample::Uptime(secs) => figures.uptime = Some(Uptime::measured(secs)),
                     Sample::Load(sample) => {
-                        state.load.replace(Some(HostLoad {
-                            of,
+                        figures.load = Some(Load {
                             busy: cpu.add(sample.cpu),
                             cores: sample.cores,
                             load_average: sample.load_average,
                             memory: sample.memory,
-                        }));
+                        });
                     }
                     Sample::Net(counters) => {
                         if let Some(rate) = rates.add(counters, Instant::now()) {
-                            state.bandwidth.replace(Some(HostRate { of, rate }));
+                            figures.bandwidth = Some(rate);
                         }
                     }
-                    Sample::Disks(disks) => {
-                        state.disks.replace(Some(HostDisks::sampled(of, disks)));
-                    }
+                    Sample::Disks(disks) => figures.disks = Some(DiskReading::sampled(disks)),
                 }
             }
         });
@@ -83,10 +80,13 @@ impl HostMonitor {
 impl Drop for HostMonitor {
     fn drop(&mut self) {
         self.task.abort();
-        if let Some(state) = self.page.upgrade().as_ref().and_then(existing_state) {
-            state.bandwidth.replace(None);
-            state.load.replace(None);
-            state.disks.replace(None);
+        if let Some(state) = self.page.upgrade().as_ref().and_then(existing_state)
+            && let Some(figures) = state.host.borrow_mut().as_mut()
+        {
+            *figures = HostFigures {
+                uptime: figures.uptime.take(),
+                ..HostFigures::new(figures.of)
+            };
         }
     }
 }
