@@ -13,14 +13,11 @@ use zeroize::Zeroizing;
 use common::*;
 use wayterm::sftp::{SftpClient, SftpCommand, ShellCwdProbe, commands::DirEntry};
 use wayterm::transport::auth::{AuthConfig, AuthMethodKind, AuthOutcome, authenticate_chain};
-use wayterm::transport::bandwidth;
 use wayterm::transport::connection::{AuthMethod, SshConnection};
 use wayterm::transport::credentials::CredentialManager;
-use wayterm::transport::disks;
-use wayterm::transport::load;
+use wayterm::transport::host_stats::{self, Sample};
 use wayterm::transport::ssh::SSHTransport;
 use wayterm::transport::types::{Transport, TransportEvent, TransportState};
-use wayterm::transport::uptime::server_uptime;
 
 fn ssh_transport(connection: Arc<SshConnection>) -> (SSHTransport, mpsc::Receiver<TransportEvent>) {
     let (tx, rx) = mpsc::channel(64);
@@ -597,100 +594,82 @@ async fn shell_cwd_probe_gives_up_on_a_missing_tmux_session() {
     assert_eq!(probe.run().await, None);
 }
 
-/// The CI sshd is this machine, so the server's samples are this
-/// machine's default-route interface, and they keep coming.
+/// A host's figures from its script: the first uptime, load and counters,
+/// and every disk reading.
+#[derive(Debug, Default)]
+struct Figures {
+    uptime: Option<u64>,
+    load: Option<wayterm::transport::load::LoadSample>,
+    net: Option<wayterm::transport::bandwidth::Counters>,
+    disks: Vec<wayterm::transport::disks::Disks>,
+}
+
+impl Figures {
+    /// Every figure, and both `df` jobs of the first round.
+    fn complete(&self) -> bool {
+        self.uptime.is_some() && self.load.is_some() && self.net.is_some() && self.disks.len() >= 2
+    }
+
+    fn mounts(&self) -> Vec<String> {
+        let last = self.disks.last().expect("a disk reading");
+        last.filesystems.iter().map(|f| f.mount.clone()).collect()
+    }
+}
+
+/// What `received` gives until every figure came or `within` passed.
+async fn gather(received: &mut mpsc::Receiver<Sample>, within: Duration) -> Figures {
+    let mut figures = Figures::default();
+    let _ = timeout(within, async {
+        while !figures.complete() {
+            match received.recv().await.expect("the stream stays open") {
+                Sample::Uptime(secs) => figures.uptime = figures.uptime.or(Some(secs)),
+                Sample::Load(load) => figures.load = figures.load.take().or(Some(load)),
+                Sample::Net(net) => figures.net = figures.net.take().or(Some(net)),
+                Sample::Disks(disks) => figures.disks.push(disks),
+            }
+        }
+    })
+    .await;
+    figures
+}
+
+/// The CI sshd runs on this machine, so the one channel's figures are the
+/// ones the same script reads locally.
 #[tokio::test]
-async fn the_server_streams_its_interface_counters() {
+async fn the_server_streams_every_figure_on_one_channel() {
     let Some(f) = fixture() else { return };
-    let Some(local) = bandwidth::local_counters() else {
-        return;
-    };
+    let (samples, mut local) = mpsc::channel(8);
+    let local_stream = tokio::spawn(host_stats::stream_local(samples));
+    let expected = gather(&mut local, Duration::from_secs(10)).await;
+    drop(local);
+    timeout(Duration::from_secs(10), local_stream)
+        .await
+        .expect("dropping the receiver ends the local script")
+        .unwrap();
+
     let connection = connect_any(&f).await;
-    let (samples, mut received) = tokio::sync::mpsc::channel(4);
-    let stream = tokio::spawn(bandwidth::stream_server(
-        std::sync::Arc::downgrade(&connection),
+    let (samples, mut received) = mpsc::channel(8);
+    let stream = tokio::spawn(host_stats::stream_server(
+        Arc::downgrade(&connection),
         samples,
     ));
-    let mut meter = bandwidth::RateMeter::default();
-    let mut rate = None;
-    for _ in 0..2 {
-        let counters = tokio::time::timeout(std::time::Duration::from_secs(10), received.recv())
-            .await
-            .expect("a sample in time")
-            .expect("the stream stays open");
-        assert_eq!(counters.interface, local.interface);
-        rate = meter.add(counters, std::time::Instant::now());
-    }
-    assert!(rate.is_some(), "two samples make a rate");
-    drop(received);
-    tokio::time::timeout(std::time::Duration::from_secs(10), stream)
-        .await
-        .expect("dropping the receiver ends the stream")
-        .unwrap();
-}
-
-/// The CI sshd runs on this machine, so the server's figures are ours.
-#[tokio::test]
-async fn the_server_streams_its_cpu_and_memory() {
-    let Some(f) = fixture() else { return };
-    let Some(local) = load::local_sample() else {
-        return;
-    };
-    let connection = connect_any(&f).await;
-    let (samples, mut received) = mpsc::channel(4);
-    let stream = tokio::spawn(load::stream_server(Arc::downgrade(&connection), samples));
-    let mut meter = load::CpuMeter::default();
-    let mut busy = None;
-    for _ in 0..2 {
-        let sample = timeout(Duration::from_secs(10), received.recv())
-            .await
-            .expect("a sample in time")
-            .expect("the stream stays open");
-        assert_eq!(sample.cores, local.cores);
-        assert_eq!(sample.memory.total, local.memory.total);
-        busy = meter.add(sample.cpu);
-    }
-    assert!(busy.is_some(), "two samples make a busy share");
+    let reported = gather(&mut received, Duration::from_secs(20)).await;
+    assert_eq!(reported.mounts(), expected.mounts());
+    let (server, local) = (
+        reported.uptime.expect("an uptime"),
+        expected.uptime.unwrap(),
+    );
+    assert!(server.abs_diff(local) <= 5, "{server} vs {local}");
+    let (server, local) = (reported.load.expect("a load"), expected.load.unwrap());
+    assert_eq!(server.cores, local.cores);
+    assert_eq!(server.memory.total, local.memory.total);
+    assert_eq!(
+        reported.net.map(|n| n.interface),
+        expected.net.map(|n| n.interface)
+    );
     drop(received);
     timeout(Duration::from_secs(10), stream)
         .await
         .expect("dropping the receiver ends the stream")
         .unwrap();
-}
-
-#[tokio::test]
-async fn the_server_lists_its_filesystems() {
-    let Some(f) = fixture() else { return };
-    let Some(local) = disks::local_filesystems() else {
-        return;
-    };
-    let connection = connect_any(&f).await;
-    let (samples, mut received) = mpsc::channel(2);
-    let stream = tokio::spawn(disks::stream_server(Arc::downgrade(&connection), samples));
-    let listed = timeout(Duration::from_secs(20), received.recv())
-        .await
-        .expect("a round in time")
-        .expect("the stream stays open");
-    if local.iter().any(|f| f.mount == "/") {
-        assert!(listed.iter().any(|f| f.mount == "/"), "{listed:?}");
-    }
-    drop(received);
-    timeout(Duration::from_secs(10), stream)
-        .await
-        .expect("dropping the receiver ends the stream")
-        .unwrap();
-}
-
-/// The CI sshd runs on Linux, so the answer is its `/proc/uptime`.
-#[tokio::test]
-async fn the_server_reports_its_uptime() {
-    let Some(f) = fixture() else { return };
-    let connection = connect_any(&f).await;
-    let reported = server_uptime(&connection).await.expect("an uptime");
-    let local = std::fs::read_to_string("/proc/uptime")
-        .ok()
-        .and_then(|text| text.split('.').next()?.parse::<u64>().ok());
-    if let Some(local) = local {
-        assert!(reported.abs_diff(local) <= 5, "{reported} vs {local}");
-    }
 }

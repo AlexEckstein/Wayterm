@@ -260,11 +260,11 @@ separators, each with a tooltip that adds detail:
 | State | a colored dot (green connected, yellow connecting/verifying/authenticating/reconnecting, red disconnected or failed) and the state ("Connected", "Reconnecting (attempt 2)…", an error's message) | the state with the endpoint ("Connected to example.com:22"); an error's whole message, which the bar may cut short |
 | Endpoint | `host:port`; a local or serial tab's transport description (shell path, `device@baud`) | the session's name and type, then host, port, user and jump host, or the shell or serial line |
 | Time connected | `m:ss`, `h:mm:ss` from an hour on, while connected | the local time the connection came up |
-| CPU | how busy the host's CPUs were over the last 2 s ("CPU 12%"): an SSH tab's server (doc 04 §Server load and disks) or a local shell's machine (doc 06 §Local shell) | whose CPU ("Server", "This computer"), the core count and the 1, 5 and 15 minute load averages |
+| CPU | how busy the host's CPUs were over the last 2 s ("CPU 12%"): an SSH tab's server (doc 04 §Server figures) or a local shell's machine (doc 06 §Local shell) | whose CPU ("Server", "This computer"), the core count and the 1, 5 and 15 minute load averages |
 | RAM | the share of the host's memory in use, what is not available ("RAM 41%") | the memory used, total and available, and the swap used |
-| Disk | the total used and size across the host's real filesystems ("Disk 66.4 GB / 96.0 GB"), coloured by the fullest one: amber from 80 %, red from 90 % | a line per filesystem (mount point, use %, used, free, size), each coloured by its own fullness, then the total; a ZFS dataset shows its used space and its pool's free space, and is as full as its pool |
-| Bandwidth | the traffic on the host's default-route interface, received and sent, in bits per second scaled to fit ("↓ 1.5 Mbit/s ↑ 200 bit/s"): an SSH tab's server (doc 04 §Server bandwidth) or a local shell's machine (doc 06 §Local shell) | whose network ("Server", "This computer"), the interface, and that it counts all traffic on it |
-| Uptime | how long an SSH tab's server has been up once it answered (doc 04 §Server uptime), or a local shell's machine (doc 06 §Local shell): "Up 12d 4h", `5h 12m`, `42m` | whose uptime ("Server", "This computer"), the full duration and the local time it booted |
+| Disk | the total used and size across the host's real filesystems ("Disk 66.4 GB / 96.0 GB"), coloured by the fullest one: amber from 80 %, red from 90 % | a line per filesystem (mount point, use %, used, free, size), each coloured by its own fullness, then the total; a ZFS dataset shows its used space and its pool's free space, and is as full as its pool; when a group's `df` has not finished by the next round (a hung mount), which group, local or network, is not up to date and since when |
+| Bandwidth | the traffic on the host's default-route interface, received and sent, in bits per second scaled to fit ("↓ 1.5 Mbit/s ↑ 200 bit/s"): an SSH tab's server (doc 04 §Server figures) or a local shell's machine (doc 06 §Local shell) | whose network ("Server", "This computer"), the interface, and that it counts all traffic on it |
+| Uptime | how long an SSH tab's server has been up once it answered (doc 04 §Server figures), or a local shell's machine (doc 06 §Local shell): "Up 12d 4h", `5h 12m`, `42m` | whose uptime ("Server", "This computer"), the full duration and the local time it booted |
 | Compression | what compression saves on an SSH connection once measured ("Compression saves 53%", doc 04 §Compression savings) | the bytes received and the uncompressed estimate |
 
 The state and the endpoint sit on the left, the CPU, RAM, disk,
@@ -280,13 +280,15 @@ its last published state, replayed when it becomes current; the window's
 status router shows only the current page's updates.
 
 The host figures are sampled only for the shown tab. When the router
-shows a connected page it starts that page's `HostMonitors`: a
-`BandwidthMonitor` (`src/ui/tabs/bandwidth.rs`) and a `ResourceMonitor`
-(`src/ui/tabs/resources.rs`) for the CPU, memory and disks. It drops them
-when another page is shown or the page leaves Connected; dropping them
-stops sampling and clears the figures. Memory and disks show with the
-first sample; the bandwidth and CPU figures appear one sample interval
-(2 s) after the tab is shown, since each needs two samples.
+shows a connected page it starts that page's `HostMonitor`
+(`src/ui/tabs/monitor.rs`): one script for all of them, on one exec
+channel for an SSH tab and under this machine's `sh` for a local shell
+(doc 04 §Server figures). It drops it when another page is shown or the
+page leaves Connected; dropping it stops the script and clears the CPU,
+memory, disk and bandwidth figures, while the uptime stays and counts on.
+The uptime comes back a round trip after the tab is shown, memory and
+disks with their first sample; the bandwidth and CPU figures appear one
+sample interval (2 s) after, since each needs two samples.
 
 ## Tray
 

@@ -1,46 +1,26 @@
-//! A host's filesystems and how full each is, sampled every [`INTERVAL`]:
-//! over a script on the server for SSH tabs (doc 04 §Server load and
-//! disks), with `statvfs` on this machine for local shells (doc 06 §Local
-//! shell). Only real storage counts: memory-backed, overlay and read-only
-//! image filesystems are skipped, a device mounted twice counts once, and
-//! the datasets of a ZFS pool share its free space.
+//! A host's filesystems and how full each is, read every [`INTERVAL`] by
+//! the host script's `df` jobs (`host_stats`; doc 04 §Server figures).
+//! Only real storage counts: memory-backed, overlay and read-only image
+//! filesystems are skipped, a device mounted twice counts once, and the
+//! datasets of a ZFS pool share its free space. The local and the network
+//! filesystems are read apart, so a hung network mount stalls only its
+//! own figures.
 
 use std::collections::HashSet;
-use std::ffi::CString;
-use std::sync::Weak;
-use std::time::Duration;
-
-use tokio::sync::mpsc;
-
-use crate::transport::connection::SshConnection;
-use crate::transport::{remote_script, sampling};
+use std::time::{Duration, Instant};
 
 /// Disk use changes slowly, and `df` costs more than reading `/proc`.
 pub const INTERVAL: Duration = Duration::from_secs(30);
 const MOUNT: &str = "wayterm-mount:";
+const MOUNTS_END: &str = "wayterm-mounts";
 const DF: &str = "wayterm-df:";
-const END: &str = "wayterm-disks";
-
-/// Prints the mount table and `df`'s POSIX listing (KiB), then an end
-/// line, every `{interval}` seconds until its output closes. It runs on a
-/// channel of its own, so a `df` stuck on a hung network mount stalls only
-/// this figure.
-const SAMPLE_SCRIPT: &str = r#"[ -r /proc/mounts ] || exit 0
-while :; do
-  sed 's/^/wayterm-mount:/' /proc/mounts
-  df -P -k 2>/dev/null | sed 's/^/wayterm-df:/'
-  printf 'wayterm-disks\n' || exit 0
-  sleep {interval}
-done
-"#;
-
-fn sample_script() -> String {
-    SAMPLE_SCRIPT.replace("{interval}", &INTERVAL.as_secs().to_string())
-}
+const END: &str = "wayterm-disks:";
+const LATE: &str = "wayterm-disks-late:";
 
 /// Not storage, or always full: memory-backed, overlays, read-only images
-/// and the desktop's FUSE bridges.
-const SKIPPED_TYPES: &[&str] = &[
+/// and the desktop's FUSE bridges. The script never runs `df` on them (an
+/// autofs mount point would mount), and a path they mount over is hidden.
+pub(crate) const SKIPPED_TYPES: &[&str] = &[
     "tmpfs",
     "devtmpfs",
     "ramfs",
@@ -59,6 +39,62 @@ const SKIPPED_TYPES: &[&str] = &[
     "fuse.lxcfs",
     "fuse.snapfuse",
 ];
+
+/// Shell `case` patterns for the filesystems read by the network `df` job:
+/// network filesystems, and FUSE ones, which hang the same way when their
+/// daemon stops (`fuseblk` is a local block device).
+pub(crate) const NETWORK_TYPES: &[&str] = &[
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "ncpfs",
+    "9p",
+    "afs",
+    "ceph",
+    "glusterfs",
+    "lustre",
+    "gpfs",
+    "beegfs",
+    "orangefs",
+    "davfs",
+    "fuse",
+    "fuse.*",
+];
+
+/// Which `df` job read a filesystem.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Group {
+    Local,
+    Network,
+}
+
+impl Group {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "local" => Some(Self::Local),
+            "net" => Some(Self::Network),
+            _ => None,
+        }
+    }
+}
+
+/// A group whose `df` had not finished when the next round was due, so its
+/// figures are from `last_read` (never, when `None`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Late {
+    pub group: Group,
+    pub last_read: Option<Instant>,
+}
+
+/// The filesystems from each group's last finished `df`, and the groups
+/// whose `df` is late.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Disks {
+    pub filesystems: Vec<Filesystem>,
+    pub late: Vec<Late>,
+}
 
 /// One line of the mount table.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -207,8 +243,8 @@ pub fn parse_df(line: &str) -> Option<(String, Usage)> {
 /// The real filesystems among `mounts`, sorted by mount point, with
 /// `usage` asked of each candidate. A mount point mounted over keeps only
 /// its last mount; a device mounted at several points (bind mounts, btrfs
-/// subvolumes) keeps the shortest one that has a usage (GNU `df` lists only
-/// one of them); a zero-sized filesystem is no storage.
+/// subvolumes) keeps the shortest one that has a usage; a zero-sized
+/// filesystem is no storage.
 pub fn real_filesystems(
     mounts: &[Mount],
     mut usage: impl FnMut(&Mount) -> Option<Usage>,
@@ -244,82 +280,79 @@ pub fn real_filesystems(
     filesystems
 }
 
-/// Collects one round of the script's lines into filesystems.
+/// Builds [`Disks`] from the script's lines: the mount table of the last
+/// round, and each group's last finished `df`. The groups' lines may come
+/// interleaved, since their jobs run side by side.
 #[derive(Debug, Default)]
 pub struct Collector {
+    table: Vec<Mount>,
     mounts: Vec<Mount>,
-    df: Vec<(String, Usage)>,
+    local: GroupReads,
+    network: GroupReads,
+}
+
+#[derive(Debug, Default)]
+struct GroupReads {
+    pending: Vec<(String, Usage)>,
+    read: Vec<(String, Usage)>,
+    last_read: Option<Instant>,
+    late: bool,
 }
 
 impl Collector {
-    /// Take one line; the round's end line returns the filesystems.
-    pub fn line(&mut self, line: &str) -> Option<Vec<Filesystem>> {
+    /// Take one line; a group's end or late line returns the disks.
+    pub fn line(&mut self, line: &str) -> Option<Disks> {
         let line = line.trim_end_matches(['\n', '\r']);
         if let Some(mount) = line.strip_prefix(MOUNT) {
-            self.mounts.extend(parse_mount(mount));
-        } else if let Some(df) = line.strip_prefix(DF) {
-            self.df.extend(parse_df(df));
-        } else if line.trim() == END {
-            let mounts = std::mem::take(&mut self.mounts);
-            let df = std::mem::take(&mut self.df);
-            return Some(real_filesystems(&mounts, |mount| {
-                df.iter()
-                    .rev()
-                    .find(|(path, _)| *path == mount.path)
-                    .map(|(_, usage)| *usage)
-            }));
+            self.table.extend(parse_mount(mount));
+        } else if line.trim() == MOUNTS_END {
+            self.mounts = std::mem::take(&mut self.table);
+        } else if let Some(rest) = line.strip_prefix(DF) {
+            let (group, df) = rest.split_once(' ')?;
+            let usage = parse_df(df)?;
+            self.group(Group::parse(group)?).pending.push(usage);
+        } else if let Some(group) = line.strip_prefix(END) {
+            let reads = self.group(Group::parse(group.trim())?);
+            reads.read = std::mem::take(&mut reads.pending);
+            reads.last_read = Some(Instant::now());
+            reads.late = false;
+            return Some(self.disks());
+        } else if let Some(group) = line.strip_prefix(LATE) {
+            self.group(Group::parse(group.trim())?).late = true;
+            return Some(self.disks());
         }
         None
     }
-}
 
-// The block counts are narrower than u64 on 32-bit targets.
-#[allow(clippy::unnecessary_cast)]
-fn statvfs(path: &str) -> Option<Usage> {
-    let path = CString::new(path).ok()?;
-    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: `path` is NUL-terminated and `stat` is written on success.
-    if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
-        return None;
+    fn group(&mut self, group: Group) -> &mut GroupReads {
+        match group {
+            Group::Local => &mut self.local,
+            Group::Network => &mut self.network,
+        }
     }
-    // SAFETY: statvfs returned 0, so it filled `stat`.
-    let stat = unsafe { stat.assume_init() };
-    let block = stat.f_frsize as u64;
-    Some(Usage {
-        size: stat.f_blocks as u64 * block,
-        used: (stat.f_blocks as u64).saturating_sub(stat.f_bfree as u64) * block,
-        available: stat.f_bavail as u64 * block,
-    })
-}
 
-/// This machine's real filesystems. `statvfs` can block on a hung network
-/// mount, so this runs off the GTK thread.
-pub fn local_filesystems() -> Option<Vec<Filesystem>> {
-    let table = std::fs::read_to_string("/proc/self/mounts").ok()?;
-    let mounts: Vec<Mount> = table.lines().filter_map(parse_mount).collect();
-    Some(real_filesystems(&mounts, |mount| statvfs(&mount.path)))
-}
-
-/// Send the server's filesystems to `samples` every interval until its
-/// receiver is dropped or the server stops (`remote_script::stream`).
-pub async fn stream_server(
-    connection: Weak<SshConnection>,
-    samples: mpsc::Sender<Vec<Filesystem>>,
-) {
-    let mut collector = Collector::default();
-    remote_script::stream(
-        connection,
-        &sample_script(),
-        move |line| collector.line(line),
-        samples,
-    )
-    .await;
-}
-
-/// Send this machine's filesystems to `samples` until its receiver is
-/// dropped.
-pub async fn stream_local(samples: mpsc::Sender<Vec<Filesystem>>) {
-    sampling::poll_local(INTERVAL, local_filesystems, samples).await;
+    fn disks(&self) -> Disks {
+        let reads = [(Group::Local, &self.local), (Group::Network, &self.network)];
+        let filesystems = real_filesystems(&self.mounts, |mount| {
+            reads.iter().find_map(|(_, reads)| {
+                reads
+                    .read
+                    .iter()
+                    .rev()
+                    .find(|(path, _)| *path == mount.path)
+                    .map(|(_, usage)| *usage)
+            })
+        });
+        let late = reads
+            .iter()
+            .filter(|(_, reads)| reads.late)
+            .map(|&(group, reads)| Late {
+                group,
+                last_read: reads.last_read,
+            })
+            .collect();
+        Disks { filesystems, late }
+    }
 }
 
 #[cfg(test)]

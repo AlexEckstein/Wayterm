@@ -2,15 +2,15 @@
 
 use crate::store::model::SessionType;
 use crate::transport::bandwidth::Rate;
-use crate::transport::disks::{Filesystem, Usage};
+use crate::transport::disks::{Filesystem, Group, Usage};
 use crate::transport::load::Memory;
 use crate::transport::traffic::Savings;
 use crate::transport::types::TransportState;
 
 use super::{
-    ColorKind, FILLING, FULL, Host, SessionInfo, bandwidth_segment, cpu_segment, disk_segment,
-    elapsed_segment, endpoint_segment, format_elapsed, format_rate, format_uptime, fullness_color,
-    memory_segment, savings_segment, shorten, state_segment, uptime_segment,
+    ColorKind, FILLING, FULL, Host, SessionInfo, StaleDisks, bandwidth_segment, cpu_segment,
+    disk_segment, elapsed_segment, endpoint_segment, format_elapsed, format_rate, format_uptime,
+    fullness_color, memory_segment, savings_segment, shorten, state_segment, uptime_segment,
 };
 
 fn ssh_session() -> SessionInfo {
@@ -361,7 +361,7 @@ fn the_disk_segment_totals_and_colours_by_the_fullest() {
         filesystem("/boot", 2, 1, 1),
         filesystem("/var", 50, 46, 4),
     ];
-    let segment = disk_segment(Host::Server, &filesystems).unwrap();
+    let segment = disk_segment(Host::Server, &filesystems, &[]).unwrap();
     assert_eq!(segment.text, "Disk 67.0 GB / 97.0 GB");
     assert_eq!(segment.color, Some(FULL), "/var is 92% full; the total 70%");
     assert_eq!(
@@ -388,7 +388,7 @@ fn the_disk_segment_totals_and_colours_by_the_fullest() {
 
 #[test]
 fn one_filesystem_needs_no_total_and_room_needs_no_colour() {
-    let segment = disk_segment(Host::ThisComputer, &[filesystem("/", 45, 20, 25)]).unwrap();
+    let segment = disk_segment(Host::ThisComputer, &[filesystem("/", 45, 20, 25)], &[]).unwrap();
     assert_eq!(segment.color, None);
     assert_eq!(
         segment.tooltip,
@@ -396,9 +396,9 @@ fn one_filesystem_needs_no_total_and_room_needs_no_colour() {
          /   45%  20.0 GB used, 25.0 GB free of 45.0 GB\n\
          Sampled every 30 s"
     );
-    let filling = disk_segment(Host::Server, &[filesystem("/", 100, 85, 15)]).unwrap();
+    let filling = disk_segment(Host::Server, &[filesystem("/", 100, 85, 15)], &[]).unwrap();
     assert_eq!(filling.color, Some(FILLING));
-    assert_eq!(disk_segment(Host::Server, &[]), None);
+    assert_eq!(disk_segment(Host::Server, &[], &[]), None);
 }
 
 #[test]
@@ -412,13 +412,39 @@ fn long_mount_points_lose_their_middle() {
 
 #[test]
 fn markup_in_a_mount_point_is_escaped() {
-    let segment = disk_segment(Host::Server, &[filesystem("/mnt/a<b>&c", 10, 1, 9)]).unwrap();
+    let segment = disk_segment(Host::Server, &[filesystem("/mnt/a<b>&c", 10, 1, 9)], &[]).unwrap();
     assert!(
         segment
             .tooltip_markup
             .unwrap()
             .contains("<tt>/mnt/a&lt;b&gt;&amp;c")
     );
+}
+
+#[test]
+fn a_stale_reading_says_so_in_the_tooltip() {
+    let stale = [
+        StaleDisks {
+            group: Group::Network,
+            last_read: Some("14:02:11".to_string()),
+        },
+        StaleDisks {
+            group: Group::Local,
+            last_read: None,
+        },
+    ];
+    let segment = disk_segment(Host::Server, &[filesystem("/", 45, 20, 25)], &stale).unwrap();
+    let lines: Vec<&str> = segment.tooltip.lines().collect();
+    assert_eq!(
+        lines[lines.len() - 3..],
+        [
+            "Network filesystems not updated since 14:02:11: df has not finished (a hung mount?)",
+            "Local filesystems not read yet: df has not finished (a hung mount?)",
+            "Sampled every 30 s",
+        ]
+    );
+    assert!(segment.text.starts_with("Disk "), "the bar is unchanged");
+    assert_eq!(segment.tooltip_markup.unwrap().lines().count(), lines.len());
 }
 
 #[test]
@@ -429,7 +455,7 @@ fn a_zfs_pool_counts_once_and_colours_its_datasets() {
         dataset("/home", 300, 600),
         dataset("/var", 50, 400),
     ];
-    let segment = disk_segment(Host::Server, &filesystems).unwrap();
+    let segment = disk_segment(Host::Server, &filesystems, &[]).unwrap();
     assert_eq!(
         segment.text, "Disk 401.0 GB / 1002.0 GB",
         "the pool's 600 GB free counted once"
@@ -447,7 +473,7 @@ fn a_zfs_pool_counts_once_and_colours_its_datasets() {
     );
 
     let full = [dataset("/", 50, 50), dataset("/home", 900, 50)];
-    let segment = disk_segment(Host::Server, &full).unwrap();
+    let segment = disk_segment(Host::Server, &full, &[]).unwrap();
     assert_eq!(segment.color, Some(FULL), "the pool is 95% full");
     assert!(
         segment
