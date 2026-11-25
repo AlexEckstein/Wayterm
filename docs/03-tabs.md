@@ -263,18 +263,30 @@ per segment; the bar only renders the items in order:
 | State | a colored dot (green connected, yellow connecting/verifying/authenticating/reconnecting, red disconnected or failed) and the state ("Connected", "Reconnecting (attempt 2)…", an error's message) | the state with the endpoint ("Connected to example.com:22"); an error's whole message, which the bar may cut short |
 | Endpoint | `host:port`; a local or serial tab's transport description (shell path, `device@baud`) | the session's name and type, then host, port, user and jump host, or the shell or serial line |
 | Time connected | `m:ss`, `h:mm:ss` from an hour on, while connected | the local time the connection came up |
-| CPU | how busy the host's CPUs were over the last 2 s ("CPU 12%"): an SSH tab's server (doc 04 §Server figures) or a local shell's machine (doc 06 §Local shell) | whose CPU ("Server", "This computer"), the core count and the 1, 5 and 15 minute load averages |
+| CPU | how busy the host's CPUs were over the last 2 s ("CPU 12%"): an SSH tab's server (doc 04 §Server figures) or a local shell's machine (doc 06 §Local shell) | the core count and the 1, 5 and 15 minute load averages |
 | RAM | the share of the host's memory in use, what is not available ("RAM 41%") | the memory used, total and available, and the swap used |
 | Disk | the total used and size across the host's real filesystems ("Disk 66.4 GB / 96.0 GB"), coloured by the fullest one: amber from 80 %, red from 90 % | a line per filesystem (mount point, use %, used, free, size), each coloured by its own fullness, then the total; a ZFS dataset shows its used space and its pool's free space, and is as full as its pool; when a group's `df` has not finished by the next round (a hung mount), which group, local or network, is not up to date and since when |
-| Bandwidth | the traffic on the host's default-route interface, received and sent, in bits per second scaled to fit ("↓ 1.5 Mbit/s ↑ 200 bit/s"): an SSH tab's server (doc 04 §Server figures) or a local shell's machine (doc 06 §Local shell) | whose network ("Server", "This computer"), the interface, and that it counts all traffic on it |
-| Uptime | how long an SSH tab's server has been up once it answered (doc 04 §Server figures), or a local shell's machine (doc 06 §Local shell): "Up 12d 4h", `5h 12m`, `42m` | whose uptime ("Server", "This computer"), the full duration and the local time it booted |
+| Bandwidth | the traffic on the host's default-route interface, received and sent, in bits per second scaled to fit ("↓ 1.5 Mbit/s ↑ 200 bit/s"): an SSH tab's server (doc 04 §Server figures) or a local shell's machine (doc 06 §Local shell) | the interface, the rates received and sent, and that it counts all traffic on the interface |
+| Uptime | how long an SSH tab's server has been up once it answered (doc 04 §Server figures), or a local shell's machine (doc 06 §Local shell): "Up 12d 4h", `5h 12m`, `42m` | the full duration ("Uptime: 12 days, 4 hours, 7 minutes") and the local time it booted |
 | Compression | what compression saves on an SSH connection once measured ("Compression saves 53%", doc 04 §Compression savings) | the bytes received and the uncompressed estimate |
 
 The state and the endpoint sit on the left, the CPU, RAM, disk,
 bandwidth, uptime, time and saving on the right. A segment with nothing
 to show is hidden, and a separator shows only between two shown segments
-on the same side. The time and the host figures' digits are tabular, so
-the ticking figures keep their width. The disk segment's colour follows
+on the same side. The host figures' tooltips (CPU, RAM, disk, bandwidth,
+uptime) open with the machine in bold, the server's host name or "This
+computer", over `Label: value` lines, and do not wrap, so the disk table
+keeps one filesystem per line; only the state's tooltip, which may carry
+a long error message, wraps.
+
+A segment whose figure changes holds its width, so a changing figure
+never moves its neighbours: `Item::widest` lists the widest texts each
+field can show (the formatters' output at their widest, such as "CPU
+100%" or "↓ 99.9 Mbit/s"), and the bar measures them in its own font and
+reserves that width, measuring again when the font changes. Their digits
+are tabular, so any figure of the same shape is as wide. The bandwidth's
+received and sent rates are each a field of their own, so neither arrow
+moves; the state and the endpoint take their own width. The disk segment's colour follows
 its fullest filesystem rather than the total, so one filling filesystem
 warns even when the total has room. While connected the bar ticks every second, reading the time from
 when the page published Connected, and the uptime and saving from the
@@ -343,3 +355,5 @@ alert's, so repeated alerts replace each other.
   own.
 - The status bar's tooltips need a pointer: its segments take no
   keyboard focus, so their detail is not reachable from the keyboard.
+- A figure past its segment's widest text (100 hours connected, 1000
+  days up) still widens the segment and moves its neighbours.

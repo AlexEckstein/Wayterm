@@ -188,23 +188,23 @@ fn uptime_reads_in_the_two_largest_units() {
 
 #[test]
 fn the_uptime_tooltip_spells_out_the_duration_and_boot() {
-    let segment = uptime_segment(
-        Host::Server,
-        12 * 86_400 + 4 * 3600 + 7 * 60,
-        "11/11/26 10:02:11",
-    );
+    let segment = uptime_segment("db", 12 * 86_400 + 4 * 3600 + 7 * 60, "11/11/26 10:02:11");
     assert_eq!(segment.text, "Up 12d 4h");
     assert_eq!(
         segment.tooltip,
-        "Server up 12 days, 4 hours, 7 minutes\nBooted 11/11/26 10:02:11"
+        "db\nUptime: 12 days, 4 hours, 7 minutes\nBooted: 11/11/26 10:02:11"
     );
     assert_eq!(
-        uptime_segment(Host::Server, 86_400 + 60, "").tooltip,
-        "Server up 1 day, 1 minute"
+        segment.tooltip_markup.as_deref(),
+        Some("<b>db</b>\nUptime: 12 days, 4 hours, 7 minutes\nBooted: 11/11/26 10:02:11")
     );
     assert_eq!(
-        uptime_segment(Host::ThisComputer, 30, "").tooltip,
-        "This computer up less than a minute"
+        uptime_segment("db", 86_400 + 60, "").tooltip,
+        "db\nUptime: 1 day, 1 minute"
+    );
+    assert_eq!(
+        uptime_segment("This computer", 30, "").tooltip,
+        "This computer\nUptime: less than a minute"
     );
 }
 
@@ -226,24 +226,22 @@ fn rates_are_bits_in_the_unit_that_fits() {
 }
 
 #[test]
-fn the_bandwidth_segment_names_the_interface_and_whose_it_is() {
+fn the_bandwidth_segment_names_the_interface_in_two_fields() {
     let rate = Rate {
         interface: "ens3".to_string(),
         rx_per_sec: 187_500,
         tx_per_sec: 25,
     };
-    let segment = bandwidth_segment(Host::Server, &rate);
+    let segment = bandwidth_segment("db", &rate);
     assert_eq!(segment.text, "↓ 1.5 Mbit/s ↑ 200 bit/s");
+    assert_eq!(segment.fields, ["↓ 1.5 Mbit/s", "↑ 200 bit/s"]);
     assert_eq!(
         segment.tooltip,
-        "Server network, ens3 (the default route)\n\
-         Receiving 1.5 Mbit/s, sending 200 bit/s\n\
+        "db\n\
+         Interface: ens3 (the default route)\n\
+         Receiving: 1.5 Mbit/s\n\
+         Sending: 200 bit/s\n\
          All traffic on the interface, sampled every 2 s"
-    );
-    assert!(
-        bandwidth_segment(Host::ThisComputer, &rate)
-            .tooltip
-            .starts_with("This computer network, ens3")
     );
 }
 
@@ -294,19 +292,20 @@ fn fullness_turns_amber_at_80_and_red_at_90() {
 #[test]
 fn the_cpu_segment_adds_cores_and_load_averages() {
     let averages = ["0.52", "0.48", "0.40"].map(str::to_string);
-    let segment = cpu_segment(Host::Server, 12, 4, &averages);
+    let segment = cpu_segment("db", 12, 4, &averages);
     assert_eq!(segment.text, "CPU 12%");
     assert_eq!(
         segment.tooltip,
-        "Server CPU 12% busy, 4 cores\n\
-         Load average 0.52, 0.48, 0.40 (1, 5, 15 min)\n\
+        "db\n\
+         CPU: 12% busy, 4 cores\n\
+         Load average: 0.52, 0.48, 0.40 (1, 5, 15 min)\n\
          Sampled every 2 s"
     );
     assert_eq!(segment.color, None, "only the disks warn");
     assert!(
-        cpu_segment(Host::ThisComputer, 0, 1, &averages)
+        cpu_segment("db", 0, 1, &averages)
             .tooltip
-            .starts_with("This computer CPU 0% busy, 1 core\n")
+            .contains("\nCPU: 0% busy, 1 core\n")
     );
 }
 
@@ -319,22 +318,24 @@ fn the_memory_segment_counts_what_is_not_available() {
         swap_total: 2 * GIB,
         swap_free: 2 * GIB - 512 * 1024 * 1024,
     };
-    let segment = memory_segment(Host::Server, &memory).unwrap();
+    let segment = memory_segment("db", &memory).unwrap();
     assert_eq!(segment.text, "RAM 38%");
     assert_eq!(
         segment.tooltip,
-        "Server memory: 3.0 GB used of 8.0 GB (38%)\n5.0 GB available\n\
+        "db\n\
+         Memory: 3.0 GB used of 8.0 GB (38%)\n\
+         Available: 5.0 GB\n\
          Swap: 512.0 MB used of 2.0 GB"
     );
     memory.swap_total = 0;
     assert!(
-        memory_segment(Host::Server, &memory)
+        memory_segment("db", &memory)
             .unwrap()
             .tooltip
-            .ends_with("\nNo swap")
+            .ends_with("\nSwap: none")
     );
     memory.total = 0;
-    assert_eq!(memory_segment(Host::Server, &memory), None);
+    assert_eq!(memory_segment("db", &memory), None);
 }
 
 fn filesystem(mount: &str, size_gib: u64, used_gib: u64, available_gib: u64) -> Filesystem {
@@ -364,12 +365,12 @@ fn the_disk_segment_totals_and_colours_by_the_fullest() {
         filesystem("/boot", 2, 1, 1),
         filesystem("/var", 50, 46, 4),
     ];
-    let segment = disk_segment(Host::Server, &filesystems, &[]).unwrap();
+    let segment = disk_segment("db", &filesystems, &[]).unwrap();
     assert_eq!(segment.text, "Disk 67.0 GB / 97.0 GB");
     assert_eq!(segment.color, Some(FULL), "/var is 92% full; the total 70%");
     assert_eq!(
         segment.tooltip,
-        "Server filesystems\n\
+        "db\n\
          /       45%  20.0 GB used, 25.0 GB free of 45.0 GB\n\
          /boot   50%  1.0 GB used, 1.0 GB free of 2.0 GB\n\
          /var    92%  46.0 GB used, 4.0 GB free of 50.0 GB\n\
@@ -379,7 +380,7 @@ fn the_disk_segment_totals_and_colours_by_the_fullest() {
     assert_eq!(
         segment.tooltip_markup.as_deref(),
         Some(
-            "Server filesystems\n\
+            "<b>db</b>\n\
              <tt>/       45%  20.0 GB used, 25.0 GB free of 45.0 GB</tt>\n\
              <tt>/boot   50%  1.0 GB used, 1.0 GB free of 2.0 GB</tt>\n\
              <tt><span foreground=\"#e0443e\">/var    92%  46.0 GB used, 4.0 GB free of 50.0 GB</span></tt>\n\
@@ -391,17 +392,17 @@ fn the_disk_segment_totals_and_colours_by_the_fullest() {
 
 #[test]
 fn one_filesystem_needs_no_total_and_room_needs_no_colour() {
-    let segment = disk_segment(Host::ThisComputer, &[filesystem("/", 45, 20, 25)], &[]).unwrap();
+    let segment = disk_segment("This computer", &[filesystem("/", 45, 20, 25)], &[]).unwrap();
     assert_eq!(segment.color, None);
     assert_eq!(
         segment.tooltip,
-        "This computer filesystems\n\
+        "This computer\n\
          /   45%  20.0 GB used, 25.0 GB free of 45.0 GB\n\
          Sampled every 30 s"
     );
-    let filling = disk_segment(Host::Server, &[filesystem("/", 100, 85, 15)], &[]).unwrap();
+    let filling = disk_segment("db", &[filesystem("/", 100, 85, 15)], &[]).unwrap();
     assert_eq!(filling.color, Some(FILLING));
-    assert_eq!(disk_segment(Host::Server, &[], &[]), None);
+    assert_eq!(disk_segment("db", &[], &[]), None);
 }
 
 #[test]
@@ -415,7 +416,7 @@ fn long_mount_points_lose_their_middle() {
 
 #[test]
 fn markup_in_a_mount_point_is_escaped() {
-    let segment = disk_segment(Host::Server, &[filesystem("/mnt/a<b>&c", 10, 1, 9)], &[]).unwrap();
+    let segment = disk_segment("db", &[filesystem("/mnt/a<b>&c", 10, 1, 9)], &[]).unwrap();
     assert!(
         segment
             .tooltip_markup
@@ -436,7 +437,7 @@ fn a_stale_reading_says_so_in_the_tooltip() {
             last_read: None,
         },
     ];
-    let segment = disk_segment(Host::Server, &[filesystem("/", 45, 20, 25)], &stale).unwrap();
+    let segment = disk_segment("db", &[filesystem("/", 45, 20, 25)], &stale).unwrap();
     let lines: Vec<&str> = segment.tooltip.lines().collect();
     assert_eq!(
         lines[lines.len() - 3..],
@@ -458,7 +459,7 @@ fn a_zfs_pool_counts_once_and_colours_its_datasets() {
         dataset("/home", 300, 600),
         dataset("/var", 50, 400),
     ];
-    let segment = disk_segment(Host::Server, &filesystems, &[]).unwrap();
+    let segment = disk_segment("db", &filesystems, &[]).unwrap();
     assert_eq!(
         segment.text, "Disk 401.0 GB / 1002.0 GB",
         "the pool's 600 GB free counted once"
@@ -466,7 +467,7 @@ fn a_zfs_pool_counts_once_and_colours_its_datasets() {
     assert_eq!(segment.color, None);
     assert_eq!(
         segment.tooltip,
-        "Server filesystems\n\
+        "db\n\
          /       40%  50.0 GB used, 600.0 GB free in pool tank\n\
          /boot   50%  1.0 GB used, 1.0 GB free of 2.0 GB\n\
          /home   40%  300.0 GB used, 600.0 GB free in pool tank\n\
@@ -476,7 +477,7 @@ fn a_zfs_pool_counts_once_and_colours_its_datasets() {
     );
 
     let full = [dataset("/", 50, 50), dataset("/home", 900, 50)];
-    let segment = disk_segment(Host::Server, &full, &[]).unwrap();
+    let segment = disk_segment("db", &full, &[]).unwrap();
     assert_eq!(segment.color, Some(FULL), "the pool is 95% full");
     assert!(
         segment
@@ -563,14 +564,58 @@ fn each_item_waits_for_its_figure() {
     );
     assert_eq!(
         Item::Cpu.segment(&tab, &live).unwrap().tooltip,
-        cpu_segment(
-            Host::Server,
-            5,
-            4,
-            &["0.1", "0.2", "0.3"].map(str::to_string)
-        )
-        .tooltip,
+        cpu_segment("db", 5, 4, &["0.1", "0.2", "0.3"].map(str::to_string)).tooltip,
+        "headed with the server's host name"
     );
+    live.host.as_mut().unwrap().of = Host::ThisComputer;
+    assert!(
+        Item::Cpu
+            .segment(&tab, &live)
+            .unwrap()
+            .tooltip
+            .starts_with("This computer\n")
+    );
+}
+
+/// A text with its digits as `9`s: with tabular digits, as wide.
+fn shape(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_ascii_digit() { '9' } else { c })
+        .collect()
+}
+
+#[test]
+fn the_widest_texts_cover_the_formats() {
+    let widest = |item: Item| -> Vec<Vec<String>> {
+        item.widest()
+            .iter()
+            .map(|texts| texts.iter().map(|text| shape(text)).collect())
+            .collect()
+    };
+    assert!(Item::State.widest().is_empty() && Item::Endpoint.widest().is_empty());
+    assert_eq!(widest(Item::Cpu), [["CPU 999%"]]);
+    assert_eq!(widest(Item::Memory), [["RAM 999%"]]);
+    assert_eq!(widest(Item::Elapsed), [["99:99:99"]]);
+    assert_eq!(widest(Item::Savings), [["Compression saves 999%"]]);
+    assert_eq!(widest(Item::Uptime), [["Up 99h 99m", "Up 999d 99h"]]);
+    let rates = [
+        "999 bit/s",
+        "99.9 kbit/s",
+        "99.9 Mbit/s",
+        "99.9 Gbit/s",
+        "99.9 Tbit/s",
+    ];
+    assert_eq!(
+        widest(Item::Bandwidth),
+        [
+            rates.map(|rate| format!("↓ {rate}")),
+            rates.map(|rate| format!("↑ {rate}"))
+        ]
+    );
+    let disk = &widest(Item::Disk)[0];
+    assert_eq!(disk.len(), 36, "each pair of units");
+    assert!(disk.contains(&"Disk 9999 B / 9999.9 PB".to_string()));
+    assert!(disk.contains(&"Disk 9999.9 GB / 9999.9 GB".to_string()));
 }
 
 #[test]
