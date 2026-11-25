@@ -389,44 +389,53 @@ fn shorten(mount: &str) -> String {
     format!("{head}…{tail}")
 }
 
-/// The total across a host's filesystems, coloured by the fullest one, so
-/// a filling filesystem warns even when the total has room. The tooltip
-/// has a line per filesystem, each coloured by its own fullness, and the
-/// total. `None` without filesystems.
+/// The total across a host's filesystems (a ZFS pool once), coloured by
+/// the fullest one, so a filling filesystem warns even when the total has
+/// room. The tooltip has a line per filesystem, each coloured by its own
+/// fullness, and the total. `None` without filesystems.
 pub fn disk_segment(of: Host, filesystems: &[Filesystem]) -> Option<Segment> {
-    let fullest = filesystems.iter().map(|f| f.usage.percent()).max()?;
-    let total = filesystems
-        .iter()
-        .fold(Usage::default(), |sum, f| sum + f.usage);
-    let mut rows: Vec<(String, Usage)> = filesystems
-        .iter()
-        .map(|f| (shorten(&f.mount), f.usage))
-        .collect();
-    if rows.len() > 1 {
-        rows.push(("Total".to_string(), total));
-    }
-    let width = rows
-        .iter()
-        .map(|(name, _)| name.chars().count())
-        .max()
-        .unwrap_or(0);
-    let line = |name: &str, usage: &Usage| {
+    let fullest = filesystems.iter().map(|f| f.percent(filesystems)).max()?;
+    let total = disks::total_usage(filesystems);
+    let describe = |usage: &Usage| {
         format!(
-            "{name:<width$}  {:>4}  {} used, {} free of {}",
-            format!("{}%", usage.percent()),
+            "{} used, {} free of {}",
             format_size(usage.used),
             format_size(usage.available),
             format_size(usage.size),
         )
     };
+    // A ZFS dataset has no size of its own: it shows its used space and
+    // its pool's free space.
+    let mut rows: Vec<(String, u8, String)> = filesystems
+        .iter()
+        .map(|f| {
+            let detail = match &f.pool {
+                Some(pool) => format!(
+                    "{} used, {} free in pool {pool}",
+                    format_size(f.usage.used),
+                    format_size(disks::pool_usage(filesystems, pool).available),
+                ),
+                None => describe(&f.usage),
+            };
+            (shorten(&f.mount), f.percent(filesystems), detail)
+        })
+        .collect();
+    if rows.len() > 1 {
+        rows.push(("Total".to_string(), total.percent(), describe(&total)));
+    }
+    let width = rows
+        .iter()
+        .map(|(name, _, _)| name.chars().count())
+        .max()
+        .unwrap_or(0);
     let heading = format!("{} filesystems", host_name(of));
     let footer = format!("Sampled every {} s", disks::INTERVAL.as_secs());
     let mut tooltip = vec![heading.clone()];
     let mut markup = vec![glib::markup_escape_text(&heading).to_string()];
-    for (name, usage) in &rows {
-        let text = line(name, usage);
+    for (name, percent, detail) in &rows {
+        let text = format!("{name:<width$}  {:>4}  {detail}", format!("{percent}%"));
         let escaped = glib::markup_escape_text(&text);
-        markup.push(match fullness_color(usage.percent()) {
+        markup.push(match fullness_color(*percent) {
             Some(color) => format!("<tt><span foreground=\"{color}\">{escaped}</span></tt>"),
             None => format!("<tt>{escaped}</tt>"),
         });

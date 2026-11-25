@@ -2,7 +2,8 @@
 //! over a script on the server for SSH tabs (doc 04 §Server load and
 //! disks), with `statvfs` on this machine for local shells (doc 06 §Local
 //! shell). Only real storage counts: memory-backed, overlay and read-only
-//! image filesystems are skipped, and a device mounted twice counts once.
+//! image filesystems are skipped, a device mounted twice counts once, and
+//! the datasets of a ZFS pool share its free space.
 
 use std::collections::HashSet;
 use std::ffi::CString;
@@ -103,6 +104,50 @@ impl std::ops::Add for Usage {
 pub struct Filesystem {
     pub mount: String,
     pub usage: Usage,
+    /// The ZFS pool a dataset belongs to. Every dataset reports the pool's
+    /// free space as its own, so a pool's space is reckoned across them.
+    pub pool: Option<String>,
+}
+
+impl Filesystem {
+    /// How full it is: a ZFS dataset is as full as its pool.
+    pub fn percent(&self, all: &[Filesystem]) -> u8 {
+        match &self.pool {
+            Some(pool) => pool_usage(all, pool).percent(),
+            None => self.usage.percent(),
+        }
+    }
+}
+
+/// The space `pool`'s datasets among `filesystems` share: their used space
+/// summed, and the pool's free space once. A quota only lowers what a
+/// dataset reports free, so the largest is the pool's.
+pub fn pool_usage(filesystems: &[Filesystem], pool: &str) -> Usage {
+    let datasets = filesystems
+        .iter()
+        .filter(|f| f.pool.as_deref() == Some(pool));
+    let (used, available) = datasets.fold((0, 0), |(used, available), f| {
+        (used + f.usage.used, available.max(f.usage.available))
+    });
+    Usage {
+        size: used + available,
+        used,
+        available,
+    }
+}
+
+/// The total across `filesystems`, each ZFS pool counted once.
+pub fn total_usage(filesystems: &[Filesystem]) -> Usage {
+    let mut pools = HashSet::new();
+    filesystems
+        .iter()
+        .filter_map(|f| match &f.pool {
+            None => Some(f.usage),
+            Some(pool) => pools
+                .insert(pool.as_str())
+                .then(|| pool_usage(filesystems, pool)),
+        })
+        .fold(Usage::default(), |sum, usage| sum + usage)
 }
 
 /// The kernel escapes space, tab, newline and backslash as `\ooo`.
@@ -188,6 +233,10 @@ pub fn real_filesystems(
             Some(Filesystem {
                 mount: mount.path.clone(),
                 usage,
+                pool: (mount.kind == "zfs").then(|| {
+                    let pool = mount.device.split('/').next().unwrap_or_default();
+                    pool.to_string()
+                }),
             })
         })
         .collect();

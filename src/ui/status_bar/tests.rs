@@ -343,6 +343,14 @@ fn filesystem(mount: &str, size_gib: u64, used_gib: u64, available_gib: u64) -> 
             used: used_gib * GIB,
             available: available_gib * GIB,
         },
+        pool: None,
+    }
+}
+
+fn dataset(mount: &str, used_gib: u64, available_gib: u64) -> Filesystem {
+    Filesystem {
+        pool: Some("tank".to_string()),
+        ..filesystem(mount, used_gib + available_gib, used_gib, available_gib)
     }
 }
 
@@ -410,5 +418,42 @@ fn markup_in_a_mount_point_is_escaped() {
             .tooltip_markup
             .unwrap()
             .contains("<tt>/mnt/a&lt;b&gt;&amp;c")
+    );
+}
+
+#[test]
+fn a_zfs_pool_counts_once_and_colours_its_datasets() {
+    let filesystems = [
+        dataset("/", 50, 600),
+        filesystem("/boot", 2, 1, 1),
+        dataset("/home", 300, 600),
+        dataset("/var", 50, 400),
+    ];
+    let segment = disk_segment(Host::Server, &filesystems).unwrap();
+    assert_eq!(
+        segment.text, "Disk 401.0 GB / 1002.0 GB",
+        "the pool's 600 GB free counted once"
+    );
+    assert_eq!(segment.color, None);
+    assert_eq!(
+        segment.tooltip,
+        "Server filesystems\n\
+         /       40%  50.0 GB used, 600.0 GB free in pool tank\n\
+         /boot   50%  1.0 GB used, 1.0 GB free of 2.0 GB\n\
+         /home   40%  300.0 GB used, 600.0 GB free in pool tank\n\
+         /var    40%  50.0 GB used, 600.0 GB free in pool tank\n\
+         Total   41%  401.0 GB used, 601.0 GB free of 1002.0 GB\n\
+         Sampled every 30 s"
+    );
+
+    let full = [dataset("/", 50, 50), dataset("/home", 900, 50)];
+    let segment = disk_segment(Host::Server, &full).unwrap();
+    assert_eq!(segment.color, Some(FULL), "the pool is 95% full");
+    assert!(
+        segment
+            .tooltip_markup
+            .unwrap()
+            .contains("<span foreground=\"#e0443e\">/       95%  50.0 GB used"),
+        "a small dataset in a full pool warns too"
     );
 }
