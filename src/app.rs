@@ -99,14 +99,15 @@ fn build_ui(app: &gtk4::Application) {
     let window = main_window.window();
     let tray_available = match tray::init_tray(app) {
         Ok(handle) => {
+            let available = handle.availability();
             // The handle keeps the D-Bus service alive with the window.
             crate::ui::widgets::set_data(window, "wayterm-tray-handle", handle);
-            true
+            available
         }
         Err(err) => {
-            // Headless or no tray host: closing the window quits.
+            // Headless: closing the window quits.
             tracing::info!(error = %err, "tray unavailable; close will quit");
-            false
+            Rc::new(std::cell::Cell::new(false))
         }
     };
     tray::install_close_handler(window, tray_available, store);

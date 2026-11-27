@@ -80,7 +80,7 @@ cargo build --release --no-default-features
 | Store | SQLite (rusqlite) | sessions, settings, hotkey overrides, macros |
 | Secrets | OS keyring (libsecret) | never in the database |
 | RDP, VNC | xfreerdp 3 + X11 reparenting; vnc-rs | a crash stays in xfreerdp; pure Rust, tokio-native RFB (doc 08) |
-| Tray | StatusNotifierItem via ksni | no GTK3 dependency |
+| Tray | StatusNotifierItem over gio's D-Bus | no GTK3 dependency; served on the GTK main loop |
 
 ## Design documents
 

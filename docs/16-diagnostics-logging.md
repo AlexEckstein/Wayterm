@@ -53,7 +53,7 @@ not captured either.
 | Module | Events |
 |---|---|
 | `logging` | the init result: the log file in use, or that logging is stderr only |
-| `app` | start (with the version) and shutdown; the custom-hotkey load report (doc 11 §Persistence); a tray that failed to start (doc 03 §Tray) |
+| `app` | start (with the version) and shutdown; the custom-hotkey load report (doc 11 §Persistence); a tray that failed to start, with no session bus (doc 03 §Tray) |
 | `store::db` | the store opened, with how long it took; the schema ready, with its time and whether the seed ran (doc 09 §Database); a store that failed to open; a settings row that could not be read |
 | `transport::supervisor` | a dial starting and how it ended (connected, or the connect error); a pooled connection found closed and evicted; the last consumer's release and the disconnect that follows; the supervisor going away (doc 04 §Connection supervisor) |
 | `transport::connection` | authentication succeeding, failing (with the chain's reason) or being cancelled; a rejected host key or host certificate; a disconnect |
@@ -67,7 +67,7 @@ not captured either.
 | `terminal::options` | a color row that is not `#rrggbb`, with its key and value; a blank row is unset, not logged (doc 02 §View options) |
 | `terminal::ghostty` | a program's clipboard write that was dropped, with its size and never its contents; a link refused or failing to open, without the URI; a color scheme the engine refused (doc 02 §GhosttyBackend) |
 | `ui::appearance` | a scheme row (`default_color_scheme`, `vte.color_scheme`, `ghostty.color_scheme`) naming no scheme, with its key and value, and a session's override naming none, with the session's id and value, when its terminal is set up (doc 02 §Color schemes); the desktop's light/dark preference changing; no session bus, settings portal or theme directory watch to follow, and a GTK that cannot take the window's theme variant (doc 13 §Window theme) |
-| `ui::main_window`, `ui::icons`, `ui::tray` | a session that failed to load, tunnel rules or SFTP columns that failed to save; shortcuts with no action behind them (doc 11 §Handlers); built-in icons or the tray pixmap that failed to load |
+| `ui::main_window`, `ui::icons`, `ui::tray` | a session that failed to load, tunnel rules or SFTP columns that failed to save; shortcuts with no action behind them (doc 11 §Handlers); built-in icons or the tray pixmap that failed to load; no tray watcher or host to show the icon, and the watcher leaving (doc 03 §Tray) |
 | `ui::tabs` | a saved tab list that could not be read or saved, and a saved tab whose session is gone (doc 03 §Restoring tabs); reconnect or disconnect on a tab with no live transport; an accepted host key that was not saved to its session; an RDP certificate's trust that was not recorded, and an RDP window that cannot be resized (doc 08 §RDP); a notice's "don't show again" that failed to save; a tab bar without a tab strip |
 | `ui::dialogs::host_picker` | sessions that failed to list or load for New Tab |
 | `ui::panels` | the session tree or the macros failing to load; a tree change — a move, an edit, a delete — that failed; a keyring entry that was not deleted with its session (doc 05 §Saving and deleting) |

@@ -119,6 +119,13 @@ Highlights:
   format (`src/transfer/tests.rs`).
 - **SFTP sidebar, Tunnels dialog, session dialog, host picker, tab state,
   status bar, tray:** their display-free models.
+- **Tray over D-Bus:** the item's and the menu's calls and properties as
+  plain functions (`src/ui/tray/sni.rs`), every declared property's type
+  checked against the introspection; then each test on its own private
+  `dbus-daemon` against a fake StatusNotifierWatcher: what a host reads,
+  a click and a left-click reaching the app, registering with a watcher
+  that appears late, going unavailable when it leaves or reports no host
+  (`tests/tray_dbus.rs`, skipped without `dbus-daemon`).
 - **Local file task:** listing (links, order), mkdir, rename, delete and
   both copies against a temporary directory, the refusals that keep a
   file from being replaced or emptied and a FIFO from being waited on,
