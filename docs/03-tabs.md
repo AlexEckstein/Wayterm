@@ -266,16 +266,28 @@ status router shows only the current page's updates.
 
 ## Tray
 
-`src/ui/tray.rs`: a StatusNotifierItem over D-Bus via `ksni` (pure Rust,
-on its own small tokio runtime), with the app icon sent as pixels so it
-shows even when Wayterm is not installed. Left-click restores the window;
-the menu offers Open Wayterm, New Session and Quit. Menu clicks are queued
-and run on the GTK main thread.
+`src/ui/tray.rs` and `src/ui/tray/sni.rs`: a StatusNotifierItem
+(`org.kde.StatusNotifierItem` at `/StatusNotifierItem`) and its menu
+(`com.canonical.dbusmenu` at `/MenuBar`) over gio's D-Bus, with the app
+icon sent as pixels so it shows even when Wayterm is not installed. gio
+answers the host's calls on the GTK main context, so clicks run there
+with no queue or runtime of their own. Left-click restores the window;
+the menu offers Open Wayterm, New Session and Quit. The item and the
+menu never change, so no change signal is sent.
 
-When the main window closes and `minimize_to_tray` is on (the default), it
-hides instead of quitting. Without a session bus or a tray host (headless,
-GNOME without the AppIndicator extension) the tray fails to start, which
-is never fatal: closing the window quits.
+The item owns `org.kde.StatusNotifierItem-<pid>-1` and registers with
+`org.kde.StatusNotifierWatcher` in the background, never auto-starting
+one; it counts as available once the watcher has taken it and reports a
+host (`IsStatusNotifierHostRegistered`). A watcher that appears later,
+as when the panel restarts, gets the item again.
+
+When the main window closes, the tray is available and
+`minimize_to_tray` is on (the default), it hides instead of quitting;
+both are read at each close. Without a session bus the tray fails to
+start; without a watcher or a host (headless, GNOME without the
+AppIndicator extension) it never becomes available, and goes back to
+unavailable when the watcher leaves. Neither is fatal: closing the
+window quits.
 
 A dropped connection posts a desktop notification through
 `gio::Notification`: "Wayterm" / "`session` connection lost".
@@ -299,5 +311,9 @@ alert's, so repeated alerts replace each other.
 - Only global shortcuts reach RDP and VNC tabs; there is no per-tab
   shortcut context for them (doc 11 §Dispatch).
 - Reconnect is never automatic after `SessionEnded`, by design.
+- The tray answers `ProvideXdgActivationToken` but does not use the
+  token, so on Wayland a restored window may not take focus.
+- A host that registers after the item was registered does not make the
+  tray available; only a new watcher does.
 - The Ghostty backend's grid is not measured before connecting: its
   transport opens at 24×80 and resizes on the first allocation.
