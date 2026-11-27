@@ -189,10 +189,10 @@ The enum is a module boundary (AGENTS.md).
   bar shows the requested path; browsing starts at `.`, the SFTP home,
   unless the shell's directory is known by then. From `.` the `..` row
   lists `..`, then `../..`, which the server resolves against the home.
-- `Delete` stats first: russh-sftp 3 splits removal into file and
+- `Delete` stats first: russh-sftp 4 splits removal into file and
   directory calls (directories must be empty).
 
-russh-sftp 3.0 anchors: `SftpSession::new(channel.into_stream())`;
+russh-sftp 4.0 anchors: `SftpSession::new(channel.into_stream())`;
 `read_dir` is a sync iterator; `remove_file`/`remove_dir`; async
 `File::close`.
 
