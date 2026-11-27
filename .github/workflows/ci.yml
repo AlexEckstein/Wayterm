@@ -115,7 +115,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgtk-4-dev libvte-2.91-gtk4-dev \
             libsqlite3-dev libsecret-1-dev \
-            openssh-server xvfb
+            openssh-server xvfb dbus-daemon
 
       - name: Install Rust toolchain
         run: |
@@ -215,7 +215,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgtk-4-dev libvte-2.91-gtk4-dev \
-            libsqlite3-dev libsecret-1-dev
+            libsqlite3-dev libsecret-1-dev \
+            dbus-daemon
 
       - name: Install Rust toolchain
         run: |
