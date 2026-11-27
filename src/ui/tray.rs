@@ -1,10 +1,11 @@
 //! Tray icon and desktop notifications (doc 03 §Tray, doc 02 §Desktop
 //! notifications).
 //!
-//! The icon is a StatusNotifierItem over D-Bus via `ksni` (pure Rust,
-//! tokio-native); notifications go through `gio::Notification`. Without a
-//! session bus or a tray host (headless CI, GNOME without the AppIndicator
-//! extension) [`init_tray`] fails and closing the window simply quits.
+//! The icon is a StatusNotifierItem over gio's D-Bus ([`sni`]), served
+//! on the GTK main context; notifications go through `gio::Notification`.
+//! Without a session bus [`init_tray`] fails; without a tray host
+//! (headless CI, GNOME without the AppIndicator extension) the item never
+//! becomes available. Either way closing the window simply quits.
 //!
 //! Manual check: `xvfb-run -a timeout 10 cargo run` exits 124 without a
 //! panic. On a desktop with a tray: left-click restores the window, the
@@ -12,14 +13,13 @@
 //! `minimize_to_tray` is on), and a dropped session posts
 //! "`<session>` connection lost".
 
-use std::cell::RefCell;
+pub mod sni;
+
 use std::rc::Rc;
-use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
-use ksni::TrayMethods as _;
 
 use crate::store::SessionStore;
 
@@ -37,8 +37,16 @@ pub const TRAY_ICON_NAME: &str = crate::app::APP_ID;
 const TRAY_ICON_PNG: &[u8] =
     include_bytes!("../../assets/icons/hicolor/64x64/apps/com.alex-eckstein.wayterm.png");
 
-/// `TRAY_ICON_PNG` as an SNI pixmap: ARGB32 in network byte order.
-pub fn tray_icon_pixmap() -> Result<ksni::Icon, glib::Error> {
+/// An SNI pixmap: ARGB32 in network byte order, row by row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrayIcon {
+    pub width: i32,
+    pub height: i32,
+    pub data: Vec<u8>,
+}
+
+/// `TRAY_ICON_PNG` as an SNI pixmap.
+pub fn tray_icon_pixmap() -> Result<TrayIcon, glib::Error> {
     let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_static(TRAY_ICON_PNG));
     let pixbuf = gtk4::gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE)?;
     let (width, height) = (pixbuf.width(), pixbuf.height());
@@ -50,7 +58,7 @@ pub fn tray_icon_pixmap() -> Result<ksni::Icon, glib::Error> {
         .flat_map(|row| row[..row_len].as_chunks::<4>().0)
         .flat_map(|&[r, g, b, a]| [a, r, g, b])
         .collect();
-    Ok(ksni::Icon {
+    Ok(TrayIcon {
         width,
         height,
         data,
@@ -175,113 +183,62 @@ impl NotificationLimit {
 /// Never fatal: the caller falls back to quit-on-close.
 #[derive(Debug, thiserror::Error)]
 pub enum TrayInitError {
-    #[error("tray runtime failed: {0}")]
-    Runtime(#[from] std::io::Error),
-    /// No D-Bus, or no StatusNotifierWatcher.
+    /// No session bus, or the item could not be exported on it.
     #[error("tray D-Bus service failed: {0}")]
-    Spawn(#[from] ksni::Error),
+    Dbus(#[from] glib::Error),
 }
 
-// ksni calls the menu on its own tasks, but the `gtk4::Application` may
-// only be touched on the main thread. Menu clicks are queued and drained
-// on the main thread, where the app and the receiver live.
-thread_local! {
-    static TRAY_DISPATCH: RefCell<Option<(gtk4::Application, std_mpsc::Receiver<TrayAction>)>> =
-        const { RefCell::new(None) };
-}
-
-fn drain_queued_actions() {
-    TRAY_DISPATCH.with(|cell| {
-        if let Some((app, rx)) = cell.borrow().as_ref() {
-            while let Ok(action) = rx.try_recv() {
-                handle_app_action(app, action);
-            }
-        }
-    });
-}
-
-/// Keeps the tray's runtime and D-Bus service alive; drop it to remove
-/// the icon.
+/// Keeps the item on the bus; drop it to remove the icon.
 pub struct TrayHandle {
-    _runtime: tokio::runtime::Runtime,
-    _handle: ksni::Handle<WaytermTray>,
+    service: sni::Service,
 }
 
-/// The status-notifier item.
-pub struct WaytermTray {
-    queue: std_mpsc::Sender<TrayAction>,
-    /// [`tray_icon_pixmap`], decoded once; empty if it failed.
-    pixmap: Vec<ksni::Icon>,
-}
+impl TrayHandle {
+    /// True while a tray host shows the icon; see [`sni::Availability`].
+    pub fn availability(&self) -> sni::Availability {
+        self.service.availability()
+    }
 
-impl WaytermTray {
-    fn fire(&self, action: TrayAction) {
-        if self.queue.send(action).is_ok() {
-            glib::MainContext::default().invoke(drain_queued_actions);
-        }
+    pub fn bus_name(&self) -> &str {
+        self.service.bus_name()
     }
 }
 
-impl ksni::Tray for WaytermTray {
-    fn id(&self) -> String {
-        TRAY_ID.to_string()
-    }
-
-    fn title(&self) -> String {
-        NOTIFICATION_TITLE.to_string()
-    }
-
-    fn icon_name(&self) -> String {
-        TRAY_ICON_NAME.to_string()
-    }
-
-    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        self.pixmap.clone()
-    }
-
-    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        tray_menu_layout()
-            .into_iter()
-            .map(|entry| match entry {
-                MenuEntry::Separator => ksni::MenuItem::Separator,
-                MenuEntry::Item(action) => ksni::menu::StandardItem {
-                    label: action.label().to_string(),
-                    activate: Box::new(move |tray: &mut Self| tray.fire(action)),
-                    ..Default::default()
-                }
-                .into(),
-            })
-            .collect()
-    }
-
-    /// Left-click restores the window.
-    fn activate(&mut self, _x: i32, _y: i32) {
-        self.fire(TrayAction::ShowWindow);
-    }
-}
-
-/// Start the tray. Call once on the main thread; it runs the D-Bus
-/// handshake on a dedicated one-worker runtime, failing fast when headless.
-pub fn init_tray(app: &gtk4::Application) -> Result<TrayHandle, TrayInitError> {
-    let (queue, queue_rx) = std_mpsc::channel();
+/// Serve the tray on `connection`, running `on_action` for each click.
+/// Call on the thread whose main context will answer the calls.
+pub fn start_tray(
+    connection: &gio::DBusConnection,
+    on_action: impl Fn(TrayAction) + 'static,
+) -> Result<TrayHandle, TrayInitError> {
     // Not fatal: the icon name still works where the app is installed.
-    let pixmap = match tray_icon_pixmap() {
+    let icon_pixmap = match tray_icon_pixmap() {
         Ok(icon) => vec![icon],
         Err(err) => {
             tracing::info!(error = %err, "tray icon pixmap unavailable");
             Vec::new()
         }
     };
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .thread_name("wayterm-tray")
-        .enable_all()
-        .build()?;
-    let handle = runtime.block_on(WaytermTray { queue, pixmap }.spawn())?;
-    TRAY_DISPATCH.set(Some((app.clone(), queue_rx)));
-    Ok(TrayHandle {
-        _runtime: runtime,
-        _handle: handle,
+    let item = sni::ItemProps {
+        id: TRAY_ID.to_string(),
+        title: NOTIFICATION_TITLE.to_string(),
+        icon_name: TRAY_ICON_NAME.to_string(),
+        icon_pixmap,
+    };
+    let menu = sni::Menu::new(tray_menu_layout());
+    let service = sni::Service::start(connection, item, menu, Rc::new(on_action))?;
+    Ok(TrayHandle { service })
+}
+
+/// Start the tray on the session bus. Call once on the main thread; it
+/// fails at once without a session bus, and otherwise registers with the
+/// tray host in the background (see [`TrayHandle::availability`]).
+pub fn init_tray(app: &gtk4::Application) -> Result<TrayHandle, TrayInitError> {
+    let connection = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)?;
+    let app = app.downgrade();
+    start_tray(&connection, move |action| {
+        if let Some(app) = app.upgrade() {
+            handle_app_action(&app, action);
+        }
     })
 }
 
@@ -297,15 +254,16 @@ pub fn handle_app_action(app: &gtk4::Application, action: TrayAction) {
     }
 }
 
-/// Hide on close instead of quitting, when the tray allows it. The setting
-/// is read at each close, so a change in Settings applies at once.
+/// Hide on close instead of quitting, when the tray allows it. Both the
+/// tray and the setting are read at each close, so a tray host coming or
+/// going, or a change in Settings, applies at once.
 pub fn install_close_handler(
     window: &gtk4::ApplicationWindow,
-    tray_available: bool,
+    tray_available: sni::Availability,
     store: Rc<SessionStore>,
 ) {
     window.connect_close_request(move |window| {
-        if should_minimize_to_tray(tray_available, minimize_to_tray_enabled(&store)) {
+        if should_minimize_to_tray(tray_available.get(), minimize_to_tray_enabled(&store)) {
             window.set_visible(false);
             glib::Propagation::Stop
         } else {

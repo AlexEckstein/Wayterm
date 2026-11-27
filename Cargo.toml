@@ -36,8 +36,7 @@ hmac = "0.13"
 sha1 = "0.11"
 data-encoding = "2"
 thiserror = "2"
-russh-sftp = "3.0"
-ksni = "0.3"
+russh-sftp = "4.0"
 libc = "0.2"
 serialport = { version = "4.10.1", default-features = false }
 # Held at 0.6.0: 0.6.1 adds Apple Remote Desktop auth and

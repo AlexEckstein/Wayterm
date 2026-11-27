@@ -459,7 +459,7 @@ same rule editor, so both accept exactly the same input.
   `russh::compression::{ZLIB_LEGACY, NONE}`; the `flate2` default
   feature provides zlib, and `zlib@openssh.com` waits for authentication
   (`Compression::is_deferred`).
-- **russh-sftp 3.0:** doc 07.
+- **russh-sftp 4.0:** doc 07.
 
 Re-verify these when bumping a dependency; these APIs have moved before.
 
